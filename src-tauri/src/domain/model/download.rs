@@ -541,7 +541,7 @@ mod tests {
     }
 
     #[test]
-    fn test_priority_ordering() {
+    fn test_file_size_ordering() {
         assert!(FileSize(100) < FileSize(200));
         assert!(FileSize(0) < FileSize(1));
         assert_eq!(FileSize(50), FileSize(50));
