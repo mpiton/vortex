@@ -5,11 +5,18 @@ use crate::domain::model::queue::Priority;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct DownloadId(pub u64);
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Url {
     raw: String,
     scheme: String,
     host: String,
+}
+
+impl std::fmt::Debug for Url {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Redact path/query/fragment to avoid leaking tokens in logs
+        write!(f, "Url({}://{}/<redacted>)", self.scheme, self.host)
+    }
 }
 
 impl Url {
