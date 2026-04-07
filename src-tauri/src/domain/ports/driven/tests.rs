@@ -18,7 +18,7 @@ mod tests {
     use crate::domain::model::meta::DownloadMeta;
     use crate::domain::model::plugin::{PluginCategory, PluginInfo, PluginManifest};
     use crate::domain::model::views::{
-        DownloadDetailView, DownloadFilter, DownloadView, HistoryEntry, SortField, StateCountMap,
+        DownloadDetailView, DownloadFilter, DownloadView, HistoryEntry, SortOrder, StateCountMap,
         StatsView,
     };
     use crate::domain::ports::driven::*;
@@ -75,7 +75,7 @@ mod tests {
         fn find_downloads(
             &self,
             _filter: Option<DownloadFilter>,
-            _sort: Option<SortField>,
+            _sort: Option<SortOrder>,
             _limit: Option<usize>,
             _offset: Option<usize>,
         ) -> Result<Vec<DownloadView>, DomainError> {
@@ -191,8 +191,8 @@ mod tests {
             Ok(HttpResponse {
                 status_code: 200,
                 headers: HashMap::from([
-                    ("content-length".to_string(), "1024".to_string()),
-                    ("accept-ranges".to_string(), "bytes".to_string()),
+                    ("content-length".to_string(), vec!["1024".to_string()]),
+                    ("accept-ranges".to_string(), vec!["bytes".to_string()]),
                 ]),
                 body: vec![],
             })
@@ -263,10 +263,31 @@ mod tests {
         fn update_config(&self, patch: ConfigPatch) -> Result<AppConfig, DomainError> {
             let mut config = self.config.lock().unwrap();
             if let Some(dir) = patch.download_dir {
-                config.download_dir = dir;
+                config.download_dir = Some(dir);
             }
             if let Some(max) = patch.max_concurrent_downloads {
                 config.max_concurrent_downloads = max;
+            }
+            if let Some(max) = patch.max_segments_per_download {
+                config.max_segments_per_download = max;
+            }
+            if let Some(limit) = patch.speed_limit_bytes_per_sec {
+                config.speed_limit_bytes_per_sec = limit;
+            }
+            if let Some(auto) = patch.auto_extract {
+                config.auto_extract = auto;
+            }
+            if let Some(theme) = patch.theme {
+                config.theme = theme;
+            }
+            if let Some(locale) = patch.locale {
+                config.locale = locale;
+            }
+            if let Some(monitoring) = patch.clipboard_monitoring {
+                config.clipboard_monitoring = monitoring;
+            }
+            if let Some(minimize) = patch.minimize_to_tray {
+                config.minimize_to_tray = minimize;
             }
             Ok(config.clone())
         }
@@ -618,7 +639,7 @@ mod tests {
         };
         let updated = store.update_config(patch).unwrap();
         assert_eq!(updated.max_concurrent_downloads, 10);
-        assert_eq!(updated.download_dir, "/downloads");
+        assert_eq!(updated.download_dir, Some("/downloads".to_string()));
     }
 
     #[test]

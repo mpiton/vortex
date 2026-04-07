@@ -24,5 +24,5 @@ pub use queue::{Priority, QueuePosition};
 pub use segment::{Segment, SegmentState};
 pub use views::{
     DailyVolume, DownloadDetailView, DownloadFilter, DownloadView, HistoryEntry, HostStats,
-    SegmentView, SortField, StateCountMap, StatsView,
+    SegmentView, SortDirection, SortField, SortOrder, StateCountMap, StatsView,
 };

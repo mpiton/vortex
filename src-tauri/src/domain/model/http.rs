@@ -14,7 +14,7 @@ use std::collections::HashMap;
 #[derive(Debug, Clone, PartialEq)]
 pub struct HttpResponse {
     pub status_code: u16,
-    pub headers: HashMap<String, String>,
+    pub headers: HashMap<String, Vec<String>>,
     pub body: Vec<u8>,
 }
 
@@ -24,17 +24,26 @@ impl HttpResponse {
         (200..300).contains(&self.status_code)
     }
 
-    /// Looks up a header value by name (case-insensitive).
+    /// Looks up the first header value by name (case-insensitive).
     pub fn header(&self, name: &str) -> Option<&str> {
-        let lower = name.to_lowercase();
         self.headers
             .iter()
-            .find(|(k, _)| k.to_lowercase() == lower)
-            .map(|(_, v)| v.as_str())
+            .find(|(k, _)| k.eq_ignore_ascii_case(name))
+            .and_then(|(_, v)| v.first())
+            .map(|s| s.as_str())
+    }
+
+    /// Returns all values for a header name (case-insensitive).
+    pub fn header_all(&self, name: &str) -> Vec<&str> {
+        self.headers
+            .iter()
+            .filter(|(k, _)| k.eq_ignore_ascii_case(name))
+            .flat_map(|(_, v)| v.iter().map(|s| s.as_str()))
+            .collect()
     }
 
     /// Returns the Content-Length header value, if present and valid.
     pub fn content_length(&self) -> Option<u64> {
-        self.header("content-length")?.parse().ok()
+        self.header("content-length")?.trim().parse().ok()
     }
 }

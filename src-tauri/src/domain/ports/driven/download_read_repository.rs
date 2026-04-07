@@ -6,7 +6,7 @@
 use crate::domain::error::DomainError;
 use crate::domain::model::download::DownloadId;
 use crate::domain::model::views::{
-    DownloadDetailView, DownloadFilter, DownloadView, SortField, StateCountMap,
+    DownloadDetailView, DownloadFilter, DownloadView, SortOrder, StateCountMap,
 };
 
 /// Reads download data as pre-computed views for the UI.
@@ -21,7 +21,7 @@ pub trait DownloadReadRepository: Send + Sync {
     fn find_downloads(
         &self,
         filter: Option<DownloadFilter>,
-        sort: Option<SortField>,
+        sort: Option<SortOrder>,
         limit: Option<usize>,
         offset: Option<usize>,
     ) -> Result<Vec<DownloadView>, DomainError>;

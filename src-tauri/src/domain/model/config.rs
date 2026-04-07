@@ -9,7 +9,9 @@
 /// Adapters serialize/deserialize this to the actual file format.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AppConfig {
-    pub download_dir: String,
+    /// Download directory path. `None` means the adapter must resolve
+    /// a platform-specific default (e.g., `~/Downloads`) before use.
+    pub download_dir: Option<String>,
     pub max_concurrent_downloads: u32,
     pub max_segments_per_download: u32,
     pub speed_limit_bytes_per_sec: Option<u64>,
@@ -23,7 +25,7 @@ pub struct AppConfig {
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
-            download_dir: String::new(),
+            download_dir: None,
             max_concurrent_downloads: 3,
             max_segments_per_download: 8,
             speed_limit_bytes_per_sec: None,

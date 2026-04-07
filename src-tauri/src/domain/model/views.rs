@@ -129,5 +129,20 @@ pub enum SortField {
     State,
 }
 
+/// Sort direction (ascending or descending).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SortDirection {
+    #[default]
+    Ascending,
+    Descending,
+}
+
+/// Combined sort specification: field + direction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SortOrder {
+    pub field: SortField,
+    pub direction: SortDirection,
+}
+
 /// Count of downloads grouped by state.
 pub type StateCountMap = HashMap<DownloadState, usize>;

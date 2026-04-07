@@ -21,6 +21,8 @@ pub trait HistoryRepository: Send + Sync {
     /// Find history entries for a specific download.
     fn find_by_download(&self, id: DownloadId) -> Result<Vec<HistoryEntry>, DomainError>;
 
-    /// Delete history entries older than the given timestamp.
+    /// Delete history entries older than the given Unix timestamp in seconds.
+    ///
+    /// Returns the number of entries deleted.
     fn delete_older_than(&self, before_timestamp: u64) -> Result<u64, DomainError>;
 }
