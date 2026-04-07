@@ -1,6 +1,6 @@
 mod adapters;
 mod application;
-mod domain;
+pub mod domain;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
