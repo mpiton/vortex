@@ -135,6 +135,16 @@ impl Download {
         self
     }
 
+    pub fn with_created_at(mut self, ts: u64) -> Self {
+        self.created_at = ts;
+        self.updated_at = ts;
+        self
+    }
+
+    pub fn touch(&mut self, now: u64) {
+        self.updated_at = now;
+    }
+
     pub fn update_progress(&mut self, downloaded_bytes: u64) {
         self.downloaded_bytes = downloaded_bytes;
     }
@@ -236,10 +246,7 @@ impl Download {
             }
             DownloadState::Retry => {
                 self.state = DownloadState::Downloading;
-                Ok(DomainEvent::DownloadRetrying {
-                    id: self.id,
-                    attempt: self.retry_count,
-                })
+                Ok(DomainEvent::DownloadStarted { id: self.id })
             }
             _ => Err(DomainError::InvalidTransition {
                 from: self.state,
@@ -284,14 +291,11 @@ impl Download {
     }
 
     pub fn retry(&mut self) -> Result<DomainEvent, DomainError> {
-        match self.state {
-            DownloadState::Error | DownloadState::Retry => {}
-            _ => {
-                return Err(DomainError::InvalidTransition {
-                    from: self.state,
-                    to: DownloadState::Retry,
-                });
-            }
+        if self.state != DownloadState::Error {
+            return Err(DomainError::InvalidTransition {
+                from: self.state,
+                to: DownloadState::Retry,
+            });
         }
 
         if self.retry_count >= self.max_retries {
@@ -344,7 +348,7 @@ impl Download {
             });
         }
         self.state = DownloadState::Downloading;
-        Ok(DomainEvent::DownloadResumed { id: self.id })
+        Ok(DomainEvent::DownloadResumedFromWait { id: self.id })
     }
 
     pub fn start_checking(&mut self) -> Result<DomainEvent, DomainError> {
@@ -456,9 +460,16 @@ mod tests {
         let mut d = make_download().with_max_retries(2);
         d.start().unwrap();
         d.fail("error".to_string()).unwrap();
+        // cycle 1: Error → retry → Retry → start → Downloading → fail → Error
         d.retry().unwrap(); // attempt 1
+        d.start().unwrap();
+        d.fail("error".to_string()).unwrap();
+        // cycle 2: Error → retry → Retry → start → Downloading → fail → Error
         d.retry().unwrap(); // attempt 2
-        let result = d.retry(); // exceeds max
+        d.start().unwrap();
+        d.fail("error".to_string()).unwrap();
+        // cycle 3: count (2) >= max (2) → MaxRetriesExceeded
+        let result = d.retry();
         assert_eq!(
             result.unwrap_err(),
             DomainError::MaxRetriesExceeded { download_id: 1 }
@@ -572,13 +583,7 @@ mod tests {
         assert_eq!(d.state(), DownloadState::Retry);
         let event = d.start().unwrap();
         assert_eq!(d.state(), DownloadState::Downloading);
-        assert_eq!(
-            event,
-            DomainEvent::DownloadRetrying {
-                id: DownloadId(1),
-                attempt: 1
-            }
-        );
+        assert_eq!(event, DomainEvent::DownloadStarted { id: DownloadId(1) });
     }
 
     #[test]

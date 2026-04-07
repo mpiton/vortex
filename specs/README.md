@@ -4,7 +4,7 @@
 **From PRD**: Vortex est un gestionnaire de telechargements desktop open-source (GPLv3), successeur de JDownloader. Architecture plugin-first, Tauri 2 + Rust backend + React frontend. Cible les power users Linux/macOS/Windows.
 **Tech Stack**: Tauri 2, Rust (tokio, sea-orm, axum, reqwest, extism), React 19, TypeScript, Zustand, TanStack Query/Table, shadcn/ui, Tailwind CSS 4
 **Architecture**: Hexagonale (Ports & Adapters) + CQRS + TDD (Red-Green-Refactor)
-**Current State**: Projet vierge — PRD, ARCHI et CLAUDE.md existent, aucun code.
+**Current State**: Fondation initiale en place — scaffolding, CI/quality gates, et modeles de domaine implementes.
 
 ## Task Execution Guidelines
 

@@ -29,18 +29,19 @@ Le domaine est le coeur de l'architecture hexagonale. Il contient les entites pu
 ### Key Functionality
 
 **State machine Download (PRD §6.1.2) :**
-```
+```text
 Queued → Downloading → Completed
            ↕              
          Paused       
            ↓
      Downloading → Waiting → Downloading
            ↓
-         Retry → Downloading (si retry_count < max)
+     Error → Retry → Downloading (si retry_count < max)
            ↓
          Error (si circuit breaker declenche)
            ↓
     Downloading → Checking → Completed
+                  Checking → Extracting → Completed
     Downloading → Extracting → Completed
 ```
 
@@ -61,7 +62,7 @@ Chaque methode de transition (`pause()`, `resume()`, `retry()`, `complete()`) re
 - [x] `Download::new()` cree un download en etat `Queued`
 - [x] `Download::pause()` depuis `Downloading` retourne `Ok(DownloadPaused)`, depuis `Completed` retourne `Err(InvalidTransition)`
 - [x] `Download::retry()` incremente `retry_count`, passe en `Retry`, et echoue apres `max_retries`
-- [x] Toutes les transitions invalides retournent `DomainError::InvalidTransition`
+- [x] Toutes les transitions invalides retournent `DomainError::InvalidTransition` (downloads) ou `DomainError::InvalidSegmentTransition` (segments)
 - [x] Aucun `use` vers un crate externe dans tout `domain/`
 - [x] `cargo test domain` — 90%+ coverage, tous les tests passent
 - [x] Les value objects (DownloadId, Priority, Speed, FileSize) sont immutables et comparables

@@ -15,6 +15,9 @@ pub enum DomainEvent {
     DownloadResumed {
         id: DownloadId,
     },
+    DownloadResumedFromWait {
+        id: DownloadId,
+    },
     DownloadCompleted {
         id: DownloadId,
     },
@@ -49,6 +52,11 @@ pub enum DomainEvent {
     SegmentCompleted {
         download_id: DownloadId,
         segment_id: u32,
+    },
+    SegmentFailed {
+        download_id: DownloadId,
+        segment_id: u32,
+        error: String,
     },
 
     // Plugins

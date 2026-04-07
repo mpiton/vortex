@@ -10,6 +10,17 @@ pub enum SegmentState {
     Error,
 }
 
+impl std::fmt::Display for SegmentState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SegmentState::Pending => write!(f, "Pending"),
+            SegmentState::Downloading => write!(f, "Downloading"),
+            SegmentState::Completed => write!(f, "Completed"),
+            SegmentState::Error => write!(f, "Error"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Segment {
     id: u32,
@@ -68,7 +79,7 @@ impl Segment {
         })
     }
 
-    pub fn fail(&mut self) -> Result<(), DomainError> {
+    pub fn fail(&mut self, error: String) -> Result<DomainEvent, DomainError> {
         if self.state != SegmentState::Downloading {
             return Err(DomainError::InvalidSegmentTransition {
                 from: self.state,
@@ -76,7 +87,11 @@ impl Segment {
             });
         }
         self.state = SegmentState::Error;
-        Ok(())
+        Ok(DomainEvent::SegmentFailed {
+            download_id: self.download_id,
+            segment_id: self.id,
+            error,
+        })
     }
 
     pub fn reset(&mut self) -> Result<(), DomainError> {
@@ -195,21 +210,21 @@ mod tests {
     fn test_segment_fail_from_downloading() {
         let mut s = make_segment();
         s.start().unwrap();
-        assert!(s.fail().is_ok());
+        assert!(s.fail("test error".to_string()).is_ok());
         assert_eq!(s.state(), SegmentState::Error);
     }
 
     #[test]
     fn test_segment_fail_from_pending_fails() {
         let mut s = make_segment();
-        assert!(s.fail().is_err());
+        assert!(s.fail("test error".to_string()).is_err());
     }
 
     #[test]
     fn test_segment_reset_from_error() {
         let mut s = make_segment();
         s.start().unwrap();
-        s.fail().unwrap();
+        s.fail("test error".to_string()).unwrap();
         assert!(s.reset().is_ok());
         assert_eq!(s.state(), SegmentState::Pending);
         assert_eq!(s.downloaded_bytes(), 0);

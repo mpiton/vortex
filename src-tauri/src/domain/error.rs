@@ -29,7 +29,7 @@ impl std::fmt::Display for DomainError {
                 write!(f, "Invalid state transition from '{from}' to '{to}'")
             }
             DomainError::InvalidSegmentTransition { from, to } => {
-                write!(f, "Invalid segment transition from '{from:?}' to '{to:?}'")
+                write!(f, "Invalid segment transition from '{from}' to '{to}'")
             }
             DomainError::MaxRetriesExceeded { download_id } => {
                 write!(f, "Max retries exceeded for download {download_id}")
