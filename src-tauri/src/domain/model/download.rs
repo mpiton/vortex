@@ -6,23 +6,78 @@ use crate::domain::model::queue::Priority;
 pub struct DownloadId(pub u64);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Url(String);
+pub struct Url {
+    raw: String,
+    scheme: String,
+    host: String,
+}
 
 impl Url {
     pub fn new(s: &str) -> Result<Url, DomainError> {
         if s.is_empty() {
             return Err(DomainError::InvalidUrl("URL must not be empty".to_string()));
         }
-        if !s.starts_with("http://") && !s.starts_with("https://") && !s.starts_with("ftp://") {
+
+        let scheme = if s.starts_with("https://") {
+            "https"
+        } else if s.starts_with("http://") {
+            "http"
+        } else if s.starts_with("ftp://") {
+            "ftp"
+        } else {
             return Err(DomainError::InvalidUrl(format!(
                 "URL must start with http, https, or ftp: {s}"
             )));
+        };
+
+        let after_scheme = &s[scheme.len() + 3..]; // skip "scheme://"
+        if after_scheme.is_empty() {
+            return Err(DomainError::InvalidUrl(format!("URL has no host: {s}")));
         }
-        Ok(Url(s.to_string()))
+
+        // Extract authority (everything before first '/' or '?' or end)
+        let authority = after_scheme.split(['/', '?']).next().unwrap_or("");
+
+        // Strip userinfo (user:pass@) if present
+        let host_port = if let Some(at_pos) = authority.rfind('@') {
+            &authority[at_pos + 1..]
+        } else {
+            authority
+        };
+
+        // Strip port if present
+        let host = if let Some(colon_pos) = host_port.rfind(':') {
+            let after_colon = &host_port[colon_pos + 1..];
+            if after_colon.chars().all(|c| c.is_ascii_digit()) {
+                &host_port[..colon_pos]
+            } else {
+                host_port
+            }
+        } else {
+            host_port
+        };
+
+        if host.is_empty() {
+            return Err(DomainError::InvalidUrl(format!("URL has no host: {s}")));
+        }
+
+        Ok(Url {
+            raw: s.to_string(),
+            scheme: scheme.to_string(),
+            host: host.to_string(),
+        })
     }
 
     pub fn as_str(&self) -> &str {
-        &self.0
+        &self.raw
+    }
+
+    pub fn scheme(&self) -> &str {
+        &self.scheme
+    }
+
+    pub fn host(&self) -> &str {
+        &self.host
     }
 }
 
@@ -86,21 +141,8 @@ pub struct Download {
 
 impl Download {
     pub fn new(id: DownloadId, url: Url, file_name: String, destination_path: String) -> Self {
-        let protocol = if url.as_str().starts_with("https://") {
-            "https".to_string()
-        } else if url.as_str().starts_with("ftp://") {
-            "ftp".to_string()
-        } else {
-            "http".to_string()
-        };
-
-        let source_hostname = url
-            .as_str()
-            .splitn(3, '/')
-            .nth(2)
-            .and_then(|s| s.split('/').next())
-            .unwrap_or("")
-            .to_string();
+        let protocol = url.scheme().to_string();
+        let source_hostname = url.host().to_string();
 
         Download {
             id,
