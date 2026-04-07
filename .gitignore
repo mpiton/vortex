@@ -1,3 +1,9 @@
+# Local docs
+specs/
+ARCHI.md
+CLAUDE.md
+PRD.md
+mockup.html
 .insaits*
 node_modules/
 dist/
