@@ -13,6 +13,11 @@ target/
 *.swo
 .DS_Store
 
+# Environment
+.env
+.env.*
+!.env.example
+
 # Nix
 result
 .direnv/

@@ -4,7 +4,7 @@ version = "0.0.0"
 description = "A desktop download manager"
 authors = ["mpiton"]
 edition = "2021"
-license = "GPL-3.0"
+license = "GPL-3.0-only"
 
 [lib]
 name = "vortex_lib"
@@ -15,10 +15,8 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = [] }
-tauri-plugin-shell = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-tokio = { version = "1", features = ["full"] }

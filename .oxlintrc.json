@@ -9,6 +9,5 @@
     "eqeqeq": "error",
     "react/react-in-jsx-scope": "off",
     "import/no-unassigned-import": "off"
-  },
-  "ignorePatterns": ["node_modules", "dist", "target", "src/components/ui"]
+  }
 }

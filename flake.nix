@@ -40,21 +40,18 @@
         linuxBuildInputs = with pkgs;
           (if pkgs.stdenv.isLinux then linuxLibs else []);
 
-        linuxNativeBuildInputs = pkgs.lib.optionals pkgs.stdenv.isLinux [
-          pkgs.pkg-config
-        ];
-
       in
       {
         devShells.default = pkgs.mkShell {
-          nativeBuildInputs = linuxNativeBuildInputs;
+          nativeBuildInputs = [
+            pkgs.pkg-config
+          ];
 
           buildInputs = [
             rustToolchain
             pkgs.nodejs_22
             pkgs.cargo-llvm-cov
             pkgs.openssl
-            pkgs.pkg-config
           ] ++ linuxBuildInputs;
 
           shellHook = ''
