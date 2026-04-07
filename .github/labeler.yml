@@ -1,0 +1,35 @@
+rust:
+  - changed-files:
+      - any-glob-to-any-file: "src-tauri/**/*.rs"
+
+frontend:
+  - changed-files:
+      - any-glob-to-any-file: "src/**/*.{ts,tsx}"
+
+ui:
+  - changed-files:
+      - any-glob-to-any-file: "src/components/**"
+
+ci:
+  - changed-files:
+      - any-glob-to-any-file: ".github/workflows/**"
+
+documentation:
+  - changed-files:
+      - any-glob-to-any-file: "**/*.md"
+
+dependencies:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "package.json"
+          - "package-lock.json"
+          - "src-tauri/Cargo.toml"
+          - "src-tauri/Cargo.lock"
+
+configuration:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "*.json"
+          - "*.yml"
+          - "*.toml"
+          - ".editorconfig"

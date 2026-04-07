@@ -23,9 +23,11 @@
 
 - [ ] My code follows the project's style guidelines
 - [ ] I have performed a self-review of my code
+- [ ] `cargo fmt` and `oxlint` pass
+- [ ] `cargo clippy -- -D warnings` is clean
+- [ ] Tests pass (`cargo test` + `npm test`)
 - [ ] I have added tests that prove my fix/feature works
-- [ ] New and existing tests pass locally
-- [ ] I have updated the documentation accordingly
+- [ ] I have updated `CHANGELOG.md` under `[Unreleased]`
 
 ## Screenshots (if applicable)
 

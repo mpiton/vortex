@@ -1,0 +1,40 @@
+pre-commit:
+  parallel: true
+  commands:
+    rust-fmt:
+      glob: "src-tauri/**/*.rs"
+      run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
+      fail_text: "Run 'cargo fmt --manifest-path src-tauri/Cargo.toml' to fix formatting"
+    rust-clippy:
+      glob: "src-tauri/**/*.rs"
+      run: cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
+      fail_text: "Fix clippy warnings before committing"
+    ts-lint:
+      glob: "src/**/*.{ts,tsx}"
+      run: npx oxlint {staged_files}
+      skip:
+        - merge
+        - rebase
+      fail_text: "Fix oxlint errors before committing"
+    no-secrets:
+      run: |
+        SECRET_FILES=$(git diff --cached --diff-filter=d --name-only | grep -iE '\.(env|env\..+|pem|key|p12|pfx|secret|creds)$' || true)
+        if [ -n "$SECRET_FILES" ]; then
+          echo "BLOCKED: Potential secret files staged:"
+          echo "$SECRET_FILES"
+          exit 1
+        fi
+      fail_text: "Remove secret files from staging"
+
+pre-push:
+  parallel: true
+  commands:
+    rust-test:
+      run: cargo test --manifest-path src-tauri/Cargo.toml --workspace
+      fail_text: "Rust tests must pass before pushing"
+    ts-test:
+      run: npx vitest run
+      fail_text: "TypeScript tests must pass before pushing"
+    ts-typecheck:
+      run: npx tsc -b
+      fail_text: "TypeScript type checking must pass before pushing"
