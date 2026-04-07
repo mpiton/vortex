@@ -37,18 +37,36 @@ Types: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `chore`, `ci`
 
 ### Development Setup
 
-<!-- TODO: Add project-specific setup instructions -->
+#### Prerequisites
+
+- [Rust](https://rustup.rs/) (stable)
+- [Node.js](https://nodejs.org/) >= 22
+- Linux: `libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf`
+- Optional: [Nix](https://nixos.org/) for reproducible environment (`nix develop`)
+
+#### Getting Started
 
 ```bash
-# Clone the repo
 git clone https://github.com/mpiton/vortex.git
 cd vortex
+npm install          # installs deps + sets up lefthook git hooks
+npm run tauri dev    # starts dev server with hot reload
+```
 
-# Install dependencies
-# TODO: Add install commands
+#### Running Tests
 
-# Run tests
-# TODO: Add test commands
+```bash
+cargo test --manifest-path src-tauri/Cargo.toml --workspace   # Rust tests
+npm test                                                       # TypeScript tests
+npm run typecheck                                              # Type checking
+```
+
+#### Linting
+
+```bash
+cargo fmt --manifest-path src-tauri/Cargo.toml --check        # Rust formatting
+cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings  # Rust linting
+npx oxlint .                                                   # TypeScript linting
 ```
 
 ## Code of Conduct

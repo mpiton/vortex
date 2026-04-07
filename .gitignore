@@ -13,6 +13,11 @@ target/
 *.swo
 .DS_Store
 
+# TypeScript build artifacts
+tsconfig.tsbuildinfo
+*.d.ts
+!src/**/*.d.ts
+
 # Environment
 .env
 .env.*
