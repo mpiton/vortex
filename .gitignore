@@ -1,0 +1,12 @@
+.insaits*
+node_modules/
+dist/
+target/
+.vite/
+*.swp
+*.swo
+.DS_Store
+
+# Nix
+result
+.direnv/
