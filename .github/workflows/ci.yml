@@ -43,8 +43,13 @@ jobs:
       - name: Clippy
         run: cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
 
-      - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Install cargo-llvm-cov and cargo-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov,cargo-audit
+
+      - name: Security audit
+        run: cargo audit --file src-tauri/Cargo.lock
 
       - name: Tests with coverage
         run: >
