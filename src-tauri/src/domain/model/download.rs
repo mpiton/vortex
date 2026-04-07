@@ -35,8 +35,8 @@ impl Url {
             return Err(DomainError::InvalidUrl(format!("URL has no host: {s}")));
         }
 
-        // Extract authority (everything before first '/' or '?' or end)
-        let authority = after_scheme.split(['/', '?']).next().unwrap_or("");
+        // Extract authority (everything before first '/', '?', '#' or end)
+        let authority = after_scheme.split(['/', '?', '#']).next().unwrap_or("");
 
         // Strip userinfo (user:pass@) if present
         let host_port = if let Some(at_pos) = authority.rfind('@') {
