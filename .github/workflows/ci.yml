@@ -67,7 +67,16 @@ jobs:
         run: npx tsc -b
 
       - name: Tests with coverage
-        run: npx vitest run --coverage
+        run: npx vitest run --coverage --coverage.thresholds.lines=80
+
+      - name: Check for secret files
+        run: |
+          SECRET_FILES=$(git ls-files | grep -iE '\.(env|env\..+|pem|key|p12|pfx|secret|creds)$' || true)
+          if [ -n "$SECRET_FILES" ]; then
+            echo "::error::Secret files found in repository:"
+            echo "$SECRET_FILES"
+            exit 1
+          fi
 
   build:
     name: Build (${{ matrix.os }})

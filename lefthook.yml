@@ -18,7 +18,7 @@ pre-commit:
       fail_text: "Fix oxlint errors before committing"
     no-secrets:
       run: |
-        SECRET_FILES=$(git diff --cached --name-only | grep -E '\.(env|pem|key)$' || true)
+        SECRET_FILES=$(git diff --cached --diff-filter=d --name-only | grep -iE '\.(env|env\..+|pem|key|p12|pfx|secret|creds)$' || true)
         if [ -n "$SECRET_FILES" ]; then
           echo "BLOCKED: Potential secret files staged:"
           echo "$SECRET_FILES"

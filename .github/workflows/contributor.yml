@@ -2,7 +2,7 @@ name: Contributor Automation
 
 on:
   pull_request:
-    types: [opened, labeled]
+    types: [opened]
   issues:
     types: [opened]
   schedule:
