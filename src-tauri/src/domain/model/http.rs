@@ -1,0 +1,40 @@
+//! HTTP response types for the `HttpClient` port.
+//!
+//! Minimal representations of HTTP responses and headers,
+//! using only `std` types. The actual HTTP implementation is
+//! provided by the reqwest adapter.
+
+use std::collections::HashMap;
+
+/// An HTTP response returned by the `HttpClient` port.
+///
+/// Contains status code, headers, and the response body as raw bytes.
+/// The domain uses this to inspect HTTP metadata (content-length,
+/// accept-ranges) without depending on any HTTP library.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HttpResponse {
+    pub status_code: u16,
+    pub headers: HashMap<String, String>,
+    pub body: Vec<u8>,
+}
+
+impl HttpResponse {
+    /// Returns `true` if the response status is in the 2xx range.
+    pub fn is_success(&self) -> bool {
+        (200..300).contains(&self.status_code)
+    }
+
+    /// Looks up a header value by name (case-insensitive).
+    pub fn header(&self, name: &str) -> Option<&str> {
+        let lower = name.to_lowercase();
+        self.headers
+            .iter()
+            .find(|(k, _)| k.to_lowercase() == lower)
+            .map(|(_, v)| v.as_str())
+    }
+
+    /// Returns the Content-Length header value, if present and valid.
+    pub fn content_length(&self) -> Option<u64> {
+        self.header("content-length")?.parse().ok()
+    }
+}

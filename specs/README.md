@@ -22,7 +22,7 @@
 - [x] [`01-project-scaffolding.md`](01-mvp/01-project-scaffolding.md) — Tauri 2 + Vite + React + Tailwind + shadcn/ui + Nix flake
 - [x] [`02-ci-quality-gates.md`](01-mvp/02-ci-quality-gates.md) — CI pipeline + lefthook pre-commit/pre-push + GitHub Actions + templates
 - [x] [`03-domain-models.md`](01-mvp/03-domain-models.md) — Entites domaine, state machine, events, errors, value objects
-- [ ] [`04-domain-ports.md`](01-mvp/04-domain-ports.md) — Traits driven/driving (tous les ports hexagonaux)
+- [x] [`04-domain-ports.md`](01-mvp/04-domain-ports.md) — Traits driven/driving (tous les ports hexagonaux)
 - [ ] [`05-cqrs-infrastructure.md`](01-mvp/05-cqrs-infrastructure.md) — CommandBus, QueryBus, Command/Query traits, AppError, read models
 - [ ] [`06-sqlite-persistence.md`](01-mvp/06-sqlite-persistence.md) — sea-orm entities, migrations, write + read repository adapters
 - [ ] [`07-event-system.md`](01-mvp/07-event-system.md) — TokioEventBus, Tauri emit bridge, frontend subscription hooks
