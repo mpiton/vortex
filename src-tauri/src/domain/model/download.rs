@@ -230,7 +230,7 @@ impl Download {
     pub fn progress_percentage(&self) -> u64 {
         match self.file_size {
             Some(FileSize(total)) if total > 0 => {
-                (self.downloaded_bytes as f64 / total as f64 * 100.0) as u64
+                ((self.downloaded_bytes as f64 / total as f64 * 100.0) as u64).min(100)
             }
             _ => 0,
         }
