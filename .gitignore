@@ -1,0 +1,23 @@
+# Local docs
+specs/
+ARCHI.md
+CLAUDE.md
+PRD.md
+mockup.html
+.insaits*
+node_modules/
+dist/
+target/
+.vite/
+*.swp
+*.swo
+.DS_Store
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Nix
+result
+.direnv/
