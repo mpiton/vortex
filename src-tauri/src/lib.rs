@@ -5,6 +5,7 @@ pub mod domain;
 // Public API — concrete types for app wiring (main.rs, Tauri setup, integration tests)
 pub use adapters::driven::event::TokioEventBus;
 pub use adapters::driven::event::spawn_tauri_event_bridge;
+pub use adapters::driven::filesystem::FsFileStorage;
 pub use adapters::driven::network::ReqwestHttpClient;
 pub use adapters::driven::network::SegmentedDownloadEngine;
 pub use adapters::driven::sqlite::connection;
