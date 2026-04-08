@@ -26,6 +26,7 @@ impl Query for GetDownloadDetailQuery {}
 #[derive(Debug)]
 pub struct GetHistoryQuery {
     pub limit: usize,
+    pub offset: Option<usize>,
 }
 impl Query for GetHistoryQuery {}
 

@@ -6,6 +6,7 @@ use crate::domain::model::plugin::PluginInfo;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)] // Returned by query handlers (tasks 11-12)
 pub struct PluginViewDto {
     pub name: String,
     pub version: String,

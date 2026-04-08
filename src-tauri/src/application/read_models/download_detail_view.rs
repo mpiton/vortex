@@ -6,6 +6,7 @@ use crate::domain::model::views::{DownloadDetailView, SegmentView};
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)] // Returned by query handlers (tasks 11-12)
 pub struct SegmentViewDto {
     pub id: u32,
     pub start_byte: u64,
@@ -28,6 +29,7 @@ impl From<SegmentView> for SegmentViewDto {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)] // Returned by query handlers (tasks 11-12)
 pub struct DownloadDetailViewDto {
     pub id: String,
     pub file_name: String,

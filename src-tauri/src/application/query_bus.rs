@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use crate::domain::ports::driven::{
-    DownloadReadRepository, HistoryRepository, PluginLoader, StatsRepository,
+    DownloadReadRepository, HistoryRepository, PluginReadRepository, StatsRepository,
 };
 
 /// Central dispatcher for CQRS queries.
@@ -18,7 +18,7 @@ pub struct QueryBus {
     download_read_repo: Arc<dyn DownloadReadRepository>,
     history_repo: Arc<dyn HistoryRepository>,
     stats_repo: Arc<dyn StatsRepository>,
-    plugin_loader: Arc<dyn PluginLoader>,
+    plugin_read_repo: Arc<dyn PluginReadRepository>,
 }
 
 impl QueryBus {
@@ -27,13 +27,13 @@ impl QueryBus {
         download_read_repo: Arc<dyn DownloadReadRepository>,
         history_repo: Arc<dyn HistoryRepository>,
         stats_repo: Arc<dyn StatsRepository>,
-        plugin_loader: Arc<dyn PluginLoader>,
+        plugin_read_repo: Arc<dyn PluginReadRepository>,
     ) -> Self {
         Self {
             download_read_repo,
             history_repo,
             stats_repo,
-            plugin_loader,
+            plugin_read_repo,
         }
     }
 }
@@ -46,13 +46,13 @@ mod tests {
     use super::QueryBus;
     use crate::domain::error::DomainError;
     use crate::domain::model::download::DownloadId;
-    use crate::domain::model::plugin::{PluginInfo, PluginManifest};
+    use crate::domain::model::plugin::PluginInfo;
     use crate::domain::model::views::{
         DownloadDetailView, DownloadFilter, DownloadView, HistoryEntry, SortOrder, StateCountMap,
         StatsView,
     };
     use crate::domain::ports::driven::{
-        DownloadReadRepository, HistoryRepository, PluginLoader, StatsRepository,
+        DownloadReadRepository, HistoryRepository, PluginReadRepository, StatsRepository,
     };
 
     struct MockDownloadReadRepo;
@@ -117,20 +117,8 @@ mod tests {
         }
     }
 
-    struct MockPluginLoader;
-    impl PluginLoader for MockPluginLoader {
-        fn load(&self, _manifest: &PluginManifest) -> Result<(), DomainError> {
-            Ok(())
-        }
-
-        fn unload(&self, _name: &str) -> Result<(), DomainError> {
-            Ok(())
-        }
-
-        fn resolve_url(&self, _url: &str) -> Result<Option<PluginInfo>, DomainError> {
-            Ok(None)
-        }
-
+    struct MockPluginReadRepo;
+    impl PluginReadRepository for MockPluginReadRepo {
         fn list_loaded(&self) -> Result<Vec<PluginInfo>, DomainError> {
             Ok(vec![])
         }
@@ -142,7 +130,7 @@ mod tests {
             Arc::new(MockDownloadReadRepo),
             Arc::new(MockHistoryRepo),
             Arc::new(MockStatsRepo),
-            Arc::new(MockPluginLoader),
+            Arc::new(MockPluginReadRepo),
         );
     }
 

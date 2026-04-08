@@ -235,7 +235,10 @@ mod tests {
         }
 
         fn get_range(&self, _url: &str, start: u64, end: u64) -> Result<Vec<u8>, DomainError> {
-            Ok(vec![0u8; (end - start + 1) as usize])
+            Ok(vec![
+                0u8;
+                end.saturating_sub(start).saturating_add(1) as usize
+            ])
         }
 
         fn supports_range(&self, _url: &str) -> Result<bool, DomainError> {

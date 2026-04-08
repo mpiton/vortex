@@ -6,6 +6,7 @@ use crate::domain::model::views::HistoryEntry;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)] // Returned by query handlers (tasks 11-12)
 pub struct HistoryViewDto {
     pub download_id: String,
     pub file_name: String,

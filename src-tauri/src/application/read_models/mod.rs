@@ -1,5 +1,4 @@
 //! Application-layer read model DTOs with serde serialization.
-#![allow(dead_code)] // All DTOs consumed by query handlers (tasks 11-12)
 
 pub mod download_detail_view;
 pub mod download_view;

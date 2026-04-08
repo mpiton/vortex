@@ -4,6 +4,8 @@
 //! Handlers will be implemented in later tasks.
 #![allow(dead_code)] // All commands consumed by handlers (tasks 11-12)
 
+use std::path::PathBuf;
+
 use crate::domain::model::config::ConfigPatch;
 use crate::domain::model::download::DownloadId;
 use crate::domain::ports::driving::Command;
@@ -11,7 +13,7 @@ use crate::domain::ports::driving::Command;
 #[derive(Debug)]
 pub struct StartDownloadCommand {
     pub url: String,
-    pub destination: Option<String>,
+    pub destination: Option<PathBuf>,
 }
 impl Command for StartDownloadCommand {}
 
