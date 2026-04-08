@@ -11,6 +11,7 @@ pub mod file_storage;
 pub mod history_repository;
 pub mod http_client;
 pub mod plugin_loader;
+pub mod plugin_read_repository;
 pub mod stats_repository;
 
 pub use clipboard_observer::ClipboardObserver;
@@ -24,4 +25,5 @@ pub use file_storage::FileStorage;
 pub use history_repository::HistoryRepository;
 pub use http_client::HttpClient;
 pub use plugin_loader::PluginLoader;
+pub use plugin_read_repository::PluginReadRepository;
 pub use stats_repository::StatsRepository;
