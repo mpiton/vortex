@@ -11,6 +11,7 @@ use crate::domain::model::views::{
 use crate::domain::ports::driven::download_read_repository::DownloadReadRepository;
 
 use super::entities::{download, download_segment};
+use super::util::{block_on, map_db_err, safe_u32, safe_u64};
 
 pub struct SqliteDownloadReadRepo {
     db: DatabaseConnection,
@@ -22,33 +23,14 @@ impl SqliteDownloadReadRepo {
     }
 }
 
-/// Bridge a sync trait method to async sea-orm by running on a dedicated thread.
-/// Uses `std::thread::scope` + `Handle::block_on` to work with both
-/// `current_thread` and `multi_thread` tokio runtimes (unlike `block_in_place`).
-fn block_on<F: std::future::Future + Send>(future: F) -> F::Output
-where
-    F::Output: Send,
-{
-    let handle = tokio::runtime::Handle::current();
-    std::thread::scope(|s| {
-        s.spawn(|| handle.block_on(future))
-            .join()
-            .expect("db thread panicked")
-    })
-}
-
-fn map_db_err(e: sea_orm::DbErr) -> DomainError {
-    DomainError::StorageError(e.to_string())
-}
-
 fn model_to_view(
     model: &download::Model,
     segments_active: u32,
     segments_total: u32,
 ) -> Result<DownloadView, DomainError> {
-    let total = model.total_bytes.map(|b| b as u64);
-    let downloaded = model.downloaded_bytes as u64;
-    let speed = model.speed_bytes_per_sec as u64;
+    let total = model.total_bytes.map(safe_u64);
+    let downloaded = safe_u64(model.downloaded_bytes);
+    let speed = safe_u64(model.speed_bytes_per_sec);
 
     let progress_percent = match total {
         Some(t) if t > 0 => downloaded as f64 / t as f64 * 100.0,
@@ -65,7 +47,7 @@ fn model_to_view(
     })?;
 
     Ok(DownloadView {
-        id: DownloadId(model.id as u64),
+        id: DownloadId(safe_u64(model.id)),
         file_name: model.file_name.clone(),
         url: model.url.clone(),
         state,
@@ -77,8 +59,8 @@ fn model_to_view(
         segments_active,
         segments_total,
         module_name: model.module_name.clone(),
-        account_name: None,
-        created_at: model.created_at as u64,
+        account_name: None, // Resolved when accounts table is implemented
+        created_at: safe_u64(model.created_at),
     })
 }
 
@@ -88,10 +70,10 @@ fn segment_model_to_view(model: &download_segment::Model) -> Result<SegmentView,
     })?;
 
     Ok(SegmentView {
-        id: model.segment_index as u32,
-        start_byte: model.start_byte as u64,
-        end_byte: model.end_byte as u64,
-        downloaded_bytes: model.downloaded_bytes as u64,
+        id: safe_u32(model.segment_index as i64),
+        start_byte: safe_u64(model.start_byte),
+        end_byte: safe_u64(model.end_byte),
+        downloaded_bytes: safe_u64(model.downloaded_bytes),
         state,
     })
 }
@@ -120,6 +102,9 @@ impl DownloadReadRepository for SqliteDownloadReadRepo {
             }
 
             if let Some(ref s) = sort {
+                // Progress is a derived value (downloaded/total ratio), not a stored column.
+                // We approximate by sorting on downloaded_bytes — a true ratio sort would
+                // need a computed SQL expression, deferred to the UI layer for now.
                 let col = match s.field {
                     SortField::CreatedAt => download::Column::CreatedAt,
                     SortField::FileName => download::Column::FileName,
@@ -205,9 +190,9 @@ impl DownloadReadRepository for SqliteDownloadReadRepo {
                 .map(segment_model_to_view)
                 .collect::<Result<_, _>>()?;
 
-            let total = model.total_bytes.map(|b| b as u64);
-            let downloaded = model.downloaded_bytes as u64;
-            let speed = model.speed_bytes_per_sec as u64;
+            let total = model.total_bytes.map(safe_u64);
+            let downloaded = safe_u64(model.downloaded_bytes);
+            let speed = safe_u64(model.speed_bytes_per_sec);
 
             let progress_percent = match total {
                 Some(t) if t > 0 => downloaded as f64 / t as f64 * 100.0,
@@ -219,16 +204,15 @@ impl DownloadReadRepository for SqliteDownloadReadRepo {
                 _ => None,
             };
 
+            let state = model.state.parse().map_err(|_| {
+                DomainError::StorageError(format!("invalid download state in DB: {}", model.state))
+            })?;
+
             let detail = DownloadDetailView {
-                id: DownloadId(model.id as u64),
+                id: DownloadId(safe_u64(model.id)),
                 file_name: model.file_name.clone(),
                 url: model.url.clone(),
-                state: model.state.parse().map_err(|_| {
-                    DomainError::StorageError(format!(
-                        "invalid download state in DB: {}",
-                        model.state
-                    ))
-                })?,
+                state,
                 progress_percent,
                 speed_bytes_per_sec: speed,
                 downloaded_bytes: downloaded,
@@ -240,10 +224,10 @@ impl DownloadReadRepository for SqliteDownloadReadRepo {
                 module_name: model.module_name.clone(),
                 account_name: None, // Resolved when accounts table is implemented
                 resume_supported: model.resume_supported != 0,
-                retry_count: model.retry_count as u32,
-                max_retries: model.max_retries as u32,
-                created_at: model.created_at as u64,
-                updated_at: model.updated_at as u64,
+                retry_count: safe_u32(model.retry_count as i64),
+                max_retries: safe_u32(model.max_retries as i64),
+                created_at: safe_u64(model.created_at),
+                updated_at: safe_u64(model.updated_at),
             };
 
             Ok(Some(detail))
@@ -354,7 +338,6 @@ mod tests {
         let views = repo.find_downloads(None, None, None, None).unwrap();
 
         assert_eq!(views.len(), 2);
-        // Default sort is by created_at DESC, so id=2 comes first
         assert_eq!(views[0].file_name, "file2.zip");
         assert_eq!(views[1].file_name, "file1.zip");
         assert_eq!(views[1].segments_active, 1);

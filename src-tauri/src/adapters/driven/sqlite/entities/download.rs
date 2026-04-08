@@ -51,7 +51,10 @@ impl Model {
             .state
             .parse()
             .map_err(|e: DomainError| DomainError::ValidationError(e.to_string()))?;
-        let priority = Priority::new(self.priority as u8)?;
+        let priority_val = u8::try_from(self.priority).map_err(|_| {
+            DomainError::ValidationError(format!("invalid priority in DB: {}", self.priority))
+        })?;
+        let priority = Priority::new(priority_val)?;
         let file_size = self.total_bytes.map(|b| FileSize(b as u64));
 
         Ok(Download::reconstruct(

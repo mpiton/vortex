@@ -202,6 +202,8 @@ impl MigrationTrait for Migration {
                             .primary_key()
                             .auto_increment(),
                     )
+                    // No FK to downloads: history entries are retained after a download
+                    // is deleted, so they outlive the source row by design.
                     .col(ColumnDef::new(History::DownloadId).big_integer().not_null())
                     .col(ColumnDef::new(History::FileName).string().not_null())
                     .col(ColumnDef::new(History::Url).string().not_null())

@@ -9,18 +9,17 @@ pub async fn establish_connection(db_path: &str) -> Result<DatabaseConnection, s
     let mut opt = ConnectOptions::new(url);
     opt.max_connections(5)
         .connect_timeout(Duration::from_secs(8))
-        .sqlx_logging(false);
+        .sqlx_logging(false)
+        // foreign_keys=ON applied to every new pool connection via sqlx_statement_cache_capacity workaround:
+        // SQLite PRAGMAs set here run once per connection, not once per pool.
+        .set_schema_search_path("PRAGMA foreign_keys = ON");
 
     let db = Database::connect(opt).await?;
 
+    // WAL is a file-level property — setting it once applies to all connections.
     db.execute(Statement::from_string(
         sea_orm::DatabaseBackend::Sqlite,
         "PRAGMA journal_mode=WAL;".to_string(),
-    ))
-    .await?;
-    db.execute(Statement::from_string(
-        sea_orm::DatabaseBackend::Sqlite,
-        "PRAGMA foreign_keys=ON;".to_string(),
     ))
     .await?;
 
@@ -76,7 +75,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_wal_mode_enabled() {
-        let dir = std::env::temp_dir().join("vortex_test_wal");
+        let test_id = std::process::id();
+        let dir = std::env::temp_dir().join(format!("vortex_test_wal_{test_id}"));
         let _ = std::fs::create_dir_all(&dir);
         let db_path = dir.join("test.db");
         let _ = std::fs::remove_file(&db_path);

@@ -9,33 +9,17 @@ use crate::domain::model::views::HistoryEntry;
 use crate::domain::ports::driven::history_repository::HistoryRepository;
 
 use super::entities::history;
-
-/// Bridge a sync trait method to async sea-orm by running on a dedicated thread.
-fn block_on<F: std::future::Future + Send>(future: F) -> F::Output
-where
-    F::Output: Send,
-{
-    let handle = tokio::runtime::Handle::current();
-    std::thread::scope(|s| {
-        s.spawn(|| handle.block_on(future))
-            .join()
-            .expect("db thread panicked")
-    })
-}
-
-fn map_db_err(e: sea_orm::DbErr) -> DomainError {
-    DomainError::StorageError(e.to_string())
-}
+use super::util::{block_on, map_db_err, safe_u64};
 
 fn model_to_entry(m: history::Model) -> HistoryEntry {
     HistoryEntry {
-        download_id: DownloadId(m.download_id as u64),
+        download_id: DownloadId(safe_u64(m.download_id)),
         file_name: m.file_name,
         url: m.url,
-        total_bytes: m.total_bytes as u64,
-        completed_at: m.completed_at as u64,
-        duration_seconds: m.duration_seconds as u64,
-        avg_speed: m.avg_speed as u64,
+        total_bytes: safe_u64(m.total_bytes),
+        completed_at: safe_u64(m.completed_at),
+        duration_seconds: safe_u64(m.duration_seconds),
+        avg_speed: safe_u64(m.avg_speed),
         destination_path: m.destination_path,
     }
 }

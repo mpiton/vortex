@@ -7,26 +7,7 @@ use crate::domain::model::download::{Download, DownloadId, DownloadState};
 use crate::domain::ports::driven::download_repository::DownloadRepository;
 
 use super::entities::download;
-
-/// Bridge a sync trait method to async sea-orm by running on a dedicated thread.
-/// Uses `std::thread::scope` + `Handle::block_on` to work with both
-/// `current_thread` and `multi_thread` tokio runtimes (unlike `block_in_place`).
-fn block_on<F: std::future::Future + Send>(future: F) -> F::Output
-where
-    F::Output: Send,
-{
-    let handle = tokio::runtime::Handle::current();
-    std::thread::scope(|s| {
-        s.spawn(|| handle.block_on(future))
-            .join()
-            .expect("db thread panicked")
-    })
-}
-
-/// Maps `sea_orm::DbErr` to `DomainError::StorageError`.
-fn map_db_err(e: sea_orm::DbErr) -> DomainError {
-    DomainError::StorageError(e.to_string())
-}
+use super::util::{block_on, map_db_err};
 
 pub struct SqliteDownloadRepo {
     db: DatabaseConnection,
@@ -60,6 +41,8 @@ impl DownloadRepository for SqliteDownloadRepo {
             download::Entity::insert(active_model)
                 .on_conflict(
                     sea_orm::sea_query::OnConflict::column(download::Column::Id)
+                        // SpeedBytesPerSec excluded: it's a runtime value
+                        // written by the download engine, not the write repo.
                         .update_columns([
                             download::Column::Url,
                             download::Column::FileName,
@@ -67,7 +50,6 @@ impl DownloadRepository for SqliteDownloadRepo {
                             download::Column::Priority,
                             download::Column::TotalBytes,
                             download::Column::DownloadedBytes,
-                            download::Column::SpeedBytesPerSec,
                             download::Column::RetryCount,
                             download::Column::MaxRetries,
                             download::Column::SegmentsCount,
