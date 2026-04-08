@@ -9,3 +9,4 @@ pub mod error;
 pub mod queries;
 pub mod query_bus;
 pub mod read_models;
+pub mod services;

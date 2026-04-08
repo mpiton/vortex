@@ -36,3 +36,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `.vortex-meta` bincode persistence for download resume state
   - Atomic meta writes (write-to-tmp + rename) to prevent corruption on crash
   - Graceful handling of corrupted `.vortex-meta` files (log warning, restart download)
+- Queue manager: `QueueManager` application service for download scheduling
+  - Configurable max concurrent downloads with `AtomicUsize` slot tracking
+  - Priority-based queue ordering (highest priority first, FIFO within same priority)
+  - Automatic next-download scheduling when a slot frees (completion, failure, pause)
+  - Exponential backoff retry: 10s, 20s, 40s, 80s, 160s (capped at 300s)
+  - Circuit breaker integration: respects `Download::retry()` / `MaxRetriesExceeded`
+  - Retry cancellation via `CancellationToken` (e.g., when download is deleted)
+  - EventBus sync-to-async bridge using bounded `mpsc::channel(1024)` with lifecycle event filtering
+  - Idempotent `on_slot_freed()` via `tokio::sync::Mutex` scheduling lock
