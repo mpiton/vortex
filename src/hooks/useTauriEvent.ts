@@ -7,14 +7,22 @@ export function useTauriEvent<T>(eventName: string, callback: (payload: T) => vo
 
   useEffect(() => {
     let cancelled = false;
-    const unlistenPromise = listen<T>(eventName, (event) => {
+    let unlistenFn: (() => void) | undefined;
+
+    listen<T>(eventName, (event) => {
       if (!cancelled) {
         callbackRef.current(event.payload);
       }
-    });
+    })
+      .then((fn) => {
+        if (cancelled) fn();
+        else unlistenFn = fn;
+      })
+      .catch(() => {});
+
     return () => {
       cancelled = true;
-      unlistenPromise.then((fn) => fn()).catch(() => {});
+      unlistenFn?.();
     };
   }, [eventName]);
 }

@@ -6,10 +6,9 @@ use crate::domain::ports::driven::EventBus;
 
 /// Subscribes to the EventBus and emits each event to the Tauri webview.
 pub fn spawn_tauri_event_bridge(app_handle: AppHandle, event_bus: &dyn EventBus) {
-    let handle = app_handle.clone();
     event_bus.subscribe(Box::new(move |event: &DomainEvent| {
         let (name, payload) = to_tauri_event(event);
-        handle.emit(name, payload).ok(); // Best-effort, don't crash on emit failure
+        app_handle.emit(name, payload).ok();
     }));
 }
 
@@ -82,7 +81,7 @@ fn event_payload(event: &DomainEvent) -> serde_json::Value {
             json!({ "name": name, "version": version })
         }
         DomainEvent::PluginUnloaded { name } => json!({ "name": name }),
-        DomainEvent::PackageCreated { id, name } => json!({ "id": id, "name": name }),
+        DomainEvent::PackageCreated { id, name } => json!({ "id": id.to_string(), "name": name }),
     }
 }
 
