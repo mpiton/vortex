@@ -89,10 +89,18 @@ impl QueueManager {
                 return Ok(());
             }
 
-            // Collect both Queued and Retry candidates so retries aren't stuck
+            // Collect Queued and matured Retry candidates (those whose backoff
+            // timer has fired, i.e. no longer in retry_cancellations).
             let mut candidates = self.download_repo.find_by_state(DownloadState::Queued)?;
             let retrying = self.download_repo.find_by_state(DownloadState::Retry)?;
-            candidates.extend(retrying);
+            {
+                let pending = lock_map(&self.retry_cancellations);
+                candidates.extend(
+                    retrying
+                        .into_iter()
+                        .filter(|d| !pending.contains_key(&d.id().0)),
+                );
+            }
 
             if candidates.is_empty() {
                 return Ok(());
@@ -114,10 +122,12 @@ impl QueueManager {
             self.active_count.fetch_add(1, Ordering::SeqCst);
 
             if let Err(engine_err) = self.engine.start(&download) {
+                // Roll back: no task was spawned, so decrement and persist Error.
+                // Do NOT publish DownloadFailed — that would re-enter
+                // handle_download_failed and double-decrement active_count.
                 self.safe_decrement();
-                if let Ok(fail_event) = download.fail(engine_err.to_string()) {
+                if let Ok(_fail_event) = download.fail(engine_err.to_string()) {
                     let _ = self.download_repo.save(&download);
-                    self.event_bus.publish(fail_event);
                 }
                 return Err(AppError::Domain(engine_err));
             }
@@ -177,62 +187,15 @@ impl QueueManager {
                 _ = token.cancelled() => { return; }
             }
 
+            // Timer matured: remove from pending set so on_slot_freed can
+            // pick this Retry download through the normal priority/FIFO path.
             {
-                let mut map = lock_map(&this.retry_cancellations); // F7
+                let mut map = lock_map(&this.retry_cancellations);
                 map.remove(&id.0);
             }
 
-            // F8: acquire schedule_lock and check slots before starting
-            let _guard = this.schedule_lock.lock().await;
-
-            let active = this.active_count.load(Ordering::SeqCst);
-            let max = this.max_concurrent.load(Ordering::SeqCst);
-            if active >= max {
-                // No slot available — put back to Queued so on_slot_freed picks it up later
-                // The download remains in Retry state; on_slot_freed will pick it up when a slot frees
-                tracing::warn!(
-                    "schedule_retry: no slot available for {id:?}, will retry when slot frees"
-                );
-                return;
-            }
-
-            let mut download = match this.download_repo.find_by_id(id) {
-                Ok(Some(d)) => d,
-                Ok(None) => {
-                    tracing::warn!("schedule_retry: download {id:?} not found");
-                    return;
-                }
-                Err(e) => {
-                    tracing::warn!("schedule_retry: find_by_id error: {e}");
-                    return;
-                }
-            };
-
-            let event = match download.start() {
-                Ok(e) => e,
-                Err(e) => {
-                    tracing::warn!("schedule_retry: start() error: {e}");
-                    return;
-                }
-            };
-
-            if let Err(e) = this.download_repo.save(&download) {
-                tracing::warn!("schedule_retry: save error: {e}");
-                return;
-            }
-
-            this.event_bus.publish(event);
-
-            // F2 applied here too: increment before engine.start, rollback on failure
-            this.active_count.fetch_add(1, Ordering::SeqCst);
-
-            if let Err(e) = this.engine.start(&download) {
-                tracing::warn!("schedule_retry: engine.start error: {e}");
-                this.safe_decrement();
-                if let Ok(fail_event) = download.fail(e.to_string()) {
-                    let _ = this.download_repo.save(&download);
-                    this.event_bus.publish(fail_event);
-                }
+            if let Err(e) = this.on_slot_freed().await {
+                tracing::warn!("schedule_retry: on_slot_freed error after delay for {id:?}: {e}");
             }
         });
     }
@@ -281,7 +244,10 @@ impl QueueManager {
 
 // F9: pub(crate) visibility
 pub(crate) fn retry_delay(attempt: u32) -> Duration {
-    let delay = Duration::from_secs(10 * 2u64.pow(attempt.saturating_sub(1)));
+    // Clamp exponent to 5 so the intermediate 2^exp never overflows u64.
+    // 10 * 2^5 = 320, capped to 300 by the min() below.
+    let exp = attempt.saturating_sub(1).min(5);
+    let delay = Duration::from_secs(10 * (1u64 << exp));
     delay.min(Duration::from_secs(300))
 }
 
@@ -628,9 +594,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_handle_failed_decrements_and_retries() {
-        // DownloadFailed always decrements (the event proves the download was active).
-        // If retry succeeds, on_slot_freed picks up the Retry download immediately.
+    async fn test_handle_failed_decrements_and_schedules_retry() {
+        // DownloadFailed always decrements. Retry is scheduled with a timer;
+        // on_slot_freed won't pick it up until the timer fires (it's filtered
+        // out by retry_cancellations).
         let d = make_download(1, 5, DownloadState::Error);
         let repo = Arc::new(MockDownloadRepo::new(vec![d]));
         let engine = Arc::new(MockEngine::new());
@@ -645,8 +612,11 @@ mod tests {
 
         qm.handle_download_failed(DownloadId(1)).await.unwrap();
 
-        // Decremented from 1 to 0, then retry → on_slot_freed picks it up → back to 1
-        assert_eq!(qm.active_count(), 1);
-        assert!(engine.started.lock().unwrap().contains(&1));
+        // Decremented from 1 to 0; retry is pending (timer), not started yet
+        assert_eq!(qm.active_count(), 0);
+        assert!(engine.started.lock().unwrap().is_empty());
+        // Download is in Retry state, waiting for backoff timer
+        let saved = repo.find_by_id(DownloadId(1)).unwrap().unwrap();
+        assert_eq!(saved.state(), DownloadState::Retry);
     }
 }
