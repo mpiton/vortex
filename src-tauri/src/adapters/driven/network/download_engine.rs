@@ -121,6 +121,15 @@ impl DownloadEngine for SegmentedDownloadEngine {
                 }
             };
 
+            // Check if cancelled during HEAD request
+            if cancel_token.is_cancelled() {
+                active_downloads
+                    .lock()
+                    .expect("active_downloads lock poisoned")
+                    .remove(&download_id);
+                return;
+            }
+
             // Pre-allocate file if size is known
             if total_size > 0 {
                 let storage = file_storage.clone();
@@ -170,7 +179,9 @@ impl DownloadEngine for SegmentedDownloadEngine {
             };
 
             // Calculate segment byte ranges
-            let segments: Vec<(u64, u64)> = if total_size > 0 {
+            // end_byte == u64::MAX signals the worker to omit the Range header
+            let segments: Vec<(u64, u64)> = if supports_range && total_size > 0 && num_segments > 1
+            {
                 let segment_size = total_size / num_segments as u64;
                 (0..num_segments)
                     .map(|i| {
@@ -183,10 +194,22 @@ impl DownloadEngine for SegmentedDownloadEngine {
                         (start, end)
                     })
                     .collect()
+            } else if supports_range && total_size > 0 {
+                // Single segment with range support: use exact range
+                vec![(0, total_size)]
             } else {
-                // Unknown size: single segment from 0 to u64::MAX (worker will handle stream end)
+                // No range support or unknown size: download without Range header
                 vec![(0, u64::MAX)]
             };
+
+            // Check if cancelled during setup
+            if cancel_token.is_cancelled() {
+                active_downloads
+                    .lock()
+                    .expect("active_downloads lock poisoned")
+                    .remove(&download_id);
+                return;
+            }
 
             event_bus.publish(DomainEvent::DownloadStarted { id: download_id });
 

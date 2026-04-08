@@ -112,10 +112,19 @@ impl HttpClient for ReqwestHttpClient {
                 .await
                 .map_err(map_reqwest_error)?;
 
-            if !response.status().is_success() {
+            let status = response.status();
+            if !status.is_success() {
                 return Err(DomainError::NetworkError(format!(
-                    "HTTP {} for range request on {url}",
-                    response.status()
+                    "HTTP {status} for range request on {url}",
+                )));
+            }
+
+            // If we requested a non-zero range but got 200 instead of 206,
+            // the server ignored our Range header — return error to prevent
+            // writing full-body data at a non-zero offset
+            if start > 0 && status == reqwest::StatusCode::OK {
+                return Err(DomainError::NetworkError(format!(
+                    "server returned 200 instead of 206 for range request on {url}",
                 )));
             }
 

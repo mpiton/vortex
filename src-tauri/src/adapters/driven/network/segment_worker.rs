@@ -173,8 +173,18 @@ pub(crate) async fn download_segment(params: SegmentParams) -> Result<u64, Segme
 
         let storage = file_storage.clone();
         let path = dest_path.clone();
-        let data = chunk.to_vec();
-        let chunk_len = data.len() as u64;
+        let mut data = chunk.to_vec();
+        let mut chunk_len = data.len() as u64;
+
+        // Clamp writes to segment boundary to prevent writing past end_byte
+        if end_byte != u64::MAX && offset + chunk_len > end_byte {
+            let allowed = end_byte.saturating_sub(offset) as usize;
+            data.truncate(allowed);
+            chunk_len = allowed as u64;
+            if chunk_len == 0 {
+                break;
+            }
+        }
 
         tokio::task::spawn_blocking(move || storage.write_segment(&path, offset, &data))
             .await
