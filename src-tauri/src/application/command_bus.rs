@@ -14,7 +14,6 @@ use crate::domain::ports::driven::{
 ///
 /// Each driven port is injected via the constructor as `Arc<dyn Trait>`.
 /// Command handler `impl` blocks will be added in later tasks.
-#[allow(dead_code)] // Fields read by command handlers (tasks 11-12)
 pub struct CommandBus {
     download_repo: Arc<dyn DownloadRepository>,
     download_engine: Arc<dyn DownloadEngine>,
@@ -29,7 +28,6 @@ pub struct CommandBus {
 
 impl CommandBus {
     #[allow(clippy::too_many_arguments)]
-    #[allow(dead_code)] // Called at app startup (task 11+)
     pub fn new(
         download_repo: Arc<dyn DownloadRepository>,
         download_engine: Arc<dyn DownloadEngine>,
@@ -52,6 +50,42 @@ impl CommandBus {
             credential_store,
             clipboard_observer,
         }
+    }
+
+    pub fn download_repo(&self) -> &dyn DownloadRepository {
+        self.download_repo.as_ref()
+    }
+
+    pub fn download_engine(&self) -> &dyn DownloadEngine {
+        self.download_engine.as_ref()
+    }
+
+    pub fn event_bus(&self) -> &dyn EventBus {
+        self.event_bus.as_ref()
+    }
+
+    pub fn file_storage(&self) -> &dyn FileStorage {
+        self.file_storage.as_ref()
+    }
+
+    pub fn http_client(&self) -> &dyn HttpClient {
+        self.http_client.as_ref()
+    }
+
+    pub fn plugin_loader(&self) -> &dyn PluginLoader {
+        self.plugin_loader.as_ref()
+    }
+
+    pub fn config_store(&self) -> &dyn ConfigStore {
+        self.config_store.as_ref()
+    }
+
+    pub fn credential_store(&self) -> &dyn CredentialStore {
+        self.credential_store.as_ref()
+    }
+
+    pub fn clipboard_observer(&self) -> &dyn ClipboardObserver {
+        self.clipboard_observer.as_ref()
     }
 }
 

@@ -13,7 +13,6 @@ use crate::domain::ports::driven::{
 ///
 /// Each driven port is injected via the constructor as `Arc<dyn Trait>`.
 /// Query handler `impl` blocks will be added in later tasks.
-#[allow(dead_code)] // Fields read by query handlers (tasks 11-12)
 pub struct QueryBus {
     download_read_repo: Arc<dyn DownloadReadRepository>,
     history_repo: Arc<dyn HistoryRepository>,
@@ -22,7 +21,6 @@ pub struct QueryBus {
 }
 
 impl QueryBus {
-    #[allow(dead_code)] // Called at app startup (task 12+)
     pub fn new(
         download_read_repo: Arc<dyn DownloadReadRepository>,
         history_repo: Arc<dyn HistoryRepository>,
@@ -35,6 +33,22 @@ impl QueryBus {
             stats_repo,
             plugin_read_repo,
         }
+    }
+
+    pub fn download_read_repo(&self) -> &dyn DownloadReadRepository {
+        self.download_read_repo.as_ref()
+    }
+
+    pub fn history_repo(&self) -> &dyn HistoryRepository {
+        self.history_repo.as_ref()
+    }
+
+    pub fn stats_repo(&self) -> &dyn StatsRepository {
+        self.stats_repo.as_ref()
+    }
+
+    pub fn plugin_read_repo(&self) -> &dyn PluginReadRepository {
+        self.plugin_read_repo.as_ref()
     }
 }
 

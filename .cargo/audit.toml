@@ -1,0 +1,9 @@
+# Cargo audit configuration
+# See: https://github.com/rustsec/rustsec/tree/main/cargo-audit
+
+[advisories]
+# RUSTSEC-2023-0071: Marvin Attack in `rsa` crate (medium severity).
+# Pulled transitively by sqlx-mysql → sqlx-macros-core, even though
+# Vortex only uses SQLite. No fix available upstream, and the MySQL
+# driver is never loaded at runtime.
+ignore = ["RUSTSEC-2023-0071"]
