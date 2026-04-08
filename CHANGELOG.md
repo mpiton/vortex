@@ -30,3 +30,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Segment worker with streaming HTTP chunks, progress throttling (500ms), and CancellationToken
   - Configurable segment count with 64KB minimum segment size
   - Single-segment fallback when server doesn't support Range requests
+- File storage adapter: `FsFileStorage` implementing `FileStorage` port
+  - Sparse file pre-allocation via `set_len()` (no disk space wasted)
+  - Segment writes at arbitrary byte offsets with seek + write_all
+  - `.vortex-meta` bincode persistence for download resume state
+  - Atomic meta writes (write-to-tmp + rename) to prevent corruption on crash
+  - Graceful handling of corrupted `.vortex-meta` files (log warning, restart download)

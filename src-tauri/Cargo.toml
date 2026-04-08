@@ -27,6 +27,8 @@ reqwest = { version = "0.13.2", features = ["stream"] }
 tokio-util = { version = "0.7.18", features = ["rt"] }
 futures-util = "0.3.32"
 bytes = "1.11.1"
+bincode = "2"
 
 [dev-dependencies]
+tempfile = "3.27.0"
 wiremock = "0.6.5"
