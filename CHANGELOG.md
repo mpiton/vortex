@@ -56,3 +56,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `RemoveDownloadCommand`: full cleanup with optional file deletion
 - Tauri IPC driving adapter: 9 `#[tauri::command]` functions with `AppState` wiring
   - Convention: `download_{action}` naming (`download_start`, `download_pause`, etc.)
+- Download query handlers: 3 CQRS query handlers on QueryBus
+  - `GetDownloadsQuery`: filtered, sorted, paginated download list via read repository
+  - `GetDownloadDetailQuery`: full detail view with segments, NotFound handling
+  - `CountDownloadsByStateQuery`: state-grouped counts for UI filter badges
+  - Tauri IPC: `download_list` (filter/sort/search/pagination), `download_detail`, `download_count_by_state`
+  - String-based filter/sort parsing in IPC layer (DownloadState, SortField, SortDirection)

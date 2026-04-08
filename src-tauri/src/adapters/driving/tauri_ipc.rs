@@ -1,7 +1,7 @@
-//! Tauri IPC driving adapter — exposes CQRS commands as Tauri commands.
+//! Tauri IPC driving adapter — exposes CQRS commands and queries as Tauri commands.
 //!
-//! Each function converts IPC parameters into a domain command,
-//! delegates to CommandBus, and serialises the result for the frontend.
+//! Each function converts IPC parameters into a domain command/query,
+//! delegates to CommandBus/QueryBus, and serialises the result for the frontend.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -14,8 +14,14 @@ use crate::application::commands::{
     ResumeAllDownloadsCommand, ResumeDownloadCommand, RetryDownloadCommand, SetPriorityCommand,
     StartDownloadCommand,
 };
+use crate::application::queries::{
+    CountDownloadsByStateQuery, GetDownloadDetailQuery, GetDownloadsQuery,
+};
 use crate::application::query_bus::QueryBus;
-use crate::domain::model::download::DownloadId;
+use crate::application::read_models::download_detail_view::DownloadDetailViewDto;
+use crate::application::read_models::download_view::DownloadViewDto;
+use crate::domain::model::download::{DownloadId, DownloadState};
+use crate::domain::model::views::{DownloadFilter, SortDirection, SortField, SortOrder};
 
 /// Shared application state managed by Tauri.
 pub struct AppState {
@@ -131,4 +137,110 @@ pub async fn download_remove(
         .handle_remove_download(cmd)
         .await
         .map_err(|e| e.to_string())
+}
+
+// --- Queries ---
+
+#[tauri::command]
+pub async fn download_list(
+    state: State<'_, AppState>,
+    filter_state: Option<String>,
+    search: Option<String>,
+    sort_field: Option<String>,
+    sort_direction: Option<String>,
+    limit: Option<usize>,
+    offset: Option<usize>,
+) -> Result<Vec<DownloadViewDto>, String> {
+    let filter = if filter_state.is_some() || search.is_some() {
+        Some(DownloadFilter {
+            state: filter_state.and_then(|s| parse_download_state(&s)),
+            search,
+            host: None,
+        })
+    } else {
+        None
+    };
+    let sort = sort_field.map(|f| SortOrder {
+        field: parse_sort_field(&f),
+        direction: sort_direction
+            .as_deref()
+            .map(parse_sort_direction)
+            .unwrap_or_default(),
+    });
+    let query = GetDownloadsQuery {
+        filter,
+        sort,
+        limit,
+        offset,
+    };
+    state
+        .query_bus
+        .handle_get_downloads(query)
+        .await
+        .map(|views| views.into_iter().map(DownloadViewDto::from).collect())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn download_detail(
+    state: State<'_, AppState>,
+    id: u64,
+) -> Result<DownloadDetailViewDto, String> {
+    let query = GetDownloadDetailQuery { id: DownloadId(id) };
+    state
+        .query_bus
+        .handle_get_download_detail(query)
+        .await
+        .map(DownloadDetailViewDto::from)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn download_count_by_state(
+    state: State<'_, AppState>,
+) -> Result<std::collections::HashMap<String, usize>, String> {
+    state
+        .query_bus
+        .handle_count_by_state(CountDownloadsByStateQuery)
+        .await
+        .map(|counts| {
+            counts
+                .into_iter()
+                .map(|(state, count)| (state.to_string(), count))
+                .collect()
+        })
+        .map_err(|e| e.to_string())
+}
+
+fn parse_download_state(s: &str) -> Option<DownloadState> {
+    match s.to_lowercase().as_str() {
+        "queued" => Some(DownloadState::Queued),
+        "downloading" => Some(DownloadState::Downloading),
+        "paused" => Some(DownloadState::Paused),
+        "waiting" => Some(DownloadState::Waiting),
+        "retry" => Some(DownloadState::Retry),
+        "error" => Some(DownloadState::Error),
+        "completed" => Some(DownloadState::Completed),
+        "checking" => Some(DownloadState::Checking),
+        "extracting" => Some(DownloadState::Extracting),
+        _ => None,
+    }
+}
+
+fn parse_sort_field(s: &str) -> SortField {
+    match s.to_lowercase().as_str() {
+        "name" | "filename" => SortField::FileName,
+        "size" | "filesize" => SortField::FileSize,
+        "progress" => SortField::Progress,
+        "speed" => SortField::Speed,
+        "state" | "status" => SortField::State,
+        _ => SortField::CreatedAt,
+    }
+}
+
+fn parse_sort_direction(s: &str) -> SortDirection {
+    match s.to_lowercase().as_str() {
+        "desc" | "descending" => SortDirection::Descending,
+        _ => SortDirection::Ascending,
+    }
 }
