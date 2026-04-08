@@ -6,7 +6,6 @@
 use crate::domain::DomainError;
 
 #[derive(Debug, thiserror::Error)]
-#[allow(dead_code)] // Consumed by command/query handlers (tasks 11-12)
 pub enum AppError {
     #[error(transparent)]
     Domain(#[from] DomainError),

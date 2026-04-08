@@ -6,7 +6,6 @@ use crate::domain::model::views::{DailyVolume, HostStats, StatsView};
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-#[allow(dead_code)] // Returned by query handlers (tasks 11-12)
 pub struct DailyVolumeDto {
     pub date: String,
     pub bytes: u64,
@@ -25,7 +24,6 @@ impl From<DailyVolume> for DailyVolumeDto {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-#[allow(dead_code)] // Returned by query handlers (tasks 11-12)
 pub struct HostStatsDto {
     pub hostname: String,
     pub total_bytes: u64,
@@ -44,7 +42,6 @@ impl From<HostStats> for HostStatsDto {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-#[allow(dead_code)] // Returned by query handlers (tasks 11-12)
 pub struct StatsViewDto {
     pub total_downloaded_bytes: u64,
     pub total_files: u64,

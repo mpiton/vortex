@@ -9,11 +9,3 @@ pub mod error;
 pub mod queries;
 pub mod query_bus;
 pub mod read_models;
-
-// Re-exports consumed once handlers are implemented (tasks 11-12).
-#[allow(unused_imports)]
-pub use command_bus::CommandBus;
-#[allow(unused_imports)]
-pub use error::AppError;
-#[allow(unused_imports)]
-pub use query_bus::QueryBus;

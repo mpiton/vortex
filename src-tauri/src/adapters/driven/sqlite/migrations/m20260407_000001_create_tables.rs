@@ -1,0 +1,434 @@
+use sea_orm_migration::prelude::*;
+
+#[derive(DeriveMigrationName)]
+pub struct Migration;
+
+#[async_trait::async_trait]
+impl MigrationTrait for Migration {
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        // --- downloads ---
+        manager
+            .create_table(
+                Table::create()
+                    .table(Downloads::Table)
+                    .if_not_exists()
+                    .col(
+                        ColumnDef::new(Downloads::Id)
+                            .big_integer()
+                            .not_null()
+                            .primary_key(),
+                    )
+                    .col(ColumnDef::new(Downloads::Url).string().not_null())
+                    .col(ColumnDef::new(Downloads::FileName).string().not_null())
+                    .col(
+                        ColumnDef::new(Downloads::State)
+                            .string()
+                            .not_null()
+                            .default("Queued"),
+                    )
+                    .col(
+                        ColumnDef::new(Downloads::Priority)
+                            .integer()
+                            .not_null()
+                            .default(5),
+                    )
+                    .col(ColumnDef::new(Downloads::TotalBytes).big_integer().null())
+                    .col(
+                        ColumnDef::new(Downloads::DownloadedBytes)
+                            .big_integer()
+                            .not_null()
+                            .default(0),
+                    )
+                    .col(
+                        ColumnDef::new(Downloads::SpeedBytesPerSec)
+                            .big_integer()
+                            .not_null()
+                            .default(0),
+                    )
+                    .col(
+                        ColumnDef::new(Downloads::RetryCount)
+                            .integer()
+                            .not_null()
+                            .default(0),
+                    )
+                    .col(
+                        ColumnDef::new(Downloads::MaxRetries)
+                            .integer()
+                            .not_null()
+                            .default(5),
+                    )
+                    .col(
+                        ColumnDef::new(Downloads::SegmentsCount)
+                            .integer()
+                            .not_null()
+                            .default(1),
+                    )
+                    .col(ColumnDef::new(Downloads::ChecksumExpected).string().null())
+                    .col(
+                        ColumnDef::new(Downloads::SourceHostname)
+                            .string()
+                            .not_null(),
+                    )
+                    .col(ColumnDef::new(Downloads::Protocol).string().not_null())
+                    .col(
+                        ColumnDef::new(Downloads::ResumeSupported)
+                            .integer()
+                            .not_null()
+                            .default(0),
+                    )
+                    .col(ColumnDef::new(Downloads::ModuleName).string().null())
+                    .col(ColumnDef::new(Downloads::AccountId).big_integer().null())
+                    .col(
+                        ColumnDef::new(Downloads::DestinationPath)
+                            .string()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(Downloads::CreatedAt)
+                            .big_integer()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(Downloads::UpdatedAt)
+                            .big_integer()
+                            .not_null(),
+                    )
+                    .to_owned(),
+            )
+            .await?;
+
+        manager
+            .create_index(
+                Index::create()
+                    .name("idx_downloads_state")
+                    .table(Downloads::Table)
+                    .col(Downloads::State)
+                    .to_owned(),
+            )
+            .await?;
+
+        // --- download_segments ---
+        manager
+            .create_table(
+                Table::create()
+                    .table(DownloadSegments::Table)
+                    .if_not_exists()
+                    .col(
+                        ColumnDef::new(DownloadSegments::Id)
+                            .big_integer()
+                            .not_null()
+                            .primary_key(),
+                    )
+                    .col(
+                        ColumnDef::new(DownloadSegments::DownloadId)
+                            .big_integer()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(DownloadSegments::SegmentIndex)
+                            .integer()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(DownloadSegments::StartByte)
+                            .big_integer()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(DownloadSegments::EndByte)
+                            .big_integer()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(DownloadSegments::DownloadedBytes)
+                            .big_integer()
+                            .not_null()
+                            .default(0),
+                    )
+                    .col(
+                        ColumnDef::new(DownloadSegments::State)
+                            .string()
+                            .not_null()
+                            .default("Pending"),
+                    )
+                    .foreign_key(
+                        ForeignKey::create()
+                            .from(DownloadSegments::Table, DownloadSegments::DownloadId)
+                            .to(Downloads::Table, Downloads::Id)
+                            .on_delete(ForeignKeyAction::Cascade),
+                    )
+                    .to_owned(),
+            )
+            .await?;
+
+        manager
+            .create_index(
+                Index::create()
+                    .name("idx_segments_download_id")
+                    .table(DownloadSegments::Table)
+                    .col(DownloadSegments::DownloadId)
+                    .to_owned(),
+            )
+            .await?;
+
+        // --- packages ---
+        manager
+            .create_table(
+                Table::create()
+                    .table(Packages::Table)
+                    .if_not_exists()
+                    .col(
+                        ColumnDef::new(Packages::Id)
+                            .big_integer()
+                            .not_null()
+                            .primary_key(),
+                    )
+                    .col(ColumnDef::new(Packages::Name).string().not_null())
+                    .col(ColumnDef::new(Packages::CreatedAt).big_integer().not_null())
+                    .to_owned(),
+            )
+            .await?;
+
+        // --- history ---
+        manager
+            .create_table(
+                Table::create()
+                    .table(History::Table)
+                    .if_not_exists()
+                    .col(
+                        ColumnDef::new(History::Id)
+                            .big_integer()
+                            .not_null()
+                            .primary_key()
+                            .auto_increment(),
+                    )
+                    .col(ColumnDef::new(History::DownloadId).big_integer().not_null())
+                    .col(ColumnDef::new(History::FileName).string().not_null())
+                    .col(ColumnDef::new(History::Url).string().not_null())
+                    .col(ColumnDef::new(History::TotalBytes).big_integer().not_null())
+                    .col(
+                        ColumnDef::new(History::CompletedAt)
+                            .big_integer()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(History::DurationSeconds)
+                            .big_integer()
+                            .not_null(),
+                    )
+                    .col(ColumnDef::new(History::AvgSpeed).big_integer().not_null())
+                    .col(ColumnDef::new(History::DestinationPath).string().not_null())
+                    .to_owned(),
+            )
+            .await?;
+
+        manager
+            .create_index(
+                Index::create()
+                    .name("idx_history_completed_at")
+                    .table(History::Table)
+                    .col(History::CompletedAt)
+                    .to_owned(),
+            )
+            .await?;
+
+        manager
+            .create_index(
+                Index::create()
+                    .name("idx_history_download_id")
+                    .table(History::Table)
+                    .col(History::DownloadId)
+                    .to_owned(),
+            )
+            .await?;
+
+        // --- plugins ---
+        manager
+            .create_table(
+                Table::create()
+                    .table(Plugins::Table)
+                    .if_not_exists()
+                    .col(
+                        ColumnDef::new(Plugins::Name)
+                            .string()
+                            .not_null()
+                            .primary_key(),
+                    )
+                    .col(ColumnDef::new(Plugins::Version).string().not_null())
+                    .col(ColumnDef::new(Plugins::Category).string().not_null())
+                    .col(
+                        ColumnDef::new(Plugins::Enabled)
+                            .integer()
+                            .not_null()
+                            .default(1),
+                    )
+                    .col(ColumnDef::new(Plugins::WasmPath).string().not_null())
+                    .col(ColumnDef::new(Plugins::ConfigJson).string().null())
+                    .col(
+                        ColumnDef::new(Plugins::InstalledAt)
+                            .big_integer()
+                            .not_null(),
+                    )
+                    .to_owned(),
+            )
+            .await?;
+
+        // --- statistics ---
+        manager
+            .create_table(
+                Table::create()
+                    .table(Statistics::Table)
+                    .if_not_exists()
+                    .col(
+                        ColumnDef::new(Statistics::Id)
+                            .big_integer()
+                            .not_null()
+                            .primary_key(),
+                    )
+                    .col(ColumnDef::new(Statistics::Date).string().not_null())
+                    .col(
+                        ColumnDef::new(Statistics::BytesDownloaded)
+                            .big_integer()
+                            .not_null()
+                            .default(0),
+                    )
+                    .col(
+                        ColumnDef::new(Statistics::FilesCompleted)
+                            .big_integer()
+                            .not_null()
+                            .default(0),
+                    )
+                    .col(
+                        ColumnDef::new(Statistics::AvgSpeed)
+                            .big_integer()
+                            .not_null()
+                            .default(0),
+                    )
+                    .col(
+                        ColumnDef::new(Statistics::PeakSpeed)
+                            .big_integer()
+                            .not_null()
+                            .default(0),
+                    )
+                    .to_owned(),
+            )
+            .await?;
+
+        manager
+            .create_index(
+                Index::create()
+                    .name("idx_statistics_date")
+                    .table(Statistics::Table)
+                    .col(Statistics::Date)
+                    .unique()
+                    .to_owned(),
+            )
+            .await?;
+
+        Ok(())
+    }
+
+    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        manager
+            .drop_table(Table::drop().table(Statistics::Table).to_owned())
+            .await?;
+        manager
+            .drop_table(Table::drop().table(Plugins::Table).to_owned())
+            .await?;
+        manager
+            .drop_table(Table::drop().table(History::Table).to_owned())
+            .await?;
+        manager
+            .drop_table(Table::drop().table(Packages::Table).to_owned())
+            .await?;
+        manager
+            .drop_table(Table::drop().table(DownloadSegments::Table).to_owned())
+            .await?;
+        manager
+            .drop_table(Table::drop().table(Downloads::Table).to_owned())
+            .await?;
+        Ok(())
+    }
+}
+
+#[derive(DeriveIden)]
+enum Downloads {
+    Table,
+    Id,
+    Url,
+    FileName,
+    State,
+    Priority,
+    TotalBytes,
+    DownloadedBytes,
+    SpeedBytesPerSec,
+    RetryCount,
+    MaxRetries,
+    SegmentsCount,
+    ChecksumExpected,
+    SourceHostname,
+    Protocol,
+    ResumeSupported,
+    ModuleName,
+    AccountId,
+    DestinationPath,
+    CreatedAt,
+    UpdatedAt,
+}
+
+#[derive(DeriveIden)]
+enum DownloadSegments {
+    Table,
+    Id,
+    DownloadId,
+    SegmentIndex,
+    StartByte,
+    EndByte,
+    DownloadedBytes,
+    State,
+}
+
+#[derive(DeriveIden)]
+enum Packages {
+    Table,
+    Id,
+    Name,
+    CreatedAt,
+}
+
+#[derive(DeriveIden)]
+enum History {
+    Table,
+    Id,
+    DownloadId,
+    FileName,
+    Url,
+    TotalBytes,
+    CompletedAt,
+    DurationSeconds,
+    AvgSpeed,
+    DestinationPath,
+}
+
+#[derive(DeriveIden)]
+enum Plugins {
+    Table,
+    Name,
+    Version,
+    Category,
+    Enabled,
+    WasmPath,
+    ConfigJson,
+    InstalledAt,
+}
+
+#[derive(DeriveIden)]
+enum Statistics {
+    Table,
+    Id,
+    Date,
+    BytesDownloaded,
+    FilesCompleted,
+    AvgSpeed,
+    PeakSpeed,
+}

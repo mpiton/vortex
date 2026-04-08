@@ -10,6 +10,22 @@ pub enum SegmentState {
     Error,
 }
 
+impl std::str::FromStr for SegmentState {
+    type Err = DomainError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "Pending" => Ok(SegmentState::Pending),
+            "Downloading" => Ok(SegmentState::Downloading),
+            "Completed" => Ok(SegmentState::Completed),
+            "Error" => Ok(SegmentState::Error),
+            _ => Err(DomainError::ValidationError(format!(
+                "Unknown segment state: {s}"
+            ))),
+        }
+    }
+}
+
 impl std::fmt::Display for SegmentState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {

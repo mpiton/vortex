@@ -107,6 +107,27 @@ pub enum DownloadState {
     Checking,
 }
 
+impl std::str::FromStr for DownloadState {
+    type Err = DomainError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "Queued" => Ok(DownloadState::Queued),
+            "Downloading" => Ok(DownloadState::Downloading),
+            "Paused" => Ok(DownloadState::Paused),
+            "Waiting" => Ok(DownloadState::Waiting),
+            "Retry" => Ok(DownloadState::Retry),
+            "Error" => Ok(DownloadState::Error),
+            "Extracting" => Ok(DownloadState::Extracting),
+            "Completed" => Ok(DownloadState::Completed),
+            "Checking" => Ok(DownloadState::Checking),
+            _ => Err(DomainError::ValidationError(format!(
+                "Unknown download state: {s}"
+            ))),
+        }
+    }
+}
+
 impl std::fmt::Display for DownloadState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -171,6 +192,55 @@ impl Download {
             destination_path,
             created_at: 0,
             updated_at: 0,
+        }
+    }
+
+    /// Reconstruct a Download from persistence storage.
+    ///
+    /// Bypasses state machine validation because the data was validated
+    /// when first created and is assumed to be consistent.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn reconstruct(
+        id: DownloadId,
+        url: Url,
+        file_name: String,
+        file_size: Option<FileSize>,
+        downloaded_bytes: u64,
+        state: DownloadState,
+        priority: Priority,
+        retry_count: u32,
+        max_retries: u32,
+        segments_count: u32,
+        checksum_expected: Option<String>,
+        source_hostname: String,
+        protocol: String,
+        resume_supported: bool,
+        module_name: Option<String>,
+        account_id: Option<u64>,
+        destination_path: String,
+        created_at: u64,
+        updated_at: u64,
+    ) -> Self {
+        Download {
+            id,
+            url,
+            file_name,
+            file_size,
+            downloaded_bytes,
+            state,
+            priority,
+            retry_count,
+            max_retries,
+            segments_count,
+            checksum_expected,
+            source_hostname,
+            protocol,
+            resume_supported,
+            module_name,
+            account_id,
+            destination_path,
+            created_at,
+            updated_at,
         }
     }
 
