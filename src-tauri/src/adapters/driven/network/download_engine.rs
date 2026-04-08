@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 
 use tokio::sync::watch;
@@ -11,7 +12,7 @@ use crate::domain::event::DomainEvent;
 use crate::domain::model::download::{Download, DownloadId};
 use crate::domain::ports::driven::{DownloadEngine, EventBus, FileStorage};
 
-use super::segment_worker::{SegmentParams, download_segment};
+use super::segment_worker::{SegmentError, SegmentParams, download_segment};
 
 struct ActiveDownload {
     cancel_token: CancellationToken,
@@ -58,7 +59,16 @@ impl DownloadEngine for SegmentedDownloadEngine {
         let (pause_tx, pause_rx) = watch::channel(false);
 
         {
-            let mut map = self.active_downloads.lock().unwrap();
+            let mut map = self
+                .active_downloads
+                .lock()
+                .expect("active_downloads lock poisoned");
+            if map.contains_key(&download_id) {
+                return Err(DomainError::AlreadyExists(format!(
+                    "download {}",
+                    download_id.0
+                )));
+            }
             map.insert(
                 download_id,
                 ActiveDownload {
@@ -103,7 +113,10 @@ impl DownloadEngine for SegmentedDownloadEngine {
                         id: download_id,
                         error: format!("HEAD request failed: {e}"),
                     });
-                    active_downloads.lock().unwrap().remove(&download_id);
+                    active_downloads
+                        .lock()
+                        .expect("active_downloads lock poisoned")
+                        .remove(&download_id);
                     return;
                 }
             };
@@ -125,7 +138,10 @@ impl DownloadEngine for SegmentedDownloadEngine {
                             id: download_id,
                             error: format!("file pre-allocation failed: {e}"),
                         });
-                        active_downloads.lock().unwrap().remove(&download_id);
+                        active_downloads
+                            .lock()
+                            .expect("active_downloads lock poisoned")
+                            .remove(&download_id);
                         return;
                     }
                     Ok(Err(e)) => {
@@ -133,7 +149,10 @@ impl DownloadEngine for SegmentedDownloadEngine {
                             id: download_id,
                             error: format!("file pre-allocation failed: {e}"),
                         });
-                        active_downloads.lock().unwrap().remove(&download_id);
+                        active_downloads
+                            .lock()
+                            .expect("active_downloads lock poisoned")
+                            .remove(&download_id);
                         return;
                     }
                     Ok(Ok(())) => {}
@@ -171,6 +190,7 @@ impl DownloadEngine for SegmentedDownloadEngine {
 
             event_bus.publish(DomainEvent::DownloadStarted { id: download_id });
 
+            let shared_downloaded = Arc::new(AtomicU64::new(0));
             let mut join_set = JoinSet::new();
             for (index, (start, end)) in segments.iter().enumerate() {
                 join_set.spawn(download_segment(SegmentParams {
@@ -187,6 +207,7 @@ impl DownloadEngine for SegmentedDownloadEngine {
                     dest_path: dest_path.clone(),
                     pause_rx: pause_rx.clone(),
                     cancel_token: cancel_token.clone(),
+                    shared_downloaded: shared_downloaded.clone(),
                 }));
             }
 
@@ -196,8 +217,11 @@ impl DownloadEngine for SegmentedDownloadEngine {
             while let Some(result) = join_set.join_next().await {
                 match result {
                     Ok(Ok(_bytes)) => {}
-                    Ok(Err(e)) => {
-                        if e != "cancelled" {
+                    Ok(Err(e)) => match e {
+                        SegmentError::Cancelled => {
+                            cancel_token.cancel();
+                        }
+                        _ => {
                             if failed {
                                 tracing::warn!(
                                     download_id = download_id.0,
@@ -205,11 +229,11 @@ impl DownloadEngine for SegmentedDownloadEngine {
                                     "additional segment failure (overwriting previous error)"
                                 );
                             }
-                            error_msg = e;
+                            error_msg = format!("{e:?}");
                             failed = true;
+                            cancel_token.cancel();
                         }
-                        cancel_token.cancel();
-                    }
+                    },
                     Err(e) => {
                         error_msg = format!("segment task panicked: {e}");
                         failed = true;
@@ -227,14 +251,20 @@ impl DownloadEngine for SegmentedDownloadEngine {
                 event_bus.publish(DomainEvent::DownloadCompleted { id: download_id });
             }
 
-            active_downloads.lock().unwrap().remove(&download_id);
+            active_downloads
+                .lock()
+                .expect("active_downloads lock poisoned")
+                .remove(&download_id);
         });
 
         Ok(())
     }
 
     fn pause(&self, id: DownloadId) -> Result<(), DomainError> {
-        let map = self.active_downloads.lock().unwrap();
+        let map = self
+            .active_downloads
+            .lock()
+            .expect("active_downloads lock poisoned");
         let active = map
             .get(&id)
             .ok_or_else(|| DomainError::NotFound(format!("download {}", id.0)))?;
@@ -245,9 +275,27 @@ impl DownloadEngine for SegmentedDownloadEngine {
         Ok(())
     }
 
+    fn resume(&self, id: DownloadId) -> Result<(), DomainError> {
+        let map = self
+            .active_downloads
+            .lock()
+            .expect("active_downloads lock poisoned");
+        let active = map
+            .get(&id)
+            .ok_or_else(|| DomainError::NotFound(format!("download {}", id.0)))?;
+
+        let _ = active.pause_sender.send(false);
+
+        self.event_bus.publish(DomainEvent::DownloadResumed { id });
+        Ok(())
+    }
+
     fn cancel(&self, id: DownloadId) -> Result<(), DomainError> {
         let active = {
-            let mut map = self.active_downloads.lock().unwrap();
+            let mut map = self
+                .active_downloads
+                .lock()
+                .expect("active_downloads lock poisoned");
             map.remove(&id)
                 .ok_or_else(|| DomainError::NotFound(format!("download {}", id.0)))?
         };
@@ -274,8 +322,10 @@ mod tests {
 
     // --- Mock types ---
 
+    type WriteRecord = (PathBuf, u64, Vec<u8>);
+
     struct MockFileStorage {
-        writes: Arc<Mutex<Vec<(PathBuf, u64, Vec<u8>)>>>,
+        writes: Arc<Mutex<Vec<WriteRecord>>>,
     }
 
     impl MockFileStorage {
@@ -333,7 +383,7 @@ mod tests {
         {
             let deadline = tokio::time::Instant::now() + timeout;
             loop {
-                if self.collected().iter().any(|e| predicate(e)) {
+                if self.collected().iter().any(&predicate) {
                     return true;
                 }
                 if tokio::time::Instant::now() >= deadline {

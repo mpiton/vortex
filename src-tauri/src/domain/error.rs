@@ -19,6 +19,7 @@ pub enum DomainError {
     NotFound(String),
     AlreadyExists(String),
     StorageError(String),
+    NetworkError(String),
     ValidationError(String),
 }
 
@@ -48,6 +49,9 @@ impl std::fmt::Display for DomainError {
             }
             DomainError::StorageError(msg) => {
                 write!(f, "Storage error: {msg}")
+            }
+            DomainError::NetworkError(msg) => {
+                write!(f, "Network error: {msg}")
             }
             DomainError::ValidationError(msg) => {
                 write!(f, "Validation error: {msg}")

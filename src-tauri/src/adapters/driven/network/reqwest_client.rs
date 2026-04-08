@@ -46,7 +46,7 @@ impl Default for ReqwestHttpClient {
 }
 
 fn map_reqwest_error(err: reqwest::Error) -> DomainError {
-    DomainError::StorageError(format!("HTTP request failed: {err}"))
+    DomainError::NetworkError(format!("HTTP request failed: {err}"))
 }
 
 /// Run an async future on the current tokio runtime from a sync context.
@@ -58,11 +58,12 @@ where
     F: std::future::Future + Send,
     F::Output: Send,
 {
-    let handle = Handle::current();
+    let handle = Handle::try_current()
+        .map_err(|_| DomainError::NetworkError("no tokio runtime available".into()))?;
     std::thread::scope(|s| {
         s.spawn(|| handle.block_on(future))
             .join()
-            .map_err(|_| DomainError::StorageError("HTTP thread panicked".into()))
+            .map_err(|_| DomainError::NetworkError("HTTP thread panicked".into()))
     })
 }
 
@@ -112,7 +113,7 @@ impl HttpClient for ReqwestHttpClient {
                 .map_err(map_reqwest_error)?;
 
             if !response.status().is_success() {
-                return Err(DomainError::StorageError(format!(
+                return Err(DomainError::NetworkError(format!(
                     "HTTP {} for range request on {url}",
                     response.status()
                 )));
@@ -246,10 +247,10 @@ mod tests {
 
         assert!(result.is_err());
         match result.unwrap_err() {
-            DomainError::StorageError(msg) => {
+            DomainError::NetworkError(msg) => {
                 assert!(msg.contains("HTTP request failed"));
             }
-            other => panic!("expected StorageError, got {other:?}"),
+            other => panic!("expected NetworkError, got {other:?}"),
         }
     }
 }

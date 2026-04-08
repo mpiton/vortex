@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use tokio::sync::watch;
@@ -8,6 +9,15 @@ use tokio_util::sync::CancellationToken;
 use crate::domain::event::DomainEvent;
 use crate::domain::model::download::DownloadId;
 use crate::domain::ports::driven::{EventBus, FileStorage};
+
+/// Typed error for segment download failures.
+#[derive(Debug, PartialEq)]
+pub(crate) enum SegmentError {
+    Cancelled,
+    Http(String),
+    Storage(String),
+    PauseChannelClosed,
+}
 
 /// Parameters for a single segment download.
 pub(crate) struct SegmentParams {
@@ -26,13 +36,15 @@ pub(crate) struct SegmentParams {
     pub dest_path: PathBuf,
     pub pause_rx: watch::Receiver<bool>,
     pub cancel_token: CancellationToken,
+    /// Shared atomic counter for aggregate progress across all segments.
+    pub shared_downloaded: Arc<AtomicU64>,
 }
 
 /// Downloads a single byte range and writes it to disk.
 ///
 /// Returns the total number of bytes downloaded for this segment.
 /// The caller (DownloadEngine orchestrator) handles retry logic.
-pub(crate) async fn download_segment(params: SegmentParams) -> Result<u64, String> {
+pub(crate) async fn download_segment(params: SegmentParams) -> Result<u64, SegmentError> {
     let SegmentParams {
         client,
         file_storage,
@@ -45,8 +57,9 @@ pub(crate) async fn download_segment(params: SegmentParams) -> Result<u64, Strin
         already_downloaded,
         total_file_size,
         dest_path,
-        pause_rx,
+        mut pause_rx,
         cancel_token,
+        shared_downloaded,
     } = params;
     event_bus.publish(DomainEvent::SegmentStarted {
         download_id,
@@ -63,29 +76,34 @@ pub(crate) async fn download_segment(params: SegmentParams) -> Result<u64, Strin
         return Ok(0);
     }
 
-    // HTTP Range header is inclusive on both ends
-    let range_header = format!("bytes={}-{}", effective_start, end_byte - 1);
-    tracing::debug!(
-        download_id = download_id.0,
-        segment_id = segment_index,
-        range = %range_header,
-        "starting segment download"
-    );
+    // Build the request, conditionally adding Range header
+    let mut req = client.get(&url);
+    if end_byte != u64::MAX {
+        let range_header = format!("bytes={}-{}", effective_start, end_byte - 1);
+        tracing::debug!(
+            download_id = download_id.0,
+            segment_id = segment_index,
+            range = %range_header,
+            "starting segment download"
+        );
+        req = req.header("Range", &range_header);
+    } else {
+        tracing::debug!(
+            download_id = download_id.0,
+            segment_id = segment_index,
+            "starting full download (no range)"
+        );
+    }
 
-    let response = client
-        .get(&url)
-        .header("Range", &range_header)
-        .send()
-        .await
-        .map_err(|e| {
-            let msg = format!("HTTP request failed: {e}");
-            event_bus.publish(DomainEvent::SegmentFailed {
-                download_id,
-                segment_id: segment_index,
-                error: msg.clone(),
-            });
-            msg
-        })?;
+    let response = req.send().await.map_err(|e| {
+        let msg = format!("HTTP request failed: {e}");
+        event_bus.publish(DomainEvent::SegmentFailed {
+            download_id,
+            segment_id: segment_index,
+            error: msg.clone(),
+        });
+        SegmentError::Http(msg)
+    })?;
 
     let status = response.status();
     if !status.is_success() {
@@ -95,7 +113,18 @@ pub(crate) async fn download_segment(params: SegmentParams) -> Result<u64, Strin
             segment_id: segment_index,
             error: msg.clone(),
         });
-        return Err(msg);
+        return Err(SegmentError::Http(msg));
+    }
+
+    // If we requested a range but got 200 (not 206), the server ignored our Range header
+    if effective_start > 0 && status == reqwest::StatusCode::OK {
+        let msg = "server returned 200 instead of 206 for ranged request".to_string();
+        event_bus.publish(DomainEvent::SegmentFailed {
+            download_id,
+            segment_id: segment_index,
+            error: msg.clone(),
+        });
+        return Err(SegmentError::Http(msg));
     }
 
     let mut offset = effective_start;
@@ -105,24 +134,23 @@ pub(crate) async fn download_segment(params: SegmentParams) -> Result<u64, Strin
 
     loop {
         if cancel_token.is_cancelled() {
-            return Err("cancelled".to_string());
+            return Err(SegmentError::Cancelled);
         }
 
-        // Check pause state — if paused, wait for state change
-        {
-            let paused = *pause_rx.borrow();
-            if paused {
-                let mut rx = pause_rx.clone();
-                loop {
-                    if cancel_token.is_cancelled() {
-                        return Err("cancelled".to_string());
+        // Check pause state — if paused, wait with cancellation support
+        if *pause_rx.borrow() {
+            loop {
+                tokio::select! {
+                    _ = cancel_token.cancelled() => {
+                        return Err(SegmentError::Cancelled);
                     }
-                    // Wait for a change in the pause signal
-                    if rx.changed().await.is_err() {
-                        return Err("pause channel closed".to_string());
-                    }
-                    if !*rx.borrow() {
-                        break;
+                    result = pause_rx.changed() => {
+                        if result.is_err() {
+                            return Err(SegmentError::PauseChannelClosed);
+                        }
+                        if !*pause_rx.borrow() {
+                            break;
+                        }
                     }
                 }
             }
@@ -135,7 +163,7 @@ pub(crate) async fn download_segment(params: SegmentParams) -> Result<u64, Strin
                 segment_id: segment_index,
                 error: msg.clone(),
             });
-            msg
+            SegmentError::Http(msg)
         })?;
 
         let Some(chunk) = chunk else {
@@ -150,7 +178,7 @@ pub(crate) async fn download_segment(params: SegmentParams) -> Result<u64, Strin
 
         tokio::task::spawn_blocking(move || storage.write_segment(&path, offset, &data))
             .await
-            .map_err(|e| e.to_string())?
+            .map_err(|e| SegmentError::Storage(e.to_string()))?
             .map_err(|e| {
                 let msg = e.to_string();
                 event_bus.publish(DomainEvent::SegmentFailed {
@@ -158,16 +186,18 @@ pub(crate) async fn download_segment(params: SegmentParams) -> Result<u64, Strin
                     segment_id: segment_index,
                     error: msg.clone(),
                 });
-                msg
+                SegmentError::Storage(msg)
             })?;
 
         offset += chunk_len;
         bytes_downloaded += chunk_len;
 
+        let total_so_far = shared_downloaded.fetch_add(chunk_len, Ordering::Relaxed) + chunk_len;
+
         if last_progress.elapsed() >= Duration::from_millis(500) {
             event_bus.publish(DomainEvent::DownloadProgress {
                 id: download_id,
-                downloaded_bytes: already_downloaded + bytes_downloaded,
+                downloaded_bytes: total_so_far,
                 total_bytes: total_file_size,
             });
             last_progress = Instant::now();
@@ -195,6 +225,7 @@ mod tests {
 
     use std::path::Path;
     use std::sync::Mutex;
+    use std::sync::atomic::AtomicU64;
 
     use wiremock::matchers::{header_exists, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -204,8 +235,10 @@ mod tests {
 
     // --- Mock implementations ---
 
+    type WriteRecord = (PathBuf, u64, Vec<u8>);
+
     struct MockFileStorage {
-        writes: Arc<Mutex<Vec<(PathBuf, u64, Vec<u8>)>>>,
+        writes: Arc<Mutex<Vec<WriteRecord>>>,
     }
 
     impl MockFileStorage {
@@ -306,6 +339,7 @@ mod tests {
             dest_path: dest.clone(),
             pause_rx,
             cancel_token: cancel,
+            shared_downloaded: Arc::new(AtomicU64::new(0)),
         })
         .await;
 
@@ -356,11 +390,12 @@ mod tests {
             dest_path: PathBuf::from("/tmp/cancel_test.bin"),
             pause_rx,
             cancel_token: cancel,
+            shared_downloaded: Arc::new(AtomicU64::new(0)),
         })
         .await;
 
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), "cancelled");
+        assert_eq!(result.unwrap_err(), SegmentError::Cancelled);
     }
 
     #[tokio::test]
@@ -406,6 +441,7 @@ mod tests {
             dest_path: PathBuf::from("/tmp/pause_test.bin"),
             pause_rx,
             cancel_token: cancel,
+            shared_downloaded: Arc::new(AtomicU64::new(0)),
         })
         .await;
 
@@ -448,6 +484,7 @@ mod tests {
             dest_path: PathBuf::from("/tmp/progress_test.bin"),
             pause_rx,
             cancel_token: cancel,
+            shared_downloaded: Arc::new(AtomicU64::new(0)),
         })
         .await;
 
@@ -505,6 +542,7 @@ mod tests {
             dest_path: PathBuf::from("/tmp/events_test.bin"),
             pause_rx,
             cancel_token: cancel,
+            shared_downloaded: Arc::new(AtomicU64::new(0)),
         })
         .await;
 
@@ -555,6 +593,7 @@ mod tests {
             dest_path: PathBuf::from("/tmp/done_test.bin"),
             pause_rx,
             cancel_token: cancel,
+            shared_downloaded: Arc::new(AtomicU64::new(0)),
         })
         .await;
 
