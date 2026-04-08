@@ -170,6 +170,10 @@ mod tests {
             Ok(())
         }
 
+        fn resume(&self, _id: DownloadId) -> Result<(), DomainError> {
+            Ok(())
+        }
+
         fn cancel(&self, _id: DownloadId) -> Result<(), DomainError> {
             Ok(())
         }

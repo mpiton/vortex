@@ -28,6 +28,9 @@ pub trait DownloadEngine: Send + Sync {
     /// Pause an active download, preserving segment progress.
     fn pause(&self, id: DownloadId) -> Result<(), DomainError>;
 
+    /// Resume a previously paused download.
+    fn resume(&self, id: DownloadId) -> Result<(), DomainError>;
+
     /// Cancel an active download and discard partial data.
     fn cancel(&self, id: DownloadId) -> Result<(), DomainError>;
 }

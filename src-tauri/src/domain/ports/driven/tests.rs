@@ -3,787 +3,788 @@
 //! Verifies that each trait can be implemented with an in-memory mock,
 //! and that all mocks satisfy Send + Sync bounds.
 
-#[cfg(test)]
-mod tests {
-    use std::collections::HashMap;
-    use std::path::Path;
-    use std::sync::Mutex;
+use std::collections::HashMap;
+use std::path::Path;
+use std::sync::Mutex;
 
-    use crate::domain::error::DomainError;
-    use crate::domain::event::DomainEvent;
-    use crate::domain::model::config::{AppConfig, ConfigPatch};
-    use crate::domain::model::credential::Credential;
-    use crate::domain::model::download::{Download, DownloadId, DownloadState};
-    use crate::domain::model::http::HttpResponse;
-    use crate::domain::model::meta::DownloadMeta;
-    use crate::domain::model::plugin::{PluginCategory, PluginInfo, PluginManifest};
-    use crate::domain::model::views::{
-        DownloadDetailView, DownloadFilter, DownloadView, HistoryEntry, SortOrder, StateCountMap,
-        StatsView,
-    };
-    use crate::domain::ports::driven::*;
+use crate::domain::error::DomainError;
+use crate::domain::event::DomainEvent;
+use crate::domain::model::config::{AppConfig, ConfigPatch};
+use crate::domain::model::credential::Credential;
+use crate::domain::model::download::{Download, DownloadId, DownloadState};
+use crate::domain::model::http::HttpResponse;
+use crate::domain::model::meta::DownloadMeta;
+use crate::domain::model::plugin::{PluginCategory, PluginInfo, PluginManifest};
+use crate::domain::model::views::{
+    DownloadDetailView, DownloadFilter, DownloadView, HistoryEntry, SortOrder, StateCountMap,
+    StatsView,
+};
+use crate::domain::ports::driven::*;
 
-    // ── InMemoryDownloadRepository ───────────────────────────────────
+// ── InMemoryDownloadRepository ───────────────────────────────────
 
-    struct InMemoryDownloadRepository {
-        store: Mutex<HashMap<u64, Download>>,
-    }
+struct InMemoryDownloadRepository {
+    store: Mutex<HashMap<u64, Download>>,
+}
 
-    impl InMemoryDownloadRepository {
-        fn new() -> Self {
-            Self {
-                store: Mutex::new(HashMap::new()),
-            }
+impl InMemoryDownloadRepository {
+    fn new() -> Self {
+        Self {
+            store: Mutex::new(HashMap::new()),
         }
     }
+}
 
-    impl DownloadRepository for InMemoryDownloadRepository {
-        fn find_by_id(&self, id: DownloadId) -> Result<Option<Download>, DomainError> {
-            Ok(self.store.lock().unwrap().get(&id.0).cloned())
-        }
-
-        fn save(&self, download: &Download) -> Result<(), DomainError> {
-            self.store
-                .lock()
-                .unwrap()
-                .insert(download.id().0, download.clone());
-            Ok(())
-        }
-
-        fn delete(&self, id: DownloadId) -> Result<(), DomainError> {
-            self.store.lock().unwrap().remove(&id.0);
-            Ok(())
-        }
-
-        fn find_by_state(&self, state: DownloadState) -> Result<Vec<Download>, DomainError> {
-            Ok(self
-                .store
-                .lock()
-                .unwrap()
-                .values()
-                .filter(|d| d.state() == state)
-                .cloned()
-                .collect())
-        }
+impl DownloadRepository for InMemoryDownloadRepository {
+    fn find_by_id(&self, id: DownloadId) -> Result<Option<Download>, DomainError> {
+        Ok(self.store.lock().unwrap().get(&id.0).cloned())
     }
 
-    // ── InMemoryDownloadReadRepository ──────────────────────────────
-
-    struct InMemoryDownloadReadRepository;
-
-    impl DownloadReadRepository for InMemoryDownloadReadRepository {
-        fn find_downloads(
-            &self,
-            _filter: Option<DownloadFilter>,
-            _sort: Option<SortOrder>,
-            _limit: Option<usize>,
-            _offset: Option<usize>,
-        ) -> Result<Vec<DownloadView>, DomainError> {
-            Ok(vec![])
-        }
-
-        fn find_download_detail(
-            &self,
-            _id: DownloadId,
-        ) -> Result<Option<DownloadDetailView>, DomainError> {
-            Ok(None)
-        }
-
-        fn count_by_state(&self) -> Result<StateCountMap, DomainError> {
-            Ok(HashMap::new())
-        }
-    }
-
-    // ── CollectingEventBus ──────────────────────────────────────────
-
-    struct CollectingEventBus {
-        events: Mutex<Vec<DomainEvent>>,
-    }
-
-    impl CollectingEventBus {
-        fn new() -> Self {
-            Self {
-                events: Mutex::new(Vec::new()),
-            }
-        }
-    }
-
-    impl EventBus for CollectingEventBus {
-        fn publish(&self, event: DomainEvent) {
-            self.events.lock().unwrap().push(event);
-        }
-
-        fn subscribe(&self, _handler: Box<dyn Fn(&DomainEvent) + Send + Sync>) {
-            // No-op for testing
-        }
-    }
-
-    // ── InMemoryFileStorage ─────────────────────────────────────────
-
-    struct InMemoryFileStorage {
-        files: Mutex<HashMap<String, Vec<u8>>>,
-        metas: Mutex<HashMap<String, DownloadMeta>>,
-    }
-
-    impl InMemoryFileStorage {
-        fn new() -> Self {
-            Self {
-                files: Mutex::new(HashMap::new()),
-                metas: Mutex::new(HashMap::new()),
-            }
-        }
-    }
-
-    impl FileStorage for InMemoryFileStorage {
-        fn create_file(&self, path: &Path, size: u64) -> Result<(), DomainError> {
-            self.files.lock().unwrap().insert(
-                path.to_string_lossy().into_owned(),
-                vec![0u8; size as usize],
-            );
-            Ok(())
-        }
-
-        fn write_segment(&self, path: &Path, offset: u64, data: &[u8]) -> Result<(), DomainError> {
-            let key = path.to_string_lossy().into_owned();
-            let mut files = self.files.lock().unwrap();
-            if let Some(file) = files.get_mut(&key) {
-                let start = offset as usize;
-                let end = start + data.len();
-                if end <= file.len() {
-                    file[start..end].copy_from_slice(data);
-                }
-            }
-            Ok(())
-        }
-
-        fn read_meta(&self, path: &Path) -> Result<Option<DownloadMeta>, DomainError> {
-            Ok(self
-                .metas
-                .lock()
-                .unwrap()
-                .get(&path.to_string_lossy().into_owned())
-                .cloned())
-        }
-
-        fn write_meta(&self, path: &Path, meta: &DownloadMeta) -> Result<(), DomainError> {
-            self.metas
-                .lock()
-                .unwrap()
-                .insert(path.to_string_lossy().into_owned(), meta.clone());
-            Ok(())
-        }
-
-        fn delete_meta(&self, path: &Path) -> Result<(), DomainError> {
-            self.metas
-                .lock()
-                .unwrap()
-                .remove(&path.to_string_lossy().into_owned());
-            Ok(())
-        }
-    }
-
-    // ── FakeHttpClient ──────────────────────────────────────────────
-
-    struct FakeHttpClient;
-
-    impl HttpClient for FakeHttpClient {
-        fn head(&self, _url: &str) -> Result<HttpResponse, DomainError> {
-            Ok(HttpResponse {
-                status_code: 200,
-                headers: HashMap::from([
-                    ("content-length".to_string(), vec!["1024".to_string()]),
-                    ("accept-ranges".to_string(), vec!["bytes".to_string()]),
-                ]),
-                body: vec![],
-            })
-        }
-
-        fn get_range(&self, _url: &str, start: u64, end: u64) -> Result<Vec<u8>, DomainError> {
-            let size = (end - start + 1) as usize;
-            Ok(vec![0xAB; size])
-        }
-
-        fn supports_range(&self, _url: &str) -> Result<bool, DomainError> {
-            Ok(true)
-        }
-    }
-
-    // ── InMemoryCredentialStore ─────────────────────────────────────
-
-    struct InMemoryCredentialStore {
-        store: Mutex<HashMap<String, Credential>>,
-    }
-
-    impl InMemoryCredentialStore {
-        fn new() -> Self {
-            Self {
-                store: Mutex::new(HashMap::new()),
-            }
-        }
-    }
-
-    impl CredentialStore for InMemoryCredentialStore {
-        fn get(&self, service: &str) -> Result<Option<Credential>, DomainError> {
-            Ok(self.store.lock().unwrap().get(service).cloned())
-        }
-
-        fn store(&self, service: &str, credential: &Credential) -> Result<(), DomainError> {
-            self.store
-                .lock()
-                .unwrap()
-                .insert(service.to_string(), credential.clone());
-            Ok(())
-        }
-
-        fn delete(&self, service: &str) -> Result<(), DomainError> {
-            self.store.lock().unwrap().remove(service);
-            Ok(())
-        }
-    }
-
-    // ── InMemoryConfigStore ───────────────────────────────────────────
-
-    struct InMemoryConfigStore {
-        config: Mutex<AppConfig>,
-    }
-
-    impl InMemoryConfigStore {
-        fn new() -> Self {
-            Self {
-                config: Mutex::new(AppConfig::default()),
-            }
-        }
-    }
-
-    impl ConfigStore for InMemoryConfigStore {
-        fn get_config(&self) -> Result<AppConfig, DomainError> {
-            Ok(self.config.lock().unwrap().clone())
-        }
-
-        fn update_config(&self, patch: ConfigPatch) -> Result<AppConfig, DomainError> {
-            let mut config = self.config.lock().unwrap();
-            if let Some(dir) = patch.download_dir {
-                config.download_dir = dir;
-            }
-            if let Some(max) = patch.max_concurrent_downloads {
-                config.max_concurrent_downloads = max;
-            }
-            if let Some(max) = patch.max_segments_per_download {
-                config.max_segments_per_download = max;
-            }
-            if let Some(limit) = patch.speed_limit_bytes_per_sec {
-                config.speed_limit_bytes_per_sec = limit;
-            }
-            if let Some(auto) = patch.auto_extract {
-                config.auto_extract = auto;
-            }
-            if let Some(theme) = patch.theme {
-                config.theme = theme;
-            }
-            if let Some(locale) = patch.locale {
-                config.locale = locale;
-            }
-            if let Some(monitoring) = patch.clipboard_monitoring {
-                config.clipboard_monitoring = monitoring;
-            }
-            if let Some(minimize) = patch.minimize_to_tray {
-                config.minimize_to_tray = minimize;
-            }
-            Ok(config.clone())
-        }
-    }
-
-    // ── InMemoryHistoryRepository ───────────────────────────────────
-
-    struct InMemoryHistoryRepository {
-        entries: Mutex<Vec<HistoryEntry>>,
-    }
-
-    impl InMemoryHistoryRepository {
-        fn new() -> Self {
-            Self {
-                entries: Mutex::new(Vec::new()),
-            }
-        }
-    }
-
-    impl HistoryRepository for InMemoryHistoryRepository {
-        fn record(&self, entry: &HistoryEntry) -> Result<(), DomainError> {
-            self.entries.lock().unwrap().push(entry.clone());
-            Ok(())
-        }
-
-        fn find_recent(&self, limit: usize) -> Result<Vec<HistoryEntry>, DomainError> {
-            let entries = self.entries.lock().unwrap();
-            Ok(entries.iter().rev().take(limit).cloned().collect())
-        }
-
-        fn find_by_download(&self, id: DownloadId) -> Result<Vec<HistoryEntry>, DomainError> {
-            let entries = self.entries.lock().unwrap();
-            Ok(entries
-                .iter()
-                .filter(|e| e.download_id == id)
-                .cloned()
-                .collect())
-        }
-
-        fn delete_older_than(&self, before_timestamp: u64) -> Result<u64, DomainError> {
-            let mut entries = self.entries.lock().unwrap();
-            let before = entries.len();
-            entries.retain(|e| e.completed_at >= before_timestamp);
-            Ok((before - entries.len()) as u64)
-        }
-    }
-
-    // ── InMemoryStatsRepository ─────────────────────────────────────
-
-    struct InMemoryStatsRepository {
-        total_bytes: Mutex<u64>,
-        total_files: Mutex<u64>,
-    }
-
-    impl InMemoryStatsRepository {
-        fn new() -> Self {
-            Self {
-                total_bytes: Mutex::new(0),
-                total_files: Mutex::new(0),
-            }
-        }
-    }
-
-    impl StatsRepository for InMemoryStatsRepository {
-        fn record_completed(&self, bytes: u64, _avg_speed: u64) -> Result<(), DomainError> {
-            *self.total_bytes.lock().unwrap() += bytes;
-            *self.total_files.lock().unwrap() += 1;
-            Ok(())
-        }
-
-        fn get_stats(&self) -> Result<StatsView, DomainError> {
-            Ok(StatsView {
-                total_downloaded_bytes: *self.total_bytes.lock().unwrap(),
-                total_files: *self.total_files.lock().unwrap(),
-                avg_speed: 0,
-                peak_speed: 0,
-                success_rate: 1.0,
-                daily_volumes: vec![],
-                top_hosts: vec![],
-            })
-        }
-    }
-
-    // ── FakeClipboardObserver ───────────────────────────────────────
-
-    struct FakeClipboardObserver {
-        urls: Mutex<Vec<String>>,
-        running: Mutex<bool>,
-    }
-
-    impl FakeClipboardObserver {
-        fn new() -> Self {
-            Self {
-                urls: Mutex::new(Vec::new()),
-                running: Mutex::new(false),
-            }
-        }
-    }
-
-    impl ClipboardObserver for FakeClipboardObserver {
-        fn start(&self) -> Result<(), DomainError> {
-            *self.running.lock().unwrap() = true;
-            Ok(())
-        }
-
-        fn stop(&self) -> Result<(), DomainError> {
-            *self.running.lock().unwrap() = false;
-            Ok(())
-        }
-
-        fn get_urls(&self) -> Result<Vec<String>, DomainError> {
-            Ok(self.urls.lock().unwrap().drain(..).collect())
-        }
-    }
-
-    // ── FakePluginLoader ────────────────────────────────────────────
-
-    struct FakePluginLoader {
-        plugins: Mutex<HashMap<String, PluginInfo>>,
-    }
-
-    impl FakePluginLoader {
-        fn new() -> Self {
-            Self {
-                plugins: Mutex::new(HashMap::new()),
-            }
-        }
-    }
-
-    impl PluginLoader for FakePluginLoader {
-        fn load(&self, manifest: &PluginManifest) -> Result<(), DomainError> {
-            let info = manifest.info().clone();
-            self.plugins
-                .lock()
-                .unwrap()
-                .insert(info.name().to_string(), info);
-            Ok(())
-        }
-
-        fn unload(&self, name: &str) -> Result<(), DomainError> {
-            self.plugins.lock().unwrap().remove(name);
-            Ok(())
-        }
-
-        fn resolve_url(&self, _url: &str) -> Result<Option<PluginInfo>, DomainError> {
-            Ok(None)
-        }
-
-        fn list_loaded(&self) -> Result<Vec<PluginInfo>, DomainError> {
-            Ok(self.plugins.lock().unwrap().values().cloned().collect())
-        }
-    }
-
-    // ── FakeDownloadEngine ──────────────────────────────────────────
-
-    struct FakeDownloadEngine {
-        started: Mutex<Vec<DownloadId>>,
-    }
-
-    impl FakeDownloadEngine {
-        fn new() -> Self {
-            Self {
-                started: Mutex::new(Vec::new()),
-            }
-        }
-    }
-
-    impl DownloadEngine for FakeDownloadEngine {
-        fn start(&self, download: &Download) -> Result<(), DomainError> {
-            self.started.lock().unwrap().push(download.id());
-            Ok(())
-        }
-
-        fn pause(&self, _id: DownloadId) -> Result<(), DomainError> {
-            Ok(())
-        }
-
-        fn cancel(&self, _id: DownloadId) -> Result<(), DomainError> {
-            Ok(())
-        }
-    }
-
-    // ── Send + Sync compile-time assertions ─────────────────────────
-
-    fn assert_send_sync<T: Send + Sync>() {}
-
-    #[test]
-    fn all_driven_port_mocks_are_send_sync() {
-        assert_send_sync::<InMemoryDownloadRepository>();
-        assert_send_sync::<InMemoryDownloadReadRepository>();
-        assert_send_sync::<CollectingEventBus>();
-        assert_send_sync::<InMemoryFileStorage>();
-        assert_send_sync::<FakeHttpClient>();
-        assert_send_sync::<InMemoryCredentialStore>();
-        assert_send_sync::<InMemoryConfigStore>();
-        assert_send_sync::<InMemoryHistoryRepository>();
-        assert_send_sync::<InMemoryStatsRepository>();
-        assert_send_sync::<FakeClipboardObserver>();
-        assert_send_sync::<FakePluginLoader>();
-        assert_send_sync::<FakeDownloadEngine>();
-    }
-
-    // ── Functional tests ────────────────────────────────────────────
-
-    #[test]
-    fn download_repository_save_and_find() {
-        let repo = InMemoryDownloadRepository::new();
-        let url = crate::domain::model::download::Url::new("https://example.com/file.zip").unwrap();
-        let download = Download::new(
-            DownloadId(1),
-            url,
-            "file.zip".to_string(),
-            "/tmp".to_string(),
-        );
-
-        repo.save(&download).unwrap();
-        let found = repo.find_by_id(DownloadId(1)).unwrap();
-        assert!(found.is_some());
-        assert_eq!(found.unwrap().file_name(), "file.zip");
-    }
-
-    #[test]
-    fn download_repository_find_by_state() {
-        let repo = InMemoryDownloadRepository::new();
-        let url = crate::domain::model::download::Url::new("https://example.com/a.zip").unwrap();
-        let download = Download::new(DownloadId(1), url, "a.zip".to_string(), "/tmp".to_string());
-
-        repo.save(&download).unwrap();
-        let queued = repo.find_by_state(DownloadState::Queued).unwrap();
-        assert_eq!(queued.len(), 1);
-
-        let downloading = repo.find_by_state(DownloadState::Downloading).unwrap();
-        assert!(downloading.is_empty());
-    }
-
-    #[test]
-    fn download_repository_delete() {
-        let repo = InMemoryDownloadRepository::new();
-        let url = crate::domain::model::download::Url::new("https://example.com/b.zip").unwrap();
-        let download = Download::new(DownloadId(2), url, "b.zip".to_string(), "/tmp".to_string());
-
-        repo.save(&download).unwrap();
-        repo.delete(DownloadId(2)).unwrap();
-        assert!(repo.find_by_id(DownloadId(2)).unwrap().is_none());
-    }
-
-    #[test]
-    fn download_read_repository_has_no_save_method() {
-        // This is a compile-time check: DownloadReadRepository doesn't expose save().
-        // If someone adds save() to the trait, this test file won't compile
-        // because InMemoryDownloadReadRepository doesn't implement it.
-        let repo = InMemoryDownloadReadRepository;
-        let _ = repo.count_by_state().unwrap();
-    }
-
-    #[test]
-    fn event_bus_collects_events() {
-        let bus = CollectingEventBus::new();
-        bus.publish(DomainEvent::DownloadStarted { id: DownloadId(1) });
-        bus.publish(DomainEvent::DownloadCompleted { id: DownloadId(1) });
-        assert_eq!(bus.events.lock().unwrap().len(), 2);
-    }
-
-    #[test]
-    fn file_storage_create_and_write() {
-        let storage = InMemoryFileStorage::new();
-        let path = Path::new("/tmp/test.bin");
-
-        storage.create_file(path, 1024).unwrap();
-        storage.write_segment(path, 0, &[1, 2, 3, 4]).unwrap();
-
-        let file = storage.files.lock().unwrap();
-        let data = file.get("/tmp/test.bin").unwrap();
-        assert_eq!(&data[0..4], &[1, 2, 3, 4]);
-        assert_eq!(data.len(), 1024);
-    }
-
-    #[test]
-    fn file_storage_meta_roundtrip() {
-        let storage = InMemoryFileStorage::new();
-        let path = Path::new("/tmp/test.vortex-meta");
-        let meta = DownloadMeta {
-            download_id: DownloadId(42),
-            url: "https://example.com/file.zip".to_string(),
-            file_name: "file.zip".to_string(),
-            total_bytes: Some(1024),
-            segments: vec![],
-            checksum_expected: None,
-            created_at: 100,
-            updated_at: 200,
-        };
-
-        storage.write_meta(path, &meta).unwrap();
-        let loaded = storage.read_meta(path).unwrap().unwrap();
-        assert_eq!(loaded.download_id, DownloadId(42));
-        assert_eq!(loaded.total_bytes, Some(1024));
-
-        storage.delete_meta(path).unwrap();
-        assert!(storage.read_meta(path).unwrap().is_none());
-    }
-
-    #[test]
-    fn http_client_head_and_range() {
-        let client = FakeHttpClient;
-
-        let head = client.head("https://example.com/file.zip").unwrap();
-        assert_eq!(head.status_code, 200);
-        assert!(head.is_success());
-        assert_eq!(head.content_length(), Some(1024));
-
-        let range_data = client
-            .get_range("https://example.com/file.zip", 0, 99)
-            .unwrap();
-        assert_eq!(range_data.len(), 100);
-
-        assert!(
-            client
-                .supports_range("https://example.com/file.zip")
-                .unwrap()
-        );
-    }
-
-    #[test]
-    fn credential_store_crud() {
-        let store = InMemoryCredentialStore::new();
-        let cred = Credential::new("test-user", "test-value");
-
-        assert!(store.get("mega").unwrap().is_none());
-
-        store.store("mega", &cred).unwrap();
-        let loaded = store.get("mega").unwrap().unwrap();
-        assert_eq!(loaded.username(), "test-user");
-        assert_eq!(loaded.password(), "test-value");
-
-        store.delete("mega").unwrap();
-        assert!(store.get("mega").unwrap().is_none());
-    }
-
-    #[test]
-    fn config_store_get_and_update() {
-        let store = InMemoryConfigStore::new();
-        let config = store.get_config().unwrap();
-        assert_eq!(config.max_concurrent_downloads, 3);
-
-        let patch = ConfigPatch {
-            max_concurrent_downloads: Some(10),
-            download_dir: Some(Some("/downloads".to_string())),
-            ..Default::default()
-        };
-        let updated = store.update_config(patch).unwrap();
-        assert_eq!(updated.max_concurrent_downloads, 10);
-        assert_eq!(updated.download_dir, Some("/downloads".to_string()));
-    }
-
-    #[test]
-    fn history_repository_record_and_find() {
-        let repo = InMemoryHistoryRepository::new();
-        let entry = HistoryEntry {
-            download_id: DownloadId(1),
-            file_name: "file.zip".to_string(),
-            url: "https://example.com/file.zip".to_string(),
-            total_bytes: 1024,
-            completed_at: 1000,
-            duration_seconds: 60,
-            avg_speed: 17,
-            destination_path: "/tmp/file.zip".to_string(),
-        };
-
-        repo.record(&entry).unwrap();
-        let recent = repo.find_recent(10).unwrap();
-        assert_eq!(recent.len(), 1);
-        assert_eq!(recent[0].file_name, "file.zip");
-
-        let by_dl = repo.find_by_download(DownloadId(1)).unwrap();
-        assert_eq!(by_dl.len(), 1);
-
-        let deleted = repo.delete_older_than(2000).unwrap();
-        assert_eq!(deleted, 1);
-        assert!(repo.find_recent(10).unwrap().is_empty());
-    }
-
-    #[test]
-    fn stats_repository_record_and_get() {
-        let repo = InMemoryStatsRepository::new();
-        repo.record_completed(1024, 512).unwrap();
-        repo.record_completed(2048, 1024).unwrap();
-
-        let stats = repo.get_stats().unwrap();
-        assert_eq!(stats.total_downloaded_bytes, 3072);
-        assert_eq!(stats.total_files, 2);
-    }
-
-    #[test]
-    fn clipboard_observer_lifecycle() {
-        let observer = FakeClipboardObserver::new();
-        observer.start().unwrap();
-        assert!(*observer.running.lock().unwrap());
-
-        // Simulate clipboard detection
-        observer
-            .urls
+    fn save(&self, download: &Download) -> Result<(), DomainError> {
+        self.store
             .lock()
             .unwrap()
-            .push("https://example.com".to_string());
-        let urls = observer.get_urls().unwrap();
-        assert_eq!(urls.len(), 1);
-
-        // Buffer drained after get_urls
-        assert!(observer.get_urls().unwrap().is_empty());
-
-        observer.stop().unwrap();
-        assert!(!*observer.running.lock().unwrap());
+            .insert(download.id().0, download.clone());
+        Ok(())
     }
 
-    #[test]
-    fn plugin_loader_lifecycle() {
-        let loader = FakePluginLoader::new();
-        let info = PluginInfo::new(
-            "test-plugin".to_string(),
-            "1.0.0".to_string(),
-            "A test plugin".to_string(),
-            "author".to_string(),
-            PluginCategory::Crawler,
+    fn delete(&self, id: DownloadId) -> Result<(), DomainError> {
+        self.store.lock().unwrap().remove(&id.0);
+        Ok(())
+    }
+
+    fn find_by_state(&self, state: DownloadState) -> Result<Vec<Download>, DomainError> {
+        Ok(self
+            .store
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|d| d.state() == state)
+            .cloned()
+            .collect())
+    }
+}
+
+// ── InMemoryDownloadReadRepository ──────────────────────────────
+
+struct InMemoryDownloadReadRepository;
+
+impl DownloadReadRepository for InMemoryDownloadReadRepository {
+    fn find_downloads(
+        &self,
+        _filter: Option<DownloadFilter>,
+        _sort: Option<SortOrder>,
+        _limit: Option<usize>,
+        _offset: Option<usize>,
+    ) -> Result<Vec<DownloadView>, DomainError> {
+        Ok(vec![])
+    }
+
+    fn find_download_detail(
+        &self,
+        _id: DownloadId,
+    ) -> Result<Option<DownloadDetailView>, DomainError> {
+        Ok(None)
+    }
+
+    fn count_by_state(&self) -> Result<StateCountMap, DomainError> {
+        Ok(HashMap::new())
+    }
+}
+
+// ── CollectingEventBus ──────────────────────────────────────────
+
+struct CollectingEventBus {
+    events: Mutex<Vec<DomainEvent>>,
+}
+
+impl CollectingEventBus {
+    fn new() -> Self {
+        Self {
+            events: Mutex::new(Vec::new()),
+        }
+    }
+}
+
+impl EventBus for CollectingEventBus {
+    fn publish(&self, event: DomainEvent) {
+        self.events.lock().unwrap().push(event);
+    }
+
+    fn subscribe(&self, _handler: Box<dyn Fn(&DomainEvent) + Send + Sync>) {
+        // No-op for testing
+    }
+}
+
+// ── InMemoryFileStorage ─────────────────────────────────────────
+
+struct InMemoryFileStorage {
+    files: Mutex<HashMap<String, Vec<u8>>>,
+    metas: Mutex<HashMap<String, DownloadMeta>>,
+}
+
+impl InMemoryFileStorage {
+    fn new() -> Self {
+        Self {
+            files: Mutex::new(HashMap::new()),
+            metas: Mutex::new(HashMap::new()),
+        }
+    }
+}
+
+impl FileStorage for InMemoryFileStorage {
+    fn create_file(&self, path: &Path, size: u64) -> Result<(), DomainError> {
+        self.files.lock().unwrap().insert(
+            path.to_string_lossy().into_owned(),
+            vec![0u8; size as usize],
         );
-        let manifest = PluginManifest::new(info);
-
-        loader.load(&manifest).unwrap();
-        let loaded = loader.list_loaded().unwrap();
-        assert_eq!(loaded.len(), 1);
-        assert_eq!(loaded[0].name(), "test-plugin");
-
-        assert!(loader.resolve_url("https://example.com").unwrap().is_none());
-
-        loader.unload("test-plugin").unwrap();
-        assert!(loader.list_loaded().unwrap().is_empty());
+        Ok(())
     }
 
-    #[test]
-    fn download_engine_fire_and_forget() {
-        let engine = FakeDownloadEngine::new();
-        let url = crate::domain::model::download::Url::new("https://example.com/big.iso").unwrap();
-        let download = Download::new(
-            DownloadId(42),
-            url,
-            "big.iso".to_string(),
-            "/tmp".to_string(),
-        );
-
-        engine.start(&download).unwrap();
-        assert_eq!(engine.started.lock().unwrap().len(), 1);
-        assert_eq!(engine.started.lock().unwrap()[0], DownloadId(42));
-
-        engine.pause(DownloadId(42)).unwrap();
-        engine.cancel(DownloadId(42)).unwrap();
-    }
-
-    #[test]
-    fn credential_debug_redacts_password() {
-        let cred = Credential::new("test-user", "test-credential-value");
-        let debug_output = format!("{cred:?}");
-        assert!(debug_output.contains("user"));
-        assert!(debug_output.contains("<redacted>"));
-        assert!(!debug_output.contains("test-credential-value"));
-    }
-
-    // ── Driving port compile-time checks ────────────────────────────
-
-    #[test]
-    fn driving_port_traits_compile() {
-        use crate::domain::ports::driving::{Command, CommandHandler, Query, QueryHandler};
-
-        // Verify marker traits can be implemented
-        struct TestCommand;
-        impl Command for TestCommand {}
-
-        struct TestQuery;
-        impl Query for TestQuery {}
-
-        // Verify handler traits can be implemented
-        struct TestCommandHandler;
-        impl CommandHandler<TestCommand> for TestCommandHandler {
-            type Output = u64;
-            async fn handle(&self, _cmd: TestCommand) -> Result<u64, DomainError> {
-                Ok(42)
+    fn write_segment(&self, path: &Path, offset: u64, data: &[u8]) -> Result<(), DomainError> {
+        let key = path.to_string_lossy().into_owned();
+        let mut files = self.files.lock().unwrap();
+        if let Some(file) = files.get_mut(&key) {
+            let start = offset as usize;
+            let end = start + data.len();
+            if end <= file.len() {
+                file[start..end].copy_from_slice(data);
             }
         }
-
-        struct TestQueryHandler;
-        impl QueryHandler<TestQuery> for TestQueryHandler {
-            type Output = String;
-            async fn handle(&self, _query: TestQuery) -> Result<String, DomainError> {
-                Ok("result".to_string())
-            }
-        }
-
-        assert_send_sync::<TestCommandHandler>();
-        assert_send_sync::<TestQueryHandler>();
+        Ok(())
     }
+
+    fn read_meta(&self, path: &Path) -> Result<Option<DownloadMeta>, DomainError> {
+        Ok(self
+            .metas
+            .lock()
+            .unwrap()
+            .get(&path.to_string_lossy().into_owned())
+            .cloned())
+    }
+
+    fn write_meta(&self, path: &Path, meta: &DownloadMeta) -> Result<(), DomainError> {
+        self.metas
+            .lock()
+            .unwrap()
+            .insert(path.to_string_lossy().into_owned(), meta.clone());
+        Ok(())
+    }
+
+    fn delete_meta(&self, path: &Path) -> Result<(), DomainError> {
+        self.metas
+            .lock()
+            .unwrap()
+            .remove(&path.to_string_lossy().into_owned());
+        Ok(())
+    }
+}
+
+// ── FakeHttpClient ──────────────────────────────────────────────
+
+struct FakeHttpClient;
+
+impl HttpClient for FakeHttpClient {
+    fn head(&self, _url: &str) -> Result<HttpResponse, DomainError> {
+        Ok(HttpResponse {
+            status_code: 200,
+            headers: HashMap::from([
+                ("content-length".to_string(), vec!["1024".to_string()]),
+                ("accept-ranges".to_string(), vec!["bytes".to_string()]),
+            ]),
+            body: vec![],
+        })
+    }
+
+    fn get_range(&self, _url: &str, start: u64, end: u64) -> Result<Vec<u8>, DomainError> {
+        let size = (end - start + 1) as usize;
+        Ok(vec![0xAB; size])
+    }
+
+    fn supports_range(&self, _url: &str) -> Result<bool, DomainError> {
+        Ok(true)
+    }
+}
+
+// ── InMemoryCredentialStore ─────────────────────────────────────
+
+struct InMemoryCredentialStore {
+    store: Mutex<HashMap<String, Credential>>,
+}
+
+impl InMemoryCredentialStore {
+    fn new() -> Self {
+        Self {
+            store: Mutex::new(HashMap::new()),
+        }
+    }
+}
+
+impl CredentialStore for InMemoryCredentialStore {
+    fn get(&self, service: &str) -> Result<Option<Credential>, DomainError> {
+        Ok(self.store.lock().unwrap().get(service).cloned())
+    }
+
+    fn store(&self, service: &str, credential: &Credential) -> Result<(), DomainError> {
+        self.store
+            .lock()
+            .unwrap()
+            .insert(service.to_string(), credential.clone());
+        Ok(())
+    }
+
+    fn delete(&self, service: &str) -> Result<(), DomainError> {
+        self.store.lock().unwrap().remove(service);
+        Ok(())
+    }
+}
+
+// ── InMemoryConfigStore ───────────────────────────────────────────
+
+struct InMemoryConfigStore {
+    config: Mutex<AppConfig>,
+}
+
+impl InMemoryConfigStore {
+    fn new() -> Self {
+        Self {
+            config: Mutex::new(AppConfig::default()),
+        }
+    }
+}
+
+impl ConfigStore for InMemoryConfigStore {
+    fn get_config(&self) -> Result<AppConfig, DomainError> {
+        Ok(self.config.lock().unwrap().clone())
+    }
+
+    fn update_config(&self, patch: ConfigPatch) -> Result<AppConfig, DomainError> {
+        let mut config = self.config.lock().unwrap();
+        if let Some(dir) = patch.download_dir {
+            config.download_dir = dir;
+        }
+        if let Some(max) = patch.max_concurrent_downloads {
+            config.max_concurrent_downloads = max;
+        }
+        if let Some(max) = patch.max_segments_per_download {
+            config.max_segments_per_download = max;
+        }
+        if let Some(limit) = patch.speed_limit_bytes_per_sec {
+            config.speed_limit_bytes_per_sec = limit;
+        }
+        if let Some(auto) = patch.auto_extract {
+            config.auto_extract = auto;
+        }
+        if let Some(theme) = patch.theme {
+            config.theme = theme;
+        }
+        if let Some(locale) = patch.locale {
+            config.locale = locale;
+        }
+        if let Some(monitoring) = patch.clipboard_monitoring {
+            config.clipboard_monitoring = monitoring;
+        }
+        if let Some(minimize) = patch.minimize_to_tray {
+            config.minimize_to_tray = minimize;
+        }
+        Ok(config.clone())
+    }
+}
+
+// ── InMemoryHistoryRepository ───────────────────────────────────
+
+struct InMemoryHistoryRepository {
+    entries: Mutex<Vec<HistoryEntry>>,
+}
+
+impl InMemoryHistoryRepository {
+    fn new() -> Self {
+        Self {
+            entries: Mutex::new(Vec::new()),
+        }
+    }
+}
+
+impl HistoryRepository for InMemoryHistoryRepository {
+    fn record(&self, entry: &HistoryEntry) -> Result<(), DomainError> {
+        self.entries.lock().unwrap().push(entry.clone());
+        Ok(())
+    }
+
+    fn find_recent(&self, limit: usize) -> Result<Vec<HistoryEntry>, DomainError> {
+        let entries = self.entries.lock().unwrap();
+        Ok(entries.iter().rev().take(limit).cloned().collect())
+    }
+
+    fn find_by_download(&self, id: DownloadId) -> Result<Vec<HistoryEntry>, DomainError> {
+        let entries = self.entries.lock().unwrap();
+        Ok(entries
+            .iter()
+            .filter(|e| e.download_id == id)
+            .cloned()
+            .collect())
+    }
+
+    fn delete_older_than(&self, before_timestamp: u64) -> Result<u64, DomainError> {
+        let mut entries = self.entries.lock().unwrap();
+        let before = entries.len();
+        entries.retain(|e| e.completed_at >= before_timestamp);
+        Ok((before - entries.len()) as u64)
+    }
+}
+
+// ── InMemoryStatsRepository ─────────────────────────────────────
+
+struct InMemoryStatsRepository {
+    total_bytes: Mutex<u64>,
+    total_files: Mutex<u64>,
+}
+
+impl InMemoryStatsRepository {
+    fn new() -> Self {
+        Self {
+            total_bytes: Mutex::new(0),
+            total_files: Mutex::new(0),
+        }
+    }
+}
+
+impl StatsRepository for InMemoryStatsRepository {
+    fn record_completed(&self, bytes: u64, _avg_speed: u64) -> Result<(), DomainError> {
+        *self.total_bytes.lock().unwrap() += bytes;
+        *self.total_files.lock().unwrap() += 1;
+        Ok(())
+    }
+
+    fn get_stats(&self) -> Result<StatsView, DomainError> {
+        Ok(StatsView {
+            total_downloaded_bytes: *self.total_bytes.lock().unwrap(),
+            total_files: *self.total_files.lock().unwrap(),
+            avg_speed: 0,
+            peak_speed: 0,
+            success_rate: 1.0,
+            daily_volumes: vec![],
+            top_hosts: vec![],
+        })
+    }
+}
+
+// ── FakeClipboardObserver ───────────────────────────────────────
+
+struct FakeClipboardObserver {
+    urls: Mutex<Vec<String>>,
+    running: Mutex<bool>,
+}
+
+impl FakeClipboardObserver {
+    fn new() -> Self {
+        Self {
+            urls: Mutex::new(Vec::new()),
+            running: Mutex::new(false),
+        }
+    }
+}
+
+impl ClipboardObserver for FakeClipboardObserver {
+    fn start(&self) -> Result<(), DomainError> {
+        *self.running.lock().unwrap() = true;
+        Ok(())
+    }
+
+    fn stop(&self) -> Result<(), DomainError> {
+        *self.running.lock().unwrap() = false;
+        Ok(())
+    }
+
+    fn get_urls(&self) -> Result<Vec<String>, DomainError> {
+        Ok(self.urls.lock().unwrap().drain(..).collect())
+    }
+}
+
+// ── FakePluginLoader ────────────────────────────────────────────
+
+struct FakePluginLoader {
+    plugins: Mutex<HashMap<String, PluginInfo>>,
+}
+
+impl FakePluginLoader {
+    fn new() -> Self {
+        Self {
+            plugins: Mutex::new(HashMap::new()),
+        }
+    }
+}
+
+impl PluginLoader for FakePluginLoader {
+    fn load(&self, manifest: &PluginManifest) -> Result<(), DomainError> {
+        let info = manifest.info().clone();
+        self.plugins
+            .lock()
+            .unwrap()
+            .insert(info.name().to_string(), info);
+        Ok(())
+    }
+
+    fn unload(&self, name: &str) -> Result<(), DomainError> {
+        self.plugins.lock().unwrap().remove(name);
+        Ok(())
+    }
+
+    fn resolve_url(&self, _url: &str) -> Result<Option<PluginInfo>, DomainError> {
+        Ok(None)
+    }
+
+    fn list_loaded(&self) -> Result<Vec<PluginInfo>, DomainError> {
+        Ok(self.plugins.lock().unwrap().values().cloned().collect())
+    }
+}
+
+// ── FakeDownloadEngine ──────────────────────────────────────────
+
+struct FakeDownloadEngine {
+    started: Mutex<Vec<DownloadId>>,
+}
+
+impl FakeDownloadEngine {
+    fn new() -> Self {
+        Self {
+            started: Mutex::new(Vec::new()),
+        }
+    }
+}
+
+impl DownloadEngine for FakeDownloadEngine {
+    fn start(&self, download: &Download) -> Result<(), DomainError> {
+        self.started.lock().unwrap().push(download.id());
+        Ok(())
+    }
+
+    fn pause(&self, _id: DownloadId) -> Result<(), DomainError> {
+        Ok(())
+    }
+
+    fn resume(&self, _id: DownloadId) -> Result<(), DomainError> {
+        Ok(())
+    }
+
+    fn cancel(&self, _id: DownloadId) -> Result<(), DomainError> {
+        Ok(())
+    }
+}
+
+// ── Send + Sync compile-time assertions ─────────────────────────
+
+fn assert_send_sync<T: Send + Sync>() {}
+
+#[test]
+fn all_driven_port_mocks_are_send_sync() {
+    assert_send_sync::<InMemoryDownloadRepository>();
+    assert_send_sync::<InMemoryDownloadReadRepository>();
+    assert_send_sync::<CollectingEventBus>();
+    assert_send_sync::<InMemoryFileStorage>();
+    assert_send_sync::<FakeHttpClient>();
+    assert_send_sync::<InMemoryCredentialStore>();
+    assert_send_sync::<InMemoryConfigStore>();
+    assert_send_sync::<InMemoryHistoryRepository>();
+    assert_send_sync::<InMemoryStatsRepository>();
+    assert_send_sync::<FakeClipboardObserver>();
+    assert_send_sync::<FakePluginLoader>();
+    assert_send_sync::<FakeDownloadEngine>();
+}
+
+// ── Functional tests ────────────────────────────────────────────
+
+#[test]
+fn download_repository_save_and_find() {
+    let repo = InMemoryDownloadRepository::new();
+    let url = crate::domain::model::download::Url::new("https://example.com/file.zip").unwrap();
+    let download = Download::new(
+        DownloadId(1),
+        url,
+        "file.zip".to_string(),
+        "/tmp".to_string(),
+    );
+
+    repo.save(&download).unwrap();
+    let found = repo.find_by_id(DownloadId(1)).unwrap();
+    assert!(found.is_some());
+    assert_eq!(found.unwrap().file_name(), "file.zip");
+}
+
+#[test]
+fn download_repository_find_by_state() {
+    let repo = InMemoryDownloadRepository::new();
+    let url = crate::domain::model::download::Url::new("https://example.com/a.zip").unwrap();
+    let download = Download::new(DownloadId(1), url, "a.zip".to_string(), "/tmp".to_string());
+
+    repo.save(&download).unwrap();
+    let queued = repo.find_by_state(DownloadState::Queued).unwrap();
+    assert_eq!(queued.len(), 1);
+
+    let downloading = repo.find_by_state(DownloadState::Downloading).unwrap();
+    assert!(downloading.is_empty());
+}
+
+#[test]
+fn download_repository_delete() {
+    let repo = InMemoryDownloadRepository::new();
+    let url = crate::domain::model::download::Url::new("https://example.com/b.zip").unwrap();
+    let download = Download::new(DownloadId(2), url, "b.zip".to_string(), "/tmp".to_string());
+
+    repo.save(&download).unwrap();
+    repo.delete(DownloadId(2)).unwrap();
+    assert!(repo.find_by_id(DownloadId(2)).unwrap().is_none());
+}
+
+#[test]
+fn download_read_repository_has_no_save_method() {
+    // This is a compile-time check: DownloadReadRepository doesn't expose save().
+    // If someone adds save() to the trait, this test file won't compile
+    // because InMemoryDownloadReadRepository doesn't implement it.
+    let repo = InMemoryDownloadReadRepository;
+    let _ = repo.count_by_state().unwrap();
+}
+
+#[test]
+fn event_bus_collects_events() {
+    let bus = CollectingEventBus::new();
+    bus.publish(DomainEvent::DownloadStarted { id: DownloadId(1) });
+    bus.publish(DomainEvent::DownloadCompleted { id: DownloadId(1) });
+    assert_eq!(bus.events.lock().unwrap().len(), 2);
+}
+
+#[test]
+fn file_storage_create_and_write() {
+    let storage = InMemoryFileStorage::new();
+    let path = Path::new("/tmp/test.bin");
+
+    storage.create_file(path, 1024).unwrap();
+    storage.write_segment(path, 0, &[1, 2, 3, 4]).unwrap();
+
+    let file = storage.files.lock().unwrap();
+    let data = file.get("/tmp/test.bin").unwrap();
+    assert_eq!(&data[0..4], &[1, 2, 3, 4]);
+    assert_eq!(data.len(), 1024);
+}
+
+#[test]
+fn file_storage_meta_roundtrip() {
+    let storage = InMemoryFileStorage::new();
+    let path = Path::new("/tmp/test.vortex-meta");
+    let meta = DownloadMeta {
+        download_id: DownloadId(42),
+        url: "https://example.com/file.zip".to_string(),
+        file_name: "file.zip".to_string(),
+        total_bytes: Some(1024),
+        segments: vec![],
+        checksum_expected: None,
+        created_at: 100,
+        updated_at: 200,
+    };
+
+    storage.write_meta(path, &meta).unwrap();
+    let loaded = storage.read_meta(path).unwrap().unwrap();
+    assert_eq!(loaded.download_id, DownloadId(42));
+    assert_eq!(loaded.total_bytes, Some(1024));
+
+    storage.delete_meta(path).unwrap();
+    assert!(storage.read_meta(path).unwrap().is_none());
+}
+
+#[test]
+fn http_client_head_and_range() {
+    let client = FakeHttpClient;
+
+    let head = client.head("https://example.com/file.zip").unwrap();
+    assert_eq!(head.status_code, 200);
+    assert!(head.is_success());
+    assert_eq!(head.content_length(), Some(1024));
+
+    let range_data = client
+        .get_range("https://example.com/file.zip", 0, 99)
+        .unwrap();
+    assert_eq!(range_data.len(), 100);
+
+    assert!(
+        client
+            .supports_range("https://example.com/file.zip")
+            .unwrap()
+    );
+}
+
+#[test]
+fn credential_store_crud() {
+    let store = InMemoryCredentialStore::new();
+    let cred = Credential::new("test-user", "test-value");
+
+    assert!(store.get("mega").unwrap().is_none());
+
+    store.store("mega", &cred).unwrap();
+    let loaded = store.get("mega").unwrap().unwrap();
+    assert_eq!(loaded.username(), "test-user");
+    assert_eq!(loaded.password(), "test-value");
+
+    store.delete("mega").unwrap();
+    assert!(store.get("mega").unwrap().is_none());
+}
+
+#[test]
+fn config_store_get_and_update() {
+    let store = InMemoryConfigStore::new();
+    let config = store.get_config().unwrap();
+    assert_eq!(config.max_concurrent_downloads, 3);
+
+    let patch = ConfigPatch {
+        max_concurrent_downloads: Some(10),
+        download_dir: Some(Some("/downloads".to_string())),
+        ..Default::default()
+    };
+    let updated = store.update_config(patch).unwrap();
+    assert_eq!(updated.max_concurrent_downloads, 10);
+    assert_eq!(updated.download_dir, Some("/downloads".to_string()));
+}
+
+#[test]
+fn history_repository_record_and_find() {
+    let repo = InMemoryHistoryRepository::new();
+    let entry = HistoryEntry {
+        download_id: DownloadId(1),
+        file_name: "file.zip".to_string(),
+        url: "https://example.com/file.zip".to_string(),
+        total_bytes: 1024,
+        completed_at: 1000,
+        duration_seconds: 60,
+        avg_speed: 17,
+        destination_path: "/tmp/file.zip".to_string(),
+    };
+
+    repo.record(&entry).unwrap();
+    let recent = repo.find_recent(10).unwrap();
+    assert_eq!(recent.len(), 1);
+    assert_eq!(recent[0].file_name, "file.zip");
+
+    let by_dl = repo.find_by_download(DownloadId(1)).unwrap();
+    assert_eq!(by_dl.len(), 1);
+
+    let deleted = repo.delete_older_than(2000).unwrap();
+    assert_eq!(deleted, 1);
+    assert!(repo.find_recent(10).unwrap().is_empty());
+}
+
+#[test]
+fn stats_repository_record_and_get() {
+    let repo = InMemoryStatsRepository::new();
+    repo.record_completed(1024, 512).unwrap();
+    repo.record_completed(2048, 1024).unwrap();
+
+    let stats = repo.get_stats().unwrap();
+    assert_eq!(stats.total_downloaded_bytes, 3072);
+    assert_eq!(stats.total_files, 2);
+}
+
+#[test]
+fn clipboard_observer_lifecycle() {
+    let observer = FakeClipboardObserver::new();
+    observer.start().unwrap();
+    assert!(*observer.running.lock().unwrap());
+
+    // Simulate clipboard detection
+    observer
+        .urls
+        .lock()
+        .unwrap()
+        .push("https://example.com".to_string());
+    let urls = observer.get_urls().unwrap();
+    assert_eq!(urls.len(), 1);
+
+    // Buffer drained after get_urls
+    assert!(observer.get_urls().unwrap().is_empty());
+
+    observer.stop().unwrap();
+    assert!(!*observer.running.lock().unwrap());
+}
+
+#[test]
+fn plugin_loader_lifecycle() {
+    let loader = FakePluginLoader::new();
+    let info = PluginInfo::new(
+        "test-plugin".to_string(),
+        "1.0.0".to_string(),
+        "A test plugin".to_string(),
+        "author".to_string(),
+        PluginCategory::Crawler,
+    );
+    let manifest = PluginManifest::new(info);
+
+    loader.load(&manifest).unwrap();
+    let loaded = loader.list_loaded().unwrap();
+    assert_eq!(loaded.len(), 1);
+    assert_eq!(loaded[0].name(), "test-plugin");
+
+    assert!(loader.resolve_url("https://example.com").unwrap().is_none());
+
+    loader.unload("test-plugin").unwrap();
+    assert!(loader.list_loaded().unwrap().is_empty());
+}
+
+#[test]
+fn download_engine_fire_and_forget() {
+    let engine = FakeDownloadEngine::new();
+    let url = crate::domain::model::download::Url::new("https://example.com/big.iso").unwrap();
+    let download = Download::new(
+        DownloadId(42),
+        url,
+        "big.iso".to_string(),
+        "/tmp".to_string(),
+    );
+
+    engine.start(&download).unwrap();
+    assert_eq!(engine.started.lock().unwrap().len(), 1);
+    assert_eq!(engine.started.lock().unwrap()[0], DownloadId(42));
+
+    engine.pause(DownloadId(42)).unwrap();
+    engine.cancel(DownloadId(42)).unwrap();
+}
+
+#[test]
+fn credential_debug_redacts_password() {
+    let cred = Credential::new("test-user", "test-credential-value");
+    let debug_output = format!("{cred:?}");
+    assert!(debug_output.contains("user"));
+    assert!(debug_output.contains("<redacted>"));
+    assert!(!debug_output.contains("test-credential-value"));
+}
+
+// ── Driving port compile-time checks ────────────────────────────
+
+#[test]
+fn driving_port_traits_compile() {
+    use crate::domain::ports::driving::{Command, CommandHandler, Query, QueryHandler};
+
+    // Verify marker traits can be implemented
+    struct TestCommand;
+    impl Command for TestCommand {}
+
+    struct TestQuery;
+    impl Query for TestQuery {}
+
+    // Verify handler traits can be implemented
+    struct TestCommandHandler;
+    impl CommandHandler<TestCommand> for TestCommandHandler {
+        type Output = u64;
+        async fn handle(&self, _cmd: TestCommand) -> Result<u64, DomainError> {
+            Ok(42)
+        }
+    }
+
+    struct TestQueryHandler;
+    impl QueryHandler<TestQuery> for TestQueryHandler {
+        type Output = String;
+        async fn handle(&self, _query: TestQuery) -> Result<String, DomainError> {
+            Ok("result".to_string())
+        }
+    }
+
+    assert_send_sync::<TestCommandHandler>();
+    assert_send_sync::<TestQueryHandler>();
 }
