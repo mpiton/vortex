@@ -131,6 +131,7 @@ impl DownloadEngine for SegmentedDownloadEngine {
 
             // Check if cancelled during HEAD request
             if cancel_token.is_cancelled() {
+                event_bus.publish(DomainEvent::DownloadCancelled { id: download_id });
                 active_downloads
                     .lock()
                     .expect("active_downloads lock poisoned")
@@ -211,6 +212,7 @@ impl DownloadEngine for SegmentedDownloadEngine {
 
             // Check if cancelled during setup
             if cancel_token.is_cancelled() {
+                event_bus.publish(DomainEvent::DownloadCancelled { id: download_id });
                 active_downloads
                     .lock()
                     .expect("active_downloads lock poisoned")
