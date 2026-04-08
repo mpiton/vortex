@@ -263,7 +263,7 @@ mod tests {
         fn update_config(&self, patch: ConfigPatch) -> Result<AppConfig, DomainError> {
             let mut config = self.config.lock().unwrap();
             if let Some(dir) = patch.download_dir {
-                config.download_dir = Some(dir);
+                config.download_dir = dir;
             }
             if let Some(max) = patch.max_concurrent_downloads {
                 config.max_concurrent_downloads = max;
@@ -634,7 +634,7 @@ mod tests {
 
         let patch = ConfigPatch {
             max_concurrent_downloads: Some(10),
-            download_dir: Some("/downloads".to_string()),
+            download_dir: Some(Some("/downloads".to_string())),
             ..Default::default()
         };
         let updated = store.update_config(patch).unwrap();

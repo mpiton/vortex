@@ -42,9 +42,12 @@ impl Default for AppConfig {
 ///
 /// Only the fields set to `Some(...)` will be applied.
 /// This avoids overwriting unchanged settings.
+///
+/// For `download_dir`: `None` = no change, `Some(None)` = reset to
+/// platform default, `Some(Some(path))` = set to custom path.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct ConfigPatch {
-    pub download_dir: Option<String>,
+    pub download_dir: Option<Option<String>>,
     pub max_concurrent_downloads: Option<u32>,
     pub max_segments_per_download: Option<u32>,
     pub speed_limit_bytes_per_sec: Option<Option<u64>>,

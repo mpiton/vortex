@@ -1,7 +1,8 @@
 //! Read model types for CQRS query results.
 //!
 //! These are flattened views optimized for display, not domain aggregates.
-//! They are returned by read repositories and never mutated.
+//! They are returned by read repositories. Fields are public
+//! because these are data-only DTOs with no invariants to protect.
 
 use std::collections::HashMap;
 
