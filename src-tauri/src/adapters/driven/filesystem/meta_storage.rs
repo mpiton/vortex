@@ -4,14 +4,28 @@
 //! that derive `bincode::Encode`/`Decode`. The domain `DownloadMeta` is
 //! converted to/from these structs at the serialization boundary so the
 //! domain remains free of external dependencies.
+//!
+//! The on-disk format is versioned: a `version: u8` field is encoded first,
+//! allowing future schema migrations without silently discarding resume state.
 
 use crate::domain::error::DomainError;
 use crate::domain::model::download::DownloadId;
 use crate::domain::model::meta::{DownloadMeta, SegmentMeta};
 
-/// Serializable mirror of [`DownloadMeta`] for `.vortex-meta` files.
+/// Maximum size (bytes) for a `.vortex-meta` file. Files larger than this
+/// are rejected before allocation to prevent OOM on corrupted files.
+pub const MAX_META_SIZE: usize = 1 << 20; // 1 MiB
+
+/// Current schema version for the on-disk format.
+const FORMAT_VERSION: u8 = 1;
+
+/// Versioned, serializable mirror of [`DownloadMeta`] for `.vortex-meta` files.
+///
+/// The `version` field is encoded first so future readers can branch on it
+/// and migrate older formats instead of treating them as corruption.
 #[derive(bincode::Encode, bincode::Decode)]
 struct StoredDownloadMeta {
+    version: u8,
     download_id: u64,
     url: String,
     file_name: String,
@@ -35,6 +49,7 @@ struct StoredSegmentMeta {
 impl From<&DownloadMeta> for StoredDownloadMeta {
     fn from(meta: &DownloadMeta) -> Self {
         Self {
+            version: FORMAT_VERSION,
             download_id: meta.download_id.0,
             url: meta.url.clone(),
             file_name: meta.file_name.clone(),
@@ -95,15 +110,20 @@ pub fn serialize_meta(meta: &DownloadMeta) -> Result<Vec<u8>, DomainError> {
 
 /// Deserialize bytes from a `.vortex-meta` file back into [`DownloadMeta`].
 ///
-/// Limits allocation to 1 MiB to prevent OOM from corrupted files
-/// with inflated collection lengths.
+/// Limits allocation to [`MAX_META_SIZE`] to prevent OOM from corrupted files
+/// with inflated collection lengths. Rejects unknown format versions.
 pub fn deserialize_meta(data: &[u8]) -> Result<DownloadMeta, DomainError> {
-    const MAX_META_SIZE: usize = 1 << 20; // 1 MiB
     let config = bincode::config::standard().with_limit::<MAX_META_SIZE>();
     let (stored, _): (StoredDownloadMeta, _) =
         bincode::decode_from_slice(data, config).map_err(|e| {
             DomainError::StorageError(format!("failed to deserialize download meta: {e}"))
         })?;
+    if stored.version != FORMAT_VERSION {
+        return Err(DomainError::StorageError(format!(
+            "unsupported .vortex-meta version {} (expected {FORMAT_VERSION})",
+            stored.version
+        )));
+    }
     Ok(DownloadMeta::from(stored))
 }
 
@@ -174,5 +194,20 @@ mod tests {
         let bytes = serialize_meta(&meta).expect("serialize should succeed");
         let restored = deserialize_meta(&bytes).expect("deserialize should succeed");
         assert_eq!(meta, restored);
+    }
+
+    #[test]
+    fn test_unknown_version_returns_error() {
+        let meta = make_meta();
+        let mut bytes = serialize_meta(&meta).expect("serialize should succeed");
+        // Corrupt the version byte (first byte in bincode standard encoding)
+        bytes[0] = 99;
+        let result = deserialize_meta(&bytes);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("unsupported .vortex-meta version"),
+            "error should mention version: {err}"
+        );
     }
 }

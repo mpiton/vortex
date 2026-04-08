@@ -4,7 +4,7 @@
 //! and `.vortex-meta` persistence (bincode) for download resume.
 
 use std::fs::{self, File, OpenOptions};
-use std::io::{Seek, SeekFrom, Write};
+use std::io::{Read as _, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -45,12 +45,17 @@ fn meta_path(download_path: &Path) -> PathBuf {
 impl FileStorage for FsFileStorage {
     /// Pre-allocate a sparse file at `path` with logical size `size`.
     ///
-    /// **Precondition:** the file must not already exist with partial data,
-    /// as `File::create` truncates any existing content.
+    /// Uses `create_new(true)` so the call **fails** if the file already
+    /// exists, preventing silent truncation of a partially downloaded file.
+    /// Callers should check for `.vortex-meta` and resume instead.
     fn create_file(&self, path: &Path, size: u64) -> Result<(), DomainError> {
-        let file = File::create(path).map_err(|e| {
-            DomainError::StorageError(format!("failed to create {}: {e}", path.display()))
-        })?;
+        let file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+            .map_err(|e| {
+                DomainError::StorageError(format!("failed to create {}: {e}", path.display()))
+            })?;
         // set_len creates a sparse file — the OS only allocates blocks
         // as data is actually written, so a 1 GB file uses ~0 bytes on disk.
         file.set_len(size).map_err(|e| {
@@ -70,6 +75,27 @@ impl FileStorage for FsFileStorage {
                 path.display()
             ))
         })?;
+
+        let file_len = file.metadata().map(|m| m.len()).map_err(|e| {
+            DomainError::StorageError(format!(
+                "failed to read metadata for {}: {e}",
+                path.display()
+            ))
+        })?;
+        let end = offset.checked_add(data.len() as u64).ok_or_else(|| {
+            DomainError::StorageError(format!(
+                "write would overflow u64: offset {offset} + {} bytes",
+                data.len()
+            ))
+        })?;
+        if end > file_len {
+            return Err(DomainError::StorageError(format!(
+                "write past EOF: offset {offset} + {} bytes > file size {file_len} in {}",
+                data.len(),
+                path.display()
+            )));
+        }
+
         file.seek(SeekFrom::Start(offset)).map_err(|e| {
             DomainError::StorageError(format!(
                 "failed to seek to offset {offset} in {}: {e}",
@@ -88,17 +114,37 @@ impl FileStorage for FsFileStorage {
 
     fn read_meta(&self, path: &Path) -> Result<Option<DownloadMeta>, DomainError> {
         let mp = meta_path(path);
-        // Read directly and handle NotFound — avoids TOCTOU race with delete_meta.
-        let data = match fs::read(&mp) {
-            Ok(bytes) => bytes,
+        // Open directly and handle NotFound — avoids TOCTOU race with delete_meta.
+        let mut file = match File::open(&mp) {
+            Ok(f) => f,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(e) => {
                 return Err(DomainError::StorageError(format!(
-                    "failed to read {}: {e}",
+                    "failed to open {}: {e}",
                     mp.display()
                 )));
             }
         };
+
+        // Reject oversized files before allocating memory.
+        let file_len = file.metadata().map(|m| m.len()).unwrap_or(0);
+        if file_len > meta_storage::MAX_META_SIZE as u64 {
+            warn!(
+                path = %mp.display(),
+                size = file_len,
+                "oversized .vortex-meta file — ignoring"
+            );
+            return Ok(None);
+        }
+
+        let mut data = Vec::with_capacity(file_len as usize);
+        if let Err(e) = file.read_to_end(&mut data) {
+            return Err(DomainError::StorageError(format!(
+                "failed to read {}: {e}",
+                mp.display()
+            )));
+        }
+
         match meta_storage::deserialize_meta(&data) {
             Ok(meta) => Ok(Some(meta)),
             Err(e) => {
@@ -122,10 +168,10 @@ impl FileStorage for FsFileStorage {
         let n = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
         let tmp = mp.with_extension(format!("vortex-meta.{n}.tmp"));
         fs::write(&tmp, &data).map_err(|e| {
+            let _ = fs::remove_file(&tmp);
             DomainError::StorageError(format!("failed to write {}: {e}", tmp.display()))
         })?;
         fs::rename(&tmp, &mp).map_err(|e| {
-            // Clean up orphaned tmp on rename failure
             let _ = fs::remove_file(&tmp);
             DomainError::StorageError(format!(
                 "failed to rename {} → {}: {e}",
@@ -202,6 +248,23 @@ mod tests {
     }
 
     #[test]
+    fn test_create_file_fails_if_already_exists() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file_path = dir.path().join("download.bin");
+        let storage = FsFileStorage::new();
+
+        storage
+            .create_file(&file_path, 100)
+            .expect("first create should succeed");
+
+        let result = storage.create_file(&file_path, 100);
+        assert!(
+            result.is_err(),
+            "second create_file on existing file should fail"
+        );
+    }
+
+    #[test]
     fn test_write_segment_at_offset() {
         let dir = tempfile::tempdir().expect("tempdir");
         let file_path = dir.path().join("download.bin");
@@ -222,6 +285,21 @@ mod tests {
         assert_eq!(&buf[10..15], b"hello");
         assert_eq!(&buf[0..10], &[0u8; 10]);
         assert_eq!(&buf[15..20], &[0u8; 5]);
+    }
+
+    #[test]
+    fn test_write_segment_rejects_write_past_eof() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file_path = dir.path().join("download.bin");
+        let storage = FsFileStorage::new();
+
+        storage.create_file(&file_path, 50).expect("create_file");
+
+        let result = storage.write_segment(&file_path, 40, &[0xAA; 20]);
+        assert!(
+            result.is_err(),
+            "write past EOF (40+20=60 > 50) should fail"
+        );
     }
 
     #[test]
@@ -288,7 +366,7 @@ mod tests {
     }
 
     #[test]
-    fn test_write_segment_concurrent_multiple_offsets() {
+    fn test_write_segment_multiple_offsets() {
         let dir = tempfile::tempdir().expect("tempdir");
         let file_path = dir.path().join("download.bin");
         let storage = FsFileStorage::new();
