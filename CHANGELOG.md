@@ -43,5 +43,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Exponential backoff retry: 10s, 20s, 40s, 80s, 160s (capped at 300s)
   - Circuit breaker integration: respects `Download::retry()` / `MaxRetriesExceeded`
   - Retry cancellation via `CancellationToken` (e.g., when download is deleted)
-  - EventBus sync-to-async bridge using `mpsc::unbounded_channel`
+  - EventBus sync-to-async bridge using bounded `mpsc::channel(1024)` with lifecycle event filtering
   - Idempotent `on_slot_freed()` via `tokio::sync::Mutex` scheduling lock

@@ -82,44 +82,46 @@ impl QueueManager {
     pub async fn on_slot_freed(&self) -> Result<(), AppError> {
         let _guard = self.schedule_lock.lock().await;
 
-        let active = self.active_count.load(Ordering::SeqCst);
-        let max = self.max_concurrent.load(Ordering::SeqCst);
-        if active >= max {
-            return Ok(());
-        }
-
-        let mut queued = self.download_repo.find_by_state(DownloadState::Queued)?;
-        if queued.is_empty() {
-            return Ok(());
-        }
-
-        // Sort: priority desc, then created_at asc (FIFO)
-        queued.sort_by(|a, b| {
-            b.priority()
-                .value()
-                .cmp(&a.priority().value())
-                .then_with(|| a.created_at().cmp(&b.created_at()))
-        });
-
-        let mut download = queued.remove(0);
-        let event = download.start()?;
-        self.download_repo.save(&download)?;
-        self.event_bus.publish(event);
-
-        // F2: increment before engine.start so we can roll back cleanly on failure
-        self.active_count.fetch_add(1, Ordering::SeqCst);
-
-        if let Err(engine_err) = self.engine.start(&download) {
-            // Roll back: transition to Error and save
-            self.safe_decrement();
-            if let Ok(fail_event) = download.fail(engine_err.to_string()) {
-                let _ = self.download_repo.save(&download);
-                self.event_bus.publish(fail_event);
+        loop {
+            let active = self.active_count.load(Ordering::SeqCst);
+            let max = self.max_concurrent.load(Ordering::SeqCst);
+            if active >= max {
+                return Ok(());
             }
-            return Err(AppError::Domain(engine_err));
-        }
 
-        Ok(())
+            // Collect both Queued and Retry candidates so retries aren't stuck
+            let mut candidates = self.download_repo.find_by_state(DownloadState::Queued)?;
+            let retrying = self.download_repo.find_by_state(DownloadState::Retry)?;
+            candidates.extend(retrying);
+
+            if candidates.is_empty() {
+                return Ok(());
+            }
+
+            // Sort: priority desc, then created_at asc (FIFO)
+            candidates.sort_by(|a, b| {
+                b.priority()
+                    .value()
+                    .cmp(&a.priority().value())
+                    .then_with(|| a.created_at().cmp(&b.created_at()))
+            });
+
+            let mut download = candidates.remove(0);
+            let event = download.start()?;
+            self.download_repo.save(&download)?;
+            self.event_bus.publish(event);
+
+            self.active_count.fetch_add(1, Ordering::SeqCst);
+
+            if let Err(engine_err) = self.engine.start(&download) {
+                self.safe_decrement();
+                if let Ok(fail_event) = download.fail(engine_err.to_string()) {
+                    let _ = self.download_repo.save(&download);
+                    self.event_bus.publish(fail_event);
+                }
+                return Err(AppError::Domain(engine_err));
+            }
+        }
     }
 
     pub async fn decrement_and_schedule(&self) -> Result<(), AppError> {
@@ -127,24 +129,12 @@ impl QueueManager {
         self.on_slot_freed().await
     }
 
-    // F3+F4: takes &Arc<Self> so schedule_retry can be called
     pub async fn handle_download_failed(self: &Arc<Self>, id: DownloadId) -> Result<(), AppError> {
-        // F5: only decrement if the download was actually active
-        let should_decrement = match self.download_repo.find_by_id(id)? {
-            Some(ref d) => matches!(
-                d.state(),
-                DownloadState::Downloading
-                    | DownloadState::Waiting
-                    | DownloadState::Checking
-                    | DownloadState::Extracting
-            ),
-            None => false,
-        };
+        // DownloadFailed is emitted for downloads that WERE active, so always
+        // decrement. safe_decrement prevents underflow if called redundantly.
+        self.safe_decrement();
 
-        if should_decrement {
-            self.safe_decrement(); // F1
-        }
-
+        // Single find_by_id — avoids TOCTOU from double read
         let mut download = match self.download_repo.find_by_id(id)? {
             Some(d) => d,
             None => {
@@ -158,6 +148,8 @@ impl QueueManager {
                 self.download_repo.save(&download)?;
                 self.event_bus.publish(event);
                 self.schedule_retry(id, download.retry_count());
+                // Slot was freed by safe_decrement above — try filling it
+                self.on_slot_freed().await?;
                 Ok(())
             }
             Err(DomainError::MaxRetriesExceeded { .. }) => {
@@ -253,12 +245,19 @@ impl QueueManager {
     }
 
     pub fn start_listening(self: Arc<Self>) {
-        // F6: bounded channel(1024) instead of unbounded
         let (tx, mut rx) = tokio::sync::mpsc::channel::<DomainEvent>(1024);
 
+        // Only forward lifecycle events that affect scheduling.
+        // DownloadProgress fires every 500ms per segment and would flood the channel.
         self.event_bus.subscribe(Box::new(move |event| {
-            if tx.try_send(event.clone()).is_err() {
-                tracing::warn!("QueueManager event channel full, dropping event");
+            let dominated = matches!(
+                event,
+                DomainEvent::DownloadCompleted { .. }
+                    | DomainEvent::DownloadPaused { .. }
+                    | DomainEvent::DownloadFailed { .. }
+            );
+            if dominated && tx.try_send(event.clone()).is_err() {
+                tracing::error!("QueueManager event channel full, dropping lifecycle event");
             }
         }));
 
@@ -499,6 +498,50 @@ mod tests {
         assert!(engine.started.lock().unwrap().is_empty());
     }
 
+    #[tokio::test]
+    async fn test_on_slot_freed_fills_all_available_slots() {
+        let d1 = make_download(1, 5, DownloadState::Queued);
+        let d2 = make_download(2, 5, DownloadState::Queued);
+        let d3 = make_download(3, 5, DownloadState::Queued);
+        let repo = Arc::new(MockDownloadRepo::new(vec![d1, d2, d3]));
+        let engine = Arc::new(MockEngine::new());
+        let bus = Arc::new(MockEventBus::new());
+        let qm = make_manager(
+            Arc::clone(&repo),
+            Arc::clone(&engine),
+            Arc::clone(&bus),
+            3,
+            0,
+        );
+
+        qm.on_slot_freed().await.unwrap();
+
+        // All 3 slots should be filled
+        assert_eq!(engine.started.lock().unwrap().len(), 3);
+        assert_eq!(qm.active_count(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_on_slot_freed_picks_up_retry_state() {
+        // Retry-state downloads should also be started by on_slot_freed
+        let d = make_download(1, 5, DownloadState::Retry);
+        let repo = Arc::new(MockDownloadRepo::new(vec![d]));
+        let engine = Arc::new(MockEngine::new());
+        let bus = Arc::new(MockEventBus::new());
+        let qm = make_manager(
+            Arc::clone(&repo),
+            Arc::clone(&engine),
+            Arc::clone(&bus),
+            3,
+            0,
+        );
+
+        qm.on_slot_freed().await.unwrap();
+
+        assert_eq!(engine.started.lock().unwrap().clone(), vec![1]);
+        assert_eq!(qm.active_count(), 1);
+    }
+
     #[test]
     fn test_retry_delay_exponential() {
         assert_eq!(retry_delay(1), Duration::from_secs(10));
@@ -585,8 +628,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_handle_failed_only_decrements_for_active_state() {
-        // Download in Error state (not active) — active_count should not decrease
+    async fn test_handle_failed_decrements_and_retries() {
+        // DownloadFailed always decrements (the event proves the download was active).
+        // If retry succeeds, on_slot_freed picks up the Retry download immediately.
         let d = make_download(1, 5, DownloadState::Error);
         let repo = Arc::new(MockDownloadRepo::new(vec![d]));
         let engine = Arc::new(MockEngine::new());
@@ -596,12 +640,13 @@ mod tests {
             Arc::clone(&engine),
             Arc::clone(&bus),
             3,
-            0,
+            1,
         );
 
         qm.handle_download_failed(DownloadId(1)).await.unwrap();
 
-        // active_count should stay 0, not wrap to usize::MAX
-        assert_eq!(qm.active_count(), 0);
+        // Decremented from 1 to 0, then retry → on_slot_freed picks it up → back to 1
+        assert_eq!(qm.active_count(), 1);
+        assert!(engine.started.lock().unwrap().contains(&1));
     }
 }
