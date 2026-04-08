@@ -23,3 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `SqliteDownloadReadRepo` (read: filtered/sorted list, detail with segments, count by state)
   - `SqliteHistoryRepo` (record, find_recent, find_by_download, delete_older_than)
   - Initial migration creating 6 tables with indexes and foreign keys
+- Event system: TokioEventBus (broadcast), Tauri bridge, useTauriEvent React hook
+- Segmented download engine: parallel HTTP Range downloads with pause/cancel
+  - `ReqwestHttpClient` adapter implementing HttpClient port (HEAD, GET range, range detection)
+  - `SegmentedDownloadEngine` adapter implementing DownloadEngine port (start, pause, cancel)
+  - Segment worker with streaming HTTP chunks, progress throttling (500ms), and CancellationToken
+  - Configurable segment count with 64KB minimum segment size
+  - Single-segment fallback when server doesn't support Range requests
