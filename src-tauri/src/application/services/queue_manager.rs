@@ -232,6 +232,9 @@ impl QueueManager {
                     | DomainEvent::DownloadPaused { .. }
                     | DomainEvent::DownloadFailed { .. }
                     | DomainEvent::DownloadCancelled { .. }
+                    | DomainEvent::DownloadCreated { .. }
+                    | DomainEvent::DownloadResumed { .. }
+                    | DomainEvent::DownloadRetrying { .. }
             );
             if dominated && tx.try_send(event.clone()).is_err() {
                 tracing::error!("QueueManager event channel full, dropping lifecycle event");
@@ -246,6 +249,13 @@ impl QueueManager {
                     | DomainEvent::DownloadCancelled { .. } => self.decrement_and_schedule().await,
                     DomainEvent::DownloadFailed { id, .. } => {
                         self.handle_download_failed(*id).await
+                    }
+                    DomainEvent::DownloadCreated { .. } | DomainEvent::DownloadRetrying { .. } => {
+                        self.on_slot_freed().await
+                    }
+                    DomainEvent::DownloadResumed { .. } => {
+                        self.active_count.fetch_add(1, Ordering::SeqCst);
+                        Ok(())
                     }
                     _ => Ok(()),
                 };

@@ -45,3 +45,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Retry cancellation via `CancellationToken` (e.g., when download is deleted)
   - EventBus sync-to-async bridge using bounded `mpsc::channel(1024)` with lifecycle event filtering
   - Idempotent `on_slot_freed()` via `tokio::sync::Mutex` scheduling lock
+  - Event-driven scheduling for DownloadCreated, DownloadResumed, and DownloadRetrying events
+- Download command handlers: 9 CQRS command handlers on CommandBus
+  - `StartDownloadCommand`: HEAD metadata, URL validation, Download entity creation, event-driven queue scheduling
+  - `PauseDownloadCommand` / `ResumeDownloadCommand`: state machine transitions with engine control
+  - `CancelDownloadCommand`: engine cancellation, DB cleanup, `.vortex-meta` removal
+  - `RetryDownloadCommand`: circuit breaker integration via domain `retry()` state machine
+  - `PauseAllDownloadsCommand` / `ResumeAllDownloadsCommand`: batch operations on active/paused downloads
+  - `SetPriorityCommand`: priority update (1-10) for queue reordering
+  - `RemoveDownloadCommand`: full cleanup with optional file deletion
+- Tauri IPC driving adapter: 9 `#[tauri::command]` functions with `AppState` wiring
+  - Convention: `download_{action}` naming (`download_start`, `download_pause`, etc.)

@@ -24,9 +24,25 @@ pub use application::read_models::{
 };
 pub use application::services::QueueManager;
 
+pub use adapters::driving::tauri_ipc::{
+    self, AppState, download_cancel, download_pause, download_pause_all, download_remove,
+    download_resume, download_resume_all, download_retry, download_set_priority, download_start,
+};
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .invoke_handler(tauri::generate_handler![
+            download_start,
+            download_pause,
+            download_resume,
+            download_cancel,
+            download_retry,
+            download_pause_all,
+            download_resume_all,
+            download_set_priority,
+            download_remove,
+        ])
         .run(tauri::generate_context!())
         // Tauri's run() has no meaningful recovery path — panic is intentional here
         .expect("fatal: failed to start Vortex");
