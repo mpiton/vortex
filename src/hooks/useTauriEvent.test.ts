@@ -10,12 +10,12 @@ vi.mock('@tauri-apps/api/event', () => ({
 import { listen } from '@tauri-apps/api/event';
 
 describe('useTauriEvent', () => {
-  let mockUnlisten: ReturnType<typeof vi.fn>;
+  let mockUnlisten: ReturnType<typeof vi.fn<() => void>>;
   let capturedCallback: ((event: { payload: unknown }) => void) | null;
 
   beforeEach(() => {
     vi.clearAllMocks();
-    mockUnlisten = vi.fn();
+    mockUnlisten = vi.fn<() => void>();
     capturedCallback = null;
     vi.mocked(listen).mockImplementation((_event, callback) => {
       capturedCallback = callback as (event: { payload: unknown }) => void;
