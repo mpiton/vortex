@@ -24,6 +24,7 @@ pub struct SegmentedDownloadEngine {
     file_storage: Arc<dyn FileStorage>,
     event_bus: Arc<dyn EventBus>,
     default_segments: u32,
+    min_segment_bytes: u64,
     active_downloads: Arc<Mutex<HashMap<DownloadId, ActiveDownload>>>,
 }
 
@@ -39,8 +40,14 @@ impl SegmentedDownloadEngine {
             file_storage,
             event_bus,
             default_segments: default_segments.max(1),
+            min_segment_bytes: 64 * 1024,
             active_downloads: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    pub fn with_min_segment_bytes(mut self, min_bytes: u64) -> Self {
+        self.min_segment_bytes = min_bytes.max(1);
+        self
     }
 }
 
@@ -82,6 +89,7 @@ impl DownloadEngine for SegmentedDownloadEngine {
         let file_storage = self.file_storage.clone();
         let event_bus = self.event_bus.clone();
         let active_downloads = self.active_downloads.clone();
+        let min_segment_bytes = self.min_segment_bytes;
 
         tokio::spawn(async move {
             // Perform HEAD request to determine size and range support
@@ -170,9 +178,8 @@ impl DownloadEngine for SegmentedDownloadEngine {
 
             // Determine number of segments
             let num_segments = if supports_range && total_size > 0 {
-                // At least 64KB per segment
                 segments_count
-                    .min((total_size / (64 * 1024)).max(1) as u32)
+                    .min((total_size / min_segment_bytes).max(1) as u32)
                     .max(1)
             } else {
                 1
@@ -284,21 +291,41 @@ impl DownloadEngine for SegmentedDownloadEngine {
     }
 
     fn pause(&self, id: DownloadId) -> Result<(), DomainError> {
-        let map = self
-            .active_downloads
-            .lock()
-            .expect("active_downloads lock poisoned");
-        let active = map
-            .get(&id)
-            .ok_or_else(|| DomainError::NotFound(format!("download {}", id.0)))?;
-
-        let _ = active.pause_sender.send(true);
-
+        {
+            let map = self
+                .active_downloads
+                .lock()
+                .expect("active_downloads lock poisoned");
+            let active = map
+                .get(&id)
+                .ok_or_else(|| DomainError::NotFound(format!("download {}", id.0)))?;
+            let _ = active.pause_sender.send(true);
+        }
+        // Guard dropped — safe to publish without deadlock risk
         self.event_bus.publish(DomainEvent::DownloadPaused { id });
         Ok(())
     }
 
     fn resume(&self, id: DownloadId) -> Result<(), DomainError> {
+        {
+            let map = self
+                .active_downloads
+                .lock()
+                .expect("active_downloads lock poisoned");
+            let active = map
+                .get(&id)
+                .ok_or_else(|| DomainError::NotFound(format!("download {}", id.0)))?;
+            let _ = active.pause_sender.send(false);
+        }
+        // Guard dropped — safe to publish without deadlock risk
+        self.event_bus.publish(DomainEvent::DownloadResumed { id });
+        Ok(())
+    }
+
+    fn cancel(&self, id: DownloadId) -> Result<(), DomainError> {
+        // Don't remove from map — the spawned task removes itself on exit.
+        // This prevents a new start() for the same ID from racing with
+        // the old task that is still shutting down.
         let map = self
             .active_downloads
             .lock()
@@ -306,23 +333,6 @@ impl DownloadEngine for SegmentedDownloadEngine {
         let active = map
             .get(&id)
             .ok_or_else(|| DomainError::NotFound(format!("download {}", id.0)))?;
-
-        let _ = active.pause_sender.send(false);
-
-        self.event_bus.publish(DomainEvent::DownloadResumed { id });
-        Ok(())
-    }
-
-    fn cancel(&self, id: DownloadId) -> Result<(), DomainError> {
-        let active = {
-            let mut map = self
-                .active_downloads
-                .lock()
-                .expect("active_downloads lock poisoned");
-            map.remove(&id)
-                .ok_or_else(|| DomainError::NotFound(format!("download {}", id.0)))?
-        };
-
         active.cancel_token.cancel();
         Ok(())
     }
@@ -647,11 +657,11 @@ mod tests {
         let cancel_result = engine.cancel(DownloadId(4));
         assert!(cancel_result.is_ok(), "cancel should succeed");
 
-        // After cancel the ID should be removed from active_downloads
+        // Cancel is idempotent — second call succeeds (task removes itself on exit)
         let cancel_again = engine.cancel(DownloadId(4));
         assert!(
-            matches!(cancel_again, Err(DomainError::NotFound(_))),
-            "second cancel should return NotFound"
+            cancel_again.is_ok(),
+            "second cancel should succeed (idempotent)"
         );
     }
 

@@ -214,6 +214,21 @@ pub(crate) async fn download_segment(params: SegmentParams) -> Result<u64, Segme
         }
     }
 
+    // Verify we received the expected number of bytes (for ranged segments)
+    let expected_bytes = end_byte
+        .saturating_sub(start_byte)
+        .saturating_sub(already_downloaded);
+    if end_byte != u64::MAX && bytes_downloaded < expected_bytes {
+        let msg =
+            format!("truncated response: got {bytes_downloaded} bytes, expected {expected_bytes}");
+        event_bus.publish(DomainEvent::SegmentFailed {
+            download_id,
+            segment_id: segment_index,
+            error: msg.clone(),
+        });
+        return Err(SegmentError::Http(msg));
+    }
+
     event_bus.publish(DomainEvent::SegmentCompleted {
         download_id,
         segment_id: segment_index,
