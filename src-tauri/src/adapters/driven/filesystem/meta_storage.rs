@@ -114,10 +114,15 @@ pub fn serialize_meta(meta: &DownloadMeta) -> Result<Vec<u8>, DomainError> {
 /// with inflated collection lengths. Rejects unknown format versions.
 pub fn deserialize_meta(data: &[u8]) -> Result<DownloadMeta, DomainError> {
     let config = bincode::config::standard().with_limit::<MAX_META_SIZE>();
-    let (stored, _): (StoredDownloadMeta, _) =
-        bincode::decode_from_slice(data, config).map_err(|e| {
+    let (stored, consumed): (StoredDownloadMeta, _) = bincode::decode_from_slice(data, config)
+        .map_err(|e| {
             DomainError::StorageError(format!("failed to deserialize download meta: {e}"))
         })?;
+    if consumed != data.len() {
+        return Err(DomainError::StorageError(
+            "failed to deserialize download meta: trailing bytes detected".to_string(),
+        ));
+    }
     if stored.version != FORMAT_VERSION {
         return Err(DomainError::StorageError(format!(
             "unsupported .vortex-meta version {} (expected {FORMAT_VERSION})",

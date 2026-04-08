@@ -127,7 +127,9 @@ impl FileStorage for FsFileStorage {
         };
 
         // Reject oversized files before allocating memory.
-        let file_len = file.metadata().map(|m| m.len()).unwrap_or(0);
+        let file_len = file.metadata().map(|m| m.len()).map_err(|e| {
+            DomainError::StorageError(format!("failed to read metadata for {}: {e}", mp.display()))
+        })?;
         if file_len > meta_storage::MAX_META_SIZE as u64 {
             warn!(
                 path = %mp.display(),
