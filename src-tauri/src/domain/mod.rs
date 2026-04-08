@@ -6,6 +6,7 @@
 pub mod error;
 pub mod event;
 pub mod model;
+pub mod ports;
 
 pub use error::DomainError;
 pub use event::DomainEvent;
