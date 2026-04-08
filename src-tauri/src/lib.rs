@@ -22,6 +22,7 @@ pub use application::read_models::{
     plugin_view::PluginViewDto,
     stats_view::{DailyVolumeDto, HostStatsDto, StatsViewDto},
 };
+pub use application::services::QueueManager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
