@@ -613,14 +613,14 @@ mod tests {
     #[test]
     fn credential_store_crud() {
         let store = InMemoryCredentialStore::new();
-        let cred = Credential::new("user", "pass123");
+        let cred = Credential::new("test-user", "test-value");
 
         assert!(store.get("mega").unwrap().is_none());
 
         store.store("mega", &cred).unwrap();
         let loaded = store.get("mega").unwrap().unwrap();
-        assert_eq!(loaded.username(), "user");
-        assert_eq!(loaded.password(), "pass123");
+        assert_eq!(loaded.username(), "test-user");
+        assert_eq!(loaded.password(), "test-value");
 
         store.delete("mega").unwrap();
         assert!(store.get("mega").unwrap().is_none());
@@ -746,11 +746,11 @@ mod tests {
 
     #[test]
     fn credential_debug_redacts_password() {
-        let cred = Credential::new("user", "super-secret");
+        let cred = Credential::new("test-user", "test-credential-value");
         let debug_output = format!("{cred:?}");
         assert!(debug_output.contains("user"));
         assert!(debug_output.contains("<redacted>"));
-        assert!(!debug_output.contains("super-secret"));
+        assert!(!debug_output.contains("test-credential-value"));
     }
 
     // ── Driving port compile-time checks ────────────────────────────
