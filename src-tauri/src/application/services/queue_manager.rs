@@ -123,11 +123,14 @@ impl QueueManager {
 
             if let Err(engine_err) = self.engine.start(&download) {
                 // Roll back: no task was spawned, so decrement and persist Error.
-                // Do NOT publish DownloadFailed — that would re-enter
-                // handle_download_failed and double-decrement active_count.
+                // Publish the event so other subscribers (Tauri bridge/UI) see
+                // the failure. handle_download_failed gates its own decrement
+                // on the download's state: it will see Error (already saved
+                // here) and skip the decrement, preventing double-count.
                 self.safe_decrement();
-                if let Ok(_fail_event) = download.fail(engine_err.to_string()) {
+                if let Ok(fail_event) = download.fail(engine_err.to_string()) {
                     let _ = self.download_repo.save(&download);
+                    self.event_bus.publish(fail_event);
                 }
                 return Err(AppError::Domain(engine_err));
             }
@@ -140,10 +143,6 @@ impl QueueManager {
     }
 
     pub async fn handle_download_failed(self: &Arc<Self>, id: DownloadId) -> Result<(), AppError> {
-        // DownloadFailed is emitted for downloads that WERE active, so always
-        // decrement. safe_decrement prevents underflow if called redundantly.
-        self.safe_decrement();
-
         // Single find_by_id — avoids TOCTOU from double read
         let mut download = match self.download_repo.find_by_id(id)? {
             Some(d) => d,
@@ -152,6 +151,20 @@ impl QueueManager {
                 return Ok(());
             }
         };
+
+        // Only decrement if the download was in an active state. Rollback-
+        // generated events arrive with the download already in Error (the
+        // rollback path persisted that state before publishing), so we skip
+        // the decrement to avoid double-counting.
+        if matches!(
+            download.state(),
+            DownloadState::Downloading
+                | DownloadState::Waiting
+                | DownloadState::Checking
+                | DownloadState::Extracting
+        ) {
+            self.safe_decrement();
+        }
 
         match download.retry() {
             Ok(event) => {
@@ -594,10 +607,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_handle_failed_decrements_and_schedules_retry() {
-        // DownloadFailed always decrements. Retry is scheduled with a timer;
-        // on_slot_freed won't pick it up until the timer fires (it's filtered
-        // out by retry_cancellations).
+    async fn test_handle_failed_rollback_skips_decrement() {
+        // When handle_download_failed sees a download already in Error state
+        // (rollback-generated event), it skips safe_decrement to avoid
+        // double-counting. active_count stays unchanged.
         let d = make_download(1, 5, DownloadState::Error);
         let repo = Arc::new(MockDownloadRepo::new(vec![d]));
         let engine = Arc::new(MockEngine::new());
@@ -612,8 +625,8 @@ mod tests {
 
         qm.handle_download_failed(DownloadId(1)).await.unwrap();
 
-        // Decremented from 1 to 0; retry is pending (timer), not started yet
-        assert_eq!(qm.active_count(), 0);
+        // No decrement — download was already Error (rollback), active stays 1
+        assert_eq!(qm.active_count(), 1);
         assert!(engine.started.lock().unwrap().is_empty());
         // Download is in Retry state, waiting for backoff timer
         let saved = repo.find_by_id(DownloadId(1)).unwrap().unwrap();
