@@ -24,6 +24,7 @@ fn event_name(event: &DomainEvent) -> &'static str {
         DomainEvent::DownloadRetrying { .. } => "download-retrying",
         DomainEvent::DownloadWaiting { .. } => "download-waiting",
         DomainEvent::DownloadChecking { .. } => "download-checking",
+        DomainEvent::DownloadCancelled { .. } => "download-cancelled",
         DomainEvent::DownloadExtracting { .. } => "download-extracting",
         DomainEvent::DownloadProgress { .. } => "download-progress",
         DomainEvent::SegmentStarted { .. } => "segment-started",
@@ -43,6 +44,7 @@ fn event_payload(event: &DomainEvent) -> serde_json::Value {
         | DomainEvent::DownloadResumed { id }
         | DomainEvent::DownloadResumedFromWait { id }
         | DomainEvent::DownloadCompleted { id }
+        | DomainEvent::DownloadCancelled { id }
         | DomainEvent::DownloadWaiting { id }
         | DomainEvent::DownloadChecking { id }
         | DomainEvent::DownloadExtracting { id } => json!({ "id": id.0 }),

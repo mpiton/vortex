@@ -231,6 +231,7 @@ impl QueueManager {
                 DomainEvent::DownloadCompleted { .. }
                     | DomainEvent::DownloadPaused { .. }
                     | DomainEvent::DownloadFailed { .. }
+                    | DomainEvent::DownloadCancelled { .. }
             );
             if dominated && tx.try_send(event.clone()).is_err() {
                 tracing::error!("QueueManager event channel full, dropping lifecycle event");
@@ -240,8 +241,9 @@ impl QueueManager {
         tokio::spawn(async move {
             while let Some(event) = rx.recv().await {
                 let result = match &event {
-                    DomainEvent::DownloadCompleted { .. } => self.decrement_and_schedule().await,
-                    DomainEvent::DownloadPaused { .. } => self.decrement_and_schedule().await,
+                    DomainEvent::DownloadCompleted { .. }
+                    | DomainEvent::DownloadPaused { .. }
+                    | DomainEvent::DownloadCancelled { .. } => self.decrement_and_schedule().await,
                     DomainEvent::DownloadFailed { id, .. } => {
                         self.handle_download_failed(*id).await
                     }

@@ -277,7 +277,9 @@ impl DownloadEngine for SegmentedDownloadEngine {
                     id: download_id,
                     error: error_msg,
                 });
-            } else if !cancel_token.is_cancelled() {
+            } else if cancel_token.is_cancelled() {
+                event_bus.publish(DomainEvent::DownloadCancelled { id: download_id });
+            } else {
                 event_bus.publish(DomainEvent::DownloadCompleted { id: download_id });
             }
 
