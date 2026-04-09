@@ -1,20 +1,24 @@
+//! Handlers for `EnablePluginCommand` and `DisablePluginCommand`.
+//!
+//! Toggles the enabled state of a loaded plugin via `PluginLoader::set_enabled`.
+
 use crate::application::command_bus::CommandBus;
 use crate::application::error::AppError;
-use crate::domain::model::queue::Priority;
 
 impl CommandBus {
-    pub async fn handle_set_priority(
+    pub async fn handle_enable_plugin(
         &self,
-        cmd: super::SetPriorityCommand,
+        cmd: super::EnablePluginCommand,
     ) -> Result<(), AppError> {
-        let download = self
-            .download_repo()
-            .find_by_id(cmd.id)?
-            .ok_or_else(|| AppError::NotFound(format!("Download {} not found", cmd.id.0)))?;
+        self.plugin_loader().set_enabled(&cmd.name, true)?;
+        Ok(())
+    }
 
-        let priority = Priority::new(cmd.priority)?;
-        let download = download.with_priority(priority);
-        self.download_repo().save(&download)?;
+    pub async fn handle_disable_plugin(
+        &self,
+        cmd: super::DisablePluginCommand,
+    ) -> Result<(), AppError> {
+        self.plugin_loader().set_enabled(&cmd.name, false)?;
         Ok(())
     }
 }
@@ -23,71 +27,40 @@ impl CommandBus {
 mod tests {
     use std::collections::HashMap;
     use std::path::Path;
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
 
     use crate::application::command_bus::CommandBus;
-    use crate::application::commands::SetPriorityCommand;
-    use crate::application::error::AppError;
+    use crate::application::commands::{DisablePluginCommand, EnablePluginCommand};
     use crate::domain::error::DomainError;
     use crate::domain::event::DomainEvent;
     use crate::domain::model::config::{AppConfig, ConfigPatch};
     use crate::domain::model::credential::Credential;
-    use crate::domain::model::download::{Download, DownloadId, DownloadState, Url};
+    use crate::domain::model::download::{Download, DownloadId, DownloadState};
     use crate::domain::model::http::HttpResponse;
     use crate::domain::model::meta::DownloadMeta;
-    use crate::domain::model::plugin::{PluginInfo, PluginManifest};
-    use crate::domain::model::queue::Priority;
+    use crate::domain::model::plugin::{PluginCategory, PluginInfo, PluginManifest};
     use crate::domain::ports::driven::{
         ClipboardObserver, ConfigStore, CredentialStore, DownloadEngine, DownloadRepository,
         EventBus, FileStorage, HttpClient, PluginLoader,
     };
 
-    struct MockDownloadRepo {
-        store: Mutex<HashMap<u64, Download>>,
-    }
-
-    impl MockDownloadRepo {
-        fn new() -> Self {
-            Self {
-                store: Mutex::new(HashMap::new()),
-            }
-        }
-
-        fn with_download(self, dl: Download) -> Self {
-            self.store.lock().unwrap().insert(dl.id().0, dl);
-            self
-        }
-    }
-
+    struct MockDownloadRepo;
     impl DownloadRepository for MockDownloadRepo {
-        fn find_by_id(&self, id: DownloadId) -> Result<Option<Download>, DomainError> {
-            Ok(self.store.lock().unwrap().get(&id.0).cloned())
+        fn find_by_id(&self, _id: DownloadId) -> Result<Option<Download>, DomainError> {
+            Ok(None)
         }
-
-        fn save(&self, d: &Download) -> Result<(), DomainError> {
-            self.store.lock().unwrap().insert(d.id().0, d.clone());
+        fn save(&self, _d: &Download) -> Result<(), DomainError> {
             Ok(())
         }
-
-        fn delete(&self, id: DownloadId) -> Result<(), DomainError> {
-            self.store.lock().unwrap().remove(&id.0);
+        fn delete(&self, _id: DownloadId) -> Result<(), DomainError> {
             Ok(())
         }
-
-        fn find_by_state(&self, s: DownloadState) -> Result<Vec<Download>, DomainError> {
-            Ok(self
-                .store
-                .lock()
-                .unwrap()
-                .values()
-                .filter(|d| d.state() == s)
-                .cloned()
-                .collect())
+        fn find_by_state(&self, _s: DownloadState) -> Result<Vec<Download>, DomainError> {
+            Ok(vec![])
         }
     }
 
     struct MockDownloadEngine;
-
     impl DownloadEngine for MockDownloadEngine {
         fn start(&self, _download: &Download) -> Result<(), DomainError> {
             Ok(())
@@ -104,14 +77,12 @@ mod tests {
     }
 
     struct MockEventBus;
-
     impl EventBus for MockEventBus {
         fn publish(&self, _event: DomainEvent) {}
         fn subscribe(&self, _handler: Box<dyn Fn(&DomainEvent) + Send + Sync>) {}
     }
 
     struct MockFileStorage;
-
     impl FileStorage for MockFileStorage {
         fn create_file(&self, _path: &Path, _size: u64) -> Result<(), DomainError> {
             Ok(())
@@ -136,7 +107,6 @@ mod tests {
     }
 
     struct MockHttpClient;
-
     impl HttpClient for MockHttpClient {
         fn head(&self, _url: &str) -> Result<HttpResponse, DomainError> {
             Ok(HttpResponse {
@@ -145,15 +115,39 @@ mod tests {
                 body: vec![],
             })
         }
-        fn get_range(&self, _url: &str, _start: u64, _end: u64) -> Result<Vec<u8>, DomainError> {
-            Ok(vec![])
+        fn get_range(&self, _url: &str, start: u64, end: u64) -> Result<Vec<u8>, DomainError> {
+            Ok(vec![
+                0u8;
+                end.saturating_sub(start).saturating_add(1) as usize
+            ])
         }
         fn supports_range(&self, _url: &str) -> Result<bool, DomainError> {
             Ok(true)
         }
     }
 
-    struct MockPluginLoader;
+    struct MockPluginLoader {
+        plugins: Vec<PluginInfo>,
+    }
+
+    impl MockPluginLoader {
+        fn empty() -> Self {
+            Self { plugins: vec![] }
+        }
+
+        fn with_plugin(name: &str) -> Self {
+            let info = PluginInfo::new(
+                name.to_string(),
+                "1.0.0".to_string(),
+                "desc".to_string(),
+                "author".to_string(),
+                PluginCategory::Utility,
+            );
+            Self {
+                plugins: vec![info],
+            }
+        }
+    }
 
     impl PluginLoader for MockPluginLoader {
         fn load(&self, _manifest: &PluginManifest) -> Result<(), DomainError> {
@@ -166,15 +160,18 @@ mod tests {
             Ok(None)
         }
         fn list_loaded(&self) -> Result<Vec<PluginInfo>, DomainError> {
-            Ok(vec![])
+            Ok(self.plugins.clone())
         }
-        fn set_enabled(&self, _name: &str, _enabled: bool) -> Result<(), DomainError> {
-            Ok(())
+        fn set_enabled(&self, name: &str, _enabled: bool) -> Result<(), DomainError> {
+            if self.plugins.iter().any(|p| p.name() == name) {
+                Ok(())
+            } else {
+                Err(DomainError::NotFound(name.to_string()))
+            }
         }
     }
 
     struct MockConfigStore;
-
     impl ConfigStore for MockConfigStore {
         fn get_config(&self) -> Result<AppConfig, DomainError> {
             Ok(AppConfig::default())
@@ -185,7 +182,6 @@ mod tests {
     }
 
     struct MockCredentialStore;
-
     impl CredentialStore for MockCredentialStore {
         fn get(&self, _service: &str) -> Result<Option<Credential>, DomainError> {
             Ok(None)
@@ -199,7 +195,6 @@ mod tests {
     }
 
     struct MockClipboardObserver;
-
     impl ClipboardObserver for MockClipboardObserver {
         fn start(&self) -> Result<(), DomainError> {
             Ok(())
@@ -212,23 +207,14 @@ mod tests {
         }
     }
 
-    fn make_download() -> Download {
-        Download::new(
-            DownloadId(1),
-            Url::new("http://example.com/f.zip").unwrap(),
-            "f.zip".to_string(),
-            "/tmp/f.zip".to_string(),
-        )
-    }
-
-    fn make_command_bus(repo: MockDownloadRepo) -> CommandBus {
+    fn make_bus(plugin_loader: Arc<dyn PluginLoader>) -> CommandBus {
         CommandBus::new(
-            Arc::new(repo),
+            Arc::new(MockDownloadRepo),
             Arc::new(MockDownloadEngine),
             Arc::new(MockEventBus),
             Arc::new(MockFileStorage),
             Arc::new(MockHttpClient),
-            Arc::new(MockPluginLoader),
+            plugin_loader,
             Arc::new(MockConfigStore),
             Arc::new(MockCredentialStore),
             Arc::new(MockClipboardObserver),
@@ -236,54 +222,60 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_set_priority_updates_download() {
-        let dl = make_download();
-        let repo = MockDownloadRepo::new().with_download(dl);
-        let bus = make_command_bus(repo);
-
-        let cmd = SetPriorityCommand {
-            id: DownloadId(1),
-            priority: 8,
+    async fn test_enable_plugin_returns_ok_when_plugin_loaded() {
+        let bus = make_bus(Arc::new(MockPluginLoader::with_plugin("my-plugin")));
+        let cmd = EnablePluginCommand {
+            name: "my-plugin".to_string(),
         };
-        bus.handle_set_priority(cmd).await.unwrap();
-
-        let updated = bus
-            .download_repo()
-            .find_by_id(DownloadId(1))
-            .unwrap()
-            .unwrap();
-        assert_eq!(updated.priority(), &Priority::new(8).unwrap());
+        assert!(bus.handle_enable_plugin(cmd).await.is_ok());
     }
 
     #[tokio::test]
-    async fn test_set_priority_invalid_range_returns_error() {
-        let dl = make_download();
-        let repo = MockDownloadRepo::new().with_download(dl);
-        let bus = make_command_bus(repo);
-
-        let cmd = SetPriorityCommand {
-            id: DownloadId(1),
-            priority: 0,
+    async fn test_enable_plugin_returns_not_found_when_plugin_absent() {
+        let bus = make_bus(Arc::new(MockPluginLoader::empty()));
+        let cmd = EnablePluginCommand {
+            name: "missing-plugin".to_string(),
         };
-        let result = bus.handle_set_priority(cmd).await;
+        let result = bus.handle_enable_plugin(cmd).await;
         assert!(result.is_err());
-        assert!(matches!(
-            result.unwrap_err(),
-            AppError::Domain(DomainError::InvalidPriority(_))
-        ));
+        let err = result.unwrap_err();
+        assert!(
+            matches!(
+                err,
+                crate::application::error::AppError::Domain(
+                    crate::domain::error::DomainError::NotFound(_)
+                )
+            ),
+            "expected NotFound, got {err:?}"
+        );
     }
 
     #[tokio::test]
-    async fn test_set_priority_not_found() {
-        let repo = MockDownloadRepo::new();
-        let bus = make_command_bus(repo);
-
-        let cmd = SetPriorityCommand {
-            id: DownloadId(999),
-            priority: 5,
+    async fn test_disable_plugin_returns_ok_when_plugin_loaded() {
+        let bus = make_bus(Arc::new(MockPluginLoader::with_plugin("my-plugin")));
+        let cmd = DisablePluginCommand {
+            name: "my-plugin".to_string(),
         };
-        let result = bus.handle_set_priority(cmd).await;
+        assert!(bus.handle_disable_plugin(cmd).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_disable_plugin_returns_not_found_when_plugin_absent() {
+        let bus = make_bus(Arc::new(MockPluginLoader::empty()));
+        let cmd = DisablePluginCommand {
+            name: "missing-plugin".to_string(),
+        };
+        let result = bus.handle_disable_plugin(cmd).await;
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), AppError::NotFound(_)));
+        let err = result.unwrap_err();
+        assert!(
+            matches!(
+                err,
+                crate::application::error::AppError::Domain(
+                    crate::domain::error::DomainError::NotFound(_)
+                )
+            ),
+            "expected NotFound, got {err:?}"
+        );
     }
 }

@@ -26,4 +26,7 @@ pub trait PluginLoader: Send + Sync {
 
     /// List all currently loaded plugins.
     fn list_loaded(&self) -> Result<Vec<PluginInfo>, DomainError>;
+
+    /// Enable or disable a loaded plugin by name.
+    fn set_enabled(&self, name: &str, enabled: bool) -> Result<(), DomainError>;
 }

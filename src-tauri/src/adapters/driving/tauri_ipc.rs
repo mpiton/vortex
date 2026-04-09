@@ -10,16 +10,18 @@ use tauri::State;
 
 use crate::application::command_bus::CommandBus;
 use crate::application::commands::{
-    CancelDownloadCommand, PauseAllDownloadsCommand, PauseDownloadCommand, RemoveDownloadCommand,
+    CancelDownloadCommand, DisablePluginCommand, EnablePluginCommand, InstallPluginCommand,
+    PauseAllDownloadsCommand, PauseDownloadCommand, RemoveDownloadCommand,
     ResumeAllDownloadsCommand, ResumeDownloadCommand, RetryDownloadCommand, SetPriorityCommand,
-    StartDownloadCommand,
+    StartDownloadCommand, UninstallPluginCommand,
 };
 use crate::application::queries::{
-    CountDownloadsByStateQuery, GetDownloadDetailQuery, GetDownloadsQuery,
+    CountDownloadsByStateQuery, GetDownloadDetailQuery, GetDownloadsQuery, ListPluginsQuery,
 };
 use crate::application::query_bus::QueryBus;
 use crate::application::read_models::download_detail_view::DownloadDetailViewDto;
 use crate::application::read_models::download_view::DownloadViewDto;
+use crate::application::read_models::plugin_view::PluginViewDto;
 use crate::domain::model::download::{DownloadId, DownloadState};
 use crate::domain::model::views::{DownloadFilter, SortDirection, SortField, SortOrder};
 
@@ -139,6 +141,69 @@ pub async fn download_remove(
         .map_err(|e| e.to_string())
 }
 
+// --- Plugin Commands ---
+
+#[tauri::command]
+pub async fn plugin_install(state: State<'_, AppState>, path: String) -> Result<(), String> {
+    let plugin_dir = std::path::PathBuf::from(&path);
+    let canonical = plugin_dir
+        .canonicalize()
+        .map_err(|e| format!("invalid plugin path: {e}"))?;
+    let config_dir =
+        dirs::config_dir().ok_or_else(|| "cannot determine system config directory".to_string())?;
+    let allowed_parent = config_dir.join("vortex").join("plugins");
+    std::fs::create_dir_all(&allowed_parent)
+        .map_err(|e| format!("cannot create plugins dir: {e}"))?;
+    let allowed_parent = allowed_parent
+        .canonicalize()
+        .map_err(|e| format!("cannot resolve plugins dir: {e}"))?;
+    if !canonical.starts_with(&allowed_parent) {
+        return Err(format!(
+            "plugin path must be under {}",
+            allowed_parent.display()
+        ));
+    }
+    let (manifest, _wasm_path) =
+        crate::adapters::driven::plugin::manifest::parse_manifest(&canonical)
+            .map_err(|e| e.to_string())?;
+    let cmd = InstallPluginCommand { manifest };
+    state
+        .command_bus
+        .handle_install_plugin(cmd)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn plugin_uninstall(state: State<'_, AppState>, name: String) -> Result<(), String> {
+    let cmd = UninstallPluginCommand { name };
+    state
+        .command_bus
+        .handle_uninstall_plugin(cmd)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn plugin_enable(state: State<'_, AppState>, name: String) -> Result<(), String> {
+    let cmd = EnablePluginCommand { name };
+    state
+        .command_bus
+        .handle_enable_plugin(cmd)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn plugin_disable(state: State<'_, AppState>, name: String) -> Result<(), String> {
+    let cmd = DisablePluginCommand { name };
+    state
+        .command_bus
+        .handle_disable_plugin(cmd)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 // --- Queries ---
 
 #[tauri::command]
@@ -209,6 +274,15 @@ pub async fn download_count_by_state(
                 .map(|(state, count)| (state.to_string(), count))
                 .collect()
         })
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn plugin_list(state: State<'_, AppState>) -> Result<Vec<PluginViewDto>, String> {
+    state
+        .query_bus
+        .handle_list_plugins(ListPluginsQuery)
+        .await
         .map_err(|e| e.to_string())
 }
 

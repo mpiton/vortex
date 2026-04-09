@@ -21,6 +21,7 @@ pub enum DomainError {
     StorageError(String),
     NetworkError(String),
     ValidationError(String),
+    PluginError(String),
 }
 
 impl std::fmt::Display for DomainError {
@@ -55,6 +56,9 @@ impl std::fmt::Display for DomainError {
             }
             DomainError::ValidationError(msg) => {
                 write!(f, "Validation error: {msg}")
+            }
+            DomainError::PluginError(msg) => {
+                write!(f, "Plugin error: {msg}")
             }
         }
     }
@@ -127,6 +131,12 @@ mod tests {
     fn test_error_is_send_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<DomainError>();
+    }
+
+    #[test]
+    fn test_display_plugin_error() {
+        let err = DomainError::PluginError("wasm load failed".to_string());
+        assert_eq!(err.to_string(), "Plugin error: wasm load failed");
     }
 
     #[test]

@@ -1,36 +1,23 @@
+//! Handler for `UninstallPluginCommand`.
+//!
+//! Unloads a plugin by name via the PluginLoader port
+//! and emits a `PluginUnloaded` domain event on success.
+
 use crate::application::command_bus::CommandBus;
 use crate::application::error::AppError;
-use crate::domain::model::download::DownloadState;
+use crate::domain::event::DomainEvent;
 
 impl CommandBus {
-    pub async fn handle_pause_all(
+    pub async fn handle_uninstall_plugin(
         &self,
-        _cmd: super::PauseAllDownloadsCommand,
-    ) -> Result<u32, AppError> {
-        let downloads = self
-            .download_repo()
-            .find_by_state(DownloadState::Downloading)?;
+        cmd: super::UninstallPluginCommand,
+    ) -> Result<(), AppError> {
+        self.plugin_loader().unload(&cmd.name)?;
 
-        let mut count = 0u32;
-        for mut dl in downloads {
-            if let Ok(event) = dl.pause() {
-                if self.download_engine().pause(dl.id()).is_err() {
-                    tracing::warn!("Failed to pause engine for download {:?}", dl.id());
-                    continue;
-                }
-                if let Err(e) = self.download_repo().save(&dl) {
-                    tracing::warn!("Failed to persist pause for download {:?}: {e}", dl.id());
-                    if let Err(rb) = self.download_engine().resume(dl.id()) {
-                        tracing::error!("Rollback failed for download {:?}: {rb}", dl.id());
-                    }
-                    continue;
-                }
-                self.event_bus().publish(event);
-                count += 1;
-            }
-        }
+        self.event_bus()
+            .publish(DomainEvent::PluginUnloaded { name: cmd.name });
 
-        Ok(count)
+        Ok(())
     }
 }
 
@@ -41,11 +28,12 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use crate::application::command_bus::CommandBus;
+    use crate::application::commands::UninstallPluginCommand;
     use crate::domain::error::DomainError;
     use crate::domain::event::DomainEvent;
     use crate::domain::model::config::{AppConfig, ConfigPatch};
     use crate::domain::model::credential::Credential;
-    use crate::domain::model::download::{Download, DownloadId, DownloadState, Url};
+    use crate::domain::model::download::{Download, DownloadId, DownloadState};
     use crate::domain::model::http::HttpResponse;
     use crate::domain::model::meta::DownloadMeta;
     use crate::domain::model::plugin::{PluginInfo, PluginManifest};
@@ -54,71 +42,33 @@ mod tests {
         EventBus, FileStorage, HttpClient, PluginLoader,
     };
 
-    struct MockDownloadRepo {
-        store: Mutex<HashMap<u64, Download>>,
-    }
-
-    impl MockDownloadRepo {
-        fn new() -> Self {
-            Self {
-                store: Mutex::new(HashMap::new()),
-            }
-        }
-    }
-
+    struct MockDownloadRepo;
     impl DownloadRepository for MockDownloadRepo {
-        fn find_by_id(&self, id: DownloadId) -> Result<Option<Download>, DomainError> {
-            Ok(self.store.lock().unwrap().get(&id.0).cloned())
+        fn find_by_id(&self, _id: DownloadId) -> Result<Option<Download>, DomainError> {
+            Ok(None)
         }
-
-        fn save(&self, d: &Download) -> Result<(), DomainError> {
-            self.store.lock().unwrap().insert(d.id().0, d.clone());
+        fn save(&self, _d: &Download) -> Result<(), DomainError> {
             Ok(())
         }
-
-        fn delete(&self, id: DownloadId) -> Result<(), DomainError> {
-            self.store.lock().unwrap().remove(&id.0);
+        fn delete(&self, _id: DownloadId) -> Result<(), DomainError> {
             Ok(())
         }
-
-        fn find_by_state(&self, s: DownloadState) -> Result<Vec<Download>, DomainError> {
-            Ok(self
-                .store
-                .lock()
-                .unwrap()
-                .values()
-                .filter(|d| d.state() == s)
-                .cloned()
-                .collect())
+        fn find_by_state(&self, _s: DownloadState) -> Result<Vec<Download>, DomainError> {
+            Ok(vec![])
         }
     }
 
-    struct MockDownloadEngine {
-        paused: Mutex<Vec<DownloadId>>,
-    }
-
-    impl MockDownloadEngine {
-        fn new() -> Self {
-            Self {
-                paused: Mutex::new(Vec::new()),
-            }
-        }
-    }
-
+    struct MockDownloadEngine;
     impl DownloadEngine for MockDownloadEngine {
         fn start(&self, _download: &Download) -> Result<(), DomainError> {
             Ok(())
         }
-
-        fn pause(&self, id: DownloadId) -> Result<(), DomainError> {
-            self.paused.lock().unwrap().push(id);
+        fn pause(&self, _id: DownloadId) -> Result<(), DomainError> {
             Ok(())
         }
-
         fn resume(&self, _id: DownloadId) -> Result<(), DomainError> {
             Ok(())
         }
-
         fn cancel(&self, _id: DownloadId) -> Result<(), DomainError> {
             Ok(())
         }
@@ -140,17 +90,14 @@ mod tests {
         fn publish(&self, event: DomainEvent) {
             self.events.lock().unwrap().push(event);
         }
-
         fn subscribe(&self, _handler: Box<dyn Fn(&DomainEvent) + Send + Sync>) {}
     }
 
     struct MockFileStorage;
-
     impl FileStorage for MockFileStorage {
         fn create_file(&self, _path: &Path, _size: u64) -> Result<(), DomainError> {
             Ok(())
         }
-
         fn write_segment(
             &self,
             _path: &Path,
@@ -159,22 +106,18 @@ mod tests {
         ) -> Result<(), DomainError> {
             Ok(())
         }
-
         fn read_meta(&self, _path: &Path) -> Result<Option<DownloadMeta>, DomainError> {
             Ok(None)
         }
-
         fn write_meta(&self, _path: &Path, _meta: &DownloadMeta) -> Result<(), DomainError> {
             Ok(())
         }
-
         fn delete_meta(&self, _path: &Path) -> Result<(), DomainError> {
             Ok(())
         }
     }
 
     struct MockHttpClient;
-
     impl HttpClient for MockHttpClient {
         fn head(&self, _url: &str) -> Result<HttpResponse, DomainError> {
             Ok(HttpResponse {
@@ -183,158 +126,151 @@ mod tests {
                 body: vec![],
             })
         }
-
         fn get_range(&self, _url: &str, start: u64, end: u64) -> Result<Vec<u8>, DomainError> {
             Ok(vec![
                 0u8;
                 end.saturating_sub(start).saturating_add(1) as usize
             ])
         }
-
         fn supports_range(&self, _url: &str) -> Result<bool, DomainError> {
             Ok(true)
         }
     }
 
-    struct MockPluginLoader;
+    struct MockPluginLoader {
+        unloaded: Mutex<Vec<String>>,
+        should_fail: bool,
+    }
+
+    impl MockPluginLoader {
+        fn new() -> Self {
+            Self {
+                unloaded: Mutex::new(Vec::new()),
+                should_fail: false,
+            }
+        }
+
+        fn failing() -> Self {
+            Self {
+                unloaded: Mutex::new(Vec::new()),
+                should_fail: true,
+            }
+        }
+    }
 
     impl PluginLoader for MockPluginLoader {
         fn load(&self, _manifest: &PluginManifest) -> Result<(), DomainError> {
             Ok(())
         }
-
-        fn unload(&self, _name: &str) -> Result<(), DomainError> {
+        fn unload(&self, name: &str) -> Result<(), DomainError> {
+            if self.should_fail {
+                return Err(DomainError::PluginError("unload failed".to_string()));
+            }
+            self.unloaded.lock().unwrap().push(name.to_string());
             Ok(())
         }
-
         fn resolve_url(&self, _url: &str) -> Result<Option<PluginInfo>, DomainError> {
             Ok(None)
         }
-
         fn list_loaded(&self) -> Result<Vec<PluginInfo>, DomainError> {
             Ok(vec![])
         }
-
         fn set_enabled(&self, _name: &str, _enabled: bool) -> Result<(), DomainError> {
             Ok(())
         }
     }
 
     struct MockConfigStore;
-
     impl ConfigStore for MockConfigStore {
         fn get_config(&self) -> Result<AppConfig, DomainError> {
             Ok(AppConfig::default())
         }
-
         fn update_config(&self, _patch: ConfigPatch) -> Result<AppConfig, DomainError> {
             Ok(AppConfig::default())
         }
     }
 
     struct MockCredentialStore;
-
     impl CredentialStore for MockCredentialStore {
         fn get(&self, _service: &str) -> Result<Option<Credential>, DomainError> {
             Ok(None)
         }
-
         fn store(&self, _service: &str, _credential: &Credential) -> Result<(), DomainError> {
             Ok(())
         }
-
         fn delete(&self, _service: &str) -> Result<(), DomainError> {
             Ok(())
         }
     }
 
     struct MockClipboardObserver;
-
     impl ClipboardObserver for MockClipboardObserver {
         fn start(&self) -> Result<(), DomainError> {
             Ok(())
         }
-
         fn stop(&self) -> Result<(), DomainError> {
             Ok(())
         }
-
         fn get_urls(&self) -> Result<Vec<String>, DomainError> {
             Ok(vec![])
         }
     }
 
-    fn make_command_bus(
-        repo: Arc<MockDownloadRepo>,
-        engine: Arc<MockDownloadEngine>,
-        events: Arc<MockEventBus>,
-    ) -> CommandBus {
+    fn make_bus(plugin_loader: Arc<dyn PluginLoader>, event_bus: Arc<MockEventBus>) -> CommandBus {
         CommandBus::new(
-            repo,
-            engine,
-            events,
+            Arc::new(MockDownloadRepo),
+            Arc::new(MockDownloadEngine),
+            event_bus,
             Arc::new(MockFileStorage),
             Arc::new(MockHttpClient),
-            Arc::new(MockPluginLoader),
+            plugin_loader,
             Arc::new(MockConfigStore),
             Arc::new(MockCredentialStore),
             Arc::new(MockClipboardObserver),
         )
     }
 
-    fn make_downloading(id: u64) -> Download {
-        let mut dl = Download::new(
-            DownloadId(id),
-            Url::new("http://example.com/file.zip").unwrap(),
-            "file.zip".to_string(),
-            "/tmp/file.zip".to_string(),
+    #[tokio::test]
+    async fn test_uninstall_plugin_unloads_and_emits_event() {
+        let loader = Arc::new(MockPluginLoader::new());
+        let event_bus = Arc::new(MockEventBus::new());
+        let bus = make_bus(loader.clone(), event_bus.clone());
+
+        let cmd = UninstallPluginCommand {
+            name: "my-plugin".to_string(),
+        };
+
+        let result = bus.handle_uninstall_plugin(cmd).await;
+        assert!(result.is_ok());
+
+        let unloaded = loader.unloaded.lock().unwrap();
+        assert_eq!(unloaded.len(), 1);
+        assert_eq!(unloaded[0], "my-plugin");
+
+        let events = event_bus.events.lock().unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0],
+            DomainEvent::PluginUnloaded {
+                name: "my-plugin".to_string(),
+            }
         );
-        dl.start().unwrap();
-        dl
     }
 
     #[tokio::test]
-    async fn test_pause_all_pauses_active() {
-        let repo = Arc::new(MockDownloadRepo::new());
-        let engine = Arc::new(MockDownloadEngine::new());
-        let events = Arc::new(MockEventBus::new());
+    async fn test_uninstall_plugin_loader_error_returns_err() {
+        let loader = Arc::new(MockPluginLoader::failing());
+        let event_bus = Arc::new(MockEventBus::new());
+        let bus = make_bus(loader, event_bus.clone());
 
-        // Insert 2 active downloads
-        repo.save(&make_downloading(1)).unwrap();
-        repo.save(&make_downloading(2)).unwrap();
+        let cmd = UninstallPluginCommand {
+            name: "bad-plugin".to_string(),
+        };
 
-        let bus = make_command_bus(repo.clone(), engine.clone(), events.clone());
-        let count = bus
-            .handle_pause_all(super::super::PauseAllDownloadsCommand)
-            .await
-            .unwrap();
+        let result = bus.handle_uninstall_plugin(cmd).await;
+        assert!(result.is_err());
 
-        assert_eq!(count, 2);
-        // Both paused in repo
-        let d1 = repo.find_by_id(DownloadId(1)).unwrap().unwrap();
-        let d2 = repo.find_by_id(DownloadId(2)).unwrap().unwrap();
-        assert_eq!(d1.state(), DownloadState::Paused);
-        assert_eq!(d2.state(), DownloadState::Paused);
-        // Engine pause called for both
-        let paused = engine.paused.lock().unwrap();
-        assert_eq!(paused.len(), 2);
-        // 2 events emitted
-        let emitted = events.events.lock().unwrap();
-        assert_eq!(emitted.len(), 2);
-    }
-
-    #[tokio::test]
-    async fn test_pause_all_empty_returns_zero() {
-        let repo = Arc::new(MockDownloadRepo::new());
-        let engine = Arc::new(MockDownloadEngine::new());
-        let events = Arc::new(MockEventBus::new());
-
-        let bus = make_command_bus(repo, engine, events);
-        let count = bus
-            .handle_pause_all(super::super::PauseAllDownloadsCommand)
-            .await
-            .unwrap();
-
-        assert_eq!(count, 0);
+        let events = event_bus.events.lock().unwrap();
+        assert!(events.is_empty(), "no event should be emitted on failure");
     }
 }

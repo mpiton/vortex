@@ -6,6 +6,7 @@
 mod count_by_state;
 mod get_download_detail;
 mod get_downloads;
+mod list_plugins;
 
 use crate::domain::model::download::DownloadId;
 use crate::domain::model::views::{DownloadFilter, SortOrder};
@@ -28,7 +29,7 @@ impl Query for GetDownloadDetailQuery {}
 
 // Handler: task 23 (history view)
 #[derive(Debug)]
-#[cfg_attr(not(test), allow(dead_code))]
+#[expect(dead_code)]
 pub struct GetHistoryQuery {
     pub limit: usize,
     pub offset: Option<usize>,
@@ -37,13 +38,11 @@ impl Query for GetHistoryQuery {}
 
 // Handler: task 23 (statistics view)
 #[derive(Debug)]
-#[cfg_attr(not(test), allow(dead_code))]
+#[expect(dead_code)]
 pub struct GetStatsQuery;
 impl Query for GetStatsQuery {}
 
-// Handler: task 13 (plugin infrastructure)
 #[derive(Debug)]
-#[cfg_attr(not(test), allow(dead_code))]
 pub struct ListPluginsQuery;
 impl Query for ListPluginsQuery {}
 

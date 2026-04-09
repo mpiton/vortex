@@ -62,3 +62,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `CountDownloadsByStateQuery`: state-grouped counts for UI filter badges
   - Tauri IPC: `download_list` (filter/sort/search/pagination), `download_detail`, `download_count_by_state`
   - String-based filter/sort parsing in IPC layer (DownloadState, SortField, SortDirection)
+- Plugin infrastructure: WASM plugin system via Extism with hot-reload
+  - `plugin.toml` manifest parser with category/capabilities/version validation
+  - `PluginRegistry` backed by DashMap for concurrent in-memory tracking
+  - `ExtismPluginLoader` implementing `PluginLoader` port: load, unload, resolve_url, list
+  - Hot-reload file watcher via `notify` crate with tokio integration
+  - `InstallPluginCommand` / `UninstallPluginCommand` CQRS handlers with domain events
+  - `EnablePluginCommand` / `DisablePluginCommand` handlers (validation-only for MVP)
+  - `ListPluginsQuery` handler returning `PluginViewDto` read models
+  - Tauri IPC: `plugin_install`, `plugin_uninstall`, `plugin_enable`, `plugin_disable`, `plugin_list`
+  - Path traversal protection on plugin_install IPC (canonicalize + prefix check)
+  - WASM file size limit (100 MB) to prevent OOM
+  - Atomic insert via DashMap entry API to prevent TOCTOU races
+  - `Container` and `Notifier` plugin categories added to domain model

@@ -87,6 +87,10 @@ impl CommandBus {
     pub fn clipboard_observer(&self) -> &dyn ClipboardObserver {
         self.clipboard_observer.as_ref()
     }
+
+    pub(crate) fn plugin_loader_arc(&self) -> Arc<dyn PluginLoader> {
+        Arc::clone(&self.plugin_loader)
+    }
 }
 
 #[cfg(test)]
@@ -317,6 +321,10 @@ mod tests {
 
         fn list_loaded(&self) -> Result<Vec<PluginInfo>, DomainError> {
             Ok(self.plugins.lock().unwrap().values().cloned().collect())
+        }
+
+        fn set_enabled(&self, _name: &str, _enabled: bool) -> Result<(), DomainError> {
+            Ok(())
         }
     }
 

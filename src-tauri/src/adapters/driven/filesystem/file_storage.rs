@@ -205,7 +205,6 @@ mod tests {
     use super::*;
     use crate::domain::model::download::DownloadId;
     use crate::domain::model::meta::SegmentMeta;
-    use std::io::Read as _;
 
     fn make_meta() -> DownloadMeta {
         DownloadMeta {
