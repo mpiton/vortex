@@ -30,28 +30,15 @@ pub use adapters::driving::tauri_ipc::{
     download_retry, download_set_priority, download_start,
 };
 
+/// Start the Tauri application.
+///
+/// The caller must provide a fully wired `AppState` containing the
+/// `CommandBus` and `QueryBus`. All IPC handlers depend on
+/// `State<'_, AppState>` — Tauri will panic if it is not managed.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run() {
+pub fn run(app_state: AppState) {
     tauri::Builder::default()
-        .setup(|app| {
-            // AppState wiring: construct all driven-port adapters and inject
-            // into CommandBus / QueryBus. Full implementation deferred to
-            // task 16 (frontend layout) when the frontend connects.
-            //
-            // Required adapters:
-            //   let db = connection::connect(&app_data_dir).await?;
-            //   let event_bus = Arc::new(TokioEventBus::new(1024));
-            //   let http_client = Arc::new(ReqwestHttpClient::new());
-            //   let file_storage = Arc::new(FsFileStorage::new());
-            //   let engine = Arc::new(SegmentedDownloadEngine::new(...));
-            //   let download_repo = Arc::new(SqliteDownloadRepo::new(db));
-            //   ... (plugin_loader, config_store, credential_store, clipboard)
-            //   let command_bus = Arc::new(CommandBus::new(...));
-            //   let query_bus = Arc::new(QueryBus::new(...));
-            //   app.manage(AppState { command_bus, query_bus });
-            let _ = app;
-            Ok(())
-        })
+        .manage(app_state)
         .invoke_handler(tauri::generate_handler![
             download_start,
             download_pause,

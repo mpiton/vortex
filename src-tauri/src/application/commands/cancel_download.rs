@@ -24,9 +24,11 @@ impl CommandBus {
             self.download_engine().cancel(cmd.id)?;
         }
 
-        // Cleanup metadata file
+        // Cleanup metadata file (best-effort, log on failure)
         let meta_path = format!("{}.vortex-meta", download.destination_path());
-        let _ = self.file_storage().delete_meta(Path::new(&meta_path));
+        if let Err(e) = self.file_storage().delete_meta(Path::new(&meta_path)) {
+            tracing::warn!("Failed to delete meta for download {:?}: {e}", cmd.id);
+        }
 
         // Remove from persistence
         self.download_repo().delete(cmd.id)?;

@@ -13,7 +13,10 @@ use crate::domain::event::DomainEvent;
 use crate::domain::model::download::{Download, DownloadId, Url};
 use crate::domain::model::http::HttpResponse;
 
-static NEXT_DOWNLOAD_ID: AtomicU64 = AtomicU64::new(1);
+/// Monotonic counter combined with nanosecond timestamp for restart-safe
+/// ID generation. The counter prevents collisions within a process; the
+/// timestamp prevents collisions across restarts.
+static NEXT_DOWNLOAD_SEQ: AtomicU64 = AtomicU64::new(0);
 
 impl CommandBus {
     pub async fn handle_start_download(
@@ -34,7 +37,7 @@ impl CommandBus {
             .unwrap_or_else(|| PathBuf::from("."))
             .join(&file_name);
 
-        let id = DownloadId(NEXT_DOWNLOAD_ID.fetch_add(1, Ordering::Relaxed));
+        let id = next_download_id();
 
         let download = Download::new(id, url, file_name, dest.to_string_lossy().to_string());
 
@@ -44,6 +47,20 @@ impl CommandBus {
 
         Ok(id)
     }
+}
+
+/// Generate a restart-safe, collision-resistant download ID.
+///
+/// Combines a nanosecond timestamp (uniqueness across restarts) with a
+/// monotonic process counter (uniqueness under concurrent requests within
+/// the same nanosecond).
+fn next_download_id() -> DownloadId {
+    let seq = NEXT_DOWNLOAD_SEQ.fetch_add(1, Ordering::Relaxed);
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as u64;
+    DownloadId(ts.wrapping_add(seq))
 }
 
 fn extract_filename(resp: &HttpResponse, url: &Url) -> String {
