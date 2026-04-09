@@ -127,7 +127,7 @@ pub fn find_wasm_file(dir: &Path) -> Result<PathBuf, DomainError> {
     for entry in entries {
         let entry = entry.map_err(|e| DomainError::PluginError(format!("dir entry error: {e}")))?;
         let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) == Some("wasm") {
+        if path.is_file() && path.extension().and_then(|e| e.to_str()) == Some("wasm") {
             wasm_files.push(path);
         }
     }
