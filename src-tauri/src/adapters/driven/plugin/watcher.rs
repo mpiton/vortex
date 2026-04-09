@@ -58,13 +58,8 @@ fn handle_fs_event(event: &notify::Event, loader: &ExtismPluginLoader) {
                     match parse_manifest(plugin_dir) {
                         Ok((manifest, _)) => {
                             let name = manifest.info().name().to_string();
-                            if loader.registry().contains(&name)
-                                && let Err(e) = loader.unload(&name)
-                            {
-                                tracing::warn!(
-                                    "failed to unload plugin '{name}' before reload: {e}"
-                                );
-                            }
+                            // Unload first if present (reload case). Ignore NotFound.
+                            let _ = loader.unload(&name);
                             if let Err(e) = loader.load(&manifest) {
                                 tracing::warn!("failed to load plugin '{name}': {e}");
                             } else {
@@ -88,11 +83,12 @@ fn handle_fs_event(event: &notify::Event, loader: &ExtismPluginLoader) {
                 if (is_plugin_toml(path) || is_wasm_file(path))
                     && let Some(plugin_dir) = path.parent()
                     && let Some(name) = plugin_dir.file_name().and_then(|n| n.to_str())
-                    && loader.registry().contains(name)
                 {
+                    // Try unload directly — unload returns NotFound if not loaded,
+                    // which is fine (avoids TOCTOU between contains and unload).
                     tracing::info!("plugin file removed, unloading '{name}'");
                     if let Err(e) = loader.unload(name) {
-                        tracing::warn!("failed to unload plugin '{name}': {e}");
+                        tracing::debug!("unload '{name}' after removal: {e}");
                     }
                 }
             }

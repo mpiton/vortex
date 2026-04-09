@@ -50,6 +50,16 @@ pub fn parse_manifest(dir: &Path) -> Result<(PluginManifest, PathBuf), DomainErr
         ))
     })?;
 
+    // Enforce convention: directory name must match plugin name
+    if let Some(dir_name) = dir.file_name().and_then(|n| n.to_str())
+        && dir_name != raw.plugin.name
+    {
+        return Err(DomainError::PluginError(format!(
+            "directory name '{dir_name}' does not match plugin name '{}'",
+            raw.plugin.name
+        )));
+    }
+
     let category = parse_category(&raw.plugin.category)?;
     let info = PluginInfo::new(
         raw.plugin.name,
@@ -153,8 +163,10 @@ mod tests {
     #[test]
     fn test_parse_manifest_valid() {
         let tmp = TempDir::new().unwrap();
+        let plugin_dir = tmp.path().join("my-hoster");
+        std::fs::create_dir_all(&plugin_dir).unwrap();
         write_plugin_toml(
-            tmp.path(),
+            &plugin_dir,
             r#"
 [plugin]
 name = "my-hoster"
@@ -170,9 +182,9 @@ filesystem = false
 subprocess = ["ffmpeg"]
 "#,
         );
-        write_dummy_wasm(tmp.path(), "my-hoster.wasm");
+        write_dummy_wasm(&plugin_dir, "my-hoster.wasm");
 
-        let (manifest, wasm_path) = parse_manifest(tmp.path()).unwrap();
+        let (manifest, wasm_path) = parse_manifest(&plugin_dir).unwrap();
         assert_eq!(manifest.info().name(), "my-hoster");
         assert_eq!(manifest.info().version(), "1.0.0");
         assert_eq!(manifest.info().category(), PluginCategory::Hoster);
