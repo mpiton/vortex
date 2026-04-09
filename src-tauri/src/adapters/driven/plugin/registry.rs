@@ -1,6 +1,6 @@
 //! In-memory plugin registry backed by a [`DashMap`].
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use dashmap::DashMap;
 
@@ -10,7 +10,7 @@ use crate::domain::ports::driven::PluginReadRepository;
 
 pub struct LoadedPlugin {
     pub manifest: PluginManifest,
-    pub plugin: Mutex<extism::Plugin>,
+    pub plugin: Arc<Mutex<extism::Plugin>>,
     pub enabled: bool,
 }
 
@@ -25,6 +25,8 @@ impl PluginRegistry {
         }
     }
 
+    /// Unconditional insert (no duplicate check). Used in tests for setup.
+    #[cfg(test)]
     pub fn insert(&self, name: String, loaded: LoadedPlugin) {
         self.plugins.insert(name, loaded);
     }
@@ -73,14 +75,16 @@ impl PluginRegistry {
     }
 
     pub fn call_plugin(&self, name: &str, func: &str, input: &str) -> Result<String, DomainError> {
-        // Get the Mutex reference, then drop the DashMap shard guard before locking.
-        // This prevents holding the shard during potentially slow WASM execution.
-        let entry = self
-            .plugins
-            .get(name)
-            .ok_or_else(|| DomainError::NotFound(name.to_string()))?;
-        let plugin_mutex = &entry.plugin;
-        let mut plugin = plugin_mutex
+        // Clone the Arc<Mutex<Plugin>> and drop the DashMap shard guard
+        // before locking. This prevents holding the shard during slow WASM execution.
+        let plugin_handle = {
+            let entry = self
+                .plugins
+                .get(name)
+                .ok_or_else(|| DomainError::NotFound(name.to_string()))?;
+            Arc::clone(&entry.plugin)
+        }; // DashMap shard guard dropped here
+        let mut plugin = plugin_handle
             .lock()
             .map_err(|_| DomainError::PluginError(format!("plugin '{name}' mutex poisoned")))?;
         let result = plugin
@@ -129,7 +133,7 @@ mod tests {
     fn make_loaded(name: &str) -> LoadedPlugin {
         LoadedPlugin {
             manifest: make_manifest(name),
-            plugin: Mutex::new(make_extism_plugin()),
+            plugin: Arc::new(Mutex::new(make_extism_plugin())),
             enabled: true,
         }
     }

@@ -134,6 +134,12 @@ mod tests {
     }
 
     #[test]
+    fn test_display_plugin_error() {
+        let err = DomainError::PluginError("wasm load failed".to_string());
+        assert_eq!(err.to_string(), "Plugin error: wasm load failed");
+    }
+
+    #[test]
     fn test_domain_error_implements_error_trait() {
         let err: Box<dyn std::error::Error> = Box::new(DomainError::NotFound("x".to_string()));
         assert!(err.to_string().contains("Not found"));

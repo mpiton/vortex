@@ -7,7 +7,7 @@ use crate::domain::error::DomainError;
 use crate::domain::model::plugin::{PluginInfo, PluginManifest};
 use crate::domain::ports::driven::PluginLoader;
 
-use super::manifest::parse_manifest;
+use super::manifest::find_wasm_file;
 use super::registry::{LoadedPlugin, PluginRegistry};
 
 pub struct ExtismPluginLoader {
@@ -36,8 +36,16 @@ impl PluginLoader for ExtismPluginLoader {
     fn load(&self, manifest: &PluginManifest) -> Result<(), DomainError> {
         let name = manifest.info().name().to_string();
 
+        // Reject names containing path separators or traversal sequences
+        if name.contains('/') || name.contains('\\') || name.contains("..") {
+            return Err(DomainError::ValidationError(format!(
+                "invalid plugin name: '{name}'"
+            )));
+        }
+
+        // Derive wasm path directly from convention: plugins_dir/<name>/<name>.wasm
         let plugin_dir = self.plugins_dir.join(&name);
-        let (_, wasm_path) = parse_manifest(&plugin_dir)?;
+        let wasm_path = find_wasm_file(&plugin_dir)?;
 
         const MAX_WASM_SIZE: u64 = 100 * 1024 * 1024; // 100 MB
         let metadata = std::fs::metadata(&wasm_path).map_err(|e| {
@@ -60,7 +68,7 @@ impl PluginLoader for ExtismPluginLoader {
 
         let loaded = LoadedPlugin {
             manifest: manifest.clone(),
-            plugin: std::sync::Mutex::new(plugin),
+            plugin: std::sync::Arc::new(std::sync::Mutex::new(plugin)),
             enabled: true,
         };
 
@@ -80,11 +88,14 @@ impl PluginLoader for ExtismPluginLoader {
     }
 
     fn resolve_url(&self, url: &str) -> Result<Option<PluginInfo>, DomainError> {
-        let infos = self.registry.list_info();
+        let mut infos: Vec<_> = self
+            .registry
+            .list_info()
+            .into_iter()
+            .filter(|i| i.is_enabled())
+            .collect();
+        infos.sort_by(|a, b| a.name().cmp(b.name()));
         for info in infos {
-            if !info.is_enabled() {
-                continue;
-            }
             let name = info.name().to_string();
             match self.registry.call_plugin(&name, "can_handle", url) {
                 Ok(result) if result.trim() == "true" => return Ok(Some(info)),
@@ -99,6 +110,10 @@ impl PluginLoader for ExtismPluginLoader {
 
     fn list_loaded(&self) -> Result<Vec<PluginInfo>, DomainError> {
         Ok(self.registry.list_info())
+    }
+
+    fn set_enabled(&self, name: &str, enabled: bool) -> Result<(), DomainError> {
+        self.registry.set_enabled(name, enabled)
     }
 }
 

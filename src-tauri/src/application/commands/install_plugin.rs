@@ -12,7 +12,12 @@ impl CommandBus {
         &self,
         cmd: super::InstallPluginCommand,
     ) -> Result<(), AppError> {
-        self.plugin_loader().load(&cmd.manifest)?;
+        let loader = self.plugin_loader_arc();
+        let manifest = cmd.manifest.clone();
+        tokio::task::spawn_blocking(move || loader.load(&manifest))
+            .await
+            .map_err(|e| AppError::Plugin(format!("plugin install task failed: {e}")))?
+            .map_err(AppError::from)?;
 
         self.event_bus().publish(DomainEvent::PluginLoaded {
             name: cmd.manifest.info().name().to_string(),
@@ -179,6 +184,9 @@ mod tests {
         }
         fn list_loaded(&self) -> Result<Vec<PluginInfo>, DomainError> {
             Ok(vec![])
+        }
+        fn set_enabled(&self, _name: &str, _enabled: bool) -> Result<(), DomainError> {
+            Ok(())
         }
     }
 

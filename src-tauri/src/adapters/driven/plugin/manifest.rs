@@ -106,23 +106,33 @@ fn build_capabilities(caps: &RawCapabilities) -> Vec<String> {
     result
 }
 
-fn find_wasm_file(dir: &Path) -> Result<PathBuf, DomainError> {
+/// Find exactly one `.wasm` file in the plugin directory.
+/// Returns an error if zero or more than one `.wasm` file is found.
+pub fn find_wasm_file(dir: &Path) -> Result<PathBuf, DomainError> {
     let entries = std::fs::read_dir(dir).map_err(|e| {
         DomainError::PluginError(format!("cannot read plugin dir {}: {e}", dir.display()))
     })?;
 
+    let mut wasm_files = Vec::new();
     for entry in entries {
         let entry = entry.map_err(|e| DomainError::PluginError(format!("dir entry error: {e}")))?;
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) == Some("wasm") {
-            return Ok(path);
+            wasm_files.push(path);
         }
     }
 
-    Err(DomainError::PluginError(format!(
-        "no .wasm file found in {}",
-        dir.display()
-    )))
+    match wasm_files.len() {
+        0 => Err(DomainError::PluginError(format!(
+            "no .wasm file found in {}",
+            dir.display()
+        ))),
+        1 => Ok(wasm_files.into_iter().next().expect("checked len == 1")),
+        n => Err(DomainError::PluginError(format!(
+            "expected exactly one .wasm file in {}, found {n}",
+            dir.display()
+        ))),
+    }
 }
 
 #[cfg(test)]

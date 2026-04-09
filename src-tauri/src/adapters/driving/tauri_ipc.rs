@@ -149,10 +149,14 @@ pub async fn plugin_install(state: State<'_, AppState>, path: String) -> Result<
     let canonical = plugin_dir
         .canonicalize()
         .map_err(|e| format!("invalid plugin path: {e}"))?;
-    let allowed_parent = dirs::config_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join("vortex")
-        .join("plugins");
+    let config_dir =
+        dirs::config_dir().ok_or_else(|| "cannot determine system config directory".to_string())?;
+    let allowed_parent = config_dir.join("vortex").join("plugins");
+    std::fs::create_dir_all(&allowed_parent)
+        .map_err(|e| format!("cannot create plugins dir: {e}"))?;
+    let allowed_parent = allowed_parent
+        .canonicalize()
+        .map_err(|e| format!("cannot resolve plugins dir: {e}"))?;
     if !canonical.starts_with(&allowed_parent) {
         return Err(format!(
             "plugin path must be under {}",

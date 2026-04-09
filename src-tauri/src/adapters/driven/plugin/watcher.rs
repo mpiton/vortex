@@ -48,11 +48,11 @@ fn handle_fs_event(event: &notify::Event, loader: &ExtismPluginLoader) {
     match event.kind {
         EventKind::Create(_) | EventKind::Modify(_) => {
             for path in &event.paths {
-                if is_plugin_toml(path)
+                if (is_plugin_toml(path) || is_wasm_file(path))
                     && let Some(plugin_dir) = path.parent()
                 {
                     tracing::info!(
-                        "plugin.toml detected, attempting load from {}",
+                        "plugin file changed, attempting load from {}",
                         plugin_dir.display()
                     );
                     match parse_manifest(plugin_dir) {

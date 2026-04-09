@@ -227,6 +227,10 @@ mod tests {
         fn list_loaded(&self) -> Result<Vec<PluginInfo>, DomainError> {
             Ok(vec![])
         }
+
+        fn set_enabled(&self, _name: &str, _enabled: bool) -> Result<(), DomainError> {
+            Ok(())
+        }
     }
 
     struct MockConfigStore;

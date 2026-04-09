@@ -1,9 +1,6 @@
 //! Handlers for `EnablePluginCommand` and `DisablePluginCommand`.
 //!
-//! Validates that the named plugin is currently loaded, then returns Ok.
-//! Actual enable/disable state is managed by the PluginRegistry in the
-//! concrete adapter. A dedicated `PluginManager` port will be introduced
-//! in a future task to allow full state control through the command bus.
+//! Toggles the enabled state of a loaded plugin via `PluginLoader::set_enabled`.
 
 use crate::application::command_bus::CommandBus;
 use crate::application::error::AppError;
@@ -13,13 +10,7 @@ impl CommandBus {
         &self,
         cmd: super::EnablePluginCommand,
     ) -> Result<(), AppError> {
-        let plugins = self.plugin_loader().list_loaded()?;
-        if !plugins.iter().any(|p| p.name() == cmd.name) {
-            return Err(AppError::NotFound(format!(
-                "plugin '{}' not loaded",
-                cmd.name
-            )));
-        }
+        self.plugin_loader().set_enabled(&cmd.name, true)?;
         Ok(())
     }
 
@@ -27,13 +18,7 @@ impl CommandBus {
         &self,
         cmd: super::DisablePluginCommand,
     ) -> Result<(), AppError> {
-        let plugins = self.plugin_loader().list_loaded()?;
-        if !plugins.iter().any(|p| p.name() == cmd.name) {
-            return Err(AppError::NotFound(format!(
-                "plugin '{}' not loaded",
-                cmd.name
-            )));
-        }
+        self.plugin_loader().set_enabled(&cmd.name, false)?;
         Ok(())
     }
 }
@@ -177,6 +162,13 @@ mod tests {
         fn list_loaded(&self) -> Result<Vec<PluginInfo>, DomainError> {
             Ok(self.plugins.clone())
         }
+        fn set_enabled(&self, name: &str, _enabled: bool) -> Result<(), DomainError> {
+            if self.plugins.iter().any(|p| p.name() == name) {
+                Ok(())
+            } else {
+                Err(DomainError::NotFound(name.to_string()))
+            }
+        }
     }
 
     struct MockConfigStore;
@@ -248,7 +240,12 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(
-            matches!(err, crate::application::error::AppError::NotFound(_)),
+            matches!(
+                err,
+                crate::application::error::AppError::Domain(
+                    crate::domain::error::DomainError::NotFound(_)
+                )
+            ),
             "expected NotFound, got {err:?}"
         );
     }
@@ -272,7 +269,12 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(
-            matches!(err, crate::application::error::AppError::NotFound(_)),
+            matches!(
+                err,
+                crate::application::error::AppError::Domain(
+                    crate::domain::error::DomainError::NotFound(_)
+                )
+            ),
             "expected NotFound, got {err:?}"
         );
     }

@@ -437,6 +437,10 @@ impl PluginLoader for FakePluginLoader {
     fn list_loaded(&self) -> Result<Vec<PluginInfo>, DomainError> {
         Ok(self.plugins.lock().unwrap().values().cloned().collect())
     }
+
+    fn set_enabled(&self, _name: &str, _enabled: bool) -> Result<(), DomainError> {
+        Ok(())
+    }
 }
 
 // ── FakeDownloadEngine ──────────────────────────────────────────
