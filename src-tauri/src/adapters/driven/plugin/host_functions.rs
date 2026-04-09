@@ -1,7 +1,10 @@
 //! Host function implementations for WASM plugins.
 
 use std::collections::HashMap;
-use std::net::IpAddr;
+use std::io::Read;
+use std::net::{IpAddr, ToSocketAddrs};
+use std::process::Child;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
@@ -58,6 +61,15 @@ struct CredentialResponse {
     password: String,
 }
 
+struct CapturedOutput {
+    bytes: Vec<u8>,
+    truncated: bool,
+}
+
+const MAX_HTTP_BODY_BYTES: u64 = 100 * 1024 * 1024;
+const MAX_SUBPROCESS_OUTPUT_BYTES: usize = 1024 * 1024;
+const SUBPROCESS_POLL_INTERVAL: Duration = Duration::from_millis(25);
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 fn read_input_string(
@@ -85,16 +97,43 @@ fn validate_url_not_internal(url: &reqwest::Url) -> Result<(), extism::Error> {
                 "http_request: requests to localhost are forbidden"
             ));
         }
-        // Reject internal IPs
-        if let Ok(ip) = host.parse::<IpAddr>()
-            && (ip.is_loopback() || ip.is_unspecified() || is_private_ip(&ip) || is_link_local(&ip))
-        {
+
+        if let Ok(ip) = host.parse::<IpAddr>() {
+            if is_forbidden_ip(&ip) {
+                return Err(anyhow::anyhow!(
+                    "http_request: requests to internal networks are forbidden"
+                ));
+            }
+            return Ok(());
+        }
+
+        let port = url
+            .port_or_known_default()
+            .ok_or_else(|| anyhow::anyhow!("http_request: URL is missing a known port"))?;
+
+        let resolved_ips = (host, port)
+            .to_socket_addrs()
+            .map_err(|e| anyhow::anyhow!("http_request: failed to resolve host '{host}': {e}"))?
+            .map(|socket_addr| socket_addr.ip())
+            .collect::<Vec<_>>();
+
+        if resolved_ips.is_empty() {
+            return Err(anyhow::anyhow!(
+                "http_request: host '{host}' did not resolve to any addresses"
+            ));
+        }
+
+        if resolved_ips.iter().any(is_forbidden_ip) {
             return Err(anyhow::anyhow!(
                 "http_request: requests to internal networks are forbidden"
             ));
         }
     }
     Ok(())
+}
+
+fn is_forbidden_ip(ip: &IpAddr) -> bool {
+    ip.is_loopback() || ip.is_unspecified() || is_private_ip(ip) || is_link_local(ip)
 }
 
 fn is_private_ip(ip: &IpAddr) -> bool {
@@ -141,6 +180,118 @@ fn validate_binary_name(binary: &str) -> Result<(), extism::Error> {
         ));
     }
     Ok(())
+}
+
+fn read_http_body_capped(
+    response: &mut reqwest::blocking::Response,
+) -> Result<Vec<u8>, extism::Error> {
+    let mut limited_reader = response.take(MAX_HTTP_BODY_BYTES + 1);
+    let mut body_bytes = Vec::new();
+    limited_reader
+        .read_to_end(&mut body_bytes)
+        .map_err(|e| anyhow::anyhow!("http_request: failed to read body: {e}"))?;
+
+    if body_bytes.len() as u64 > MAX_HTTP_BODY_BYTES {
+        return Err(anyhow::anyhow!(
+            "http_request: response body exceeds 100 MB limit"
+        ));
+    }
+
+    Ok(body_bytes)
+}
+
+fn read_stream_capped<R: Read>(mut reader: R, max_bytes: usize) -> std::io::Result<CapturedOutput> {
+    let mut bytes = Vec::new();
+    let mut truncated = false;
+    let mut chunk = [0_u8; 8192];
+
+    loop {
+        let read = reader.read(&mut chunk)?;
+        if read == 0 {
+            break;
+        }
+
+        let remaining = max_bytes.saturating_sub(bytes.len());
+        let to_copy = remaining.min(read);
+        if to_copy > 0 {
+            bytes.extend_from_slice(&chunk[..to_copy]);
+        }
+        if to_copy < read || bytes.len() >= max_bytes {
+            truncated = true;
+        }
+    }
+
+    Ok(CapturedOutput { bytes, truncated })
+}
+
+fn spawn_output_reader<T>(
+    stream: Option<T>,
+) -> std::thread::JoinHandle<std::io::Result<CapturedOutput>>
+where
+    T: Read + Send + 'static,
+{
+    std::thread::spawn(move || match stream {
+        Some(stream) => read_stream_capped(stream, MAX_SUBPROCESS_OUTPUT_BYTES),
+        None => Ok(CapturedOutput {
+            bytes: Vec::new(),
+            truncated: false,
+        }),
+    })
+}
+
+fn decode_captured_output(output: CapturedOutput) -> String {
+    let mut text = String::from_utf8_lossy(&output.bytes).into_owned();
+    if output.truncated {
+        text.push_str("\n[truncated]");
+    }
+    text
+}
+
+fn collect_subprocess_output(
+    stdout_handle: std::thread::JoinHandle<std::io::Result<CapturedOutput>>,
+    stderr_handle: std::thread::JoinHandle<std::io::Result<CapturedOutput>>,
+) -> Result<(String, String), extism::Error> {
+    let stdout = stdout_handle
+        .join()
+        .map_err(|_| anyhow::anyhow!("run_subprocess: stdout reader thread panicked"))?
+        .map_err(|e| anyhow::anyhow!("run_subprocess: failed to read stdout: {e}"))?;
+    let stderr = stderr_handle
+        .join()
+        .map_err(|_| anyhow::anyhow!("run_subprocess: stderr reader thread panicked"))?
+        .map_err(|e| anyhow::anyhow!("run_subprocess: failed to read stderr: {e}"))?;
+
+    Ok((
+        decode_captured_output(stdout),
+        decode_captured_output(stderr),
+    ))
+}
+
+fn wait_for_child_with_timeout(
+    child: &mut Child,
+    timeout: Duration,
+) -> Result<(std::process::ExitStatus, bool), extism::Error> {
+    let started_at = Instant::now();
+
+    loop {
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|e| anyhow::anyhow!("run_subprocess: failed to poll child status: {e}"))?
+        {
+            return Ok((status, false));
+        }
+
+        if started_at.elapsed() >= timeout {
+            child.kill().map_err(|e| {
+                anyhow::anyhow!("run_subprocess: failed to kill timed out process: {e}")
+            })?;
+            let status = child.wait().map_err(|e| {
+                anyhow::anyhow!("run_subprocess: failed to reap timed out process: {e}")
+            })?;
+            return Ok((status, true));
+        }
+
+        std::thread::sleep(SUBPROCESS_POLL_INTERVAL);
+    }
 }
 
 // ── Host functions ────────────────────────────────────────────────────────────
@@ -214,14 +365,13 @@ pub fn make_http_request_function(
                 builder = builder.body(body);
             }
 
-            let response = builder
+            let mut response = builder
                 .send()
                 .map_err(|e| anyhow::anyhow!("http_request: request failed: {e}"))?;
 
             // F2: Check Content-Length before reading body into memory
-            const MAX_BODY: u64 = 100 * 1024 * 1024;
             if let Some(len) = response.content_length()
-                && len > MAX_BODY
+                && len > MAX_HTTP_BODY_BYTES
             {
                 return Err(anyhow::anyhow!(
                     "http_request: Content-Length {len} exceeds 100 MB limit"
@@ -235,14 +385,7 @@ pub fn make_http_request_function(
                 .map(|(k, v)| (k.as_str().to_string(), v.to_str().unwrap_or("").to_string()))
                 .collect();
 
-            let body_bytes = response
-                .bytes()
-                .map_err(|e| anyhow::anyhow!("http_request: failed to read body: {e}"))?;
-            if body_bytes.len() as u64 > MAX_BODY {
-                return Err(anyhow::anyhow!(
-                    "http_request: response body exceeds 100 MB limit"
-                ));
-            }
+            let body_bytes = read_http_body_capped(&mut response)?;
             let body = String::from_utf8_lossy(&body_bytes).into_owned();
 
             let http_resp = HttpResponse {
@@ -456,7 +599,7 @@ pub fn make_run_subprocess_function(
             let timeout = std::time::Duration::from_millis(req.timeout_ms.unwrap_or(60_000));
             let binary = req.binary.clone();
 
-            let child = std::process::Command::new(&req.binary)
+            let mut child = std::process::Command::new(&req.binary)
                 .args(&req.args)
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
@@ -465,29 +608,24 @@ pub fn make_run_subprocess_function(
                     anyhow::anyhow!("run_subprocess: failed to spawn '{}': {e}", req.binary)
                 })?;
 
-            // Run wait_with_output on a helper thread so we can enforce a timeout.
-            let (tx, rx) = std::sync::mpsc::channel();
-            std::thread::spawn(move || {
-                let _ = tx.send(child.wait_with_output());
-            });
+            let stdout_handle = spawn_output_reader(child.stdout.take());
+            let stderr_handle = spawn_output_reader(child.stderr.take());
 
-            let output = match rx.recv_timeout(timeout) {
-                Ok(result) => result.map_err(|e| {
-                    anyhow::anyhow!("run_subprocess: failed to collect output: {e}")
-                })?,
-                Err(_) => {
-                    return Err(anyhow::anyhow!(
-                        "run_subprocess: '{}' timed out after {}ms",
-                        binary,
-                        timeout.as_millis()
-                    ));
-                }
-            };
+            let (status, timed_out) = wait_for_child_with_timeout(&mut child, timeout)?;
+            let (stdout, stderr) = collect_subprocess_output(stdout_handle, stderr_handle)?;
+
+            if timed_out {
+                return Err(anyhow::anyhow!(
+                    "run_subprocess: '{}' timed out after {}ms",
+                    binary,
+                    timeout.as_millis()
+                ));
+            }
 
             let resp = SubprocessResponse {
-                exit_code: output.status.code().unwrap_or(-1),
-                stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+                exit_code: status.code().unwrap_or(-1),
+                stdout,
+                stderr,
             };
             let json = serde_json::to_string(&resp).map_err(|e| {
                 anyhow::anyhow!("run_subprocess: failed to serialize response: {e}")

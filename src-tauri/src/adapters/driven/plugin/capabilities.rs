@@ -19,6 +19,7 @@ impl SharedHostResources {
     /// Create shared resources with a 30-second HTTP timeout and no credential store.
     pub fn new() -> Self {
         let http_client = reqwest::blocking::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
             .timeout(std::time::Duration::from_secs(30))
             .build()
             .expect("failed to build reqwest blocking client");
