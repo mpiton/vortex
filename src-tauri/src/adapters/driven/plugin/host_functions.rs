@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::io::Read;
-use std::net::{IpAddr, ToSocketAddrs};
+use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::process::Child;
 use std::time::{Duration, Instant};
 
@@ -89,7 +89,7 @@ fn write_output_string(
 }
 
 /// Reject URLs targeting internal/loopback networks (SSRF protection).
-fn validate_url_not_internal(url: &reqwest::Url) -> Result<(), extism::Error> {
+fn validate_url_not_internal(url: &reqwest::Url) -> Result<Option<Vec<SocketAddr>>, extism::Error> {
     if let Some(host) = url.host_str() {
         // Reject localhost variants
         if host == "localhost" || host.ends_with(".localhost") {
@@ -104,36 +104,54 @@ fn validate_url_not_internal(url: &reqwest::Url) -> Result<(), extism::Error> {
                     "http_request: requests to internal networks are forbidden"
                 ));
             }
-            return Ok(());
+            return Ok(None);
         }
 
         let port = url
             .port_or_known_default()
             .ok_or_else(|| anyhow::anyhow!("http_request: URL is missing a known port"))?;
 
-        let resolved_ips = (host, port)
+        let resolved_addrs = (host, port)
             .to_socket_addrs()
             .map_err(|e| anyhow::anyhow!("http_request: failed to resolve host '{host}': {e}"))?
-            .map(|socket_addr| socket_addr.ip())
             .collect::<Vec<_>>();
 
-        if resolved_ips.is_empty() {
+        if resolved_addrs.is_empty() {
             return Err(anyhow::anyhow!(
                 "http_request: host '{host}' did not resolve to any addresses"
             ));
         }
 
-        if resolved_ips.iter().any(is_forbidden_ip) {
+        if resolved_addrs
+            .iter()
+            .any(|addr| is_forbidden_ip(&addr.ip()))
+        {
             return Err(anyhow::anyhow!(
                 "http_request: requests to internal networks are forbidden"
             ));
         }
+
+        return Ok(Some(resolved_addrs));
     }
-    Ok(())
+    Ok(None)
+}
+
+fn normalize_ip(ip: &IpAddr) -> IpAddr {
+    match ip {
+        IpAddr::V4(v4) => IpAddr::V4(*v4),
+        IpAddr::V6(v6) => v6
+            .to_ipv4_mapped()
+            .map(IpAddr::V4)
+            .unwrap_or(IpAddr::V6(*v6)),
+    }
 }
 
 fn is_forbidden_ip(ip: &IpAddr) -> bool {
-    ip.is_loopback() || ip.is_unspecified() || is_private_ip(ip) || is_link_local(ip)
+    let normalized = normalize_ip(ip);
+    normalized.is_loopback()
+        || normalized.is_unspecified()
+        || is_private_ip(&normalized)
+        || is_link_local(&normalized)
 }
 
 fn is_private_ip(ip: &IpAddr) -> bool {
@@ -145,6 +163,9 @@ fn is_private_ip(ip: &IpAddr) -> bool {
                 || (octets[0] == 192 && octets[1] == 168)
         }
         IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return is_private_ip(&IpAddr::V4(v4));
+            }
             let segments = v6.segments();
             // fc00::/7 (unique local)
             (segments[0] & 0xfe00) == 0xfc00
@@ -160,6 +181,9 @@ fn is_link_local(ip: &IpAddr) -> bool {
             octets[0] == 169 && octets[1] == 254
         }
         IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return is_link_local(&IpAddr::V4(v4));
+            }
             let segments = v6.segments();
             // fe80::/10
             (segments[0] & 0xffc0) == 0xfe80
@@ -216,8 +240,9 @@ fn read_stream_capped<R: Read>(mut reader: R, max_bytes: usize) -> std::io::Resu
         if to_copy > 0 {
             bytes.extend_from_slice(&chunk[..to_copy]);
         }
-        if to_copy < read || bytes.len() >= max_bytes {
+        if to_copy < read {
             truncated = true;
+            break;
         }
     }
 
@@ -346,15 +371,22 @@ pub fn make_http_request_function(
                 .map_err(|e| anyhow::anyhow!("http_request: invalid URL '{}': {e}", req.url))?;
 
             // F1: SSRF protection — reject internal/loopback destinations
-            validate_url_not_internal(&url)?;
+            let resolved_addrs = validate_url_not_internal(&url)?;
 
-            // F6: Minimize mutex scope — clone the client, then release the lock
+            // F6: Minimize mutex scope — prepare the client, then release the lock
             let client = {
                 let guard = ud.get()?;
                 let ctx = guard
                     .lock()
                     .map_err(|_| anyhow::anyhow!("http_request: mutex poisoned"))?;
-                ctx.shared.http_client().clone()
+                match (url.host_str(), resolved_addrs.as_deref()) {
+                    (Some(host), Some(addrs)) => {
+                        ctx.shared.http_client_for_host(host, addrs).map_err(|e| {
+                            anyhow::anyhow!("http_request: failed to build client: {e}")
+                        })?
+                    }
+                    _ => ctx.shared.http_client().clone(),
+                }
             }; // Mutex released here — HTTP call runs without holding the lock
 
             let mut builder = client.request(method, url);
@@ -612,8 +644,6 @@ pub fn make_run_subprocess_function(
             let stderr_handle = spawn_output_reader(child.stderr.take());
 
             let (status, timed_out) = wait_for_child_with_timeout(&mut child, timeout)?;
-            let (stdout, stderr) = collect_subprocess_output(stdout_handle, stderr_handle)?;
-
             if timed_out {
                 return Err(anyhow::anyhow!(
                     "run_subprocess: '{}' timed out after {}ms",
@@ -621,6 +651,8 @@ pub fn make_run_subprocess_function(
                     timeout.as_millis()
                 ));
             }
+
+            let (stdout, stderr) = collect_subprocess_output(stdout_handle, stderr_handle)?;
 
             let resp = SubprocessResponse {
                 exit_code: status.code().unwrap_or(-1),
@@ -725,5 +757,32 @@ mod tests {
             "subprocess:yt-dlp".to_string(),
         ];
         assert!(ctx_caps2.iter().any(|c| c == &cap_key));
+    }
+
+    #[test]
+    fn test_ipv4_mapped_ipv6_is_forbidden() {
+        let loopback = "::ffff:127.0.0.1".parse::<IpAddr>().unwrap();
+        let private = "::ffff:10.0.0.1".parse::<IpAddr>().unwrap();
+        let link_local = "::ffff:169.254.169.254".parse::<IpAddr>().unwrap();
+
+        assert!(is_forbidden_ip(&loopback));
+        assert!(is_forbidden_ip(&private));
+        assert!(is_forbidden_ip(&link_local));
+    }
+
+    #[test]
+    fn test_read_stream_capped_only_marks_truncated_when_extra_bytes_exist() {
+        let exact = vec![b'a'; MAX_SUBPROCESS_OUTPUT_BYTES];
+        let exact_output =
+            read_stream_capped(std::io::Cursor::new(exact), MAX_SUBPROCESS_OUTPUT_BYTES).unwrap();
+        assert!(!exact_output.truncated);
+        assert_eq!(exact_output.bytes.len(), MAX_SUBPROCESS_OUTPUT_BYTES);
+
+        let too_long = vec![b'a'; MAX_SUBPROCESS_OUTPUT_BYTES + 1];
+        let too_long_output =
+            read_stream_capped(std::io::Cursor::new(too_long), MAX_SUBPROCESS_OUTPUT_BYTES)
+                .unwrap();
+        assert!(too_long_output.truncated);
+        assert_eq!(too_long_output.bytes.len(), MAX_SUBPROCESS_OUTPUT_BYTES);
     }
 }

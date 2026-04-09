@@ -1,6 +1,8 @@
 //! Capability-based host function registration for WASM plugins.
 
+use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use dashmap::DashMap;
 
@@ -10,21 +12,28 @@ use crate::domain::ports::driven::CredentialStore;
 /// Shared resources across all plugins (singleton).
 pub struct SharedHostResources {
     pub(crate) http_client: reqwest::blocking::Client,
+    http_timeout: Duration,
     pub(crate) credential_store: Option<Arc<dyn CredentialStore>>,
     pub(crate) plugin_configs: DashMap<String, DashMap<String, String>>,
     pub(crate) plugin_states: DashMap<String, DashMap<String, String>>,
 }
 
 impl SharedHostResources {
+    fn http_client_builder(timeout: Duration) -> reqwest::blocking::ClientBuilder {
+        reqwest::blocking::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(timeout)
+    }
+
     /// Create shared resources with a 30-second HTTP timeout and no credential store.
     pub fn new() -> Self {
-        let http_client = reqwest::blocking::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .timeout(std::time::Duration::from_secs(30))
+        let http_timeout = Duration::from_secs(30);
+        let http_client = Self::http_client_builder(http_timeout)
             .build()
             .expect("failed to build reqwest blocking client");
         Self {
             http_client,
+            http_timeout,
             credential_store: None,
             plugin_configs: DashMap::new(),
             plugin_states: DashMap::new(),
@@ -39,6 +48,16 @@ impl SharedHostResources {
 
     pub fn http_client(&self) -> &reqwest::blocking::Client {
         &self.http_client
+    }
+
+    pub fn http_client_for_host(
+        &self,
+        host: &str,
+        addrs: &[SocketAddr],
+    ) -> Result<reqwest::blocking::Client, reqwest::Error> {
+        Self::http_client_builder(self.http_timeout)
+            .resolve_to_addrs(host, addrs)
+            .build()
     }
 
     pub fn credential_store(&self) -> Option<&Arc<dyn CredentialStore>> {
