@@ -5,8 +5,10 @@ pub enum PluginCategory {
     Crawler,
     Hoster,
     Debrid,
+    Container,
     Captcha,
     Extractor,
+    Notifier,
     Utility,
 }
 
@@ -16,8 +18,10 @@ impl fmt::Display for PluginCategory {
             PluginCategory::Crawler => "Crawler",
             PluginCategory::Hoster => "Hoster",
             PluginCategory::Debrid => "Debrid",
+            PluginCategory::Container => "Container",
             PluginCategory::Captcha => "Captcha",
             PluginCategory::Extractor => "Extractor",
+            PluginCategory::Notifier => "Notifier",
             PluginCategory::Utility => "Utility",
         };
         write!(f, "{name}")
@@ -190,8 +194,10 @@ mod tests {
         assert_eq!(PluginCategory::Crawler.to_string(), "Crawler");
         assert_eq!(PluginCategory::Hoster.to_string(), "Hoster");
         assert_eq!(PluginCategory::Debrid.to_string(), "Debrid");
+        assert_eq!(PluginCategory::Container.to_string(), "Container");
         assert_eq!(PluginCategory::Captcha.to_string(), "Captcha");
         assert_eq!(PluginCategory::Extractor.to_string(), "Extractor");
+        assert_eq!(PluginCategory::Notifier.to_string(), "Notifier");
         assert_eq!(PluginCategory::Utility.to_string(), "Utility");
     }
 }

@@ -4,6 +4,7 @@
 //! Handler implementations live in submodules and add methods to `CommandBus`.
 
 mod cancel_download;
+mod install_plugin;
 mod pause_all;
 mod pause_download;
 mod remove_download;
@@ -12,6 +13,8 @@ mod resume_download;
 mod retry_download;
 mod set_priority;
 mod start_download;
+mod toggle_plugin;
+mod uninstall_plugin;
 
 use std::path::PathBuf;
 
@@ -58,21 +61,33 @@ impl Command for PauseAllDownloadsCommand {}
 pub struct ResumeAllDownloadsCommand;
 impl Command for ResumeAllDownloadsCommand {}
 
-// Handler: task 13 (plugin infrastructure)
+/// Install a plugin from a pre-parsed manifest.
+///
+/// The driving adapter (IPC) is responsible for parsing the manifest from the
+/// source path before constructing this command.
 #[derive(Debug)]
-#[cfg_attr(not(test), allow(dead_code))]
 pub struct InstallPluginCommand {
-    pub url: String,
+    pub manifest: crate::domain::model::plugin::PluginManifest,
 }
 impl Command for InstallPluginCommand {}
 
-// Handler: task 13 (plugin infrastructure)
 #[derive(Debug)]
-#[cfg_attr(not(test), allow(dead_code))]
 pub struct UninstallPluginCommand {
     pub name: String,
 }
 impl Command for UninstallPluginCommand {}
+
+#[derive(Debug)]
+pub struct EnablePluginCommand {
+    pub name: String,
+}
+impl Command for EnablePluginCommand {}
+
+#[derive(Debug)]
+pub struct DisablePluginCommand {
+    pub name: String,
+}
+impl Command for DisablePluginCommand {}
 
 #[derive(Debug)]
 pub struct SetPriorityCommand {
@@ -90,7 +105,7 @@ impl Command for RemoveDownloadCommand {}
 
 // Handler: task 23 (settings)
 #[derive(Debug)]
-#[cfg_attr(not(test), allow(dead_code))]
+#[expect(dead_code)]
 pub struct UpdateConfigCommand {
     pub patch: ConfigPatch,
 }

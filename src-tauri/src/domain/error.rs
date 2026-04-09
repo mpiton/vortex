@@ -21,6 +21,7 @@ pub enum DomainError {
     StorageError(String),
     NetworkError(String),
     ValidationError(String),
+    PluginError(String),
 }
 
 impl std::fmt::Display for DomainError {
@@ -55,6 +56,9 @@ impl std::fmt::Display for DomainError {
             }
             DomainError::ValidationError(msg) => {
                 write!(f, "Validation error: {msg}")
+            }
+            DomainError::PluginError(msg) => {
+                write!(f, "Plugin error: {msg}")
             }
         }
     }

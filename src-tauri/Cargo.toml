@@ -28,6 +28,11 @@ tokio-util = { version = "0.7.18", features = ["rt"] }
 futures-util = "0.3.32"
 bytes = "1.11.1"
 bincode = "2"
+extism = "1.21.0"
+notify = "8.2.0"
+toml = "1.1.2"
+dashmap = "6.1.0"
+dirs = "6.0.0"
 
 [dev-dependencies]
 tempfile = "3.27.0"

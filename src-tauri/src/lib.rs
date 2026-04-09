@@ -24,10 +24,12 @@ pub use application::read_models::{
 };
 pub use application::services::QueueManager;
 
+pub use adapters::driven::plugin::{ExtismPluginLoader, PluginRegistry, PluginWatcher};
 pub use adapters::driving::tauri_ipc::{
     self, AppState, download_cancel, download_count_by_state, download_detail, download_list,
     download_pause, download_pause_all, download_remove, download_resume, download_resume_all,
-    download_retry, download_set_priority, download_start,
+    download_retry, download_set_priority, download_start, plugin_disable, plugin_enable,
+    plugin_install, plugin_list, plugin_uninstall,
 };
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -52,6 +54,11 @@ pub fn run() {
             download_list,
             download_detail,
             download_count_by_state,
+            plugin_install,
+            plugin_uninstall,
+            plugin_enable,
+            plugin_disable,
+            plugin_list,
         ])
         .run(tauri::generate_context!())
         // Tauri's run() has no meaningful recovery path — panic is intentional here
