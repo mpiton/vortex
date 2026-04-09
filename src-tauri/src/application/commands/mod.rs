@@ -1,8 +1,17 @@
-//! CQRS command types.
+//! CQRS command types and handlers.
 //!
 //! Each command represents an intent to mutate application state.
-//! Handlers will be implemented in later tasks.
-#![allow(dead_code)] // All commands consumed by handlers (tasks 11-12)
+//! Handler implementations live in submodules and add methods to `CommandBus`.
+
+mod cancel_download;
+mod pause_all;
+mod pause_download;
+mod remove_download;
+mod resume_all;
+mod resume_download;
+mod retry_download;
+mod set_priority;
+mod start_download;
 
 use std::path::PathBuf;
 
@@ -49,19 +58,39 @@ impl Command for PauseAllDownloadsCommand {}
 pub struct ResumeAllDownloadsCommand;
 impl Command for ResumeAllDownloadsCommand {}
 
+// Handler: task 13 (plugin infrastructure)
 #[derive(Debug)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub struct InstallPluginCommand {
     pub url: String,
 }
 impl Command for InstallPluginCommand {}
 
+// Handler: task 13 (plugin infrastructure)
 #[derive(Debug)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub struct UninstallPluginCommand {
     pub name: String,
 }
 impl Command for UninstallPluginCommand {}
 
 #[derive(Debug)]
+pub struct SetPriorityCommand {
+    pub id: DownloadId,
+    pub priority: u8,
+}
+impl Command for SetPriorityCommand {}
+
+#[derive(Debug)]
+pub struct RemoveDownloadCommand {
+    pub id: DownloadId,
+    pub delete_files: bool,
+}
+impl Command for RemoveDownloadCommand {}
+
+// Handler: task 23 (settings)
+#[derive(Debug)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub struct UpdateConfigCommand {
     pub patch: ConfigPatch,
 }

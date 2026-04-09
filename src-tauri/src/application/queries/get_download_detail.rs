@@ -1,0 +1,162 @@
+use crate::application::error::AppError;
+use crate::application::query_bus::QueryBus;
+use crate::domain::model::views::DownloadDetailView;
+
+impl QueryBus {
+    pub async fn handle_get_download_detail(
+        &self,
+        query: super::GetDownloadDetailQuery,
+    ) -> Result<DownloadDetailView, AppError> {
+        self.download_read_repo()
+            .find_download_detail(query.id)?
+            .ok_or_else(|| AppError::NotFound(format!("Download {} not found", query.id.0)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    use crate::application::queries::GetDownloadDetailQuery;
+    use crate::application::query_bus::QueryBus;
+    use crate::domain::error::DomainError;
+    use crate::domain::model::download::{DownloadId, DownloadState};
+    use crate::domain::model::plugin::PluginInfo;
+    use crate::domain::model::views::{
+        DownloadDetailView, DownloadFilter, DownloadView, HistoryEntry, SortOrder, StateCountMap,
+        StatsView,
+    };
+    use crate::domain::ports::driven::{
+        DownloadReadRepository, HistoryRepository, PluginReadRepository, StatsRepository,
+    };
+
+    struct MockDownloadReadRepo {
+        detail: Option<DownloadDetailView>,
+    }
+
+    impl DownloadReadRepository for MockDownloadReadRepo {
+        fn find_downloads(
+            &self,
+            _filter: Option<DownloadFilter>,
+            _sort: Option<SortOrder>,
+            _limit: Option<usize>,
+            _offset: Option<usize>,
+        ) -> Result<Vec<DownloadView>, DomainError> {
+            Ok(vec![])
+        }
+
+        fn find_download_detail(
+            &self,
+            _id: DownloadId,
+        ) -> Result<Option<DownloadDetailView>, DomainError> {
+            Ok(self.detail.clone())
+        }
+
+        fn count_by_state(&self) -> Result<StateCountMap, DomainError> {
+            Ok(HashMap::new())
+        }
+    }
+
+    struct MockHistoryRepo;
+    impl HistoryRepository for MockHistoryRepo {
+        fn record(&self, _entry: &HistoryEntry) -> Result<(), DomainError> {
+            Ok(())
+        }
+        fn find_recent(&self, _limit: usize) -> Result<Vec<HistoryEntry>, DomainError> {
+            Ok(vec![])
+        }
+        fn find_by_download(&self, _id: DownloadId) -> Result<Vec<HistoryEntry>, DomainError> {
+            Ok(vec![])
+        }
+        fn delete_older_than(&self, _before: u64) -> Result<u64, DomainError> {
+            Ok(0)
+        }
+    }
+
+    struct MockStatsRepo;
+    impl StatsRepository for MockStatsRepo {
+        fn record_completed(&self, _bytes: u64, _avg_speed: u64) -> Result<(), DomainError> {
+            Ok(())
+        }
+        fn get_stats(&self) -> Result<StatsView, DomainError> {
+            Ok(StatsView {
+                total_downloaded_bytes: 0,
+                total_files: 0,
+                avg_speed: 0,
+                peak_speed: 0,
+                success_rate: 0.0,
+                daily_volumes: vec![],
+                top_hosts: vec![],
+            })
+        }
+    }
+
+    struct MockPluginReadRepo;
+    impl PluginReadRepository for MockPluginReadRepo {
+        fn list_loaded(&self) -> Result<Vec<PluginInfo>, DomainError> {
+            Ok(vec![])
+        }
+    }
+
+    fn make_detail() -> DownloadDetailView {
+        DownloadDetailView {
+            id: DownloadId(42),
+            file_name: "test.zip".to_string(),
+            url: "http://example.com/test.zip".to_string(),
+            state: DownloadState::Downloading,
+            progress_percent: 50.0,
+            speed_bytes_per_sec: 1024,
+            downloaded_bytes: 512,
+            total_bytes: Some(1024),
+            eta_seconds: Some(10),
+            segments: vec![],
+            checksum_expected: None,
+            destination_path: "/tmp/test.zip".to_string(),
+            module_name: None,
+            account_name: None,
+            resume_supported: true,
+            retry_count: 0,
+            max_retries: 5,
+            created_at: 0,
+            updated_at: 0,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_get_download_detail_returns_detail() {
+        let bus = QueryBus::new(
+            Arc::new(MockDownloadReadRepo {
+                detail: Some(make_detail()),
+            }),
+            Arc::new(MockHistoryRepo),
+            Arc::new(MockStatsRepo),
+            Arc::new(MockPluginReadRepo),
+        );
+        let result = bus
+            .handle_get_download_detail(GetDownloadDetailQuery { id: DownloadId(42) })
+            .await
+            .unwrap();
+        assert_eq!(result.id, DownloadId(42));
+        assert_eq!(result.file_name, "test.zip");
+    }
+
+    #[tokio::test]
+    async fn test_get_download_detail_not_found() {
+        let bus = QueryBus::new(
+            Arc::new(MockDownloadReadRepo { detail: None }),
+            Arc::new(MockHistoryRepo),
+            Arc::new(MockStatsRepo),
+            Arc::new(MockPluginReadRepo),
+        );
+        let result = bus
+            .handle_get_download_detail(GetDownloadDetailQuery {
+                id: DownloadId(999),
+            })
+            .await;
+        assert!(matches!(
+            result,
+            Err(crate::application::error::AppError::NotFound(_))
+        ));
+    }
+}

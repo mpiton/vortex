@@ -169,8 +169,12 @@ impl QueueManager {
         match download.retry() {
             Ok(event) => {
                 self.download_repo.save(&download)?;
-                self.event_bus.publish(event);
+                // Register the retry cancellation token BEFORE publishing the
+                // event, so that on_slot_freed (triggered by DownloadRetrying
+                // in the event loop) sees the pending token and skips this
+                // download — preserving the exponential backoff.
                 self.schedule_retry(id, download.retry_count());
+                self.event_bus.publish(event);
                 // Slot was freed by safe_decrement above — try filling it
                 self.on_slot_freed().await?;
                 Ok(())
@@ -232,6 +236,9 @@ impl QueueManager {
                     | DomainEvent::DownloadPaused { .. }
                     | DomainEvent::DownloadFailed { .. }
                     | DomainEvent::DownloadCancelled { .. }
+                    | DomainEvent::DownloadCreated { .. }
+                    | DomainEvent::DownloadResumed { .. }
+                    | DomainEvent::DownloadRetrying { .. }
             );
             if dominated && tx.try_send(event.clone()).is_err() {
                 tracing::error!("QueueManager event channel full, dropping lifecycle event");
@@ -246,6 +253,20 @@ impl QueueManager {
                     | DomainEvent::DownloadCancelled { .. } => self.decrement_and_schedule().await,
                     DomainEvent::DownloadFailed { id, .. } => {
                         self.handle_download_failed(*id).await
+                    }
+                    DomainEvent::DownloadCreated { .. } | DomainEvent::DownloadRetrying { .. } => {
+                        self.on_slot_freed().await
+                    }
+                    DomainEvent::DownloadResumed { .. } => {
+                        // Re-occupy the slot freed on pause. Only the command
+                        // handler emits DownloadResumed (the engine does not),
+                        // so this increments exactly once per resume. Manual
+                        // resumes may temporarily exceed max_concurrent — that
+                        // is intentional: the user explicitly asked to resume.
+                        // Automatic scheduling (on_slot_freed) still respects
+                        // the limit.
+                        self.active_count.fetch_add(1, Ordering::SeqCst);
+                        Ok(())
                     }
                     _ => Ok(()),
                 };
