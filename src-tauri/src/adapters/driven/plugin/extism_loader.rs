@@ -7,19 +7,22 @@ use crate::domain::error::DomainError;
 use crate::domain::model::plugin::{PluginInfo, PluginManifest};
 use crate::domain::ports::driven::PluginLoader;
 
+use super::capabilities::{SharedHostResources, build_host_functions};
 use super::manifest::find_wasm_file;
 use super::registry::{LoadedPlugin, PluginRegistry};
 
 pub struct ExtismPluginLoader {
     registry: Arc<PluginRegistry>,
     plugins_dir: PathBuf,
+    shared_resources: Arc<SharedHostResources>,
 }
 
 impl ExtismPluginLoader {
-    pub fn new(plugins_dir: PathBuf) -> Self {
+    pub fn new(plugins_dir: PathBuf, shared_resources: Arc<SharedHostResources>) -> Self {
         Self {
             registry: Arc::new(PluginRegistry::new()),
             plugins_dir,
+            shared_resources,
         }
     }
 
@@ -63,7 +66,8 @@ impl PluginLoader for ExtismPluginLoader {
         })?;
 
         let extism_manifest = extism::Manifest::new([extism::Wasm::data(wasm_bytes)]);
-        let plugin = extism::Plugin::new(&extism_manifest, [], true)
+        let host_functions = build_host_functions(manifest, &self.shared_resources);
+        let plugin = extism::Plugin::new(&extism_manifest, host_functions, true)
             .map_err(|e| DomainError::PluginError(format!("failed to load plugin: {e}")))?;
 
         let loaded = LoadedPlugin {
@@ -160,7 +164,10 @@ description = "Test plugin"
     #[test]
     fn test_load_nonexistent_wasm() {
         let tmp = TempDir::new().unwrap();
-        let loader = ExtismPluginLoader::new(tmp.path().to_path_buf());
+        let loader = ExtismPluginLoader::new(
+            tmp.path().to_path_buf(),
+            Arc::new(SharedHostResources::new()),
+        );
         let manifest = make_manifest("ghost-plugin");
 
         // Plugin dir doesn't exist — should fail
@@ -172,7 +179,10 @@ description = "Test plugin"
     #[test]
     fn test_unload_not_found() {
         let tmp = TempDir::new().unwrap();
-        let loader = ExtismPluginLoader::new(tmp.path().to_path_buf());
+        let loader = ExtismPluginLoader::new(
+            tmp.path().to_path_buf(),
+            Arc::new(SharedHostResources::new()),
+        );
 
         let result = loader.unload("nonexistent");
         assert!(result.is_err());
@@ -182,7 +192,10 @@ description = "Test plugin"
     #[test]
     fn test_resolve_url_no_plugins_returns_none() {
         let tmp = TempDir::new().unwrap();
-        let loader = ExtismPluginLoader::new(tmp.path().to_path_buf());
+        let loader = ExtismPluginLoader::new(
+            tmp.path().to_path_buf(),
+            Arc::new(SharedHostResources::new()),
+        );
 
         let result = loader.resolve_url("https://example.com/file.zip");
         assert!(result.is_ok());
@@ -192,7 +205,10 @@ description = "Test plugin"
     #[test]
     fn test_list_loaded_empty() {
         let tmp = TempDir::new().unwrap();
-        let loader = ExtismPluginLoader::new(tmp.path().to_path_buf());
+        let loader = ExtismPluginLoader::new(
+            tmp.path().to_path_buf(),
+            Arc::new(SharedHostResources::new()),
+        );
 
         let result = loader.list_loaded();
         assert!(result.is_ok());
@@ -203,7 +219,10 @@ description = "Test plugin"
     fn test_load_already_loaded_returns_error() {
         let tmp = TempDir::new().unwrap();
         setup_plugin_dir(tmp.path(), "dup-plugin");
-        let loader = ExtismPluginLoader::new(tmp.path().to_path_buf());
+        let loader = ExtismPluginLoader::new(
+            tmp.path().to_path_buf(),
+            Arc::new(SharedHostResources::new()),
+        );
         let manifest = make_manifest("dup-plugin");
 
         loader.load(&manifest).unwrap();
@@ -216,7 +235,10 @@ description = "Test plugin"
     fn test_unload_after_load() {
         let tmp = TempDir::new().unwrap();
         setup_plugin_dir(tmp.path(), "removable-plugin");
-        let loader = ExtismPluginLoader::new(tmp.path().to_path_buf());
+        let loader = ExtismPluginLoader::new(
+            tmp.path().to_path_buf(),
+            Arc::new(SharedHostResources::new()),
+        );
         let manifest = make_manifest("removable-plugin");
 
         loader.load(&manifest).unwrap();

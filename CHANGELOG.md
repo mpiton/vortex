@@ -75,3 +75,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - WASM file size limit (100 MB) to prevent OOM
   - Atomic insert via DashMap entry API to prevent TOCTOU races
   - `Container` and `Notifier` plugin categories added to domain model
+  - Plugin host functions: http_request, log, get_config/set_config, get_state/set_state, get_credential, run_subprocess
+  - Capability-based security for plugin host function access

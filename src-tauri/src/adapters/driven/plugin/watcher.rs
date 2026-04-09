@@ -114,7 +114,11 @@ mod tests {
     use tempfile::TempDir;
 
     fn make_loader(plugins_dir: &std::path::Path) -> Arc<ExtismPluginLoader> {
-        Arc::new(ExtismPluginLoader::new(plugins_dir.to_path_buf()))
+        use crate::adapters::driven::plugin::capabilities::SharedHostResources;
+        Arc::new(ExtismPluginLoader::new(
+            plugins_dir.to_path_buf(),
+            Arc::new(SharedHostResources::new()),
+        ))
     }
 
     fn setup_plugin_dir(plugins_dir: &std::path::Path, name: &str) {
