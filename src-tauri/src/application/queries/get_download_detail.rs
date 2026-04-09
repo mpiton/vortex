@@ -154,6 +154,9 @@ mod tests {
                 id: DownloadId(999),
             })
             .await;
-        assert!(result.is_err());
+        assert!(matches!(
+            result,
+            Err(crate::application::error::AppError::NotFound(_))
+        ));
     }
 }

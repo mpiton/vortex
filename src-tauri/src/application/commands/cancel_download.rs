@@ -31,9 +31,13 @@ impl CommandBus {
         // Remove from persistence
         self.download_repo().delete(cmd.id)?;
 
-        // Emit event (QueueManager decrements slot if was active)
-        self.event_bus()
-            .publish(DomainEvent::DownloadCancelled { id: cmd.id });
+        // Only emit DownloadCancelled for active downloads.
+        // QueueManager's decrement_and_schedule reacts to this event;
+        // emitting it for non-active downloads would underflow active_count.
+        if is_active {
+            self.event_bus()
+                .publish(DomainEvent::DownloadCancelled { id: cmd.id });
+        }
 
         Ok(())
     }
@@ -362,5 +366,7 @@ mod tests {
         assert!(engine.cancelled.lock().unwrap().is_empty());
         // Download still removed
         assert!(repo.find_by_id(DownloadId(2)).unwrap().is_none());
+        // No DownloadCancelled event for non-active downloads
+        assert!(events.events.lock().unwrap().is_empty());
     }
 }

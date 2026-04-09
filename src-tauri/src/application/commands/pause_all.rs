@@ -14,8 +14,14 @@ impl CommandBus {
         let mut count = 0u32;
         for mut dl in downloads {
             if let Ok(event) = dl.pause() {
-                self.download_repo().save(&dl)?;
-                let _ = self.download_engine().pause(dl.id());
+                if self.download_engine().pause(dl.id()).is_err() {
+                    tracing::warn!("Failed to pause engine for download {:?}", dl.id());
+                    continue;
+                }
+                if let Err(e) = self.download_repo().save(&dl) {
+                    tracing::warn!("Failed to persist pause for download {:?}: {e}", dl.id());
+                    continue;
+                }
                 self.event_bus().publish(event);
                 count += 1;
             }

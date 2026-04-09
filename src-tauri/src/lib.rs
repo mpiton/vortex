@@ -33,6 +33,25 @@ pub use adapters::driving::tauri_ipc::{
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .setup(|app| {
+            // AppState wiring: construct all driven-port adapters and inject
+            // into CommandBus / QueryBus. Full implementation deferred to
+            // task 16 (frontend layout) when the frontend connects.
+            //
+            // Required adapters:
+            //   let db = connection::connect(&app_data_dir).await?;
+            //   let event_bus = Arc::new(TokioEventBus::new(1024));
+            //   let http_client = Arc::new(ReqwestHttpClient::new());
+            //   let file_storage = Arc::new(FsFileStorage::new());
+            //   let engine = Arc::new(SegmentedDownloadEngine::new(...));
+            //   let download_repo = Arc::new(SqliteDownloadRepo::new(db));
+            //   ... (plugin_loader, config_store, credential_store, clipboard)
+            //   let command_bus = Arc::new(CommandBus::new(...));
+            //   let query_bus = Arc::new(QueryBus::new(...));
+            //   app.manage(AppState { command_bus, query_bus });
+            let _ = app;
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             download_start,
             download_pause,

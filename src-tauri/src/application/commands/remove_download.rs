@@ -25,12 +25,21 @@ impl CommandBus {
         }
 
         if cmd.delete_files {
+            // Remove the downloaded content file
+            let dest = Path::new(download.destination_path());
+            if dest.exists() {
+                let _ = std::fs::remove_file(dest);
+            }
+            // Remove the .vortex-meta sidecar
             let meta_path = format!("{}.vortex-meta", download.destination_path());
             let _ = self.file_storage().delete_meta(Path::new(&meta_path));
         }
 
         self.download_repo().delete(cmd.id)?;
 
+        // Only emit DownloadCancelled for active downloads.
+        // QueueManager's decrement_and_schedule reacts to this event;
+        // emitting for non-active downloads would underflow active_count.
         if is_active {
             self.event_bus()
                 .publish(DomainEvent::DownloadCancelled { id: cmd.id });

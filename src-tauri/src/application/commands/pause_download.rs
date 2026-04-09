@@ -18,8 +18,8 @@ impl CommandBus {
             .ok_or_else(|| AppError::NotFound(format!("Download {} not found", cmd.id.0)))?;
 
         let event = download.pause()?;
-        self.download_repo().save(&download)?;
         self.download_engine().pause(cmd.id)?;
+        self.download_repo().save(&download)?;
         self.event_bus().publish(event);
 
         Ok(())

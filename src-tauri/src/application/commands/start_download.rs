@@ -5,12 +5,15 @@
 //! `DownloadCreated` so the queue manager can schedule it.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::application::command_bus::CommandBus;
 use crate::application::error::AppError;
 use crate::domain::event::DomainEvent;
-use crate::domain::model::download::{Download, DownloadId, FileSize, Url};
+use crate::domain::model::download::{Download, DownloadId, Url};
 use crate::domain::model::http::HttpResponse;
+
+static NEXT_DOWNLOAD_ID: AtomicU64 = AtomicU64::new(1);
 
 impl CommandBus {
     pub async fn handle_start_download(
@@ -19,15 +22,11 @@ impl CommandBus {
     ) -> Result<DownloadId, AppError> {
         let url = Url::new(&cmd.url)?;
 
-        let (file_name, _file_size, _resume_supported) = match self.http_client().head(url.as_str())
-        {
-            Ok(resp) => {
-                let name = extract_filename(&resp, &url);
-                let size = resp.content_length().map(FileSize);
-                let resume = resp.header("accept-ranges") == Some("bytes");
-                (name, size, resume)
-            }
-            Err(_) => (filename_from_url(&url), None, false),
+        // file_size and resume_supported are discovered by the engine at download time.
+        // The HEAD probe here is used only for filename resolution.
+        let file_name = match self.http_client().head(url.as_str()) {
+            Ok(resp) => extract_filename(&resp, &url),
+            Err(_) => filename_from_url(&url),
         };
 
         let dest = cmd
@@ -35,12 +34,7 @@ impl CommandBus {
             .unwrap_or_else(|| PathBuf::from("."))
             .join(&file_name);
 
-        let id = DownloadId(
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as u64,
-        );
+        let id = DownloadId(NEXT_DOWNLOAD_ID.fetch_add(1, Ordering::Relaxed));
 
         let download = Download::new(id, url, file_name, dest.to_string_lossy().to_string());
 
