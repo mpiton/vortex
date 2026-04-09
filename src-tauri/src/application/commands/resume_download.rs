@@ -99,12 +99,14 @@ mod tests {
 
     struct MockDownloadEngine {
         resumed: Mutex<Vec<DownloadId>>,
+        paused: Mutex<Vec<DownloadId>>,
     }
 
     impl MockDownloadEngine {
         fn new() -> Self {
             Self {
                 resumed: Mutex::new(Vec::new()),
+                paused: Mutex::new(Vec::new()),
             }
         }
     }
@@ -113,7 +115,8 @@ mod tests {
         fn start(&self, _download: &Download) -> Result<(), DomainError> {
             Ok(())
         }
-        fn pause(&self, _id: DownloadId) -> Result<(), DomainError> {
+        fn pause(&self, id: DownloadId) -> Result<(), DomainError> {
+            self.paused.lock().unwrap().push(id);
             Ok(())
         }
         fn resume(&self, id: DownloadId) -> Result<(), DomainError> {
@@ -414,6 +417,9 @@ mod tests {
 
         // Engine was resumed then rolled back (pause called)
         assert_eq!(engine.resumed.lock().unwrap().len(), 1);
+        let paused = engine.paused.lock().unwrap();
+        assert_eq!(paused.len(), 1, "rollback must call engine.pause()");
+        assert_eq!(paused[0], DownloadId(1));
 
         // No event emitted (rollback path)
         assert!(event_bus.events.lock().unwrap().is_empty());
