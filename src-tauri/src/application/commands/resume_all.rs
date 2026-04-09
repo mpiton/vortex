@@ -318,6 +318,53 @@ mod tests {
         assert_eq!(emitted.len(), 2);
     }
 
+    struct FailingEngine;
+    impl DownloadEngine for FailingEngine {
+        fn start(&self, _d: &Download) -> Result<(), DomainError> {
+            Ok(())
+        }
+        fn pause(&self, _id: DownloadId) -> Result<(), DomainError> {
+            Ok(())
+        }
+        fn resume(&self, _id: DownloadId) -> Result<(), DomainError> {
+            Err(DomainError::NetworkError("engine down".into()))
+        }
+        fn cancel(&self, _id: DownloadId) -> Result<(), DomainError> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn test_resume_all_engine_failure_skips_download() {
+        let repo = Arc::new(MockDownloadRepo::new());
+        let events = Arc::new(MockEventBus::new());
+
+        repo.save(&make_paused(1)).unwrap();
+        repo.save(&make_paused(2)).unwrap();
+
+        let bus = CommandBus::new(
+            repo.clone(),
+            Arc::new(FailingEngine),
+            events.clone(),
+            Arc::new(MockFileStorage),
+            Arc::new(MockHttpClient),
+            Arc::new(MockPluginLoader),
+            Arc::new(MockConfigStore),
+            Arc::new(MockCredentialStore),
+            Arc::new(MockClipboardObserver),
+        );
+
+        let count = bus
+            .handle_resume_all(super::super::ResumeAllDownloadsCommand)
+            .await
+            .unwrap();
+
+        // No downloads resumed (engine always fails)
+        assert_eq!(count, 0);
+        // No events emitted
+        assert!(events.events.lock().unwrap().is_empty());
+    }
+
     #[tokio::test]
     async fn test_resume_all_empty_returns_zero() {
         let repo = Arc::new(MockDownloadRepo::new());

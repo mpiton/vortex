@@ -316,6 +316,109 @@ mod tests {
         assert!(result.is_err());
     }
 
+    struct FailingEngine;
+    impl DownloadEngine for FailingEngine {
+        fn start(&self, _d: &Download) -> Result<(), DomainError> {
+            Ok(())
+        }
+        fn pause(&self, _id: DownloadId) -> Result<(), DomainError> {
+            Ok(())
+        }
+        fn resume(&self, _id: DownloadId) -> Result<(), DomainError> {
+            Err(DomainError::NetworkError("engine down".into()))
+        }
+        fn cancel(&self, _id: DownloadId) -> Result<(), DomainError> {
+            Ok(())
+        }
+    }
+
+    struct FailingSaveRepo {
+        store: Mutex<HashMap<u64, Download>>,
+    }
+    impl FailingSaveRepo {
+        fn with_download(dl: Download) -> Self {
+            let mut map = HashMap::new();
+            map.insert(dl.id().0, dl);
+            Self {
+                store: Mutex::new(map),
+            }
+        }
+    }
+    impl DownloadRepository for FailingSaveRepo {
+        fn find_by_id(&self, id: DownloadId) -> Result<Option<Download>, DomainError> {
+            Ok(self.store.lock().unwrap().get(&id.0).cloned())
+        }
+        fn save(&self, _d: &Download) -> Result<(), DomainError> {
+            Err(DomainError::StorageError("disk full".into()))
+        }
+        fn delete(&self, _id: DownloadId) -> Result<(), DomainError> {
+            Ok(())
+        }
+        fn find_by_state(&self, _s: DownloadState) -> Result<Vec<Download>, DomainError> {
+            Ok(vec![])
+        }
+    }
+
+    #[tokio::test]
+    async fn test_resume_engine_failure_returns_error_no_event() {
+        let dl = make_paused_download(1);
+        let repo = Arc::new(MockDownloadRepo::with_download(dl));
+        let event_bus = Arc::new(MockEventBus::new());
+        let bus = CommandBus::new(
+            repo.clone(),
+            Arc::new(FailingEngine),
+            event_bus.clone(),
+            Arc::new(MockFileStorage),
+            Arc::new(MockHttpClient),
+            Arc::new(MockPluginLoader),
+            Arc::new(MockConfigStore),
+            Arc::new(MockCredentialStore),
+            Arc::new(MockClipboardObserver),
+        );
+
+        let result = bus
+            .handle_resume_download(ResumeDownloadCommand { id: DownloadId(1) })
+            .await;
+        assert!(result.is_err());
+
+        // State unchanged in repo (still Paused)
+        let saved = repo.store.lock().unwrap().get(&1).cloned().unwrap();
+        assert_eq!(saved.state(), DownloadState::Paused);
+
+        // No event emitted
+        assert!(event_bus.events.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_resume_save_failure_triggers_rollback() {
+        let dl = make_paused_download(1);
+        let repo = Arc::new(FailingSaveRepo::with_download(dl));
+        let engine = Arc::new(MockDownloadEngine::new());
+        let event_bus = Arc::new(MockEventBus::new());
+        let bus = CommandBus::new(
+            repo,
+            engine.clone(),
+            event_bus.clone(),
+            Arc::new(MockFileStorage),
+            Arc::new(MockHttpClient),
+            Arc::new(MockPluginLoader),
+            Arc::new(MockConfigStore),
+            Arc::new(MockCredentialStore),
+            Arc::new(MockClipboardObserver),
+        );
+
+        let result = bus
+            .handle_resume_download(ResumeDownloadCommand { id: DownloadId(1) })
+            .await;
+        assert!(result.is_err());
+
+        // Engine was resumed then rolled back (pause called)
+        assert_eq!(engine.resumed.lock().unwrap().len(), 1);
+
+        // No event emitted (rollback path)
+        assert!(event_bus.events.lock().unwrap().is_empty());
+    }
+
     #[tokio::test]
     async fn test_resume_download_not_found() {
         let repo = Arc::new(MockDownloadRepo::new());
