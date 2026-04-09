@@ -1,4 +1,6 @@
+pub mod capabilities;
 pub mod extism_loader;
+pub mod host_functions;
 pub mod manifest;
 pub mod registry;
 pub mod watcher;
