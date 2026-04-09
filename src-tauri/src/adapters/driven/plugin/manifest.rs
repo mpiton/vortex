@@ -198,9 +198,11 @@ subprocess = ["ffmpeg"]
     #[test]
     fn test_parse_manifest_missing_field() {
         let tmp = TempDir::new().unwrap();
+        let plugin_dir = tmp.path().join("bad-plugin");
+        std::fs::create_dir_all(&plugin_dir).unwrap();
         // Missing `version` field
         write_plugin_toml(
-            tmp.path(),
+            &plugin_dir,
             r#"
 [plugin]
 name = "bad-plugin"
@@ -209,9 +211,9 @@ author = "Alice"
 description = "Missing version"
 "#,
         );
-        write_dummy_wasm(tmp.path(), "bad-plugin.wasm");
+        write_dummy_wasm(&plugin_dir, "bad-plugin.wasm");
 
-        let result = parse_manifest(tmp.path());
+        let result = parse_manifest(&plugin_dir);
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), DomainError::PluginError(_)));
     }
@@ -219,8 +221,10 @@ description = "Missing version"
     #[test]
     fn test_parse_manifest_unknown_category() {
         let tmp = TempDir::new().unwrap();
+        let plugin_dir = tmp.path().join("weird");
+        std::fs::create_dir_all(&plugin_dir).unwrap();
         write_plugin_toml(
-            tmp.path(),
+            &plugin_dir,
             r#"
 [plugin]
 name = "weird"
@@ -230,18 +234,24 @@ author = "Bob"
 description = "Unknown category"
 "#,
         );
-        write_dummy_wasm(tmp.path(), "weird.wasm");
+        write_dummy_wasm(&plugin_dir, "weird.wasm");
 
-        let result = parse_manifest(tmp.path());
+        let result = parse_manifest(&plugin_dir);
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), DomainError::PluginError(_)));
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("spaceship"),
+            "expected category error, got: {err_msg}"
+        );
     }
 
     #[test]
     fn test_parse_manifest_missing_wasm() {
         let tmp = TempDir::new().unwrap();
+        let plugin_dir = tmp.path().join("no-wasm");
+        std::fs::create_dir_all(&plugin_dir).unwrap();
         write_plugin_toml(
-            tmp.path(),
+            &plugin_dir,
             r#"
 [plugin]
 name = "no-wasm"
@@ -252,9 +262,40 @@ description = "No wasm file"
 "#,
         );
 
-        let result = parse_manifest(tmp.path());
+        let result = parse_manifest(&plugin_dir);
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), DomainError::PluginError(_)));
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("no .wasm"),
+            "expected wasm error, got: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn test_parse_manifest_dir_name_mismatch() {
+        let tmp = TempDir::new().unwrap();
+        let plugin_dir = tmp.path().join("wrong-dir-name");
+        std::fs::create_dir_all(&plugin_dir).unwrap();
+        write_plugin_toml(
+            &plugin_dir,
+            r#"
+[plugin]
+name = "actual-name"
+version = "1.0.0"
+category = "utility"
+author = "Alice"
+description = "Dir name mismatch"
+"#,
+        );
+        write_dummy_wasm(&plugin_dir, "actual-name.wasm");
+
+        let result = parse_manifest(&plugin_dir);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("does not match"),
+            "expected name mismatch error, got: {err_msg}"
+        );
     }
 
     #[test]
