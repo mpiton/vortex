@@ -20,7 +20,9 @@ impl CommandBus {
                 }
                 if let Err(e) = self.download_repo().save(&dl) {
                     tracing::warn!("Failed to persist pause for download {:?}: {e}", dl.id());
-                    let _ = self.download_engine().resume(dl.id()); // rollback
+                    if let Err(rb) = self.download_engine().resume(dl.id()) {
+                        tracing::error!("Rollback failed for download {:?}: {rb}", dl.id());
+                    }
                     continue;
                 }
                 self.event_bus().publish(event);

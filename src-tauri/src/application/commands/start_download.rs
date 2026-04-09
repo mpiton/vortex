@@ -49,18 +49,20 @@ impl CommandBus {
     }
 }
 
-/// Generate a restart-safe, collision-resistant download ID.
+/// Generate a restart-safe, collision-resistant download ID that fits
+/// within JavaScript's `Number.MAX_SAFE_INTEGER` (2^53).
 ///
-/// Combines a nanosecond timestamp (uniqueness across restarts) with a
-/// monotonic process counter (uniqueness under concurrent requests within
-/// the same nanosecond).
+/// Layout: millisecond timestamp in high 41 bits, monotonic counter in
+/// low 12 bits. Disjoint bit ranges prevent the `(T, seq)` vs
+/// `(T+seq, 0)` collision class. 12-bit counter allows 4096 downloads
+/// per millisecond.
 fn next_download_id() -> DownloadId {
-    let seq = NEXT_DOWNLOAD_SEQ.fetch_add(1, Ordering::Relaxed);
+    let seq = NEXT_DOWNLOAD_SEQ.fetch_add(1, Ordering::Relaxed) & 0xFFF;
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
-        .as_nanos() as u64;
-    DownloadId(ts.wrapping_add(seq))
+        .as_millis() as u64;
+    DownloadId((ts << 12) | seq)
 }
 
 fn extract_filename(resp: &HttpResponse, url: &Url) -> String {

@@ -30,15 +30,15 @@ pub use adapters::driving::tauri_ipc::{
     download_retry, download_set_priority, download_start,
 };
 
-/// Start the Tauri application.
-///
-/// The caller must provide a fully wired `AppState` containing the
-/// `CommandBus` and `QueryBus`. All IPC handlers depend on
-/// `State<'_, AppState>` — Tauri will panic if it is not managed.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run(app_state: AppState) {
+pub fn run() {
     tauri::Builder::default()
-        .manage(app_state)
+        .setup(|_app| {
+            // TODO(task-16): construct AppState from real adapters and call
+            // app.manage(state). IPC handlers require State<'_, AppState>;
+            // until wired, the app starts but IPC calls will fail.
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             download_start,
             download_pause,

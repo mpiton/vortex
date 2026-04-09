@@ -20,8 +20,9 @@ impl CommandBus {
         let event = download.pause()?;
         self.download_engine().pause(cmd.id)?;
         if let Err(e) = self.download_repo().save(&download) {
-            // Rollback: re-resume engine since persist failed
-            let _ = self.download_engine().resume(cmd.id);
+            if let Err(rb) = self.download_engine().resume(cmd.id) {
+                tracing::error!("Rollback failed for download {:?}: {rb}", cmd.id);
+            }
             return Err(e.into());
         }
         self.event_bus().publish(event);
