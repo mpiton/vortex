@@ -1,14 +1,15 @@
 import { useLayoutStore } from "@/stores/layout-store";
+import { useDownloadStore, selectTotalSpeed, selectActiveCount } from "@/stores/downloadStore";
 
 function Dot() {
   return <span className="text-[10px] text-border">·</span>;
 }
 
 export function StatusBar() {
-  const totalSpeed = useLayoutStore((state) => state.totalSpeed);
+  const totalSpeed = useDownloadStore(selectTotalSpeed);
+  const activeCount = useDownloadStore(selectActiveCount);
   const speedLimit = useLayoutStore((state) => state.speedLimit);
   const freeSpace = useLayoutStore((state) => state.freeSpace);
-  const totalConnections = useLayoutStore((state) => state.totalConnections);
   const appVersion = useLayoutStore((state) => state.appVersion);
 
   const limitLabel = speedLimit > 0 ? `${speedLimit} MB/s` : "unlimited";
@@ -29,7 +30,7 @@ export function StatusBar() {
         <Dot />
         <div className="flex items-center gap-1.5">
           <div className="h-[7px] w-[7px] rounded-full bg-success" />
-          <span className="text-text-dim">{totalConnections} connections</span>
+          <span className="text-text-dim">{activeCount} active</span>
         </div>
       </div>
     </footer>
