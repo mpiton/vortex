@@ -18,9 +18,9 @@ describe("StatusBar", () => {
     expect(screen.getByText(/-- GB/)).toBeInTheDocument();
   });
 
-  it("should render connection count", () => {
+  it("should render active download count", () => {
     render(<StatusBar />);
-    expect(screen.getByText(/0 connections/)).toBeInTheDocument();
+    expect(screen.getByText(/0 active/)).toBeInTheDocument();
   });
 
   it("should render app version", () => {

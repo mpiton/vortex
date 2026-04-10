@@ -6,6 +6,14 @@ import { AppLayout } from "../AppLayout";
 const mockNavigate = vi.fn();
 const originalPlatform = navigator.platform;
 
+vi.mock("@/hooks/useDownloadProgress", () => ({
+  useDownloadProgress: vi.fn(),
+}));
+
+vi.mock("@/hooks/useDownloadEvents", () => ({
+  useDownloadEvents: vi.fn(),
+}));
+
 vi.mock("react-router", async () => {
   const actual = await vi.importActual("react-router");
   return {

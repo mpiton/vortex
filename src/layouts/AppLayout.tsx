@@ -3,9 +3,13 @@ import { Outlet, useNavigate } from "react-router";
 import { Sidebar } from "./Sidebar";
 import { StatusBar } from "./StatusBar";
 import { ROUTES } from "@/types/layout";
+import { useDownloadProgress } from "@/hooks/useDownloadProgress";
+import { useDownloadEvents } from "@/hooks/useDownloadEvents";
 
 export function AppLayout() {
   const navigate = useNavigate();
+  useDownloadProgress();
+  useDownloadEvents();
 
   useEffect(() => {
     function handleKeydown(event: KeyboardEvent) {
