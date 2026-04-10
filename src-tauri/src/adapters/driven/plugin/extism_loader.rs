@@ -236,7 +236,7 @@ description = "Test plugin"
     }
 
     #[test]
-    fn test_resolve_url_unknown_scheme_returns_none() {
+    fn test_resolve_url_ftp_scheme_returns_none() {
         let tmp = TempDir::new().unwrap();
         let loader = ExtismPluginLoader::new(
             tmp.path().to_path_buf(),
@@ -244,7 +244,7 @@ description = "Test plugin"
         )
         .unwrap();
 
-        let result = loader.resolve_url("magnet:?xt=urn:btih:abc123");
+        let result = loader.resolve_url("ftp://ftp.example.com/file.tar.gz");
         assert!(result.is_ok());
         assert!(result.unwrap().is_none());
     }

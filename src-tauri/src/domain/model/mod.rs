@@ -18,6 +18,7 @@ pub use config::{AppConfig, ConfigPatch};
 pub use credential::Credential;
 pub use download::{Download, DownloadId, DownloadState, FileSize, Speed, Url};
 pub use http::HttpResponse;
+pub use link::LinkStatus;
 pub use meta::{DownloadMeta, SegmentMeta};
 pub use package::Package;
 pub use plugin::{PluginCategory, PluginInfo, PluginManifest};

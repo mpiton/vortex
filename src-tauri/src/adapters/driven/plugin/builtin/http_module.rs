@@ -7,7 +7,7 @@
 //! FTP support is planned but not yet implemented — `can_handle`
 //! returns `false` for ftp:// URLs until then.
 
-use std::net::{IpAddr, ToSocketAddrs};
+use std::net::IpAddr;
 
 use reqwest::header::HeaderMap;
 
@@ -117,7 +117,7 @@ impl HttpModule {
         let parsed =
             reqwest::Url::parse(url).map_err(|e| DomainError::InvalidUrl(format!("{e}")))?;
         if self.ssrf_protection {
-            validate_not_internal(&parsed)?;
+            validate_not_internal_async(&parsed).await?;
         }
 
         let mut builder = self.client.head(parsed.clone());
@@ -139,6 +139,67 @@ impl HttpModule {
 // ---------------------------------------------------------------------------
 
 /// Reject URLs targeting internal/loopback networks.
+///
+/// Uses async DNS resolution to avoid blocking the tokio runtime.
+/// Fails closed: if DNS resolution fails, the request is rejected.
+async fn validate_not_internal_async(url: &reqwest::Url) -> Result<(), DomainError> {
+    let host = match url.host_str() {
+        Some(h) => h,
+        None => return Ok(()),
+    };
+
+    if host == "localhost" || host.ends_with(".localhost") {
+        return Err(DomainError::ValidationError(
+            "requests to localhost are forbidden".to_string(),
+        ));
+    }
+
+    if let Some(ip) = parse_host_ip(host) {
+        if is_forbidden_ip(&ip) {
+            return Err(DomainError::ValidationError(
+                "requests to internal networks are forbidden".to_string(),
+            ));
+        }
+        return Ok(());
+    }
+
+    // Async DNS resolution — fail closed on errors
+    let port = url
+        .port_or_known_default()
+        .ok_or_else(|| DomainError::ValidationError("URL is missing a known port".to_string()))?;
+
+    // Strip brackets for lookup_host (expects "host:port", not "[host]:port")
+    let bare_host = host.trim_start_matches('[').trim_end_matches(']');
+    let addr_str = format!("{bare_host}:{port}");
+    let addrs: Vec<_> = tokio::net::lookup_host(&addr_str)
+        .await
+        .map_err(|e| {
+            DomainError::ValidationError(format!(
+                "failed to resolve host '{host}' for SSRF validation: {e}"
+            ))
+        })?
+        .collect();
+
+    if addrs.is_empty() {
+        return Err(DomainError::ValidationError(format!(
+            "host '{host}' did not resolve to any addresses"
+        )));
+    }
+
+    if addrs.iter().any(|addr| is_forbidden_ip(&addr.ip())) {
+        return Err(DomainError::ValidationError(
+            "requests to internal networks are forbidden".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
+/// Synchronous SSRF check for redirect policy (IP-literal and localhost only).
+///
+/// DNS resolution is not performed here because reqwest's redirect policy
+/// callback is synchronous. The async validation in `send_head` covers
+/// the initial URL; redirect targets with IP literals are caught here.
 fn validate_not_internal(url: &reqwest::Url) -> Result<(), DomainError> {
     let host = match url.host_str() {
         Some(h) => h,
@@ -151,28 +212,22 @@ fn validate_not_internal(url: &reqwest::Url) -> Result<(), DomainError> {
         ));
     }
 
-    if let Ok(ip) = host.parse::<IpAddr>() {
-        if is_forbidden_ip(&ip) {
-            return Err(DomainError::ValidationError(
-                "requests to internal networks are forbidden".to_string(),
-            ));
-        }
-        return Ok(());
-    }
-
-    // Resolve hostname and check all resolved IPs
-    let port = url.port_or_known_default().unwrap_or(80);
-    if let Ok(addrs) = (host, port).to_socket_addrs() {
-        for addr in addrs {
-            if is_forbidden_ip(&addr.ip()) {
-                return Err(DomainError::ValidationError(
-                    "requests to internal networks are forbidden".to_string(),
-                ));
-            }
-        }
+    if let Some(ip) = parse_host_ip(host)
+        && is_forbidden_ip(&ip)
+    {
+        return Err(DomainError::ValidationError(
+            "requests to internal networks are forbidden".to_string(),
+        ));
     }
 
     Ok(())
+}
+
+/// Parse an IP address from a URL host string, handling IPv6 brackets.
+fn parse_host_ip(host: &str) -> Option<IpAddr> {
+    // URL host_str() may return "[fe80::1]" for IPv6 — strip brackets
+    let bare = host.trim_start_matches('[').trim_end_matches(']');
+    bare.parse().ok()
 }
 
 fn is_forbidden_ip(ip: &IpAddr) -> bool {
@@ -203,7 +258,9 @@ fn is_private(ip: &IpAddr) -> bool {
             if let Some(v4) = v6.to_ipv4_mapped() {
                 return is_private(&IpAddr::V4(v4));
             }
-            (v6.segments()[0] & 0xfe00) == 0xfc00 // fc00::/7
+            let seg0 = v6.segments()[0];
+            (seg0 & 0xfe00) == 0xfc00       // fc00::/7  unique local
+                || (seg0 & 0xffc0) == 0xfe80 // fe80::/10 link-local
         }
     }
 }
@@ -262,7 +319,8 @@ fn parse_accept_ranges(headers: &HeaderMap) -> bool {
 /// Path traversal sequences and null bytes are stripped.
 fn extract_filename(headers: &HeaderMap, url: &str) -> Option<String> {
     let raw = extract_raw_filename(headers, url)?;
-    Some(sanitize_filename(&raw))
+    let sanitized = sanitize_filename(&raw);
+    (!sanitized.is_empty()).then_some(sanitized)
 }
 
 fn extract_raw_filename(headers: &HeaderMap, url: &str) -> Option<String> {
@@ -278,8 +336,12 @@ fn extract_raw_filename(headers: &HeaderMap, url: &str) -> Option<String> {
         }
     }
 
-    // Fall back to URL path
+    // Fall back to URL path — require at least one '/' after the authority
     let path = url.split('?').next().unwrap_or(url);
+    let after_scheme = path.find("://").map(|p| p + 3).unwrap_or(0);
+    if !path[after_scheme..].contains('/') {
+        return None;
+    }
     path.rsplit('/')
         .next()
         .filter(|s| !s.is_empty())
@@ -413,6 +475,12 @@ mod tests {
     }
 
     #[test]
+    fn test_ssrf_rejects_ipv6_link_local() {
+        let url = reqwest::Url::parse("http://[fe80::1]/secret").unwrap();
+        assert!(validate_not_internal(&url).is_err());
+    }
+
+    #[test]
     fn test_ssrf_allows_public_ip() {
         let url = reqwest::Url::parse("http://8.8.8.8/file").unwrap();
         assert!(validate_not_internal(&url).is_ok());
@@ -469,10 +537,25 @@ mod tests {
     }
 
     #[test]
+    fn test_extract_filename_bare_domain_returns_none() {
+        let headers = HeaderMap::new();
+        let name = extract_filename(&headers, "https://example.com");
+        assert_eq!(name, None);
+    }
+
+    #[test]
     fn test_sanitize_filename_strips_traversal() {
         assert_eq!(sanitize_filename("../../etc/passwd"), "etcpasswd");
         assert_eq!(sanitize_filename("file\0name.zip"), "filename.zip");
         assert_eq!(sanitize_filename("path/to\\file.zip"), "pathtofile.zip");
+    }
+
+    #[test]
+    fn test_sanitize_filename_all_dangerous_returns_empty() {
+        let headers = HeaderMap::new();
+        headers.get(reqwest::header::CONTENT_DISPOSITION);
+        // A raw filename of "../" sanitizes to "" → extract_filename returns None
+        assert_eq!(sanitize_filename("../"), "");
     }
 
     // ---- plugin info ----
