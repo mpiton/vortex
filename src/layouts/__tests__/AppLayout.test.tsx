@@ -38,21 +38,27 @@ describe("AppLayout", () => {
     expect(screen.getByText(/vortex v0\.1\.0/)).toBeInTheDocument();
   });
 
-  it("should navigate on modifier+1 keyboard shortcut", () => {
+  it.each([
+    { platform: "Linux x86_64", modifier: "ctrlKey" as const },
+    { platform: "MacIntel", modifier: "metaKey" as const },
+  ])("should navigate on $modifier+1 ($platform)", ({ platform, modifier }) => {
+    Object.defineProperty(navigator, "platform", { value: platform, configurable: true });
     renderAppLayout();
-    const isMac = navigator.platform.includes("Mac");
-    fireEvent.keyDown(window, { key: "1", ctrlKey: !isMac, metaKey: isMac });
+    fireEvent.keyDown(window, { key: "1", [modifier]: true });
     expect(mockNavigate).toHaveBeenCalledWith("/downloads");
   });
 
-  it("should navigate to settings on modifier+,", () => {
+  it.each([
+    { platform: "Linux x86_64", modifier: "ctrlKey" as const },
+    { platform: "MacIntel", modifier: "metaKey" as const },
+  ])("should navigate to settings on $modifier+, ($platform)", ({ platform, modifier }) => {
+    Object.defineProperty(navigator, "platform", { value: platform, configurable: true });
     renderAppLayout();
-    const isMac = navigator.platform.includes("Mac");
-    fireEvent.keyDown(window, { key: ",", ctrlKey: !isMac, metaKey: isMac });
+    fireEvent.keyDown(window, { key: ",", [modifier]: true });
     expect(mockNavigate).toHaveBeenCalledWith("/settings");
   });
 
-  it("should ignore keydown without Ctrl", () => {
+  it("should ignore keydown without modifier", () => {
     renderAppLayout();
     fireEvent.keyDown(window, { key: "1" });
     expect(mockNavigate).not.toHaveBeenCalled();
