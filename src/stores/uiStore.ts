@@ -18,7 +18,7 @@ export const useUiStore = create<UiStoreState>((set) => ({
   selectedDownloadIds: [],
   detailsPanelOpen: false,
   filterBarExpanded: false,
-  selectDownload: (id) => set({ selectedDownloadId: id }),
+  selectDownload: (id) => set({ selectedDownloadId: id, detailsPanelOpen: id !== null }),
   setSelectedDownloadIds: (ids) => set({ selectedDownloadIds: ids }),
   toggleDownloadSelection: (id) =>
     set((s) => {
