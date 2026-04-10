@@ -39,17 +39,10 @@ impl HttpModule {
     fn build(ssrf_protection: bool) -> Result<Self, DomainError> {
         let mut builder = reqwest::Client::builder().timeout(std::time::Duration::from_secs(30));
 
+        // When SSRF is enabled, disable automatic redirects — we follow them
+        // manually in send_head so each hop gets async DNS validation.
         if ssrf_protection {
-            builder = builder.redirect(reqwest::redirect::Policy::custom(|attempt| {
-                if let Err(e) = validate_not_internal(attempt.url()) {
-                    return attempt.error(e);
-                }
-                if attempt.previous().len() >= 10 {
-                    attempt.stop()
-                } else {
-                    attempt.follow()
-                }
-            }));
+            builder = builder.redirect(reqwest::redirect::Policy::none());
         } else {
             builder = builder.redirect(reqwest::redirect::Policy::limited(10));
         }
@@ -112,25 +105,54 @@ impl HttpModule {
         )
     }
 
-    /// Send a HEAD request with SSRF validation and optional basic auth.
+    /// Send a HEAD request with SSRF validation and manual redirect following.
+    ///
+    /// When SSRF protection is enabled, redirects are followed manually so
+    /// each hop gets full async DNS validation (hostname → IP check).
     async fn send_head(&self, url: &str) -> Result<reqwest::Response, DomainError> {
-        let parsed =
+        const MAX_REDIRECTS: u8 = 10;
+
+        let mut current =
             reqwest::Url::parse(url).map_err(|e| DomainError::InvalidUrl(format!("{e}")))?;
-        if self.ssrf_protection {
-            validate_not_internal_async(&parsed).await?;
+
+        for _ in 0..=MAX_REDIRECTS {
+            if self.ssrf_protection {
+                validate_not_internal_async(&current).await?;
+            }
+
+            let mut builder = self.client.head(current.clone());
+            if let Some((user, pass)) = extract_basic_auth(&current) {
+                builder = builder.basic_auth(user, Some(pass));
+            }
+
+            let response = builder.send().await.map_err(|e| {
+                DomainError::NetworkError(format!(
+                    "HEAD request failed for {}: {e}",
+                    redact_credentials(&current)
+                ))
+            })?;
+
+            if !self.ssrf_protection || !response.status().is_redirection() {
+                return Ok(response);
+            }
+
+            // Manual redirect: extract Location, validate, follow
+            let location = response
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|v| v.to_str().ok())
+                .ok_or_else(|| {
+                    DomainError::NetworkError("redirect without Location header".to_string())
+                })?;
+
+            current = current
+                .join(location)
+                .map_err(|e| DomainError::NetworkError(format!("invalid redirect URL: {e}")))?;
         }
 
-        let mut builder = self.client.head(parsed.clone());
-        if let Some((user, pass)) = extract_basic_auth(&parsed) {
-            builder = builder.basic_auth(user, Some(pass));
-        }
-
-        builder.send().await.map_err(|e| {
-            DomainError::NetworkError(format!(
-                "HEAD request failed for {}: {e}",
-                redact_credentials(&parsed)
-            ))
-        })
+        Err(DomainError::NetworkError(
+            "too many redirects (max 10)".to_string(),
+        ))
     }
 }
 
@@ -187,34 +209,6 @@ async fn validate_not_internal_async(url: &reqwest::Url) -> Result<(), DomainErr
     }
 
     if addrs.iter().any(|addr| is_forbidden_ip(&addr.ip())) {
-        return Err(DomainError::ValidationError(
-            "requests to internal networks are forbidden".to_string(),
-        ));
-    }
-
-    Ok(())
-}
-
-/// Synchronous SSRF check for redirect policy (IP-literal and localhost only).
-///
-/// DNS resolution is not performed here because reqwest's redirect policy
-/// callback is synchronous. The async validation in `send_head` covers
-/// the initial URL; redirect targets with IP literals are caught here.
-fn validate_not_internal(url: &reqwest::Url) -> Result<(), DomainError> {
-    let host = match url.host_str() {
-        Some(h) => h,
-        None => return Ok(()),
-    };
-
-    if host == "localhost" || host.ends_with(".localhost") {
-        return Err(DomainError::ValidationError(
-            "requests to localhost are forbidden".to_string(),
-        ));
-    }
-
-    if let Some(ip) = parse_host_ip(host)
-        && is_forbidden_ip(&ip)
-    {
         return Err(DomainError::ValidationError(
             "requests to internal networks are forbidden".to_string(),
         ));
@@ -337,7 +331,7 @@ fn extract_raw_filename(headers: &HeaderMap, url: &str) -> Option<String> {
     }
 
     // Fall back to URL path — require at least one '/' after the authority
-    let path = url.split('?').next().unwrap_or(url);
+    let path = url.split(['?', '#']).next().unwrap_or(url);
     let after_scheme = path.find("://").map(|p| p + 3).unwrap_or(0);
     if !path[after_scheme..].contains('/') {
         return None;
@@ -454,36 +448,39 @@ mod tests {
 
     // ---- SSRF ----
 
-    #[test]
-    fn test_ssrf_rejects_localhost() {
+    #[tokio::test]
+    async fn test_ssrf_rejects_localhost() {
         let url = reqwest::Url::parse("http://localhost/secret").unwrap();
-        assert!(validate_not_internal(&url).is_err());
+        assert!(validate_not_internal_async(&url).await.is_err());
     }
 
-    #[test]
-    fn test_ssrf_rejects_loopback_ip() {
+    #[tokio::test]
+    async fn test_ssrf_rejects_loopback_ip() {
         let url = reqwest::Url::parse("http://127.0.0.1/secret").unwrap();
-        assert!(validate_not_internal(&url).is_err());
+        assert!(validate_not_internal_async(&url).await.is_err());
     }
 
-    #[test]
-    fn test_ssrf_rejects_private_ip() {
+    #[tokio::test]
+    async fn test_ssrf_rejects_private_ip() {
         for addr in &["10.0.0.1", "172.16.0.1", "192.168.1.1", "169.254.169.254"] {
             let url = reqwest::Url::parse(&format!("http://{addr}/secret")).unwrap();
-            assert!(validate_not_internal(&url).is_err(), "should reject {addr}");
+            assert!(
+                validate_not_internal_async(&url).await.is_err(),
+                "should reject {addr}"
+            );
         }
     }
 
-    #[test]
-    fn test_ssrf_rejects_ipv6_link_local() {
+    #[tokio::test]
+    async fn test_ssrf_rejects_ipv6_link_local() {
         let url = reqwest::Url::parse("http://[fe80::1]/secret").unwrap();
-        assert!(validate_not_internal(&url).is_err());
+        assert!(validate_not_internal_async(&url).await.is_err());
     }
 
-    #[test]
-    fn test_ssrf_allows_public_ip() {
+    #[tokio::test]
+    async fn test_ssrf_allows_public_ip() {
         let url = reqwest::Url::parse("http://8.8.8.8/file").unwrap();
-        assert!(validate_not_internal(&url).is_ok());
+        assert!(validate_not_internal_async(&url).await.is_ok());
     }
 
     // ---- filename extraction ----
