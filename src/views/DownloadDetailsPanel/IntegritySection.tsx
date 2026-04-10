@@ -14,7 +14,7 @@ export function IntegritySection({ download }: IntegritySectionProps) {
       <div className="space-y-2 text-xs">
         <div>
           <p className="text-muted-foreground">Algorithm</p>
-          <p className="font-mono">SHA-256</p>
+          <p className="font-mono">{hasChecksum ? 'SHA-256' : '—'}</p>
         </div>
         <div>
           <p className="text-muted-foreground">Expected Hash</p>

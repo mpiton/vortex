@@ -13,8 +13,10 @@ export function MetricsSection({ download }: MetricsSectionProps) {
   const speed = progress?.speedBytesPerSec ?? download.speedBytesPerSec;
   const downloaded = progress?.downloadedBytes ?? download.downloadedBytes;
   const total = progress?.totalBytes ?? download.totalBytes;
-  const progressPercent =
-    total && total > 0 ? (downloaded / total) * 100 : download.progressPercent;
+  const progressPercent = Math.min(
+    100,
+    Math.max(0, total && total > 0 ? (downloaded / total) * 100 : download.progressPercent),
+  );
 
   const speedIsHigh = speed > 1_048_576;
   const remaining = (total ?? 0) - downloaded;
@@ -48,7 +50,9 @@ export function MetricsSection({ download }: MetricsSectionProps) {
 
       <div className="col-span-2 rounded bg-background p-2">
         <div className="text-muted-foreground">Connections</div>
-        <div className="font-mono font-semibold">{download.segments.length}</div>
+        <div className="font-mono font-semibold">
+          {download.segments.filter((s) => s.state === 'Downloading').length}
+        </div>
       </div>
 
       <div className="col-span-2 rounded bg-background p-2">

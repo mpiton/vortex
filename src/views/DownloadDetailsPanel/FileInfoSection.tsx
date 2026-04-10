@@ -7,7 +7,10 @@ interface FileInfoSectionProps {
 }
 
 function getMimeType(fileName: string): string {
-  const ext = fileName.split('.').pop()?.toLowerCase();
+  const dotIndex = fileName.lastIndexOf('.');
+  const ext = dotIndex > 0 && dotIndex < fileName.length - 1
+    ? fileName.slice(dotIndex + 1).toLowerCase()
+    : undefined;
   const mimeMap: Record<string, string> = {
     mp4: 'video/mp4',
     mkv: 'video/x-matroska',

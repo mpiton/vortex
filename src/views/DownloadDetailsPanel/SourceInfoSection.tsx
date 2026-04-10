@@ -51,13 +51,7 @@ export function SourceInfoSection({ download }: SourceInfoSectionProps) {
         </div>
         <div>
           <p className="text-muted-foreground">Resume Supported</p>
-          <input
-            type="checkbox"
-            disabled
-            checked={download.resumeSupported}
-            readOnly
-            className="mt-1"
-          />
+          <p className="font-mono">{download.resumeSupported ? 'Yes' : 'No'}</p>
         </div>
       </div>
     </section>

@@ -21,8 +21,16 @@ export function DownloadDetailsPanel() {
 
   if (!selectedDownloadId) {
     return (
-      <aside className="w-80 shrink-0 border-l bg-muted/30 p-4 text-center text-sm text-muted-foreground">
-        Select a download to view details
+      <aside className="w-80 shrink-0 border-l bg-muted/30">
+        <div className="flex items-center justify-between border-b px-4 py-2">
+          <h2 className="text-sm font-semibold">Details</h2>
+          <Button variant="ghost" size="icon" className="h-7 w-7" aria-label="Close details panel" onClick={() => setDetailsPanelOpen(false)}>
+            <X className="size-3.5" />
+          </Button>
+        </div>
+        <p className="p-4 text-center text-sm text-muted-foreground">
+          Select a download to view details
+        </p>
       </aside>
     );
   }
@@ -68,7 +76,7 @@ function DownloadDetailContent({
     <aside className="w-80 shrink-0 border-l bg-muted/30 overflow-y-auto">
       <div className="flex items-center justify-between border-b px-4 py-2">
         <h2 className="text-sm font-semibold">Details</h2>
-        <Button variant="ghost" size="icon" className="h-7 w-7" onClick={onClose}>
+        <Button variant="ghost" size="icon" className="h-7 w-7" aria-label="Close details panel" onClick={onClose}>
           <X className="size-3.5" />
         </Button>
       </div>

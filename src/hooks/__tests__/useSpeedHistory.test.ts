@@ -29,9 +29,10 @@ describe('useSpeedHistory', () => {
     vi.clearAllMocks();
   });
 
-  it('should return empty array initially', () => {
+  it('should sample immediately on mount', () => {
     const { result } = renderHook(() => useSpeedHistory('dl-1'));
-    expect(result.current).toEqual([]);
+    expect(result.current.length).toBe(1);
+    expect(result.current[0].speed).toBe(0);
   });
 
   it('should collect speed samples over time', () => {
@@ -50,12 +51,6 @@ describe('useSpeedHistory', () => {
 
     const { result } = renderHook(() => useSpeedHistory('dl-1'));
 
-    expect(result.current).toEqual([]);
-
-    act(() => {
-      vi.advanceTimersByTime(2000);
-    });
-
     expect(result.current.length).toBe(1);
     expect(result.current[0].speed).toBe(1024000);
 
@@ -64,5 +59,11 @@ describe('useSpeedHistory', () => {
     });
 
     expect(result.current.length).toBe(2);
+
+    act(() => {
+      vi.advanceTimersByTime(2000);
+    });
+
+    expect(result.current.length).toBe(3);
   });
 });

@@ -18,7 +18,7 @@ export function useSpeedHistory(downloadId: string): SpeedSample[] {
     samplesRef.current = [];
     setSamples([]);
 
-    const interval = setInterval(() => {
+    const sample = () => {
       const progress = useDownloadStore.getState().progressMap[downloadId];
       const speed = progress?.speedBytesPerSec ?? 0;
       const now = Date.now();
@@ -30,7 +30,10 @@ export function useSpeedHistory(downloadId: string): SpeedSample[] {
       ].slice(-MAX_SAMPLES);
 
       setSamples([...samplesRef.current]);
-    }, SAMPLE_INTERVAL_MS);
+    };
+
+    sample();
+    const interval = setInterval(sample, SAMPLE_INTERVAL_MS);
 
     return () => clearInterval(interval);
   }, [downloadId]);

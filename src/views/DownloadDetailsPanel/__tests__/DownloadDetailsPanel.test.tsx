@@ -50,8 +50,11 @@ vi.mock('@/stores/uiStore', () => ({
 }));
 
 vi.mock('@/stores/downloadStore', () => ({
-  useDownloadStore: (selector: (s: { progressMap: Record<string, unknown> }) => unknown) =>
-    selector({ progressMap: {} }),
+  useDownloadStore: Object.assign(
+    (selector: (s: { progressMap: Record<string, unknown> }) => unknown) =>
+      selector({ progressMap: {} }),
+    { getState: () => ({ progressMap: {} }) },
+  ),
 }));
 
 function mockDownloadDetail(overrides?: Partial<DownloadDetailView>): DownloadDetailView {

@@ -6,6 +6,6 @@ export function useDownloadDetail(downloadId: string) {
   return useTauriQuery<DownloadDetailView>(
     'query_download_detail',
     { id: downloadId },
-    { queryKey: downloadQueries.detail(downloadId), staleTime: 500 },
+    { queryKey: downloadQueries.detail(downloadId), staleTime: 500, enabled: !!downloadId },
   );
 }
