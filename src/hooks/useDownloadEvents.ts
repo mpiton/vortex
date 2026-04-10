@@ -5,7 +5,7 @@ import type { DownloadIdPayload, DownloadFailedPayload } from '@/types/events';
 
 export function useDownloadEvents(): void {
   const invalidateDownloads = () => {
-    queryClient.invalidateQueries({ queryKey: downloadQueries.lists() });
+    queryClient.invalidateQueries({ queryKey: downloadQueries.all() });
   };
 
   useTauriEvent<DownloadIdPayload>('download-created', invalidateDownloads);
