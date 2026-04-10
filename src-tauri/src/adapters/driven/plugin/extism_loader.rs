@@ -7,6 +7,7 @@ use crate::domain::error::DomainError;
 use crate::domain::model::plugin::{PluginInfo, PluginManifest};
 use crate::domain::ports::driven::PluginLoader;
 
+use super::builtin::HttpModule;
 use super::capabilities::{SharedHostResources, build_host_functions};
 use super::manifest::find_wasm_file;
 use super::registry::{LoadedPlugin, PluginRegistry};
@@ -15,15 +16,20 @@ pub struct ExtismPluginLoader {
     registry: Arc<PluginRegistry>,
     plugins_dir: PathBuf,
     shared_resources: Arc<SharedHostResources>,
+    builtin_http: HttpModule,
 }
 
 impl ExtismPluginLoader {
-    pub fn new(plugins_dir: PathBuf, shared_resources: Arc<SharedHostResources>) -> Self {
-        Self {
+    pub fn new(
+        plugins_dir: PathBuf,
+        shared_resources: Arc<SharedHostResources>,
+    ) -> Result<Self, DomainError> {
+        Ok(Self {
             registry: Arc::new(PluginRegistry::new()),
             plugins_dir,
             shared_resources,
-        }
+            builtin_http: HttpModule::new()?,
+        })
     }
 
     pub fn registry(&self) -> &Arc<PluginRegistry> {
@@ -32,6 +38,10 @@ impl ExtismPluginLoader {
 
     pub fn plugins_dir(&self) -> &Path {
         &self.plugins_dir
+    }
+
+    pub fn builtin_http(&self) -> &HttpModule {
+        &self.builtin_http
     }
 }
 
@@ -109,6 +119,10 @@ impl PluginLoader for ExtismPluginLoader {
                 }
             }
         }
+        // Fallback: built-in HTTP module handles http://, https://
+        if HttpModule::can_handle(url) {
+            return Ok(Some(HttpModule::plugin_info()));
+        }
         Ok(None)
     }
 
@@ -167,7 +181,8 @@ description = "Test plugin"
         let loader = ExtismPluginLoader::new(
             tmp.path().to_path_buf(),
             Arc::new(SharedHostResources::new()),
-        );
+        )
+        .unwrap();
         let manifest = make_manifest("ghost-plugin");
 
         // Plugin dir doesn't exist — should fail
@@ -182,7 +197,8 @@ description = "Test plugin"
         let loader = ExtismPluginLoader::new(
             tmp.path().to_path_buf(),
             Arc::new(SharedHostResources::new()),
-        );
+        )
+        .unwrap();
 
         let result = loader.unload("nonexistent");
         assert!(result.is_err());
@@ -195,9 +211,40 @@ description = "Test plugin"
         let loader = ExtismPluginLoader::new(
             tmp.path().to_path_buf(),
             Arc::new(SharedHostResources::new()),
-        );
+        )
+        .unwrap();
+
+        // magnet: scheme is not handled by any built-in module
+        let result = loader.resolve_url("magnet:?xt=urn:btih:abc123");
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_none());
+    }
+
+    #[test]
+    fn test_resolve_url_builtin_http_fallback() {
+        let tmp = TempDir::new().unwrap();
+        let loader = ExtismPluginLoader::new(
+            tmp.path().to_path_buf(),
+            Arc::new(SharedHostResources::new()),
+        )
+        .unwrap();
 
         let result = loader.resolve_url("https://example.com/file.zip");
+        assert!(result.is_ok());
+        let info = result.unwrap().expect("expected Some(PluginInfo)");
+        assert_eq!(info.name(), "builtin-http");
+    }
+
+    #[test]
+    fn test_resolve_url_ftp_scheme_returns_none() {
+        let tmp = TempDir::new().unwrap();
+        let loader = ExtismPluginLoader::new(
+            tmp.path().to_path_buf(),
+            Arc::new(SharedHostResources::new()),
+        )
+        .unwrap();
+
+        let result = loader.resolve_url("ftp://ftp.example.com/file.tar.gz");
         assert!(result.is_ok());
         assert!(result.unwrap().is_none());
     }
@@ -208,7 +255,8 @@ description = "Test plugin"
         let loader = ExtismPluginLoader::new(
             tmp.path().to_path_buf(),
             Arc::new(SharedHostResources::new()),
-        );
+        )
+        .unwrap();
 
         let result = loader.list_loaded();
         assert!(result.is_ok());
@@ -222,7 +270,8 @@ description = "Test plugin"
         let loader = ExtismPluginLoader::new(
             tmp.path().to_path_buf(),
             Arc::new(SharedHostResources::new()),
-        );
+        )
+        .unwrap();
         let manifest = make_manifest("dup-plugin");
 
         loader.load(&manifest).unwrap();
@@ -238,7 +287,8 @@ description = "Test plugin"
         let loader = ExtismPluginLoader::new(
             tmp.path().to_path_buf(),
             Arc::new(SharedHostResources::new()),
-        );
+        )
+        .unwrap();
         let manifest = make_manifest("removable-plugin");
 
         loader.load(&manifest).unwrap();

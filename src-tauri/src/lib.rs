@@ -24,6 +24,7 @@ pub use application::read_models::{
 };
 pub use application::services::QueueManager;
 
+pub use adapters::driven::plugin::builtin::HttpModule;
 pub use adapters::driven::plugin::capabilities::SharedHostResources;
 pub use adapters::driven::plugin::{ExtismPluginLoader, PluginRegistry, PluginWatcher};
 pub use adapters::driving::tauri_ipc::{
