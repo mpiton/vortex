@@ -2,20 +2,30 @@ import { create } from 'zustand';
 import { tauriInvoke } from '@/api/client';
 
 interface AppConfig {
-  [key: string]: unknown;
+  downloadDir: string | null;
+  maxConcurrentDownloads: number;
+  maxSegmentsPerDownload: number;
+  speedLimitBytesPerSec: number | null;
+  autoExtract: boolean;
+  theme: string;
+  locale: string;
+  clipboardMonitoring: boolean;
+  minimizeToTray: boolean;
 }
+
+type AppConfigPatch = Partial<AppConfig>;
 
 interface SettingsStoreState {
   config: AppConfig | null;
   isLoading: boolean;
   error: string | null;
   setConfig: (config: AppConfig) => void;
-  updateConfig: (partial: Partial<AppConfig>) => Promise<void>;
+  updateConfig: (partial: AppConfigPatch) => Promise<void>;
   clearError: () => void;
 }
 
-// Note: 'settings_update' IPC command will be implemented in task 23.
-// Until then, updateConfig applies the change optimistically without a backend call.
+// Note: 'settings_update' IPC command will be registered in task 23.
+// updateConfig applies optimistically, then attempts IPC; failure is logged, not thrown.
 export const useSettingsStore = create<SettingsStoreState>((set) => ({
   config: null,
   isLoading: false,
@@ -25,7 +35,7 @@ export const useSettingsStore = create<SettingsStoreState>((set) => ({
   updateConfig: async (partial) => {
     set({ isLoading: true, error: null });
     set((s) => ({
-      config: s.config ? { ...s.config, ...partial } : partial,
+      config: s.config ? { ...s.config, ...partial } : s.config,
     }));
     try {
       await tauriInvoke('settings_update', partial);

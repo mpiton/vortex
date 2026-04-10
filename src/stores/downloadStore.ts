@@ -39,7 +39,7 @@ export const useDownloadStore = create<DownloadStoreState>((set) => ({
         const deltaBytes = downloadedBytes - prev.lastSampleBytes;
         const deltaSec = (now - prev.lastSampleTime) / 1000;
         if (deltaSec > 0) {
-          speedBytesPerSec = deltaBytes / deltaSec;
+          speedBytesPerSec = Math.max(0, deltaBytes / deltaSec);
         }
       }
 
