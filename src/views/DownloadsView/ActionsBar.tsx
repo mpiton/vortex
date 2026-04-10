@@ -1,3 +1,4 @@
+import { useRef } from 'react';
 import { Pause, Play, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useTauriMutation } from '@/api/hooks';
@@ -26,17 +27,29 @@ export function ActionsBar() {
     invalidateKeys: INVALIDATE_KEYS,
   });
 
+  const cancellingRef = useRef(false);
+
   const handleCancelSelected = async () => {
-    const ids = [...selectedDownloadIds];
-    const results = await Promise.allSettled(
-      ids.map((id) => cancelDownload.mutateAsync({ id })),
-    );
-    const failures = results.filter((r) => r.status === 'rejected');
-    if (failures.length === 0) {
-      clearSelection();
-    } else {
-      const failedIds = ids.filter((_, i) => results[i].status === 'rejected');
-      setSelectedDownloadIds(failedIds);
+    if (cancellingRef.current) return;
+    cancellingRef.current = true;
+    const snapshot = [...selectedDownloadIds];
+    try {
+      const results = await Promise.allSettled(
+        snapshot.map((id) => cancelDownload.mutateAsync({ id })),
+      );
+      const failedIds = snapshot.filter((_, i) => results[i].status === 'rejected');
+      const currentIds = useUiStore.getState().selectedDownloadIds;
+      const unchanged = currentIds.length === snapshot.length
+        && currentIds.every((id, i) => id === snapshot[i]);
+      if (unchanged) {
+        if (failedIds.length === 0) {
+          clearSelection();
+        } else {
+          setSelectedDownloadIds(failedIds);
+        }
+      }
+    } finally {
+      cancellingRef.current = false;
     }
   };
 
