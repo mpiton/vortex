@@ -4,10 +4,14 @@ import { useTauriMutation } from '@/api/hooks';
 import { downloadQueries } from '@/api/queries';
 import { useUiStore } from '@/stores/uiStore';
 
-const INVALIDATE_KEYS: readonly unknown[][] = [[...downloadQueries.lists()]];
+const INVALIDATE_KEYS = [
+  downloadQueries.lists(),
+  downloadQueries.countByState(),
+] as const;
 
 export function ActionsBar() {
   const selectedDownloadIds = useUiStore((s) => s.selectedDownloadIds);
+  const setSelectedDownloadIds = useUiStore((s) => s.setSelectedDownloadIds);
   const clearSelection = useUiStore((s) => s.clearSelection);
 
   const pauseAll = useTauriMutation<void, void>('download_pause_all', {
@@ -22,10 +26,18 @@ export function ActionsBar() {
     invalidateKeys: INVALIDATE_KEYS,
   });
 
-  const handleCancelSelected = () => {
+  const handleCancelSelected = async () => {
     const ids = [...selectedDownloadIds];
-    clearSelection();
-    Promise.allSettled(ids.map((id) => cancelDownload.mutateAsync({ id })));
+    const results = await Promise.allSettled(
+      ids.map((id) => cancelDownload.mutateAsync({ id })),
+    );
+    const failures = results.filter((r) => r.status === 'rejected');
+    if (failures.length === 0) {
+      clearSelection();
+    } else {
+      const failedIds = ids.filter((_, i) => results[i].status === 'rejected');
+      setSelectedDownloadIds(failedIds);
+    }
   };
 
   const hasSelection = selectedDownloadIds.length > 0;

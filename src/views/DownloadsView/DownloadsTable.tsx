@@ -278,7 +278,7 @@ export function DownloadsTable({
   const [sorting, setSorting] = useState<SortingState>([]);
   const tableContainerRef = useRef<HTMLDivElement>(null);
 
-  const invalidateKeys = useMemo(() => [downloadQueries.lists()] as const, []);
+  const invalidateKeys = useMemo(() => [downloadQueries.lists(), downloadQueries.countByState()] as const, []);
   const pauseMut = useTauriMutation<unknown, { id: string }>('download_pause', { invalidateKeys });
   const resumeMut = useTauriMutation<unknown, { id: string }>('download_resume', { invalidateKeys });
   const startMut = useTauriMutation<unknown, { id: string }>('download_start', { invalidateKeys });
@@ -439,7 +439,7 @@ export function DownloadsTable({
           )}
           {virtualRows.map((virtualRow) => {
             const row = rows[virtualRow.index];
-            const isSelected = selectedDownloadIds.includes(row.original.id);
+            const isSelected = rowSelection[row.original.id] === true;
 
             return (
               <tr

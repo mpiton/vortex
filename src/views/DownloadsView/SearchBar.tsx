@@ -14,6 +14,7 @@ export function SearchBar({ value, onChange }: SearchBarProps) {
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder="Search downloads..."
+        aria-label="Search downloads"
         className="pl-9"
       />
     </div>

@@ -21,12 +21,19 @@ export const useUiStore = create<UiStoreState>((set) => ({
   selectDownload: (id) => set({ selectedDownloadId: id }),
   setSelectedDownloadIds: (ids) => set({ selectedDownloadIds: ids }),
   toggleDownloadSelection: (id) =>
-    set((s) => ({
-      selectedDownloadIds: s.selectedDownloadIds.includes(id)
+    set((s) => {
+      const removing = s.selectedDownloadIds.includes(id);
+      const nextIds = removing
         ? s.selectedDownloadIds.filter((i) => i !== id)
-        : [...s.selectedDownloadIds, id],
-    })),
-  clearSelection: () => set({ selectedDownloadIds: [] }),
+        : [...s.selectedDownloadIds, id];
+      return {
+        selectedDownloadIds: nextIds,
+        selectedDownloadId: removing && s.selectedDownloadId === id
+          ? null
+          : s.selectedDownloadId,
+      };
+    }),
+  clearSelection: () => set({ selectedDownloadIds: [], selectedDownloadId: null }),
   setDetailsPanelOpen: (open) => set({ detailsPanelOpen: open }),
   toggleFilterBar: () => set((s) => ({ filterBarExpanded: !s.filterBarExpanded })),
 }));

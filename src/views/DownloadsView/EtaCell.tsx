@@ -10,7 +10,8 @@ export function EtaCell({ downloadId }: EtaCellProps) {
 
   let eta: number | null = null;
   if (progress && progress.speedBytesPerSec > 0) {
-    eta = (progress.totalBytes - progress.downloadedBytes) / progress.speedBytesPerSec;
+    const remainingBytes = Math.max(0, progress.totalBytes - progress.downloadedBytes);
+    eta = remainingBytes / progress.speedBytesPerSec;
   }
 
   return (
