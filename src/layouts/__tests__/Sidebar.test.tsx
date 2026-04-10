@@ -31,16 +31,15 @@ describe("Sidebar", () => {
     }
   });
 
-  it("should render the Vortex title", () => {
+  it("should render the Vx logo", () => {
     renderSidebar();
-    expect(screen.getByText("Vortex")).toBeInTheDocument();
+    expect(screen.getByText("Vx")).toBeInTheDocument();
   });
 
   it("should highlight active route with correct classes", () => {
     renderSidebar("/settings");
     const settingsLink = screen.getByText("Settings").closest("a");
-    expect(settingsLink).toHaveClass("bg-indigo-600");
-    expect(settingsLink).toHaveClass("font-semibold");
+    expect(settingsLink).toHaveClass("bg-accent/20");
   });
 
   it("should not highlight inactive routes", () => {

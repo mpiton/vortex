@@ -33,9 +33,9 @@ describe("AppLayout", () => {
 
   it("should render Sidebar, main content, and StatusBar", () => {
     renderAppLayout();
-    expect(screen.getByText("Vortex")).toBeInTheDocument();
+    expect(screen.getByText("Vx")).toBeInTheDocument();
     expect(screen.getByText("Downloads Page")).toBeInTheDocument();
-    expect(screen.getByText("v0.1.0")).toBeInTheDocument();
+    expect(screen.getByText(/vortex v0\.1\.0/)).toBeInTheDocument();
   });
 
   it("should navigate on Ctrl+1 keyboard shortcut", () => {

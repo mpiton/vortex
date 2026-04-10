@@ -35,14 +35,14 @@ export function AppLayout() {
   }, [navigate]);
 
   return (
-    <div className="flex h-screen w-screen flex-col bg-background font-sans">
-      <div className="flex flex-1 overflow-hidden">
-        <Sidebar />
-        <main className="flex-1 overflow-auto p-6">
+    <div className="flex h-screen w-screen overflow-hidden font-mono text-[13px] leading-normal text-text">
+      <Sidebar />
+      <div className="flex min-w-0 flex-1 flex-col">
+        <main className="flex-1 overflow-y-auto bg-surface-alt">
           <Outlet />
         </main>
+        <StatusBar />
       </div>
-      <StatusBar />
     </div>
   );
 }
