@@ -27,7 +27,8 @@ function readStoredTheme(fallback: Theme): Theme {
 }
 
 function getSystemDark(): boolean {
-  return typeof window.matchMedia === 'function'
+  return typeof window !== 'undefined' &&
+    typeof window.matchMedia === 'function'
     ? window.matchMedia('(prefers-color-scheme: dark)').matches
     : false;
 }

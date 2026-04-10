@@ -45,7 +45,7 @@ describe("Sidebar", () => {
   it("should not highlight inactive routes", () => {
     renderSidebar("/downloads");
     const settingsLink = screen.getByText("Settings").closest("a");
-    expect(settingsLink).not.toHaveClass("bg-indigo-600");
+    expect(settingsLink).not.toHaveClass("bg-accent/20");
   });
 
   it("should render navigation links with correct paths", () => {

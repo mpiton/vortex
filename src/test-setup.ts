@@ -3,6 +3,7 @@ import { vi } from "vitest";
 
 // jsdom does not implement matchMedia — provide a minimal stub for all tests
 Object.defineProperty(window, "matchMedia", {
+  configurable: true,
   writable: true,
   value: vi.fn().mockImplementation((query: string) => ({
     matches: false,
@@ -12,6 +13,6 @@ Object.defineProperty(window, "matchMedia", {
     removeListener: vi.fn(),
     addEventListener: vi.fn(),
     removeEventListener: vi.fn(),
-    dispatchEvent: vi.fn(),
+    dispatchEvent: vi.fn(() => true),
   })),
 });

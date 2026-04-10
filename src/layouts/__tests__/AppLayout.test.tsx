@@ -38,15 +38,17 @@ describe("AppLayout", () => {
     expect(screen.getByText(/vortex v0\.1\.0/)).toBeInTheDocument();
   });
 
-  it("should navigate on Ctrl+1 keyboard shortcut", () => {
+  it("should navigate on modifier+1 keyboard shortcut", () => {
     renderAppLayout();
-    fireEvent.keyDown(window, { key: "1", ctrlKey: true });
+    const isMac = navigator.platform.includes("Mac");
+    fireEvent.keyDown(window, { key: "1", ctrlKey: !isMac, metaKey: isMac });
     expect(mockNavigate).toHaveBeenCalledWith("/downloads");
   });
 
-  it("should navigate to settings on Ctrl+,", () => {
+  it("should navigate to settings on modifier+,", () => {
     renderAppLayout();
-    fireEvent.keyDown(window, { key: ",", ctrlKey: true });
+    const isMac = navigator.platform.includes("Mac");
+    fireEvent.keyDown(window, { key: ",", ctrlKey: !isMac, metaKey: isMac });
     expect(mockNavigate).toHaveBeenCalledWith("/settings");
   });
 

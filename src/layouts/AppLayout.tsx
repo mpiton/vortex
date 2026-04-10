@@ -12,8 +12,11 @@ export function AppLayout() {
       const modifier = navigator.platform.includes("Mac") ? event.metaKey : event.ctrlKey;
       if (!modifier) return;
 
-      const target = event.target as HTMLElement;
-      if (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable) {
+      const target = event.target;
+      if (
+        target instanceof HTMLElement &&
+        (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)
+      ) {
         return;
       }
 
