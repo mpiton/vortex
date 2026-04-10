@@ -7,6 +7,7 @@ export const downloadQueries = {
     filters ? ([...downloadQueries.lists(), filters] as const) : (downloadQueries.lists() as readonly unknown[]),
   details: () => [...downloadQueries.all(), 'detail'] as const,
   detail: (id: string) => [...downloadQueries.details(), id] as const,
+  countByState: () => [...downloadQueries.all(), 'countByState'] as const,
 };
 
 export const pluginQueries = {

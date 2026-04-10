@@ -5,7 +5,7 @@ import { tauriInvoke } from '@/api/client';
 export function useTauriQuery<T>(
   command: string,
   args?: Record<string, unknown>,
-  options?: Omit<UseQueryOptions<T, Error>, 'queryKey' | 'queryFn'>
+  options?: Omit<UseQueryOptions<T, Error>, 'queryFn'>
 ) {
   return useQuery<T, Error>({
     queryKey: args ? [command, args] : [command],
@@ -15,7 +15,7 @@ export function useTauriQuery<T>(
 }
 
 interface UseTauriMutationOptions<TData, TVariables> {
-  invalidateKeys?: readonly unknown[][];
+  invalidateKeys?: readonly (readonly unknown[])[];
   onSuccess?: (data: TData, variables: TVariables, context: unknown) => void;
   onError?: (error: Error, variables: TVariables, context: unknown) => void;
 }

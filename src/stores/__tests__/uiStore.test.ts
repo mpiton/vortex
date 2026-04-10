@@ -4,6 +4,7 @@ import { useUiStore } from '@/stores/uiStore';
 beforeEach(() => {
   useUiStore.setState({
     selectedDownloadId: null,
+    selectedDownloadIds: [],
     detailsPanelOpen: false,
     filterBarExpanded: false,
   });
@@ -42,7 +43,7 @@ describe('useUiStore — toggleFilterBar', () => {
   });
 
   it('should toggle filterBarExpanded from true to false', () => {
-    useUiStore.setState({ filterBarExpanded: true, selectedDownloadId: null, detailsPanelOpen: false });
+    useUiStore.setState({ filterBarExpanded: true, selectedDownloadId: null, selectedDownloadIds: [], detailsPanelOpen: false });
     useUiStore.getState().toggleFilterBar();
     expect(useUiStore.getState().filterBarExpanded).toBe(false);
   });

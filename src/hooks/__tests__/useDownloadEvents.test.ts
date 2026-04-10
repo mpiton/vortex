@@ -15,7 +15,9 @@ vi.mock('@/api/client', () => ({
 
 vi.mock('@/api/queries', () => ({
   downloadQueries: {
+    all: () => ['downloads'],
     lists: () => ['downloads', 'list'],
+    countByState: () => ['downloads', 'countByState'],
   },
 }));
 
@@ -46,7 +48,7 @@ describe('useDownloadEvents', () => {
     });
     renderHook(() => useDownloadEvents());
     expect(queryClient.invalidateQueries).toHaveBeenCalledWith({
-      queryKey: ['downloads', 'list'],
+      queryKey: ['downloads'],
     });
   });
 
@@ -56,7 +58,7 @@ describe('useDownloadEvents', () => {
     });
     renderHook(() => useDownloadEvents());
     expect(queryClient.invalidateQueries).toHaveBeenCalledWith({
-      queryKey: ['downloads', 'list'],
+      queryKey: ['downloads'],
     });
   });
 
@@ -66,7 +68,7 @@ describe('useDownloadEvents', () => {
     });
     renderHook(() => useDownloadEvents());
     expect(queryClient.invalidateQueries).toHaveBeenCalledWith({
-      queryKey: ['downloads', 'list'],
+      queryKey: ['downloads'],
     });
   });
 
@@ -76,7 +78,7 @@ describe('useDownloadEvents', () => {
     });
     renderHook(() => useDownloadEvents());
     expect(queryClient.invalidateQueries).toHaveBeenCalledWith({
-      queryKey: ['downloads', 'list'],
+      queryKey: ['downloads'],
     });
   });
 

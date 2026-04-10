@@ -77,3 +77,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `Container` and `Notifier` plugin categories added to domain model
   - Plugin host functions: http_request, log, get_config/set_config, get_state/set_state, get_credential, run_subprocess
   - Capability-based security for plugin host function access
+- Downloads View: main table UI with TanStack Table + Virtual virtualization
+  - Virtualized table rendering 10k+ rows with `@tanstack/react-virtual` (estimateSize: 48px, overscan: 10)
+  - 9 columns: checkbox, state dot, filename (tooltip URL), type badge, host, progress bar, speed, ETA, actions
+  - Sortable columns via TanStack Table `getSortedRowModel` (click header for asc/desc toggle)
+  - FilterBar with state tabs: All | Active | Queued | Done | Failed (counts from `download_count_by_state`)
+  - SearchBar: case-insensitive search across filename, URL, and hostname
+  - Multi-select: Ctrl/Cmd+click toggles selection, single click selects for detail panel
+  - ActionsBar: Pause All / Resume All when no selection; Cancel Selected / Clear when items selected
+  - Per-row actions: Pause/Resume/Retry buttons + DropdownMenu (Set Priority, Remove)
+  - Real-time progress: ProgressCell, SpeedCell, EtaCell read from Zustand `downloadStore.progressMap`
+  - Speed color coding: green (>10 MB/s), blue (1-10 MB/s), muted (<1 MB/s)
+  - Format utilities: `formatEta`, `formatSpeed`, `formatBytes` in `src/lib/format.ts`
+  - uiStore extended with `selectedDownloadIds` for multi-select state
+  - Fixed `useTauriQuery` to support custom `queryKey` (query cache invalidation now works correctly)
+  - Fixed `useDownloadEvents` to invalidate `downloadQueries.all()` (covers list + count queries)

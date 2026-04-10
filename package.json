@@ -19,6 +19,8 @@
   "dependencies": {
     "@radix-ui/react-slot": "^1.2.4",
     "@tanstack/react-query": "^5.97.0",
+    "@tanstack/react-table": "^8.21.3",
+    "@tanstack/react-virtual": "^3.13.23",
     "@tauri-apps/api": "^2.0.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
