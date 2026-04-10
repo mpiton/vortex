@@ -50,27 +50,7 @@ function DownloadDetailContent({
   downloadId: string;
   onClose: () => void;
 }) {
-  const { data: detail, isLoading } = useDownloadDetail(downloadId);
-
-  if (isLoading) {
-    return (
-      <aside className="w-80 shrink-0 border-l bg-muted/30 p-4">
-        <div className="animate-pulse space-y-4">
-          {Array.from({ length: 5 }).map((_, i) => (
-            <div key={i} className="h-16 rounded bg-muted" />
-          ))}
-        </div>
-      </aside>
-    );
-  }
-
-  if (!detail) {
-    return (
-      <aside className="w-80 shrink-0 border-l bg-muted/30 p-4">
-        <p className="text-sm text-muted-foreground">Download not found</p>
-      </aside>
-    );
-  }
+  const { data: detail, isLoading, isError } = useDownloadDetail(downloadId);
 
   return (
     <aside className="w-80 shrink-0 border-l bg-muted/30 overflow-y-auto">
@@ -80,23 +60,35 @@ function DownloadDetailContent({
           <X className="size-3.5" />
         </Button>
       </div>
-      <div className="space-y-4 p-4">
-        <FileInfoSection download={detail} />
-        <Separator />
-        <MetricsSection download={detail} />
-        <Separator />
-        <SegmentVisualization segments={detail.segments} totalBytes={detail.totalBytes} />
-        <Separator />
-        <SpeedSparkline downloadId={downloadId} />
-        <Separator />
-        <SourceInfoSection download={detail} />
-        <Separator />
-        <IntegritySection download={detail} />
-        <Separator />
-        <ModuleSection download={detail} />
-        <Separator />
-        <LogsSection downloadId={downloadId} />
-      </div>
+      {isLoading ? (
+        <div className="animate-pulse space-y-4 p-4">
+          {Array.from({ length: 5 }).map((_, i) => (
+            <div key={i} className="h-16 rounded bg-muted" />
+          ))}
+        </div>
+      ) : isError ? (
+        <p className="p-4 text-sm text-destructive">Failed to load download details</p>
+      ) : !detail ? (
+        <p className="p-4 text-sm text-muted-foreground">Download not found</p>
+      ) : (
+        <div className="space-y-4 p-4">
+          <FileInfoSection download={detail} />
+          <Separator />
+          <MetricsSection download={detail} />
+          <Separator />
+          <SegmentVisualization segments={detail.segments} totalBytes={detail.totalBytes} />
+          <Separator />
+          <SpeedSparkline downloadId={downloadId} />
+          <Separator />
+          <SourceInfoSection download={detail} />
+          <Separator />
+          <IntegritySection download={detail} />
+          <Separator />
+          <ModuleSection download={detail} />
+          <Separator />
+          <LogsSection downloadId={downloadId} />
+        </div>
+      )}
     </aside>
   );
 }
