@@ -4,6 +4,7 @@ pub mod config;
 pub mod credential;
 pub mod download;
 pub mod http;
+pub mod link;
 pub mod meta;
 pub mod package;
 pub mod plugin;

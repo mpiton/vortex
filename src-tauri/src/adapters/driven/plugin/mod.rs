@@ -1,3 +1,4 @@
+pub mod builtin;
 pub mod capabilities;
 pub mod extism_loader;
 pub mod host_functions;

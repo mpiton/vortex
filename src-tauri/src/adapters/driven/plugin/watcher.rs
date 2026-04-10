@@ -115,10 +115,13 @@ mod tests {
 
     fn make_loader(plugins_dir: &std::path::Path) -> Arc<ExtismPluginLoader> {
         use crate::adapters::driven::plugin::capabilities::SharedHostResources;
-        Arc::new(ExtismPluginLoader::new(
-            plugins_dir.to_path_buf(),
-            Arc::new(SharedHostResources::new()),
-        ))
+        Arc::new(
+            ExtismPluginLoader::new(
+                plugins_dir.to_path_buf(),
+                Arc::new(SharedHostResources::new()),
+            )
+            .expect("test HTTP client"),
+        )
     }
 
     fn setup_plugin_dir(plugins_dir: &std::path::Path, name: &str) {
