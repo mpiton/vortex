@@ -1,0 +1,1 @@
+export { DownloadDetailsPanel } from './DownloadDetailsPanel';

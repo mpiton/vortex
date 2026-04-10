@@ -92,3 +92,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - uiStore extended with `selectedDownloadIds` for multi-select state
   - Fixed `useTauriQuery` to support custom `queryKey` (query cache invalidation now works correctly)
   - Fixed `useDownloadEvents` to invalidate `downloadQueries.all()` (covers list + count queries)
+- Download Details Panel: right sidebar showing detailed info for the selected download
+  - 8 sections: File Info, Metrics, Segments, Speed History, Source, Integrity, Module, Logs
+  - Real-time metrics from Zustand `downloadStore.progressMap` (speed, ETA, downloaded/total)
+  - Segment visualization with colored progress bars per segment
+  - Speed sparkline: SVG polyline chart with 2-minute history sampled every 2 seconds
+  - File info with MIME type detection, tooltips on long filenames/paths/URLs
+  - Integrity section with SHA-256 checksum status
+  - Scrollable logs section fetching last 20 log lines via IPC query
+  - Auto-opens when a download is selected, closeable via X button
+  - `useDownloadDetail` hook wrapping TanStack Query with 500ms staleTime
+  - `useSpeedHistory` hook sampling speed from store at 2s intervals
