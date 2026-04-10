@@ -1,9 +1,10 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { MemoryRouter, Routes, Route } from "react-router";
 import { AppLayout } from "../AppLayout";
 
 const mockNavigate = vi.fn();
+const originalPlatform = navigator.platform;
 
 vi.mock("react-router", async () => {
   const actual = await vi.importActual("react-router");
@@ -29,6 +30,13 @@ function renderAppLayout(initialRoute = "/downloads") {
 describe("AppLayout", () => {
   beforeEach(() => {
     mockNavigate.mockClear();
+  });
+
+  afterEach(() => {
+    Object.defineProperty(navigator, "platform", {
+      value: originalPlatform,
+      configurable: true,
+    });
   });
 
   it("should render Sidebar, main content, and StatusBar", () => {
