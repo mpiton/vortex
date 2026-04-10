@@ -13,7 +13,7 @@ export type SortField = 'name' | 'filename' | 'size' | 'filesize' | 'progress' |
 export type SortDirection = 'asc' | 'ascending' | 'desc' | 'descending';
 
 export interface DownloadFilter {
-  filterState?: string;
+  filterState?: DownloadState;
   search?: string;
   sortField?: SortField;
   sortDirection?: SortDirection;

@@ -8,11 +8,11 @@ beforeEach(() => {
 describe('useDownloadStore — updateProgress', () => {
   it('should add entry to progressMap', () => {
     useDownloadStore.getState().updateProgress('1', 500, 1000);
-    expect(useDownloadStore.getState().progressMap['1']).toEqual({
-      id: '1',
-      downloadedBytes: 500,
-      totalBytes: 1000,
-    });
+    const entry = useDownloadStore.getState().progressMap['1'];
+    expect(entry.id).toBe('1');
+    expect(entry.downloadedBytes).toBe(500);
+    expect(entry.totalBytes).toBe(1000);
+    expect(entry.speedBytesPerSec).toBe(0);
   });
 
   it('should update existing entry', () => {
@@ -76,7 +76,18 @@ describe('selectActiveCount', () => {
 });
 
 describe('selectTotalSpeed', () => {
-  it('should return 0', () => {
+  it('should return 0 when no progress entries', () => {
     expect(selectTotalSpeed(useDownloadStore.getState())).toBe(0);
+  });
+
+  it('should sum speed across progress entries', () => {
+    useDownloadStore.setState({
+      progressMap: {
+        '1': { id: '1', downloadedBytes: 500, totalBytes: 1000, speedBytesPerSec: 100, lastSampleBytes: 500, lastSampleTime: Date.now() },
+        '2': { id: '2', downloadedBytes: 300, totalBytes: 600, speedBytesPerSec: 200, lastSampleBytes: 300, lastSampleTime: Date.now() },
+      },
+      countByState: {},
+    });
+    expect(selectTotalSpeed(useDownloadStore.getState())).toBe(300);
   });
 });

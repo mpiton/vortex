@@ -1,3 +1,6 @@
+/** Rust emits DownloadId.0 (u64) via serde_json. JavaScript receives it as number.
+ *  We type IDs as `number` to match the actual JSON wire format.
+ *  Consumers must use `String(payload.id)` when correlating with DTO IDs (which are string). */
 export interface DownloadIdPayload {
   id: number;
 }

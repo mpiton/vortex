@@ -47,9 +47,16 @@ describe('useSettingsStore — updateConfig', () => {
     expect(useSettingsStore.getState().isLoading).toBe(false);
   });
 
-  it('should set error and re-throw on failure', async () => {
+  it('should apply config optimistically before IPC call', async () => {
+    vi.mocked(tauriInvoke).mockRejectedValueOnce(new Error('unavailable'));
+    useSettingsStore.setState({ config: { theme: 'light' }, isLoading: false, error: null });
+    await useSettingsStore.getState().updateConfig({ theme: 'dark' });
+    expect(useSettingsStore.getState().config).toEqual({ theme: 'dark' });
+  });
+
+  it('should set error but not throw on IPC failure', async () => {
     vi.mocked(tauriInvoke).mockRejectedValueOnce(new Error('server error'));
-    await expect(useSettingsStore.getState().updateConfig({ theme: 'dark' })).rejects.toThrow('server error');
+    await useSettingsStore.getState().updateConfig({ theme: 'dark' });
     expect(useSettingsStore.getState().isLoading).toBe(false);
     expect(useSettingsStore.getState().error).toBe('server error');
   });
