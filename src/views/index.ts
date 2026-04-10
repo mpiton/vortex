@@ -1,0 +1,10 @@
+export { DownloadsView } from "./DownloadsView";
+export { LinkGrabberView } from "./LinkGrabberView";
+export { PackagesView } from "./PackagesView";
+export { AccountsView } from "./AccountsView";
+export { CaptchaView } from "./CaptchaView";
+export { PluginsView } from "./PluginsView";
+export { SchedulerView } from "./SchedulerView";
+export { HistoryView } from "./HistoryView";
+export { StatisticsView } from "./StatisticsView";
+export { SettingsView } from "./SettingsView";

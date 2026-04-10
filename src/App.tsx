@@ -1,10 +1,37 @@
+import { BrowserRouter, Routes, Route, Navigate } from "react-router";
+import { AppLayout } from "@/layouts/AppLayout";
+import {
+  DownloadsView,
+  LinkGrabberView,
+  PackagesView,
+  AccountsView,
+  CaptchaView,
+  PluginsView,
+  SchedulerView,
+  HistoryView,
+  StatisticsView,
+  SettingsView,
+} from "@/views";
+
 export function App() {
   return (
-    <main className="flex min-h-screen items-center justify-center bg-surface font-sans">
-      <div className="text-center">
-        <h1 className="text-4xl font-bold text-accent">Vortex</h1>
-        <p className="mt-2 text-muted">Download Manager — Coming Soon</p>
-      </div>
-    </main>
+    <BrowserRouter>
+      <Routes>
+        <Route element={<AppLayout />}>
+          <Route index element={<Navigate to="/downloads" replace />} />
+          <Route path="downloads" element={<DownloadsView />} />
+          <Route path="link-grabber" element={<LinkGrabberView />} />
+          <Route path="packages" element={<PackagesView />} />
+          <Route path="accounts" element={<AccountsView />} />
+          <Route path="captcha" element={<CaptchaView />} />
+          <Route path="plugins" element={<PluginsView />} />
+          <Route path="scheduler" element={<SchedulerView />} />
+          <Route path="history" element={<HistoryView />} />
+          <Route path="statistics" element={<StatisticsView />} />
+          <Route path="settings" element={<SettingsView />} />
+          <Route path="*" element={<Navigate to="/downloads" replace />} />
+        </Route>
+      </Routes>
+    </BrowserRouter>
   );
 }

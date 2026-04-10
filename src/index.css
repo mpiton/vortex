@@ -1,39 +1,99 @@
 @import "tailwindcss";
+@custom-variant dark (&:is(.dark *));
 
 @theme {
-  --color-accent: #6366f1;
-  --color-accent-hover: #4f46e5;
-  --color-sidebar-bg: #0f172a;
-  --color-sidebar-text: #e2e8f0;
-  --color-surface: #ffffff;
-  --color-surface-dark: #1e293b;
-  --color-muted: #64748b;
-  --color-border: #e2e8f0;
-  --color-border-dark: #334155;
-  --color-success: #22c55e;
-  --color-warning: #f59e0b;
-  --color-error: #ef4444;
+  /* Mockup palette */
+  --color-accent: #4F46E5;
+  --color-accent-hover: #4338CA;
+  --color-accent-light: #EEF2FF;
+  --color-accent-medium: #818CF8;
+  --color-accent-foreground: #C7D2FE;
+  --color-sidebar-bg: #1E1F2B;
+  --color-sidebar-hover: #2A2B3D;
+  --color-sidebar-divider: #2E2F42;
+  --color-sidebar-icon: #6B6D80;
+  --color-success: #16A34A;
+  --color-success-light: #F0FDF4;
+  --color-warning: #CA8A04;
+  --color-warning-light: #FEF9C3;
+  --color-error: #DC2626;
+  --color-error-light: #FEF2F2;
+  --color-cyan: #0891B2;
+  --color-cyan-light: #ECFEFF;
 
-  --color-background: #ffffff;
-  --color-foreground: #0f172a;
-  --color-primary: #6366f1;
-  --color-primary-foreground: #ffffff;
-  --color-secondary: #f1f5f9;
-  --color-secondary-foreground: #0f172a;
-  --color-destructive: #ef4444;
-  --color-destructive-foreground: #ffffff;
-  --color-muted-foreground: #64748b;
-  --color-card: #ffffff;
-  --color-card-foreground: #0f172a;
-  --color-popover: #ffffff;
-  --color-popover-foreground: #0f172a;
-  --color-input: #e2e8f0;
-  --color-ring: #6366f1;
+  /* Surfaces */
+  --color-background: #EDEEF2;
+  --color-foreground: #1A1D24;
+  --color-surface: #FFFFFF;
+  --color-surface-alt: #F6F7F9;
+  --color-surface-muted: #E4E6EB;
 
-  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  /* Semantic (shadcn compat) */
+  --color-primary: #4F46E5;
+  --color-primary-foreground: #FFFFFF;
+  --color-secondary: #F6F7F9;
+  --color-secondary-foreground: #1A1D24;
+  --color-destructive: #DC2626;
+  --color-destructive-foreground: #FFFFFF;
+  --color-muted: #5C6370;
+  --color-muted-foreground: #8B919D;
+  --color-card: #FFFFFF;
+  --color-card-foreground: #1A1D24;
+  --color-popover: #FFFFFF;
+  --color-popover-foreground: #1A1D24;
+  --color-border: #D0D3DA;
+  --color-border-soft: #E4E6EB;
+  --color-input: #E4E6EB;
+  --color-ring: #4F46E5;
+
+  /* Text */
+  --color-text: #1A1D24;
+  --color-text-muted: #5C6370;
+  --color-text-dim: #8B919D;
+  --color-text-ghost: #B0B5BF;
+
+  /* Typography — monospace only per mockup */
+  --font-sans: "IBM Plex Mono", ui-monospace, monospace;
   --font-mono: "IBM Plex Mono", ui-monospace, monospace;
 
   --radius-sm: 0.25rem;
   --radius-md: 0.375rem;
   --radius-lg: 0.5rem;
+}
+
+.dark {
+  --color-background: #111318;
+  --color-foreground: #E4E6EB;
+  --color-surface: #1A1D24;
+  --color-surface-alt: #22252E;
+  --color-surface-muted: #2E3140;
+  --color-primary: #818CF8;
+  --color-primary-foreground: #1E1F2B;
+  --color-secondary: #22252E;
+  --color-secondary-foreground: #E4E6EB;
+  --color-muted: #5C6370;
+  --color-muted-foreground: #8B919D;
+  --color-card: #1A1D24;
+  --color-card-foreground: #E4E6EB;
+  --color-popover: #1A1D24;
+  --color-popover-foreground: #E4E6EB;
+  --color-border: #2E3140;
+  --color-border-soft: #3A3E4A;
+  --color-input: #2E3140;
+  --color-ring: #818CF8;
+  --color-accent: #818CF8;
+  --color-accent-hover: #6366F1;
+  --color-text: #E4E6EB;
+  --color-text-muted: #8B919D;
+  --color-text-dim: #6B6D80;
+  --color-text-ghost: #4A4D5A;
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
 }
