@@ -8,7 +8,9 @@ vi.mock('@/api/client', () => ({
 
 import { tauriInvoke } from '@/api/client';
 
-const baseConfig = {
+import type { AppConfig } from '@/types/settings';
+
+const baseConfig: AppConfig = {
   downloadDir: '/tmp',
   maxConcurrentDownloads: 3,
   maxSegmentsPerDownload: 8,
@@ -17,7 +19,30 @@ const baseConfig = {
   theme: 'light',
   locale: 'en',
   clipboardMonitoring: true,
-  minimizeToTray: false,
+  startMinimized: false,
+  notificationsEnabled: true,
+  soundEnabled: false,
+  confirmDelete: true,
+  subfolderPerPackage: false,
+  maxRetries: 3,
+  retryDelaySeconds: 5,
+  verifyChecksums: true,
+  preAllocateSpace: false,
+  proxyType: 'none',
+  proxyUrl: null,
+  userAgent: 'Vortex/1.0',
+  dnsOverHttps: false,
+  connectionTimeoutSeconds: 30,
+  webInterfaceEnabled: false,
+  webInterfacePort: 9666,
+  restApiEnabled: false,
+  apiKey: '',
+  websocketEnabled: false,
+  minFileSizeMb: 1,
+  excludedDomains: [],
+  excludedExtensions: [],
+  accentColor: '#4F46E5',
+  compactMode: false,
 };
 
 beforeEach(() => {
@@ -37,7 +62,7 @@ describe('useSettingsStore — updateConfig', () => {
     vi.mocked(tauriInvoke).mockResolvedValueOnce(null);
     useSettingsStore.setState({ config: baseConfig, isLoading: false });
     await useSettingsStore.getState().updateConfig({ theme: 'dark' });
-    expect(tauriInvoke).toHaveBeenCalledWith('settings_update', { theme: 'dark' });
+    expect(tauriInvoke).toHaveBeenCalledWith('settings_update', { patch: { theme: 'dark' } });
   });
 
   it('should merge partial config on success', async () => {

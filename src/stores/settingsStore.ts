@@ -1,19 +1,6 @@
 import { create } from 'zustand';
 import { tauriInvoke } from '@/api/client';
-
-interface AppConfig {
-  downloadDir: string | null;
-  maxConcurrentDownloads: number;
-  maxSegmentsPerDownload: number;
-  speedLimitBytesPerSec: number | null;
-  autoExtract: boolean;
-  theme: string;
-  locale: string;
-  clipboardMonitoring: boolean;
-  minimizeToTray: boolean;
-}
-
-type AppConfigPatch = Partial<AppConfig>;
+import type { AppConfig, AppConfigPatch } from '@/types/settings';
 
 interface SettingsStoreState {
   config: AppConfig | null;
@@ -38,7 +25,7 @@ export const useSettingsStore = create<SettingsStoreState>((set) => ({
       config: s.config ? { ...s.config, ...partial } : s.config,
     }));
     try {
-      await tauriInvoke('settings_update', partial);
+      await tauriInvoke('settings_update', { patch: partial });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       set({ error: message });

@@ -10,6 +10,42 @@ vi.mock("@tauri-apps/api/event", () => ({ listen }));
 
 import { ClipboardIndicator } from "../ClipboardIndicator";
 import { useSettingsStore } from "@/stores/settingsStore";
+import type { AppConfig } from "@/types/settings";
+
+const baseConfig: AppConfig = {
+  downloadDir: null,
+  maxConcurrentDownloads: 3,
+  maxSegmentsPerDownload: 8,
+  speedLimitBytesPerSec: null,
+  autoExtract: false,
+  theme: "dark",
+  locale: "en",
+  clipboardMonitoring: false,
+  startMinimized: false,
+  notificationsEnabled: true,
+  soundEnabled: false,
+  confirmDelete: true,
+  subfolderPerPackage: false,
+  maxRetries: 3,
+  retryDelaySeconds: 5,
+  verifyChecksums: true,
+  preAllocateSpace: false,
+  proxyType: "none",
+  proxyUrl: null,
+  userAgent: "Vortex/1.0",
+  dnsOverHttps: false,
+  connectionTimeoutSeconds: 30,
+  webInterfaceEnabled: false,
+  webInterfacePort: 9666,
+  restApiEnabled: false,
+  apiKey: "",
+  websocketEnabled: false,
+  minFileSizeMb: 1,
+  excludedDomains: [],
+  excludedExtensions: [],
+  accentColor: "#4F46E5",
+  compactMode: false,
+};
 
 function wrapper({ children }: { children: React.ReactNode }) {
   const client = new QueryClient({
@@ -32,17 +68,7 @@ describe("ClipboardIndicator", () => {
 
   it("should show grey dot when disabled", () => {
     useSettingsStore.setState({
-      config: {
-        downloadDir: null,
-        maxConcurrentDownloads: 3,
-        maxSegmentsPerDownload: 8,
-        speedLimitBytesPerSec: null,
-        autoExtract: false,
-        theme: "system",
-        locale: "en",
-        clipboardMonitoring: false,
-        minimizeToTray: true,
-      },
+      config: { ...baseConfig, clipboardMonitoring: false },
     });
 
     render(<ClipboardIndicator />, { wrapper });
@@ -55,17 +81,7 @@ describe("ClipboardIndicator", () => {
 
   it("should show green dot when enabled", () => {
     useSettingsStore.setState({
-      config: {
-        downloadDir: null,
-        maxConcurrentDownloads: 3,
-        maxSegmentsPerDownload: 8,
-        speedLimitBytesPerSec: null,
-        autoExtract: false,
-        theme: "system",
-        locale: "en",
-        clipboardMonitoring: true,
-        minimizeToTray: true,
-      },
+      config: { ...baseConfig, clipboardMonitoring: true },
     });
 
     render(<ClipboardIndicator />, { wrapper });

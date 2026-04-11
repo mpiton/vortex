@@ -81,6 +81,9 @@ pub enum DomainEvent {
     ClipboardUrlDetected {
         urls: Vec<String>,
     },
+
+    // Settings
+    SettingsUpdated,
 }
 
 #[cfg(test)]

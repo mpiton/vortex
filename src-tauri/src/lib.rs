@@ -27,6 +27,7 @@ pub use application::read_models::{
 pub use application::services::QueueManager;
 
 pub use adapters::driven::clipboard::TauriClipboardObserver;
+pub use adapters::driven::config::TomlConfigStore;
 pub use adapters::driven::plugin::builtin::HttpModule;
 pub use adapters::driven::plugin::capabilities::SharedHostResources;
 pub use adapters::driven::plugin::{ExtismPluginLoader, PluginRegistry, PluginWatcher};
@@ -35,13 +36,19 @@ pub use adapters::driving::tauri_ipc::{
     download_detail, download_list, download_pause, download_pause_all, download_remove,
     download_resume, download_resume_all, download_retry, download_set_priority, download_start,
     link_resolve, plugin_disable, plugin_enable, plugin_install, plugin_list, plugin_uninstall,
+    settings_get, settings_update,
 };
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_clipboard_manager::init())
-        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_notification::init());
+    #[cfg(all(debug_assertions, unix))]
+    {
+        builder = builder.plugin(tauri_plugin_pilot::init());
+    }
+    builder
         .setup(|app| {
             // System tray — default to clipboard_enabled=false since the
             // observer starts disabled and AppState isn't wired yet.
@@ -77,6 +84,8 @@ pub fn run() {
             link_resolve,
             clipboard_toggle,
             clipboard_state,
+            settings_get,
+            settings_update,
         ])
         .run(tauri::generate_context!())
         // Tauri's run() has no meaningful recovery path — panic is intentional here

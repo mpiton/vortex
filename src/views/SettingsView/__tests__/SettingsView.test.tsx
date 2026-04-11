@@ -1,0 +1,157 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { SettingsView } from '../SettingsView';
+import type { AppConfig } from '@/types/settings';
+
+const mockInvoke = vi.hoisted(() => vi.fn());
+const mockListen = vi.hoisted(() => vi.fn().mockResolvedValue(vi.fn()));
+
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke: mockInvoke,
+}));
+
+vi.mock('@tauri-apps/api/event', () => ({
+  listen: mockListen,
+}));
+
+const mockConfig: AppConfig = {
+  downloadDir: '/tmp/downloads',
+  startMinimized: false,
+  notificationsEnabled: true,
+  autoExtract: false,
+  clipboardMonitoring: true,
+  soundEnabled: false,
+  confirmDelete: true,
+  subfolderPerPackage: false,
+  maxConcurrentDownloads: 3,
+  maxSegmentsPerDownload: 8,
+  speedLimitBytesPerSec: null,
+  maxRetries: 3,
+  retryDelaySeconds: 5,
+  verifyChecksums: false,
+  preAllocateSpace: true,
+  proxyType: 'none',
+  proxyUrl: null,
+  userAgent: 'Vortex/1.0',
+  dnsOverHttps: false,
+  connectionTimeoutSeconds: 30,
+  webInterfaceEnabled: false,
+  webInterfacePort: 9666,
+  restApiEnabled: false,
+  apiKey: 'test-api-key-123',
+  websocketEnabled: false,
+  minFileSizeMb: 0,
+  excludedDomains: [],
+  excludedExtensions: [],
+  theme: 'auto',
+  accentColor: '#4F46E5',
+  compactMode: false,
+  locale: 'en',
+};
+
+function renderWithProviders() {
+  const queryClient = new QueryClient({
+    defaultOptions: {
+      queries: { retry: false },
+      mutations: { retry: false },
+    },
+  });
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <SettingsView />
+    </QueryClientProvider>,
+  );
+}
+
+describe('SettingsView', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockInvoke.mockResolvedValue(mockConfig);
+  });
+
+  it('should render all 6 tab buttons', async () => {
+    renderWithProviders();
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /General/ })).toBeInTheDocument();
+    });
+
+    expect(screen.getByRole('button', { name: /Downloads/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Network/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Remote Access/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Browser/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Appearance/ })).toBeInTheDocument();
+    expect(mockListen).toHaveBeenCalledWith('settings-updated', expect.any(Function));
+  });
+
+  it('should show General section by default', async () => {
+    renderWithProviders();
+
+    await waitFor(() => {
+      expect(screen.getByText('Start minimized')).toBeInTheDocument();
+    });
+
+    expect(screen.getByText('Clipboard monitoring')).toBeInTheDocument();
+  });
+
+  it('should switch to Downloads section when tab clicked', async () => {
+    const user = userEvent.setup();
+    renderWithProviders();
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /General/ })).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByRole('button', { name: /Downloads/ }));
+
+    expect(screen.getByText('Max concurrent downloads')).toBeInTheDocument();
+    expect(screen.getByText('Max segments per download')).toBeInTheDocument();
+  });
+
+  it('should switch to Network section when tab clicked', async () => {
+    const user = userEvent.setup();
+    renderWithProviders();
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /General/ })).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByRole('button', { name: /Network/ }));
+
+    expect(screen.getByText('Proxy type')).toBeInTheDocument();
+    expect(screen.getByText('User agent')).toBeInTheDocument();
+  });
+
+  it('should switch to Appearance section when tab clicked', async () => {
+    const user = userEvent.setup();
+    renderWithProviders();
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /General/ })).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByRole('button', { name: /Appearance/ }));
+
+    expect(screen.getByText('Theme')).toBeInTheDocument();
+    expect(screen.getByText('Accent color')).toBeInTheDocument();
+    expect(screen.getByText('Compact mode')).toBeInTheDocument();
+  });
+
+  it('should show loading skeletons when config not yet loaded', () => {
+    mockInvoke.mockImplementation(() => new Promise(() => {}));
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    const { container } = render(
+      <QueryClientProvider client={queryClient}>
+        <SettingsView />
+      </QueryClientProvider>,
+    );
+
+    expect(container.querySelectorAll('[data-slot="skeleton"]').length).toBeGreaterThan(0);
+  });
+});
