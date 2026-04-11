@@ -1,0 +1,30 @@
+[plugin]
+name = "vortex-mod-youtube"
+version = "1.0.0"
+category = "crawler"
+author = "vortex-community"
+description = "YouTube video/playlist/shorts/channel downloader via yt-dlp"
+license = "GPL-3.0"
+min_vortex_version = "0.1.0"
+
+[capabilities]
+# Least privilege — all network access is delegated to yt-dlp, so the
+# plugin does not need the `http` host function.
+subprocess = ["yt-dlp"]
+
+# NOTE: The `[config]` section is forward-compatible documentation. The
+# current Vortex plugin manifest parser (`src-tauri/src/adapters/driven/
+# plugin/manifest.rs`) consumes `[plugin]` and `[capabilities]` only, so
+# these default values and option lists are not wired to the plugin
+# runtime yet. They describe the contract this plugin expects the host
+# settings UI to expose, and are kept here so that when manifest schema
+# support lands (or a settings-driven installer is added), the values can
+# be picked up without changing the plugin code.
+[config]
+default_quality = { type = "string", default = "1080p", options = ["360p", "480p", "720p", "1080p", "1440p", "2160p", "4320p", "best"] }
+preferred_format = { type = "string", default = "mp4", options = ["mp4", "webm", "mkv"] }
+audio_only = { type = "boolean", default = false }
+audio_format = { type = "string", default = "m4a", options = ["m4a", "mp3", "ogg", "opus", "wav"] }
+auto_subtitles = { type = "boolean", default = true }
+subtitle_languages = { type = "array", default = ["en"], description = "ISO 639-1 codes" }
+cookie_file = { type = "string", default = "", description = "Browser cookie file for age-restricted content" }
