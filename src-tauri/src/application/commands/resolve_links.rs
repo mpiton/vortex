@@ -150,10 +150,11 @@ impl CommandBus {
 }
 
 fn is_allowed_scheme(url: &str) -> bool {
-    url.starts_with("http://")
-        || url.starts_with("https://")
-        || url.starts_with("ftp://")
-        || url.starts_with("magnet:")
+    let lower = url.to_lowercase();
+    lower.starts_with("http://")
+        || lower.starts_with("https://")
+        || lower.starts_with("ftp://")
+        || lower.starts_with("magnet:")
 }
 
 fn sanitize_resolve_error(_e: &crate::domain::DomainError) -> String {
