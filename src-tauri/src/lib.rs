@@ -44,7 +44,7 @@ pub fn run() {
     let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_notification::init());
-    #[cfg(debug_assertions)]
+    #[cfg(all(debug_assertions, unix))]
     {
         builder = builder.plugin(tauri_plugin_pilot::init());
     }
