@@ -159,14 +159,28 @@ fn validate_and_split(url: &str) -> Option<(String, &str)> {
         None => (rest, ""),
     };
     let authority_no_user = authority.rsplit('@').next().unwrap_or(authority);
-    let host = authority_no_user
-        .split(':')
-        .next()
-        .unwrap_or(authority_no_user);
-    if host.is_empty() {
+    let host = extract_host(authority_no_user)?;
+    Some((host.to_ascii_lowercase(), path_and_query))
+}
+
+/// Extract the host portion (without port) from an authority string.
+/// Handles both plain hosts/IPv4 and bracketed IPv6 literals — see
+/// the equivalent helper in the gallery plugin for the full policy.
+fn extract_host(authority: &str) -> Option<&str> {
+    if authority.is_empty() {
         return None;
     }
-    Some((host.to_ascii_lowercase(), path_and_query))
+    if authority.starts_with('[') {
+        let close = authority.find(']')?;
+        Some(&authority[..=close])
+    } else {
+        let host = authority.split(':').next().unwrap_or(authority);
+        if host.is_empty() {
+            None
+        } else {
+            Some(host)
+        }
+    }
 }
 
 #[cfg(test)]

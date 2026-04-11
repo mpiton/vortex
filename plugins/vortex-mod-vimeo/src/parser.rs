@@ -282,20 +282,29 @@ pub fn extract_player_config_from_html(html: &str) -> Result<&str, PluginError> 
     // Prefer the canonical assignment pattern; fall back to "playerConfig ="
     // in case Vimeo ever drops the `window.` prefix.
     //
-    // Both markers require that the next character is not an identifier
-    // continuation (alphanumeric or `_`), so that similarly named
-    // variables like `window.playerConfigVersion` or
-    // `playerConfigDetail =` do not match before the real assignment.
+    // Both markers require an identifier boundary on **both** sides,
+    // so that similarly named variables like `window.playerConfigVersion`
+    // or `mywindow.playerConfig` do not match before the real
+    // assignment.
+    //
+    // Additionally, for the `CANONICAL` marker we insist on an `=`
+    // operator between the end of the needle and the next `{`. This
+    // rejects non-assignment references such as
+    // `console.log(window.playerConfig)` which happen to appear
+    // before the real assignment in the HTML. The `FALLBACK` needle
+    // already contains the `=`, so the gap check is a no-op for it.
     const CANONICAL: &str = "window.playerConfig";
     const FALLBACK: &str = "playerConfig =";
-    let start_marker = find_at_word_boundary(html, CANONICAL)
-        .or_else(|| find_at_word_boundary(html, FALLBACK))
-        .ok_or(PluginError::PlayerConfigNotFound)?;
+    let (start_marker, needle_len) =
+        find_assignment_marker(html, CANONICAL, RequireAssignment::Yes)
+            .or_else(|| find_assignment_marker(html, FALLBACK, RequireAssignment::No))
+            .ok_or(PluginError::PlayerConfigNotFound)?;
 
     // Find the first `{` after the marker.
-    let rest = &html[start_marker..];
+    let needle_end = start_marker + needle_len;
+    let rest = &html[needle_end..];
     let brace_rel = rest.find('{').ok_or(PluginError::PlayerConfigNotFound)?;
-    let brace_start = start_marker + brace_rel;
+    let brace_start = needle_end + brace_rel;
 
     // Walk the bytes, counting unescaped braces outside string literals.
     let bytes = html.as_bytes();
@@ -331,27 +340,74 @@ pub fn extract_player_config_from_html(html: &str) -> Result<&str, PluginError> 
 
 // ── Request builders ──────────────────────────────────────────────────────────
 
-/// Return the byte offset of the first occurrence of `needle` in
-/// `haystack` that is **not** followed by a JavaScript identifier
-/// continuation character (`[A-Za-z0-9_$]`). JavaScript allows `$` as
-/// an identifier character, so `window.playerConfig$legacy` must not
-/// satisfy the word boundary for `window.playerConfig`. The check
-/// uses a right-hand boundary only — the left-hand side does not need
-/// one because both markers here start with a literal character
-/// (`w` or `p`) that is already preceded by whitespace or punctuation
-/// in every realistic HTML context.
-fn find_at_word_boundary(haystack: &str, needle: &str) -> Option<usize> {
+/// Whether the caller requires the gap between the needle end and
+/// the next `{` to contain an `=` operator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RequireAssignment {
+    /// Scan the gap for an `=` operator. Use this when the needle
+    /// itself is bare (e.g. `window.playerConfig`).
+    Yes,
+    /// The needle already contains the `=` operator — skip the gap
+    /// scan. Use this for markers like `playerConfig =`.
+    No,
+}
+
+/// Return the byte offset and length of the first occurrence of
+/// `needle` in `haystack` that:
+///
+/// 1. is bounded on **both** sides by non-JavaScript-identifier
+///    characters, so `mywindow.playerConfig` and
+///    `window.playerConfigVersion` do not match; and
+/// 2. if `require_assignment == Yes`, is followed (before the next
+///    `{`) by an `=` operator, so `console.log(window.playerConfig)`
+///    and similar non-assignment references are filtered out.
+///
+/// JavaScript identifier-continuation characters are `[A-Za-z0-9_$]`
+/// — the `$` must be included because it is a legal identifier
+/// character and appears in minified bundles.
+///
+/// Returns `(byte_offset, needle_length)` so the caller can walk
+/// forward from the end of the needle without re-measuring it.
+fn find_assignment_marker(
+    haystack: &str,
+    needle: &str,
+    require_assignment: RequireAssignment,
+) -> Option<(usize, usize)> {
+    let bytes = haystack.as_bytes();
     let mut start = 0usize;
     while start < haystack.len() {
         let rel = haystack[start..].find(needle)?;
         let abs = start + rel;
         let after = abs + needle.len();
-        let next_ok = haystack
-            .as_bytes()
-            .get(after)
-            .is_none_or(|b| !is_js_ident_continue(*b));
-        if next_ok {
-            return Some(abs);
+
+        // Left boundary: the byte immediately before `abs` must not
+        // be an identifier continuation. At offset 0 there is no
+        // preceding byte, so the boundary is trivially satisfied.
+        let left_ok = abs == 0 || !is_js_ident_continue(bytes[abs - 1]);
+
+        // Right boundary: the byte at `after` must not be an
+        // identifier continuation (end-of-string is fine).
+        let right_ok = bytes.get(after).is_none_or(|b| !is_js_ident_continue(*b));
+
+        if left_ok && right_ok {
+            let assignment_ok = match require_assignment {
+                RequireAssignment::No => true,
+                RequireAssignment::Yes => {
+                    // Scan the gap between the needle end and the
+                    // next `{` for an `=`. If there is no `{` at all
+                    // after the needle, this cannot be an assignment
+                    // site — fall through to the next candidate.
+                    let gap_rest = &haystack[after..];
+                    if let Some(brace_rel) = gap_rest.find('{') {
+                        gap_rest[..brace_rel].contains('=')
+                    } else {
+                        false
+                    }
+                }
+            };
+            if assignment_ok {
+                return Some((abs, needle.len()));
+            }
         }
         start = abs + needle.len();
     }
@@ -669,6 +725,47 @@ mod tests {
         "#;
         let json = extract_player_config_from_html(html).unwrap();
         assert_eq!(json, r#"{"real": true}"#);
+    }
+
+    #[test]
+    fn extract_player_config_rejects_left_boundary_violation() {
+        // `mywindow.playerConfig` must not match `window.playerConfig`
+        // because the byte before `window` is an identifier character.
+        let html = r#"
+            <script>
+              mywindow.playerConfig = {"decoy": true};
+              window.playerConfig = {"real": true};
+            </script>
+        "#;
+        let json = extract_player_config_from_html(html).unwrap();
+        assert_eq!(json, r#"{"real": true}"#);
+    }
+
+    #[test]
+    fn extract_player_config_rejects_non_assignment_reference() {
+        // A reference like `console.log(window.playerConfig)` appears
+        // before the real assignment. The scanner must walk past it
+        // because the gap between the needle end and the next `{`
+        // does not contain an `=` operator.
+        let html = r#"
+            <script>
+              console.log(window.playerConfig);
+              function f() {}
+              window.playerConfig = {"real": true};
+            </script>
+        "#;
+        let json = extract_player_config_from_html(html).unwrap();
+        assert_eq!(json, r#"{"real": true}"#);
+    }
+
+    #[test]
+    fn extract_player_config_fallback_marker_still_works() {
+        // The FALLBACK marker `playerConfig =` already contains `=`
+        // so the gap check is skipped — it must still find the
+        // assignment.
+        let html = r#"<script>playerConfig = {"fallback": true};</script>"#;
+        let json = extract_player_config_from_html(html).unwrap();
+        assert_eq!(json, r#"{"fallback": true}"#);
     }
 
     #[test]

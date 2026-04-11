@@ -158,14 +158,36 @@ fn validate_and_split(url: &str) -> Option<(String, &str)> {
         None => (rest, ""),
     };
     let authority_no_user = authority.rsplit('@').next().unwrap_or(authority);
-    let host = authority_no_user
-        .split(':')
-        .next()
-        .unwrap_or(authority_no_user);
-    if host.is_empty() {
+    let host = extract_host(authority_no_user)?;
+    Some((host.to_ascii_lowercase(), path_and_query))
+}
+
+/// Extract the host portion (without port) from an authority string.
+///
+/// Handles both plain hostnames/IPv4 (`example.com:8080`, `1.2.3.4`)
+/// and IPv6 literals (`[::1]:8080`, `[2001:db8::1]`). For IPv6, the
+/// host is the substring between `[` and `]`, keeping the brackets
+/// so downstream host-allowlist matches still behave as expected.
+/// For plain hosts, the host is the substring before the first `:`.
+///
+/// Returns `None` when the authority is empty or malformed (e.g. a
+/// lone `[` with no closing `]`).
+fn extract_host(authority: &str) -> Option<&str> {
+    if authority.is_empty() {
         return None;
     }
-    Some((host.to_ascii_lowercase(), path_and_query))
+    if authority.starts_with('[') {
+        // IPv6 literal — host includes the brackets.
+        let close = authority.find(']')?;
+        Some(&authority[..=close])
+    } else {
+        let host = authority.split(':').next().unwrap_or(authority);
+        if host.is_empty() {
+            None
+        } else {
+            Some(host)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -232,6 +254,23 @@ mod tests {
     fn is_recognised_provider_rejects_generic() {
         assert!(is_recognised_provider("https://imgur.com/a/abc"));
         assert!(!is_recognised_provider("https://example.com/page"));
+    }
+
+    #[test]
+    fn extract_host_handles_plain_and_ipv6() {
+        // Plain host: everything before the first `:` is the host.
+        assert_eq!(extract_host("example.com"), Some("example.com"));
+        assert_eq!(extract_host("example.com:8080"), Some("example.com"));
+        assert_eq!(extract_host("1.2.3.4:443"), Some("1.2.3.4"));
+        // IPv6 literal: host is the substring between `[` and `]`,
+        // brackets included.
+        assert_eq!(extract_host("[::1]"), Some("[::1]"));
+        assert_eq!(extract_host("[::1]:8080"), Some("[::1]"));
+        assert_eq!(extract_host("[2001:db8::1]:443"), Some("[2001:db8::1]"));
+        // Malformed: lone `[` with no `]` → None.
+        assert_eq!(extract_host("[::1"), None);
+        // Empty authority → None.
+        assert_eq!(extract_host(""), None);
     }
 
     #[test]
