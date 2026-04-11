@@ -67,7 +67,7 @@ impl CommandBus {
                 continue;
             }
 
-            if url.starts_with("magnet:") {
+            if url.to_lowercase().starts_with("magnet:") {
                 results.push(ResolvedLinkDto {
                     id,
                     original_url: url.clone(),
