@@ -45,6 +45,7 @@ export function PlaylistSection({
               className="flex items-center gap-2 rounded p-2 hover:bg-muted"
             >
               <Checkbox
+                aria-label={`#${idx + 1} ${item.title}`}
                 checked={selectedItems.includes(item.id)}
                 onCheckedChange={(checked) => {
                   if (checked) {

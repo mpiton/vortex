@@ -359,3 +359,95 @@ describe("MediaGrabberDialog - Playlist", () => {
     expect(screen.queryByText(/Playlist/)).not.toBeInTheDocument();
   });
 });
+
+describe("MediaGrabberDialog - State Reset", () => {
+  beforeEach(() => {
+    mockInvoke.mockReset();
+  });
+
+  it("should reset selections when dialog reopens with new link", async () => {
+    mockInvoke.mockResolvedValue(mockMetadata);
+    const user = userEvent.setup();
+
+    const altLink: ResolvedLink = {
+      ...mockMediaLink,
+      id: "media-2",
+      originalUrl: "https://youtube.com/watch?v=alt456",
+    };
+
+    const altMetadata: MediaMetadata = {
+      ...mockMetadata,
+      title: "Alt Video",
+      availableQualities: [
+        { quality: "720p", height: 720, width: 1280, fps: 60, bitrateKbps: 3000 },
+      ],
+      availableFormats: ["webm"],
+      availableAudioFormats: ["opus"],
+    };
+
+    const { onConfirm, rerender } = (() => {
+      const queryClient = new QueryClient({
+        defaultOptions: {
+          queries: { retry: false },
+          mutations: { retry: false },
+        },
+      });
+      const onConfirmFn = vi.fn();
+      const result = render(
+        <QueryClientProvider client={queryClient}>
+          <MediaGrabberDialog
+            link={mockMediaLink}
+            open={true}
+            onOpenChange={vi.fn()}
+            onConfirm={onConfirmFn}
+          />
+        </QueryClientProvider>,
+      );
+      return { onConfirm: onConfirmFn, ...result };
+    })();
+
+    // Wait for first metadata
+    await screen.findByText("Test Video Title");
+
+    // Toggle audio only
+    await user.click(screen.getByRole("switch"));
+
+    // Now rerender with new link and new metadata
+    mockInvoke.mockResolvedValue(altMetadata);
+
+    rerender(
+      <QueryClientProvider
+        client={
+          new QueryClient({
+            defaultOptions: {
+              queries: { retry: false },
+              mutations: { retry: false },
+            },
+          })
+        }
+      >
+        <MediaGrabberDialog
+          link={altLink}
+          open={true}
+          onOpenChange={vi.fn()}
+          onConfirm={onConfirm}
+        />
+      </QueryClientProvider>,
+    );
+
+    await screen.findByText("Alt Video");
+
+    // Audio only should be reset
+    await user.click(screen.getByRole("button", { name: "Download" }));
+
+    expect(onConfirm).toHaveBeenCalledWith(
+      expect.objectContaining({
+        quality: "720p",
+        format: "webm",
+        audioOnly: false,
+        subtitles: [],
+        playlistItems: [],
+      }),
+    );
+  });
+});

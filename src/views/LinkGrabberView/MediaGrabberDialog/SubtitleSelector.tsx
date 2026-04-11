@@ -25,11 +25,10 @@ export function SubtitleSelector({
               id={`subtitle-${lang.code}`}
               checked={selected.includes(lang.code)}
               onCheckedChange={(checked) => {
-                if (checked) {
-                  onSelect([...selected, lang.code]);
-                } else {
-                  onSelect(selected.filter((c) => c !== lang.code));
-                }
+                const next = new Set(selected);
+                if (checked === true) next.add(lang.code);
+                else next.delete(lang.code);
+                onSelect([...next]);
               }}
             />
             <label

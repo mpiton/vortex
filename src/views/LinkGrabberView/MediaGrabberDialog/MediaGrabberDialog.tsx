@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Dialog,
   DialogContent,
@@ -47,6 +47,23 @@ export function MediaGrabberDialog({
     refetch,
   } = useMediaMetadata(link.originalUrl, open);
 
+  useEffect(() => {
+    if (!open) return;
+    setAudioOnly(false);
+    setSelectedSubtitles([]);
+    setSelectedPlaylistItems([]);
+  }, [open, link.originalUrl]);
+
+  useEffect(() => {
+    if (!metadata) return;
+    const firstQuality = metadata.availableQualities[0]?.quality ?? "1080p";
+    const firstFormat = metadata.availableFormats[0] ?? "mp4";
+    const firstAudioFormat = metadata.availableAudioFormats[0] ?? "m4a";
+    setQualitySelection(firstQuality);
+    setFormatSelection(firstFormat);
+    setAudioFormat(firstAudioFormat);
+  }, [metadata]);
+
   const handleConfirm = () => {
     onConfirm({
       quality: audioOnly ? "audio_only" : qualitySelection,
@@ -74,7 +91,7 @@ export function MediaGrabberDialog({
               thumbnail={metadata.thumbnailUrl}
             />
 
-            {metadata.isPlaylist && metadata.playlistItems && (
+            {metadata.isPlaylist && metadata.playlistItems && metadata.playlistItems.length > 0 && (
               <PlaylistSection
                 items={metadata.playlistItems}
                 selectedItems={selectedPlaylistItems}
@@ -115,6 +132,7 @@ export function MediaGrabberDialog({
               quality={audioOnly ? "audio_only" : qualitySelection}
               format={audioOnly ? audioFormat : formatSelection}
               duration={metadata.durationSeconds}
+              qualities={metadata.availableQualities}
             />
           </div>
         ) : (

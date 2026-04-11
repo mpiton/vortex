@@ -34,14 +34,15 @@ export function AudioOnlySection({
 
       {enabled && (
         <div className="space-y-2">
-          <label className="text-sm font-semibold">Audio Format</label>
-          <div className="grid grid-cols-3 gap-2">
+          <span className="text-sm font-semibold" id="audio-format-label">Audio Format</span>
+          <div className="grid grid-cols-3 gap-2" role="group" aria-labelledby="audio-format-label">
             {audioFormats.map((fmt) => (
               <Button
                 key={fmt}
                 variant={selectedFormat === fmt ? "default" : "outline"}
                 size="sm"
                 onClick={() => onSelectFormat(fmt)}
+                aria-pressed={selectedFormat === fmt}
                 className="uppercase"
               >
                 {fmt}

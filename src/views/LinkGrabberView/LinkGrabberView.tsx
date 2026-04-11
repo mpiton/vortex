@@ -143,7 +143,10 @@ export function LinkGrabberView() {
         <MediaGrabberDialog
           link={selectedMediaLink}
           open={mediaGrabberOpen}
-          onOpenChange={setMediaGrabberOpen}
+          onOpenChange={(open) => {
+            setMediaGrabberOpen(open);
+            if (!open) setSelectedMediaLink(null);
+          }}
           onConfirm={handleMediaGrabberConfirm}
         />
       )}

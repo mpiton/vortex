@@ -121,5 +121,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - SizeEstimate: real-time download size estimation based on quality and duration
   - MediaPreview: thumbnail + title display with broken image fallback
   - `useMediaMetadata` hook fetching metadata via Tauri IPC
-  - Integration in LinkGrabberView via clickable media badge in LinkRow
+  - Integration in LinkGrabberView via clickable media button in LinkRow
   - shadcn/ui Dialog, Card, Skeleton components added to UI library

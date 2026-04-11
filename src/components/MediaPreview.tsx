@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 interface MediaPreviewProps {
   title: string;
@@ -7,6 +7,10 @@ interface MediaPreviewProps {
 
 export function MediaPreview({ title, thumbnail }: MediaPreviewProps) {
   const [imgError, setImgError] = useState(false);
+
+  useEffect(() => {
+    setImgError(false);
+  }, [thumbnail]);
 
   return (
     <div className="space-y-2">

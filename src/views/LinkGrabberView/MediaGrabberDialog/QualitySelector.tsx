@@ -29,7 +29,7 @@ export function QualitySelector({
             key={q.quality}
             role="radio"
             aria-checked={selected === q.quality}
-            tabIndex={0}
+            tabIndex={selected === q.quality ? 0 : -1}
             className={`cursor-pointer p-3 transition-colors ${
               selected === q.quality
                 ? "ring-2 ring-accent bg-accent/10"
@@ -55,14 +55,15 @@ export function QualitySelector({
       </div>
 
       <div className="space-y-2">
-        <label className="text-sm font-semibold">Container Format</label>
-        <div className="flex gap-2">
+        <span className="text-sm font-semibold" id="container-format-label">Container Format</span>
+        <div className="flex gap-2" role="group" aria-labelledby="container-format-label">
           {formats.map((fmt) => (
             <Button
               key={fmt}
               variant={selectedFormat === fmt ? "default" : "outline"}
               size="sm"
               onClick={() => onSelectFormat(fmt)}
+              aria-pressed={selectedFormat === fmt}
               className="uppercase"
             >
               {fmt}
