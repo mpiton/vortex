@@ -46,6 +46,14 @@ export interface PackageCreatedPayload {
   name: string;
 }
 
+export interface ClipboardUrlDetectedPayload {
+  urls: string[];
+}
+
+export interface ClipboardMonitoringChangedPayload {
+  enabled: boolean;
+}
+
 export type TauriEventMap = {
   'download-created': DownloadIdPayload;
   'download-started': DownloadIdPayload;
@@ -66,6 +74,8 @@ export type TauriEventMap = {
   'plugin-loaded': PluginLoadedPayload;
   'plugin-unloaded': PluginUnloadedPayload;
   'package-created': PackageCreatedPayload;
+  'clipboard-url-detected': ClipboardUrlDetectedPayload;
+  'clipboard-monitoring-changed': ClipboardMonitoringChangedPayload;
 };
 
 export type TauriEventName = keyof TauriEventMap;

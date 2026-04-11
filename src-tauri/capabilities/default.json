@@ -4,6 +4,10 @@
   "description": "Default capabilities for Vortex",
   "windows": ["main"],
   "permissions": [
-    "core:default"
+    "core:default",
+    "core:tray:default",
+    "notification:allow-notify",
+    "notification:allow-request-permission",
+    "notification:allow-is-permission-granted"
   ]
 }

@@ -76,6 +76,11 @@ pub enum DomainEvent {
         id: u64,
         name: String,
     },
+
+    // Clipboard
+    ClipboardUrlDetected {
+        urls: Vec<String>,
+    },
 }
 
 #[cfg(test)]
@@ -162,5 +167,24 @@ mod tests {
                 name: "My Package".to_string()
             }
         );
+    }
+
+    #[test]
+    fn test_clipboard_url_detected_event() {
+        let event = DomainEvent::ClipboardUrlDetected {
+            urls: vec!["https://example.com/file.zip".to_string()],
+        };
+        let s = format!("{event:?}");
+        assert!(s.contains("ClipboardUrlDetected"));
+        assert!(s.contains("example.com"));
+    }
+
+    #[test]
+    fn test_clipboard_url_detected_clone() {
+        let event = DomainEvent::ClipboardUrlDetected {
+            urls: vec!["https://a.com".into(), "https://b.com".into()],
+        };
+        let cloned = event.clone();
+        assert_eq!(event, cloned);
     }
 }

@@ -33,6 +33,7 @@ fn event_name(event: &DomainEvent) -> &'static str {
         DomainEvent::PluginLoaded { .. } => "plugin-loaded",
         DomainEvent::PluginUnloaded { .. } => "plugin-unloaded",
         DomainEvent::PackageCreated { .. } => "package-created",
+        DomainEvent::ClipboardUrlDetected { .. } => "clipboard-url-detected",
     }
 }
 
@@ -84,6 +85,7 @@ fn event_payload(event: &DomainEvent) -> serde_json::Value {
         }
         DomainEvent::PluginUnloaded { name } => json!({ "name": name }),
         DomainEvent::PackageCreated { id, name } => json!({ "id": id.to_string(), "name": name }),
+        DomainEvent::ClipboardUrlDetected { urls } => json!({ "urls": urls }),
     }
 }
 
@@ -234,5 +236,31 @@ mod tests {
         // Verify snake_case keys are not present
         assert!(payload.get("download_id").is_none());
         assert!(payload.get("segment_id").is_none());
+    }
+
+    #[test]
+    fn test_event_name_clipboard_url_detected() {
+        assert_eq!(
+            event_name(&DomainEvent::ClipboardUrlDetected {
+                urls: vec!["https://example.com".into()]
+            }),
+            "clipboard-url-detected"
+        );
+    }
+
+    #[test]
+    fn test_event_payload_clipboard_url_detected() {
+        let event = DomainEvent::ClipboardUrlDetected {
+            urls: vec![
+                "https://a.com/file.zip".into(),
+                "ftp://b.com/data.tar".into(),
+            ],
+        };
+        let (name, payload) = to_tauri_event(&event);
+        assert_eq!(name, "clipboard-url-detected");
+        let urls = payload["urls"].as_array().unwrap();
+        assert_eq!(urls.len(), 2);
+        assert_eq!(urls[0], "https://a.com/file.zip");
+        assert_eq!(urls[1], "ftp://b.com/data.tar");
     }
 }

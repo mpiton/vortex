@@ -14,6 +14,7 @@ mod resume_download;
 mod retry_download;
 mod set_priority;
 mod start_download;
+mod toggle_clipboard;
 mod toggle_plugin;
 mod uninstall_plugin;
 

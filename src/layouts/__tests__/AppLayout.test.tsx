@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { MemoryRouter, Routes, Route } from "react-router";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { AppLayout } from "../AppLayout";
 
 const mockNavigate = vi.fn();
@@ -14,6 +15,14 @@ vi.mock("@/hooks/useDownloadEvents", () => ({
   useDownloadEvents: vi.fn(),
 }));
 
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: vi.fn(),
+}));
+
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn().mockResolvedValue(() => {}),
+}));
+
 vi.mock("react-router", async () => {
   const actual = await vi.importActual("react-router");
   return {
@@ -23,15 +32,20 @@ vi.mock("react-router", async () => {
 });
 
 function renderAppLayout(initialRoute = "/downloads") {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
   return render(
-    <MemoryRouter initialEntries={[initialRoute]}>
-      <Routes>
-        <Route element={<AppLayout />}>
-          <Route path="downloads" element={<div>Downloads Page</div>} />
-          <Route path="settings" element={<div>Settings Page</div>} />
-        </Route>
-      </Routes>
-    </MemoryRouter>,
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter initialEntries={[initialRoute]}>
+        <Routes>
+          <Route element={<AppLayout />}>
+            <Route path="downloads" element={<div>Downloads Page</div>} />
+            <Route path="settings" element={<div>Settings Page</div>} />
+          </Route>
+        </Routes>
+      </MemoryRouter>
+    </QueryClientProvider>,
   );
 }
 
