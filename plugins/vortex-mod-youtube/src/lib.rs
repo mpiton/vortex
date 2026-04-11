@@ -73,9 +73,20 @@ pub struct MediaVariant {
 
 // ── Pure business logic (native-testable) ────────────────────────────────────
 
-/// Returns `"true"` if the URL is any form of recognised YouTube resource.
+/// Returns `"true"` if the URL is one of the kinds this plugin can actually
+/// route to an extraction function.
+///
+/// Uses [`url_matcher::classify_url`] directly rather than
+/// [`url_matcher::is_youtube_url`] so that the routing contract stays in sync
+/// with the `extract_*` / `get_media_variants` handlers: adding a new
+/// [`UrlKind`] variant later will force an explicit decision here instead of
+/// silently accepting it.
 pub fn handle_can_handle(url: &str) -> String {
-    bool_to_string(url_matcher::is_youtube_url(url))
+    let kind = url_matcher::classify_url(url);
+    bool_to_string(matches!(
+        kind,
+        UrlKind::Video | UrlKind::Shorts | UrlKind::Playlist | UrlKind::Channel
+    ))
 }
 
 /// Returns `"true"` if the URL refers to a playlist or channel.
@@ -148,12 +159,33 @@ pub fn build_media_variants_response(video: VideoInfo) -> MediaVariantsResponse 
     MediaVariantsResponse { variants }
 }
 
-/// Reject URLs that do not look like YouTube resources before spending a
-/// subprocess call on them.
-pub fn ensure_youtube_url(url: &str) -> Result<(), PluginError> {
-    if url_matcher::is_youtube_url(url) {
-        Ok(())
-    } else {
-        Err(PluginError::UnsupportedUrl(url.to_string()))
+/// Reject URLs that do not map to a supported [`UrlKind`] before spending a
+/// subprocess call on them. Returns the classified kind on success so that
+/// callers can dispatch on it without re-running [`url_matcher::classify_url`].
+pub fn ensure_youtube_url(url: &str) -> Result<UrlKind, PluginError> {
+    let kind = url_matcher::classify_url(url);
+    match kind {
+        UrlKind::Video | UrlKind::Shorts | UrlKind::Playlist | UrlKind::Channel => Ok(kind),
+        UrlKind::Unknown => Err(PluginError::UnsupportedUrl(url.to_string())),
+    }
+}
+
+/// Reject URLs that are not a single-video resource (video or short).
+/// Used as a pre-check by `get_media_variants`.
+pub fn ensure_single_video(url: &str) -> Result<UrlKind, PluginError> {
+    let kind = url_matcher::classify_url(url);
+    match kind {
+        UrlKind::Video | UrlKind::Shorts => Ok(kind),
+        _ => Err(PluginError::UnsupportedUrl(url.to_string())),
+    }
+}
+
+/// Reject URLs that are not a playlist or channel resource.
+/// Used as a pre-check by `extract_playlist`.
+pub fn ensure_playlist_or_channel(url: &str) -> Result<UrlKind, PluginError> {
+    let kind = url_matcher::classify_url(url);
+    match kind {
+        UrlKind::Playlist | UrlKind::Channel => Ok(kind),
+        _ => Err(PluginError::UnsupportedUrl(url.to_string())),
     }
 }

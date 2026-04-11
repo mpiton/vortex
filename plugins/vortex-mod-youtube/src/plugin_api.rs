@@ -13,10 +13,11 @@ use crate::extractor::{
     yt_dlp_args_for_single_video,
 };
 use crate::metadata::{parse_flat_playlist, parse_single_video};
-use crate::url_matcher::{classify_url, UrlKind};
+use crate::url_matcher::UrlKind;
 use crate::{
     build_media_variants_response, build_playlist_response, build_single_video_response,
-    ensure_youtube_url, handle_can_handle, handle_supports_playlist,
+    ensure_playlist_or_channel, ensure_single_video, ensure_youtube_url, handle_can_handle,
+    handle_supports_playlist,
 };
 
 // ── Host function imports ─────────────────────────────────────────────────────
@@ -47,9 +48,8 @@ pub fn supports_playlist(url: String) -> FnResult<String> {
 /// `yt-dlp --dump-json --flat-playlist` (playlist / channel).
 #[plugin_fn]
 pub fn extract_links(url: String) -> FnResult<String> {
-    ensure_youtube_url(&url).map_err(error_to_fn_error)?;
+    let kind = ensure_youtube_url(&url).map_err(error_to_fn_error)?;
 
-    let kind = classify_url(&url);
     let response = match kind {
         UrlKind::Playlist | UrlKind::Channel => {
             let stdout = call_yt_dlp(yt_dlp_args_for_playlist(&url))?;
@@ -61,6 +61,9 @@ pub fn extract_links(url: String) -> FnResult<String> {
             let video = parse_single_video(&stdout).map_err(error_to_fn_error)?;
             build_single_video_response(video)
         }
+        // `ensure_youtube_url` rejects `Unknown` — this arm is unreachable,
+        // but exhaustiveness matching forces a decision if a new kind is
+        // added later. Return `UnsupportedUrl` for safety.
         UrlKind::Unknown => {
             return Err(error_to_fn_error(PluginError::UnsupportedUrl(url)));
         }
@@ -70,9 +73,14 @@ pub fn extract_links(url: String) -> FnResult<String> {
 }
 
 /// List available media formats for a single video URL.
+///
+/// Rejects playlist / channel URLs explicitly — without this guard, yt-dlp
+/// would silently extract the first video in the playlist (because the
+/// args include `--no-playlist`) and return its variants as if they
+/// belonged to the collection itself.
 #[plugin_fn]
 pub fn get_media_variants(url: String) -> FnResult<String> {
-    ensure_youtube_url(&url).map_err(error_to_fn_error)?;
+    ensure_single_video(&url).map_err(error_to_fn_error)?;
 
     let stdout = call_yt_dlp(yt_dlp_args_for_single_video(&url))?;
     let video = parse_single_video(&stdout).map_err(error_to_fn_error)?;
@@ -81,9 +89,13 @@ pub fn get_media_variants(url: String) -> FnResult<String> {
 }
 
 /// Extract a flat playlist listing.
+///
+/// Rejects single-video URLs explicitly so that callers get a clear
+/// `UnsupportedUrl` error instead of yt-dlp falling back to single-item
+/// extraction behaviour on a `watch?v=...` URL.
 #[plugin_fn]
 pub fn extract_playlist(url: String) -> FnResult<String> {
-    ensure_youtube_url(&url).map_err(error_to_fn_error)?;
+    ensure_playlist_or_channel(&url).map_err(error_to_fn_error)?;
 
     let stdout = call_yt_dlp(yt_dlp_args_for_playlist(&url))?;
     let playlist = parse_flat_playlist(&stdout).map_err(error_to_fn_error)?;

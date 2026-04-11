@@ -187,6 +187,13 @@ pub fn parse_single_video(json: &str) -> Result<VideoInfo, PluginError> {
     let formats = raw.formats.into_iter().map(into_format_entry).collect();
     let subtitles = convert_subtitles(raw.subtitles);
     let automatic_captions = convert_subtitles(raw.automatic_captions);
+    // yt-dlp always populates `webpage_url` for successful extractions, but
+    // when a downstream tool feeds us a sparse dump we derive a canonical
+    // watch URL from the video id rather than emit an empty string silently.
+    let webpage_url = raw
+        .webpage_url
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| canonical_watch_url(&raw.id));
 
     Ok(VideoInfo {
         id: raw.id,
@@ -196,12 +203,18 @@ pub fn parse_single_video(json: &str) -> Result<VideoInfo, PluginError> {
         upload_date: raw.upload_date,
         view_count: raw.view_count,
         uploader: raw.uploader,
-        webpage_url: raw.webpage_url.unwrap_or_default(),
+        webpage_url,
         thumbnail: raw.thumbnail,
         formats,
         subtitles,
         automatic_captions,
     })
+}
+
+/// Canonical YouTube watch URL for a given video id — used as a fallback
+/// when yt-dlp omits `webpage_url`/`url`.
+fn canonical_watch_url(id: &str) -> String {
+    format!("https://www.youtube.com/watch?v={id}")
 }
 
 /// Parse the output of `yt-dlp --dump-json --flat-playlist <url>`.
@@ -210,6 +223,12 @@ pub fn parse_single_video(json: &str) -> Result<VideoInfo, PluginError> {
 /// playlists) **or** a single JSON object with an `entries` array (envelope
 /// format — often used for channels, depending on yt-dlp version and URL
 /// shape). Both shapes are accepted.
+///
+/// Detection is defensive: we attempt envelope deserialisation first when
+/// the input is a single top-level JSON object, and silently fall back to
+/// JSONL parsing on any failure. This avoids the previous heuristic where a
+/// substring match on `"entries"` (which could appear as a string value, not
+/// a key) would commit to envelope parsing and fail the whole playlist.
 pub fn parse_flat_playlist(output: &str) -> Result<Playlist, PluginError> {
     let trimmed = output.trim_start();
     if trimmed.is_empty() {
@@ -220,17 +239,17 @@ pub fn parse_flat_playlist(output: &str) -> Result<Playlist, PluginError> {
         });
     }
 
-    // Try envelope shape first: the output is a single JSON object that
-    // parses into RawPlaylistEnvelope. We detect this cheaply by looking at
-    // the number of top-level newlines.
-    if let Some(first_line) = trimmed.lines().next() {
-        let contains_entries_key = first_line.contains("\"entries\"");
-        let looks_single_object = trimmed.lines().filter(|l| !l.trim().is_empty()).count() == 1
-            && trimmed.starts_with('{');
-        if looks_single_object && contains_entries_key {
-            let env: RawPlaylistEnvelope = serde_json::from_str(trimmed)?;
+    // Only consider the envelope shape when the output is a single JSON
+    // object. Multi-line outputs are always JSONL by definition.
+    let single_line_object =
+        trimmed.starts_with('{') && trimmed.lines().filter(|l| !l.trim().is_empty()).count() == 1;
+
+    if single_line_object {
+        if let Ok(env) = serde_json::from_str::<RawPlaylistEnvelope>(trimmed) {
             return Ok(from_envelope(env));
         }
+        // Not an envelope after all — fall through to JSONL parsing of the
+        // same single line (it may be a single-entry flat playlist).
     }
 
     parse_jsonl_playlist(output)
@@ -276,10 +295,21 @@ fn parse_jsonl_playlist(jsonl: &str) -> Result<Playlist, PluginError> {
 }
 
 fn into_playlist_entry(raw: RawPlaylistEntry) -> PlaylistEntry {
+    // Prefer webpage_url > url > canonical fallback from the video id. yt-dlp
+    // omits both fields for placeholder entries (private/deleted/region-locked
+    // videos) and emitting an empty string silently would produce unusable
+    // MediaLink.url values downstream — deriving a canonical watch URL keeps
+    // the link at least navigable and debuggable.
+    let url = raw
+        .webpage_url
+        .filter(|s| !s.is_empty())
+        .or_else(|| raw.url.filter(|s| !s.is_empty()))
+        .unwrap_or_else(|| canonical_watch_url(&raw.id));
+
     PlaylistEntry {
         id: raw.id,
         title: raw.title,
-        url: raw.webpage_url.or(raw.url).unwrap_or_default(),
+        url,
         duration: parse_duration(raw.duration),
         thumbnail: raw.thumbnail,
     }
@@ -345,10 +375,24 @@ fn convert_subtitles(
 
 fn parse_duration(value: Option<serde_json::Value>) -> Option<u64> {
     value.and_then(|v| match v {
-        serde_json::Value::Number(n) => n.as_f64().map(|f| f.round() as u64),
-        serde_json::Value::String(s) => s.parse::<f64>().ok().map(|f| f.round() as u64),
+        serde_json::Value::Number(n) => n.as_f64().and_then(seconds_to_u64),
+        serde_json::Value::String(s) => s.parse::<f64>().ok().and_then(seconds_to_u64),
         _ => None,
     })
+}
+
+/// Convert a floating-point seconds value to a whole-second `u64`.
+///
+/// Rejects negative values (yt-dlp may emit `-1` as a sentinel for live
+/// streams or unknown durations) and NaN/infinity. Without this guard the
+/// saturating `as u64` cast would silently coerce `-1.0` into `Some(0)`,
+/// indistinguishable from a legitimate 0-second video.
+fn seconds_to_u64(f: f64) -> Option<u64> {
+    if f.is_nan() || f.is_infinite() || f < 0.0 {
+        None
+    } else {
+        Some(f.round() as u64)
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -447,6 +491,54 @@ mod tests {
         assert_eq!(pl.entries.len(), 2);
         assert_eq!(pl.entries[0].id, "v1");
         assert_eq!(pl.entries[1].id, "v2");
+    }
+
+    #[test]
+    fn single_line_with_entries_as_value_parses_as_jsonl() {
+        // A JSONL line where "entries" is a string value, not a key. The old
+        // heuristic (substring check) committed to envelope parsing and
+        // failed. The new defensive path should fall back to JSONL.
+        let line = r#"{"id":"abc12345678","title":"entries","webpage_url":"https://www.youtube.com/watch?v=abc12345678"}"#;
+        let pl = parse_flat_playlist(line).unwrap();
+        assert_eq!(pl.entries.len(), 1);
+        assert_eq!(pl.entries[0].title.as_deref(), Some("entries"));
+    }
+
+    #[test]
+    fn playlist_entry_missing_url_fallbacks_to_canonical_watch_url() {
+        let line = r#"{"id":"abc12345678","title":"Placeholder"}"#;
+        let pl = parse_flat_playlist(line).unwrap();
+        assert_eq!(pl.entries.len(), 1);
+        assert_eq!(
+            pl.entries[0].url,
+            "https://www.youtube.com/watch?v=abc12345678"
+        );
+    }
+
+    #[test]
+    fn single_video_missing_webpage_url_fallbacks_to_canonical() {
+        let json = r#"{"id":"abc12345678"}"#;
+        let info = parse_single_video(json).unwrap();
+        assert_eq!(
+            info.webpage_url,
+            "https://www.youtube.com/watch?v=abc12345678"
+        );
+    }
+
+    #[test]
+    fn parses_negative_duration_as_none() {
+        let json = r#"{"id":"abc12345678","duration":-1}"#;
+        let info = parse_single_video(json).unwrap();
+        assert_eq!(info.duration, None);
+    }
+
+    #[test]
+    fn parses_nan_duration_as_none() {
+        // serde_json rejects NaN in strict number form, so test the string
+        // branch directly.
+        let json = r#"{"id":"abc12345678","duration":"nan"}"#;
+        let info = parse_single_video(json).unwrap();
+        assert_eq!(info.duration, None);
     }
 
     #[test]

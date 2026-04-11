@@ -7,9 +7,11 @@
 #![cfg(test)]
 
 use crate::metadata::{parse_flat_playlist, parse_single_video};
+use crate::url_matcher::UrlKind;
 use crate::{
     build_media_variants_response, build_playlist_response, build_single_video_response,
-    ensure_youtube_url, handle_can_handle, handle_supports_playlist,
+    ensure_playlist_or_channel, ensure_single_video, ensure_youtube_url, handle_can_handle,
+    handle_supports_playlist,
 };
 
 const SINGLE_VIDEO_JSON: &str = r#"{
@@ -101,11 +103,72 @@ fn build_media_variants_response_lists_both_formats() {
 }
 
 #[test]
-fn ensure_youtube_url_ok_for_valid_url() {
-    assert!(ensure_youtube_url("https://youtu.be/dQw4w9WgXcQ").is_ok());
+fn ensure_youtube_url_returns_kind_for_valid_url() {
+    assert_eq!(
+        ensure_youtube_url("https://youtu.be/dQw4w9WgXcQ").unwrap(),
+        UrlKind::Video
+    );
+    assert_eq!(
+        ensure_youtube_url("https://www.youtube.com/shorts/abcDEF12345").unwrap(),
+        UrlKind::Shorts
+    );
+    assert_eq!(
+        ensure_youtube_url("https://www.youtube.com/playlist?list=PLxyz").unwrap(),
+        UrlKind::Playlist
+    );
 }
 
 #[test]
 fn ensure_youtube_url_err_for_invalid_url() {
     assert!(ensure_youtube_url("https://vimeo.com/12345").is_err());
+}
+
+#[test]
+fn ensure_single_video_rejects_playlist() {
+    assert!(
+        ensure_single_video("https://www.youtube.com/playlist?list=PLxyz").is_err(),
+        "playlist URL should be rejected by single-video guard"
+    );
+}
+
+#[test]
+fn ensure_single_video_accepts_video_and_shorts() {
+    assert_eq!(
+        ensure_single_video("https://youtu.be/dQw4w9WgXcQ").unwrap(),
+        UrlKind::Video
+    );
+    assert_eq!(
+        ensure_single_video("https://www.youtube.com/shorts/abcDEF12345").unwrap(),
+        UrlKind::Shorts
+    );
+}
+
+#[test]
+fn ensure_playlist_or_channel_rejects_single_video() {
+    assert!(
+        ensure_playlist_or_channel("https://youtu.be/dQw4w9WgXcQ").is_err(),
+        "single video URL should be rejected by playlist guard"
+    );
+}
+
+#[test]
+fn ensure_playlist_or_channel_accepts_both_kinds() {
+    assert_eq!(
+        ensure_playlist_or_channel("https://www.youtube.com/playlist?list=PLxyz").unwrap(),
+        UrlKind::Playlist
+    );
+    assert_eq!(
+        ensure_playlist_or_channel("https://www.youtube.com/@MrBeast").unwrap(),
+        UrlKind::Channel
+    );
+}
+
+#[test]
+fn can_handle_rejects_unknown_youtube_path() {
+    // /embed/... is a YouTube host but not a supported kind — must not
+    // advertise support for it, otherwise dispatcher will later fail.
+    assert_eq!(
+        handle_can_handle("https://www.youtube.com/embed/dQw4w9WgXcQ"),
+        "false"
+    );
 }

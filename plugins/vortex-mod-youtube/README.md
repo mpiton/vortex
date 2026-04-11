@@ -1,6 +1,6 @@
 # vortex-mod-youtube
 
-YouTube WASM plugin for [Vortex](https://github.com/...).
+YouTube WASM plugin for [Vortex](https://github.com/mpiton/vortex).
 
 ## Features
 
@@ -27,7 +27,19 @@ The resulting WASM binary is at `target/wasm32-wasip1/release/vortex_mod_youtube
 
 ## Install
 
-Copy the `.wasm` and `plugin.toml` to `~/.config/vortex/plugins/vortex-mod-youtube/`:
+The Vortex plugin loader expects the binary filename to match the plugin name
+from `plugin.toml` (directory naming convention enforced in
+`src-tauri/src/adapters/driven/plugin/manifest.rs`). Copy the manifest and
+rename the build artifact to match the directory:
+
+```bash
+mkdir -p ~/.config/vortex/plugins/vortex-mod-youtube
+cp plugin.toml ~/.config/vortex/plugins/vortex-mod-youtube/
+cp target/wasm32-wasip1/release/vortex_mod_youtube.wasm \
+   ~/.config/vortex/plugins/vortex-mod-youtube/vortex-mod-youtube.wasm
+```
+
+Final layout:
 
 ```
 ~/.config/vortex/plugins/vortex-mod-youtube/
