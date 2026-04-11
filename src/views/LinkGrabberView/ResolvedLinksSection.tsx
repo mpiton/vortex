@@ -21,7 +21,10 @@ function getGroupKey(link: ResolvedLink, mode: GroupingMode): string {
       }
     }
     case "extension": {
-      return link.filename?.split(".").pop()?.toUpperCase() ?? "UNKNOWN";
+      const name = link.filename ?? "";
+      const dotIndex = name.lastIndexOf(".");
+      if (dotIndex <= 0) return "UNKNOWN";
+      return name.slice(dotIndex + 1).toUpperCase() || "UNKNOWN";
     }
     case "type": {
       if (link.isMedia) return "Media";

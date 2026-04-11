@@ -35,13 +35,13 @@ export function LinkGrabberView() {
   );
 
   const handlePasteUrls = (urls: string[]) => {
+    // TODO: container: entries need a dedicated backend command for decryption
     const validUrls = urls.filter(
       (u) =>
         u.startsWith("http://") ||
         u.startsWith("https://") ||
         u.startsWith("ftp://") ||
-        u.startsWith("magnet:") ||
-        u.startsWith("container:"),
+        u.startsWith("magnet:"),
     );
     if (validUrls.length > 0) {
       resolveLinks({ urls: validUrls });

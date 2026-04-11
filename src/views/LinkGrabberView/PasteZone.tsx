@@ -10,7 +10,7 @@ export function extractUrls(text: string): string[] {
   const matches = text.match(
     /(https?:\/\/[^\s]+|ftp:\/\/[^\s]+|magnet:\?[^\s]+)/gi,
   );
-  return (matches ?? []).map((url) => url.replace(/[),.;:>\]}"'!?]+$/, ""));
+  return (matches ?? []).map((url) => url.replace(/[),.;:>}"'!?]+$/, ""));
 }
 
 export function PasteZone({ onPasteUrls, isLoading }: PasteZoneProps) {

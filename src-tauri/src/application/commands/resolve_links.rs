@@ -128,7 +128,7 @@ impl CommandBus {
                     });
                 }
                 Err(e) => {
-                    tracing::debug!(url = url, error = %e, "link resolution failed");
+                    tracing::debug!(error = %e, "link resolution failed");
                     results.push(ResolvedLinkDto {
                         id,
                         original_url: url.clone(),

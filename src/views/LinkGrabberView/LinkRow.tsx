@@ -45,7 +45,6 @@ export function LinkRow({ link, selected, onSelect }: LinkRowProps) {
       <Tooltip>
         <TooltipTrigger asChild>
           <span
-            role="button"
             tabIndex={0}
             className="min-w-0 flex-1 truncate text-sm font-semibold"
           >
