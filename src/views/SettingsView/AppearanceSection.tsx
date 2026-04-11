@@ -46,7 +46,7 @@ export function AppearanceSection({ config }: AppearanceSectionProps) {
             value={config.theme}
             onValueChange={(v: ThemeMode) => handleChange('theme', v)}
           >
-            <SelectTrigger className="w-32">
+            <SelectTrigger className="w-32" aria-label="Theme">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -91,7 +91,7 @@ export function AppearanceSection({ config }: AppearanceSectionProps) {
             value={config.locale}
             onValueChange={(v) => handleChange('locale', v)}
           >
-            <SelectTrigger className="w-32">
+            <SelectTrigger className="w-32" aria-label="Language">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>

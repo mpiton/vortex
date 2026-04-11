@@ -51,7 +51,11 @@ export function SettingNumberInput({
   const commit = () => {
     const num = Number(localValue);
     if (!Number.isNaN(num) && localValue !== '') {
-      const clamped = Math.min(max ?? num, Math.max(min ?? num, num));
+      let clamped = Math.min(max ?? num, Math.max(min ?? num, num));
+      if (step && step > 0) {
+        const base = min ?? 0;
+        clamped = Math.round((clamped - base) / step) * step + base;
+      }
       setLocalValue(String(clamped));
       onChange(clamped);
     } else {

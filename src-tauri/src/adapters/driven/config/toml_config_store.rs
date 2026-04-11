@@ -46,9 +46,33 @@ impl TomlConfigStore {
             .map_err(|e| DomainError::StorageError(format!("failed to serialize config: {e}")))?;
 
         let tmp_path = self.path.with_extension("tmp");
-        std::fs::write(&tmp_path, content).map_err(|e| {
-            DomainError::StorageError(format!("failed to write config tmp file: {e}"))
-        })?;
+        {
+            use std::io::Write;
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(&tmp_path)
+                .map_err(|e| {
+                    DomainError::StorageError(format!("failed to create config tmp file: {e}"))
+                })?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                file.set_permissions(std::fs::Permissions::from_mode(0o600))
+                    .map_err(|e| {
+                        DomainError::StorageError(format!(
+                            "failed to set config file permissions: {e}"
+                        ))
+                    })?;
+            }
+            file.write_all(content.as_bytes()).map_err(|e| {
+                DomainError::StorageError(format!("failed to write config tmp file: {e}"))
+            })?;
+            file.flush().map_err(|e| {
+                DomainError::StorageError(format!("failed to flush config tmp file: {e}"))
+            })?;
+        }
         std::fs::rename(&tmp_path, &self.path)
             .map_err(|e| DomainError::StorageError(format!("failed to rename config file: {e}")))?;
         Ok(())
