@@ -8,9 +8,9 @@ use tracing::{debug, warn};
 use crate::domain::error::DomainError;
 use crate::domain::ports::driven::ClipboardObserver;
 
-/// Strips common trailing punctuation that is not part of the URL.
+/// Greedy match — trailing punctuation is stripped by `strip_trailing_punctuation`.
 static URL_REGEX: LazyLock<regex::Regex> = LazyLock::new(|| {
-    regex::Regex::new(r"(https?://|ftp://|magnet:\?)[^\s]*[^\s.,)\]>;:'\x22]")
+    regex::Regex::new(r"(https?://|ftp://|magnet:\?)\S+")
         .expect("URL regex is a compile-time constant")
 });
 
@@ -44,8 +44,28 @@ impl TauriClipboardObserver {
     fn extract_urls(text: &str) -> Vec<String> {
         URL_REGEX
             .find_iter(text)
-            .map(|m| m.as_str().to_string())
+            .map(|m| Self::strip_trailing_punctuation(m.as_str()).to_string())
+            .filter(|u| u.len() > "http://".len())
             .collect()
+    }
+
+    /// Strips trailing punctuation that is likely wrapper syntax, not part of
+    /// the URL. Keeps `]` when a matching `[` exists in the URL (IPv6 hosts).
+    fn strip_trailing_punctuation(url: &str) -> &str {
+        let bytes = url.as_bytes();
+        let mut end = bytes.len();
+        while end > 0 {
+            match bytes[end - 1] {
+                b'.' | b',' | b')' | b';' | b':' | b'>' | b'\'' | b'"' => {
+                    end -= 1;
+                }
+                b']' if !url[..end].contains('[') => {
+                    end -= 1;
+                }
+                _ => break,
+            }
+        }
+        &url[..end]
     }
 }
 
@@ -213,6 +233,20 @@ mod tests {
         let text = "[https://example.com/file.zip]";
         let urls = TauriClipboardObserver::extract_urls(text);
         assert_eq!(urls, vec!["https://example.com/file.zip"]);
+    }
+
+    #[test]
+    fn test_url_extraction_preserves_ipv6() {
+        let text = "http://[::1]";
+        let urls = TauriClipboardObserver::extract_urls(text);
+        assert_eq!(urls, vec!["http://[::1]"]);
+    }
+
+    #[test]
+    fn test_url_extraction_preserves_ipv6_with_path() {
+        let text = "http://[::1]:8080/path";
+        let urls = TauriClipboardObserver::extract_urls(text);
+        assert_eq!(urls, vec!["http://[::1]:8080/path"]);
     }
 
     #[test]
