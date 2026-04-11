@@ -69,8 +69,8 @@ impl TomlConfigStore {
             file.write_all(content.as_bytes()).map_err(|e| {
                 DomainError::StorageError(format!("failed to write config tmp file: {e}"))
             })?;
-            file.flush().map_err(|e| {
-                DomainError::StorageError(format!("failed to flush config tmp file: {e}"))
+            file.sync_all().map_err(|e| {
+                DomainError::StorageError(format!("failed to sync config tmp file: {e}"))
             })?;
         }
         std::fs::rename(&tmp_path, &self.path)
