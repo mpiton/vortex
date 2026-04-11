@@ -525,7 +525,12 @@ fn img_src_regex() -> &'static Regex {
     R.get_or_init(|| {
         // Match <img ... src="..." ...> and capture the src value.
         // Uses [^>]* rather than .*? to avoid backtracking on large pages.
-        Regex::new(r#"(?i)<img\b[^>]*\bsrc\s*=\s*["']([^"']+)["']"#).unwrap()
+        //
+        // The pattern is a compile-time constant — `.expect` documents
+        // the invariant and honours the crate-wide rule that no
+        // production code path may `.unwrap()`.
+        Regex::new(r#"(?i)<img\b[^>]*\bsrc\s*=\s*["']([^"']+)["']"#)
+            .expect("img_src_regex: compile-time constant regex must compile")
     })
 }
 

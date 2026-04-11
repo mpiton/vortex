@@ -191,14 +191,22 @@ pub fn parse_player_config(raw: &str) -> Result<PlayerConfig, PluginError> {
 /// Convert a JavaScript object literal into valid JSON by rewriting
 /// single-quoted string delimiters to double quotes.
 ///
-/// The scanner walks the bytes tracking whether we are currently
-/// inside a `"`-delimited string (so `"don't"` is not rewritten) and
-/// whether the previous character was a backslash (so `\'` inside a
-/// single-quoted string keeps its meaning as an escaped quote). When
-/// a `'` is encountered outside a double-quoted string, the scanner
-/// toggles a `in_single` flag and emits `"` instead. Escape sequences
-/// inside a single-quoted string are re-emitted verbatim, except that
-/// `\'` becomes `'` (a literal apostrophe inside what is now a
+/// The scanner walks the input **by `char`** (not by byte) so that
+/// non-ASCII metadata embedded in the player config — e.g. a video
+/// title like `"Éclair — intro"` with accented characters, emoji, or
+/// full-width punctuation — round-trips through the rewrite intact.
+/// Iterating bytes and casting each to `char` would corrupt any
+/// multi-byte UTF-8 code unit by splitting it across multiple
+/// 1-character pushes.
+///
+/// State tracks whether we are currently inside a `"`-delimited
+/// string (so `"don't"` is not rewritten) and whether the previous
+/// character was a backslash (so `\'` inside a single-quoted string
+/// keeps its meaning as an escaped quote). When a `'` is encountered
+/// outside a double-quoted string, the scanner toggles an `in_single`
+/// flag and emits `"` instead. Escape sequences inside a
+/// single-quoted string are re-emitted verbatim, except that `\'`
+/// becomes `'` (a literal apostrophe inside what is now a
 /// double-quoted string).
 ///
 /// This handles the shapes the balanced-brace extractor can return:
@@ -216,29 +224,29 @@ fn js_object_literal_to_json(input: &str) -> String {
     let mut in_single = false;
     let mut escaped = false;
 
-    for b in input.bytes() {
+    for c in input.chars() {
         if escaped {
             // Inside a single-quoted string, `\'` collapses to `'`
             // (literal apostrophe). Inside a double-quoted string,
             // every escape is preserved verbatim.
-            if in_single && b == b'\'' {
+            if in_single && c == '\'' {
                 out.push('\'');
             } else {
                 out.push('\\');
-                out.push(b as char);
+                out.push(c);
             }
             escaped = false;
             continue;
         }
-        match b {
-            b'\\' if in_double || in_single => {
+        match c {
+            '\\' if in_double || in_single => {
                 escaped = true;
             }
-            b'"' if !in_single => {
+            '"' if !in_single => {
                 in_double = !in_double;
                 out.push('"');
             }
-            b'\'' if !in_double => {
+            '\'' if !in_double => {
                 // Toggle the single-quote state and emit a double
                 // quote in its place.
                 in_single = !in_single;
@@ -247,10 +255,10 @@ fn js_object_literal_to_json(input: &str) -> String {
             // Inside a single-quoted string, a literal `"` character
             // must be escaped when emitted into the JSON output so
             // the reparser does not see it as an end-of-string.
-            b'"' if in_single => {
+            '"' if in_single => {
                 out.push_str("\\\"");
             }
-            _ => out.push(b as char),
+            _ => out.push(c),
         }
     }
     out
@@ -534,6 +542,50 @@ mod tests {
         let out = js_object_literal_to_json(input);
         // Strict JSON pass-through — no `'` outside strings, nothing rewritten.
         assert_eq!(out, input);
+    }
+
+    #[test]
+    fn js_object_literal_preserves_utf8_content() {
+        // A title with accented characters, em-dashes, and emoji must
+        // round-trip through the rewrite without corruption. Iterating
+        // bytes and casting each to char would split multi-byte UTF-8
+        // sequences across multiple `push` calls.
+        let input = r#"{'title':'Éclair — intro 🎬','n':1}"#;
+        let out = js_object_literal_to_json(input);
+        assert_eq!(out, r#"{"title":"Éclair — intro 🎬","n":1}"#);
+        // And it should parse as valid JSON.
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["title"], "Éclair — intro 🎬");
+    }
+
+    #[test]
+    fn js_object_literal_preserves_utf8_inside_double_quoted() {
+        // Double-quoted strings must also round-trip UTF-8 intact.
+        let input = r#"{"title":"Élodie: «bonjour»"}"#;
+        let out = js_object_literal_to_json(input);
+        assert_eq!(out, r#"{"title":"Élodie: «bonjour»"}"#);
+    }
+
+    #[test]
+    fn parse_player_config_accepts_js_literal_with_utf8() {
+        let raw = r#"{
+            'request': {
+                'files': {
+                    'progressive': [
+                        {
+                            'quality': '720p',
+                            'url': 'https://vod.vimeo.com/720.mp4'
+                        }
+                    ]
+                }
+            },
+            'video': {
+                'title': 'Éclair — intro 🎬'
+            }
+        }"#;
+        let c = parse_player_config(raw).unwrap();
+        assert_eq!(c.request.files.progressive[0].quality, "720p");
+        assert_eq!(c.video.unwrap().title.unwrap(), "Éclair — intro 🎬");
     }
 
     #[test]

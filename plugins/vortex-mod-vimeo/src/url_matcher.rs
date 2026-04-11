@@ -84,14 +84,23 @@ fn is_vimeo_host(host: &str) -> bool {
     )
 }
 
+// All four URL-classification regexes are compile-time constants:
+// `.expect` documents the invariant and honours the crate-wide
+// policy that production code paths must not `.unwrap()`.
+
 fn video_regex() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();
-    R.get_or_init(|| Regex::new(r"^/(\d{6,})$").unwrap())
+    R.get_or_init(|| {
+        Regex::new(r"^/(\d{6,})$").expect("video_regex: compile-time constant regex must compile")
+    })
 }
 
 fn private_video_regex() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();
-    R.get_or_init(|| Regex::new(r"^/(\d{6,})/([a-f0-9]{8,})$").unwrap())
+    R.get_or_init(|| {
+        Regex::new(r"^/(\d{6,})/([a-f0-9]{8,})$")
+            .expect("private_video_regex: compile-time constant regex must compile")
+    })
 }
 
 fn showcase_or_album_regex() -> &'static Regex {
@@ -99,12 +108,18 @@ fn showcase_or_album_regex() -> &'static Regex {
     // ID must not match. Callers normalise query/fragment/trailing
     // slash before passing the path to this regex.
     static R: OnceLock<Regex> = OnceLock::new();
-    R.get_or_init(|| Regex::new(r"^/(?:showcase|album)/(\d+)$").unwrap())
+    R.get_or_init(|| {
+        Regex::new(r"^/(?:showcase|album)/(\d+)$")
+            .expect("showcase_or_album_regex: compile-time constant regex must compile")
+    })
 }
 
 fn player_video_regex() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();
-    R.get_or_init(|| Regex::new(r"^/video/(\d{6,})$").unwrap())
+    R.get_or_init(|| {
+        Regex::new(r"^/video/(\d{6,})$")
+            .expect("player_video_regex: compile-time constant regex must compile")
+    })
 }
 
 /// Extract the numeric video ID from a URL or return `None` if the URL is

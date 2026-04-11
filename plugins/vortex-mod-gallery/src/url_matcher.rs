@@ -120,19 +120,32 @@ fn is_flickr_host(host: &str) -> bool {
 // Callers pre-normalise the path with `normalize_path`, so fragment
 // and query are already stripped by the time the regex runs.
 
+// All three provider regexes are compile-time constants: `.expect`
+// documents the invariant and honours the crate-wide policy that
+// production code paths must not `.unwrap()`.
+
 fn imgur_regex() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();
-    R.get_or_init(|| Regex::new(r"^/(?:a|gallery)/([A-Za-z0-9]+)(?:$|/)").unwrap())
+    R.get_or_init(|| {
+        Regex::new(r"^/(?:a|gallery)/([A-Za-z0-9]+)(?:$|/)")
+            .expect("imgur_regex: compile-time constant regex must compile")
+    })
 }
 
 fn reddit_regex() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();
-    R.get_or_init(|| Regex::new(r"^/r/[A-Za-z0-9_]+/comments/[A-Za-z0-9]+(?:$|/)").unwrap())
+    R.get_or_init(|| {
+        Regex::new(r"^/r/[A-Za-z0-9_]+/comments/[A-Za-z0-9]+(?:$|/)")
+            .expect("reddit_regex: compile-time constant regex must compile")
+    })
 }
 
 fn flickr_regex() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();
-    R.get_or_init(|| Regex::new(r"^/photos/([^/]+)/albums/(\d+)(?:$|/)").unwrap())
+    R.get_or_init(|| {
+        Regex::new(r"^/photos/([^/]+)/albums/(\d+)(?:$|/)")
+            .expect("flickr_regex: compile-time constant regex must compile")
+    })
 }
 
 fn validate_and_split(url: &str) -> Option<(String, &str)> {
