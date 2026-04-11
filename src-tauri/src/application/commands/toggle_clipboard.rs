@@ -4,16 +4,27 @@ use crate::domain::model::config::ConfigPatch;
 
 impl CommandBus {
     pub fn handle_toggle_clipboard(&self, enabled: bool) -> Result<bool, AppError> {
-        if enabled {
-            self.clipboard_observer().start()?;
-        } else {
-            self.clipboard_observer().stop()?;
-        }
-
+        // Persist config first to avoid observer/config state drift
+        // if the observer toggle succeeds but config write fails
         self.config_store().update_config(ConfigPatch {
             clipboard_monitoring: Some(enabled),
             ..Default::default()
         })?;
+
+        let observer_result = if enabled {
+            self.clipboard_observer().start()
+        } else {
+            self.clipboard_observer().stop()
+        };
+
+        if let Err(e) = observer_result {
+            // Rollback config on observer failure
+            let _ = self.config_store().update_config(ConfigPatch {
+                clipboard_monitoring: Some(!enabled),
+                ..Default::default()
+            });
+            return Err(e.into());
+        }
 
         Ok(enabled)
     }

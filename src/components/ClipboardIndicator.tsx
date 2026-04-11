@@ -11,6 +11,7 @@ export function ClipboardIndicator() {
     <button
       type="button"
       onClick={() => toggle(!isEnabled)}
+      aria-pressed={isEnabled}
       className="flex items-center gap-1.5 text-[11px] text-text-dim hover:text-text transition-colors"
       title={isEnabled ? 'Clipboard monitoring active' : 'Clipboard monitoring paused'}
     >

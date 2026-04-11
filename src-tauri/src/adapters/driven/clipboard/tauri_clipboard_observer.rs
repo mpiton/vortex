@@ -2,15 +2,21 @@ use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 
+use tokio::task::JoinHandle;
 use tracing::{debug, warn};
 
 use crate::domain::error::DomainError;
 use crate::domain::ports::driven::ClipboardObserver;
 
+/// Strips common trailing punctuation that is not part of the URL.
+/// Handles: `.`, `,`, `)`, `]`, `>`, `"`, `'`, `;`, `:`
 static URL_REGEX: LazyLock<regex::Regex> = LazyLock::new(|| {
-    regex::Regex::new(r"(https?://|ftp://|magnet:\?)[^\s]+")
+    regex::Regex::new(r"(https?://|ftp://|magnet:\?)[^\s]+[^\s.,)\]>;:'\x22]")
         .expect("URL regex is a compile-time constant")
 });
+
+const MAX_SEEN_URLS: usize = 1000;
+const MAX_CLIPBOARD_LEN: usize = 1_000_000;
 
 /// Monitors the system clipboard for URLs using Tauri's clipboard plugin.
 ///
@@ -21,6 +27,7 @@ pub struct TauriClipboardObserver {
     detected_urls: Arc<Mutex<Vec<String>>>,
     seen_urls: Arc<Mutex<HashSet<String>>>,
     last_content: Arc<Mutex<String>>,
+    task_handle: Mutex<Option<JoinHandle<()>>>,
 }
 
 impl TauriClipboardObserver {
@@ -31,6 +38,7 @@ impl TauriClipboardObserver {
             detected_urls: Arc::new(Mutex::new(Vec::new())),
             seen_urls: Arc::new(Mutex::new(HashSet::new())),
             last_content: Arc::new(Mutex::new(String::new())),
+            task_handle: Mutex::new(None),
         }
     }
 
@@ -42,14 +50,17 @@ impl TauriClipboardObserver {
     }
 }
 
-const MAX_SEEN_URLS: usize = 1000;
-const MAX_CLIPBOARD_LEN: usize = 1_000_000;
-
 impl ClipboardObserver for TauriClipboardObserver {
     fn start(&self) -> Result<(), DomainError> {
         // Re-entrancy guard: if already running, just ensure enabled
         if self.enabled.swap(true, Ordering::SeqCst) {
             return Ok(());
+        }
+
+        // Abort any lingering task from a previous stop→start cycle
+        let mut handle_guard = self.task_handle.lock().unwrap();
+        if let Some(old_handle) = handle_guard.take() {
+            old_handle.abort();
         }
 
         let app_handle = self.app_handle.clone();
@@ -58,71 +69,95 @@ impl ClipboardObserver for TauriClipboardObserver {
         let seen_urls = Arc::clone(&self.seen_urls);
         let last_content = Arc::clone(&self.last_content);
 
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             loop {
                 if !enabled.load(Ordering::SeqCst) {
                     break;
                 }
 
-                let clipboard_text = tokio::task::spawn_blocking({
-                    let handle = app_handle.clone();
+                let clipboard_result = tokio::task::spawn_blocking({
+                    let h = app_handle.clone();
                     move || {
                         use tauri_plugin_clipboard_manager::ClipboardExt;
-                        handle.clipboard().read_text()
+                        h.clipboard().read_text()
                     }
                 })
                 .await;
 
-                if let Ok(Ok(content)) = clipboard_text {
-                    // Skip very large clipboard content to avoid regex overhead
-                    if content.len() > MAX_CLIPBOARD_LEN {
+                // Handle both JoinError (task panic) and clipboard errors
+                let content = match clipboard_result {
+                    Ok(Ok(text)) => text,
+                    Ok(Err(e)) => {
+                        warn!("clipboard: failed to read: {e}");
                         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                         continue;
                     }
+                    Err(e) => {
+                        warn!("clipboard: spawn_blocking join error: {e}");
+                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                        continue;
+                    }
+                };
 
+                // Skip very large clipboard content to avoid regex overhead
+                if content.len() > MAX_CLIPBOARD_LEN {
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    continue;
+                }
+
+                let changed = {
                     let mut last = last_content.lock().unwrap();
                     if content != *last {
                         *last = content.clone();
-                        drop(last);
+                        true
+                    } else {
+                        false
+                    }
+                };
 
-                        let urls = Self::extract_urls(&content);
-                        if !urls.is_empty() {
-                            let mut seen = seen_urls.lock().unwrap();
+                if changed {
+                    let urls = Self::extract_urls(&content);
+                    if !urls.is_empty() {
+                        let mut seen = seen_urls.lock().unwrap();
 
-                            // Evict to prevent unbounded growth
-                            if seen.len() > MAX_SEEN_URLS {
-                                seen.clear();
-                            }
+                        // Evict when at capacity to prevent unbounded growth
+                        if seen.len() >= MAX_SEEN_URLS {
+                            seen.clear();
+                        }
 
-                            let mut new_urls = Vec::new();
-
-                            for url in urls {
-                                if !seen.contains(&url) {
-                                    seen.insert(url.clone());
-                                    new_urls.push(url);
-                                }
-                            }
-
-                            if !new_urls.is_empty() {
-                                debug!(count = new_urls.len(), "clipboard: new URLs detected");
-                                let mut buffer = detected_urls.lock().unwrap();
-                                buffer.extend(new_urls);
+                        let mut new_urls = Vec::new();
+                        for url in urls {
+                            if seen.insert(url.clone()) {
+                                new_urls.push(url);
                             }
                         }
+                        drop(seen);
+
+                        if !new_urls.is_empty() {
+                            debug!(count = new_urls.len(), "clipboard: new URLs detected");
+                            let mut buffer = detected_urls.lock().unwrap();
+                            buffer.extend(new_urls);
+                        }
                     }
-                } else if let Ok(Err(e)) = clipboard_text {
-                    warn!("clipboard: failed to read: {}", e);
                 }
 
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             }
         });
 
+        *handle_guard = Some(handle);
         Ok(())
     }
 
     fn stop(&self) -> Result<(), DomainError> {
         self.enabled.store(false, Ordering::SeqCst);
+
+        // Abort the polling task immediately instead of waiting for it to notice the flag
+        let mut handle_guard = self.task_handle.lock().unwrap();
+        if let Some(handle) = handle_guard.take() {
+            handle.abort();
+        }
+
         Ok(())
     }
 
@@ -144,13 +179,27 @@ mod tests {
     }
 
     #[test]
+    fn test_url_extraction_strips_trailing_punctuation() {
+        let text = "See https://example.com/file.zip.";
+        let urls = TauriClipboardObserver::extract_urls(text);
+        assert_eq!(urls, vec!["https://example.com/file.zip"]);
+    }
+
+    #[test]
+    fn test_url_extraction_strips_trailing_paren() {
+        let text = "(https://example.com/file.zip)";
+        let urls = TauriClipboardObserver::extract_urls(text);
+        assert_eq!(urls, vec!["https://example.com/file.zip"]);
+    }
+
+    #[test]
     fn test_url_extraction_multiple() {
-        let text = "https://a.com http://b.com ftp://c.com";
+        let text = "https://a.com/f http://b.com/g ftp://c.com/h";
         let urls = TauriClipboardObserver::extract_urls(text);
         assert_eq!(urls.len(), 3);
-        assert!(urls.contains(&"https://a.com".to_string()));
-        assert!(urls.contains(&"http://b.com".to_string()));
-        assert!(urls.contains(&"ftp://c.com".to_string()));
+        assert!(urls.contains(&"https://a.com/f".to_string()));
+        assert!(urls.contains(&"http://b.com/g".to_string()));
+        assert!(urls.contains(&"ftp://c.com/h".to_string()));
     }
 
     #[test]
@@ -161,14 +210,9 @@ mod tests {
     }
 
     #[test]
-    fn test_duplicate_detection() {
-        let text1 = "https://example.com/file.zip";
-        let text2 = "https://example.com/file.zip https://other.com";
-
-        let urls1 = TauriClipboardObserver::extract_urls(text1);
-        let urls2 = TauriClipboardObserver::extract_urls(text2);
-
-        assert_eq!(urls1, vec!["https://example.com/file.zip"]);
-        assert_eq!(urls2.len(), 2);
+    fn test_url_extraction_no_match() {
+        let text = "no urls here, just plain text";
+        let urls = TauriClipboardObserver::extract_urls(text);
+        assert!(urls.is_empty());
     }
 }

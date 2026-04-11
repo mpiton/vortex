@@ -43,14 +43,17 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_notification::init())
         .setup(|app| {
-            // System tray
-            if let Err(e) = setup_system_tray(app) {
+            // System tray — default to clipboard_enabled=false since the
+            // observer starts disabled and AppState isn't wired yet.
+            // TODO(task-16): read clipboard_monitoring from persisted config.
+            if let Err(e) = setup_system_tray(app, false) {
                 tracing::error!("Failed to setup system tray: {e}");
             }
 
             // TODO(task-16): construct AppState from real adapters and call
-            // app.manage(state). IPC handlers require State<'_, AppState>;
-            // until wired, the app starts but IPC calls will fail.
+            // app.manage(state). IPC handlers (including clipboard_toggle,
+            // clipboard_state) require State<'_, AppState>; until wired,
+            // the app starts but IPC calls will fail.
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

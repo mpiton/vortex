@@ -6,7 +6,8 @@
   "permissions": [
     "core:default",
     "core:tray:default",
-    "clipboard-manager:allow-read-text",
-    "notification:default"
+    "notification:allow-notify",
+    "notification:allow-request-permission",
+    "notification:allow-is-permission-granted"
   ]
 }

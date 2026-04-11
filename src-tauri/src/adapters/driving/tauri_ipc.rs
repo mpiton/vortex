@@ -322,10 +322,12 @@ pub async fn clipboard_toggle(
 
     // Notify frontend of state change
     use tauri::Emitter;
-    let _ = app.emit(
+    if let Err(e) = app.emit(
         "clipboard-monitoring-changed",
         serde_json::json!({ "enabled": result }),
-    );
+    ) {
+        tracing::warn!("Failed to emit clipboard-monitoring-changed: {e}");
+    }
 
     Ok(result)
 }

@@ -133,6 +133,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Tray icon click opens/focuses main window
   - Desktop notification bridge: notifies on download completion and failure via `tauri-plugin-notification`
   - `ClipboardIndicator` component in StatusBar showing monitoring state with toggle
-  - `useClipboardMonitoring` React hook with optimistic state updates
+  - `useClipboardMonitoring` React hook with server-confirmed state updates
   - Vitest test infrastructure: jsdom environment, setup file, Tauri API mocks
   - Frontend tests for ClipboardIndicator (4 tests) and useClipboardMonitoring (4 tests)
