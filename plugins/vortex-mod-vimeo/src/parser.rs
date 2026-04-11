@@ -394,12 +394,13 @@ fn find_assignment_marker(
                 RequireAssignment::No => true,
                 RequireAssignment::Yes => {
                     // Scan the gap between the needle end and the
-                    // next `{` for an `=`. If there is no `{` at all
-                    // after the needle, this cannot be an assignment
-                    // site — fall through to the next candidate.
+                    // next `{` for a **plain** `=` operator. If there
+                    // is no `{` at all after the needle, this cannot
+                    // be an assignment site — fall through to the
+                    // next candidate.
                     let gap_rest = &haystack[after..];
                     if let Some(brace_rel) = gap_rest.find('{') {
-                        gap_rest[..brace_rel].contains('=')
+                        gap_contains_assignment(&gap_rest[..brace_rel])
                     } else {
                         false
                     }
@@ -412,6 +413,43 @@ fn find_assignment_marker(
         start = abs + needle.len();
     }
     None
+}
+
+/// Return `true` if `gap` contains at least one bare `=` character
+/// that is **not** part of a comparison or arrow-function operator.
+///
+/// JavaScript operators that contain `=` but are not plain assignment:
+///
+/// - `==`, `===` — loose / strict equality
+/// - `!=`, `!==` — loose / strict inequality
+/// - `<=`, `>=` — less / greater or equal
+/// - `=>` — arrow function
+///
+/// A plain `=` is identified by checking its neighbours: the
+/// preceding byte must not be `=`, `!`, `<`, or `>`, and the
+/// following byte must not be `=` or `>`. Anything else is accepted
+/// as an assignment operator (including compound forms like `+=`
+/// that are unlikely to introduce a `{…}` block on their right-hand
+/// side but would still be a real assignment if they did).
+fn gap_contains_assignment(gap: &str) -> bool {
+    let bytes = gap.as_bytes();
+    for i in 0..bytes.len() {
+        if bytes[i] != b'=' {
+            continue;
+        }
+        let prev = if i == 0 { 0 } else { bytes[i - 1] };
+        let next = bytes.get(i + 1).copied().unwrap_or(0);
+        // Reject `==`, `===`, `!=`, `!==`, `<=`, `>=` on the left.
+        if matches!(prev, b'=' | b'!' | b'<' | b'>') {
+            continue;
+        }
+        // Reject `==`, `===` on the right and arrow-function `=>`.
+        if matches!(next, b'=' | b'>') {
+            continue;
+        }
+        return true;
+    }
+    false
 }
 
 /// JavaScript ASCII identifier-continuation check.
@@ -739,6 +777,81 @@ mod tests {
         "#;
         let json = extract_player_config_from_html(html).unwrap();
         assert_eq!(json, r#"{"real": true}"#);
+    }
+
+    #[test]
+    fn extract_player_config_rejects_equality_comparison() {
+        // `window.playerConfig === null` is not an assignment, but
+        // the old `gap.contains('=')` check would accept it because
+        // `===` contains `=`. The new `gap_contains_assignment`
+        // helper rejects this.
+        let html = r#"
+            <script>
+              if (window.playerConfig === null) { legacy(); }
+              window.playerConfig = {"real": true};
+            </script>
+        "#;
+        let json = extract_player_config_from_html(html).unwrap();
+        assert_eq!(json, r#"{"real": true}"#);
+    }
+
+    #[test]
+    fn extract_player_config_rejects_loose_equality_and_inequality() {
+        let html_eq = r#"
+            <script>
+              if (window.playerConfig == null) { legacy(); }
+              window.playerConfig = {"real": true};
+            </script>
+        "#;
+        assert_eq!(
+            extract_player_config_from_html(html_eq).unwrap(),
+            r#"{"real": true}"#
+        );
+
+        let html_neq = r#"
+            <script>
+              if (window.playerConfig !== null) { /* ... */ }
+              window.playerConfig = {"real": true};
+            </script>
+        "#;
+        assert_eq!(
+            extract_player_config_from_html(html_neq).unwrap(),
+            r#"{"real": true}"#
+        );
+    }
+
+    #[test]
+    fn extract_player_config_rejects_arrow_function_reference() {
+        // `window.playerConfig => { ... }` is syntactically nonsense,
+        // but a gap with `=>` must still be rejected as non-assignment.
+        let html = r#"
+            <script>
+              const cb = window.playerConfig => { legacy(); };
+              window.playerConfig = {"real": true};
+            </script>
+        "#;
+        let json = extract_player_config_from_html(html).unwrap();
+        assert_eq!(json, r#"{"real": true}"#);
+    }
+
+    #[test]
+    fn gap_contains_assignment_accepts_bare_equal() {
+        assert!(gap_contains_assignment(" = "));
+        assert!(gap_contains_assignment("="));
+        assert!(gap_contains_assignment("\t= \n"));
+    }
+
+    #[test]
+    fn gap_contains_assignment_rejects_comparisons_and_arrows() {
+        assert!(!gap_contains_assignment(" == "));
+        assert!(!gap_contains_assignment(" === "));
+        assert!(!gap_contains_assignment(" != "));
+        assert!(!gap_contains_assignment(" !== "));
+        assert!(!gap_contains_assignment(" <= "));
+        assert!(!gap_contains_assignment(" >= "));
+        assert!(!gap_contains_assignment(" => "));
+        assert!(!gap_contains_assignment(""));
+        assert!(!gap_contains_assignment("no equals here"));
     }
 
     #[test]
