@@ -45,7 +45,6 @@ impl TauriClipboardObserver {
         URL_REGEX
             .find_iter(text)
             .map(|m| Self::strip_trailing_punctuation(m.as_str()).to_string())
-            .filter(|u| u.len() > "http://".len())
             .collect()
     }
 
