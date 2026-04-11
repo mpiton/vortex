@@ -1,3 +1,4 @@
+import { useState, useEffect } from 'react';
 import { useTauriMutation } from '@/api/hooks';
 import type { AppConfig, AppConfigPatch, ProxyType } from '@/types/settings';
 import { Input } from '@/components/ui/input';
@@ -15,13 +16,19 @@ interface NetworkSectionProps {
 }
 
 export function NetworkSection({ config }: NetworkSectionProps) {
-  const { mutate } = useTauriMutation<AppConfig, AppConfigPatch>('settings_update', {
+  const { mutate } = useTauriMutation<AppConfig, { patch: AppConfigPatch }>('settings_update', {
     invalidateKeys: [['settings_get']],
   });
 
   const handleChange = <K extends keyof AppConfig>(key: K, value: AppConfig[K]) => {
-    mutate({ [key]: value } as AppConfigPatch);
+    mutate({ patch: { [key]: value } as AppConfigPatch });
   };
+
+  const [userAgentDraft, setUserAgentDraft] = useState(config.userAgent);
+  const [proxyUrlDraft, setProxyUrlDraft] = useState(config.proxyUrl ?? '');
+
+  useEffect(() => { setUserAgentDraft(config.userAgent); }, [config.userAgent]);
+  useEffect(() => { setProxyUrlDraft(config.proxyUrl ?? ''); }, [config.proxyUrl]);
 
   return (
     <div className="space-y-6">
@@ -54,9 +61,10 @@ export function NetworkSection({ config }: NetworkSectionProps) {
           <div className="space-y-1">
             <p className="text-sm font-medium">Proxy URL</p>
             <Input
-              value={config.proxyUrl ?? ''}
+              value={proxyUrlDraft}
               placeholder="http://proxy:8080"
-              onChange={(e) => handleChange('proxyUrl', e.target.value || null)}
+              onChange={(e) => setProxyUrlDraft(e.target.value)}
+              onBlur={() => handleChange('proxyUrl', proxyUrlDraft || null)}
             />
           </div>
         )}
@@ -64,8 +72,9 @@ export function NetworkSection({ config }: NetworkSectionProps) {
         <div className="space-y-1">
           <p className="text-sm font-medium">User agent</p>
           <Input
-            value={config.userAgent}
-            onChange={(e) => handleChange('userAgent', e.target.value)}
+            value={userAgentDraft}
+            onChange={(e) => setUserAgentDraft(e.target.value)}
+            onBlur={() => handleChange('userAgent', userAgentDraft)}
           />
         </div>
 

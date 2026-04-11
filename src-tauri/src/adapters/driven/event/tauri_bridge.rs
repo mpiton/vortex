@@ -251,6 +251,14 @@ mod tests {
     }
 
     #[test]
+    fn test_settings_updated_event_bridge_mapping() {
+        let event = DomainEvent::SettingsUpdated;
+        let (name, payload) = to_tauri_event(&event);
+        assert_eq!(name, "settings-updated");
+        assert_eq!(payload, serde_json::json!({}));
+    }
+
+    #[test]
     fn test_event_payload_clipboard_url_detected() {
         let event = DomainEvent::ClipboardUrlDetected {
             urls: vec![

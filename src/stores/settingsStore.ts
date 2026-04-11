@@ -25,7 +25,7 @@ export const useSettingsStore = create<SettingsStoreState>((set) => ({
       config: s.config ? { ...s.config, ...partial } : s.config,
     }));
     try {
-      await tauriInvoke('settings_update', partial);
+      await tauriInvoke('settings_update', { patch: partial });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       set({ error: message });

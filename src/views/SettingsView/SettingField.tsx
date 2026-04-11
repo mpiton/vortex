@@ -1,3 +1,4 @@
+import { useState, useId, useEffect } from 'react';
 import { Switch } from '@/components/ui/switch';
 import { Input } from '@/components/ui/input';
 
@@ -9,13 +10,14 @@ interface SettingToggleProps {
 }
 
 export function SettingToggle({ label, description, checked, onCheckedChange }: SettingToggleProps) {
+  const id = useId();
   return (
     <div className="flex items-center justify-between gap-4 py-2">
       <div>
-        <p className="text-sm font-medium">{label}</p>
+        <label htmlFor={id} className="text-sm font-medium">{label}</label>
         {description && <p className="text-xs text-muted-foreground">{description}</p>}
       </div>
-      <Switch checked={checked} onCheckedChange={onCheckedChange} />
+      <Switch id={id} checked={checked} onCheckedChange={onCheckedChange} />
     </div>
   );
 }
@@ -39,20 +41,40 @@ export function SettingNumberInput({
   max,
   step,
 }: SettingNumberInputProps) {
+  const id = useId();
+  const [localValue, setLocalValue] = useState(String(value));
+
+  useEffect(() => {
+    setLocalValue(String(value));
+  }, [value]);
+
+  const commit = () => {
+    const num = Number(localValue);
+    if (!Number.isNaN(num) && localValue !== '') {
+      const clamped = Math.min(max ?? num, Math.max(min ?? num, num));
+      onChange(clamped);
+    } else {
+      setLocalValue(String(value));
+    }
+  };
+
   return (
     <div className="flex items-center justify-between gap-4 py-2">
       <div>
-        <p className="text-sm font-medium">{label}</p>
+        <label htmlFor={id} className="text-sm font-medium">{label}</label>
         {description && <p className="text-xs text-muted-foreground">{description}</p>}
       </div>
       <Input
+        id={id}
         type="number"
         className="w-24"
-        value={value}
+        value={localValue}
         min={min}
         max={max}
         step={step}
-        onChange={(e) => onChange(Number(e.target.value))}
+        onChange={(e) => setLocalValue(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => { if (e.key === 'Enter') commit(); }}
       />
     </div>
   );

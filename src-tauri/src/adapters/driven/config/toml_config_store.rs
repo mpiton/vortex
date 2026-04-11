@@ -4,6 +4,7 @@
 //! (write to `.tmp` then rename) and automatic parent directory creation.
 
 use std::path::PathBuf;
+use std::sync::Mutex;
 
 use crate::domain::error::DomainError;
 use crate::domain::model::config::{AppConfig, ConfigPatch, apply_patch};
@@ -12,11 +13,15 @@ use crate::domain::ports::driven::ConfigStore;
 /// Persists application configuration as a TOML file.
 pub struct TomlConfigStore {
     path: PathBuf,
+    lock: Mutex<()>,
 }
 
 impl TomlConfigStore {
     pub fn new(path: PathBuf) -> Self {
-        Self { path }
+        Self {
+            path,
+            lock: Mutex::new(()),
+        }
     }
 
     fn read_or_default(&self) -> Result<AppConfig, DomainError> {
@@ -60,6 +65,10 @@ impl ConfigStore for TomlConfigStore {
     }
 
     fn update_config(&self, patch: ConfigPatch) -> Result<AppConfig, DomainError> {
+        let _guard = self
+            .lock
+            .lock()
+            .map_err(|e| DomainError::StorageError(format!("config lock poisoned: {e}")))?;
         let mut config = self.read_or_default()?;
         apply_patch(&mut config, &patch);
         self.write_config(&config)?;

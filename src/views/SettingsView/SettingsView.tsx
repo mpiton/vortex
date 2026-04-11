@@ -60,7 +60,7 @@ export function SettingsView() {
     };
   }, [queryClient]);
 
-  if (isLoading || !config) {
+  if (isLoading) {
     return (
       <div className="flex h-full gap-4 p-4">
         <div className="flex w-48 flex-col gap-1">
@@ -72,6 +72,17 @@ export function SettingsView() {
           <Skeleton className="h-8 w-48" />
           <Skeleton className="h-64 w-full" />
         </div>
+      </div>
+    );
+  }
+
+  if (!config) {
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-4 p-4">
+        <p className="text-sm text-destructive">Failed to load settings</p>
+        <Button variant="outline" onClick={() => queryClient.invalidateQueries({ queryKey: ['settings_get'] })}>
+          Retry
+        </Button>
       </div>
     );
   }

@@ -1,3 +1,4 @@
+import { useState, useEffect } from 'react';
 import { useTauriMutation } from '@/api/hooks';
 import type { AppConfig, AppConfigPatch } from '@/types/settings';
 import { SettingNumberInput } from './SettingField';
@@ -7,13 +8,19 @@ interface BrowserSectionProps {
 }
 
 export function BrowserSection({ config }: BrowserSectionProps) {
-  const { mutate } = useTauriMutation<AppConfig, AppConfigPatch>('settings_update', {
+  const { mutate } = useTauriMutation<AppConfig, { patch: AppConfigPatch }>('settings_update', {
     invalidateKeys: [['settings_get']],
   });
 
   const handleChange = <K extends keyof AppConfig>(key: K, value: AppConfig[K]) => {
-    mutate({ [key]: value } as AppConfigPatch);
+    mutate({ patch: { [key]: value } as AppConfigPatch });
   };
+
+  const [domainsDraft, setDomainsDraft] = useState(config.excludedDomains.join(', '));
+  const [extensionsDraft, setExtensionsDraft] = useState(config.excludedExtensions.join(', '));
+
+  useEffect(() => { setDomainsDraft(config.excludedDomains.join(', ')); }, [config.excludedDomains]);
+  useEffect(() => { setExtensionsDraft(config.excludedExtensions.join(', ')); }, [config.excludedExtensions]);
 
   return (
     <div className="space-y-6">
@@ -37,9 +44,10 @@ export function BrowserSection({ config }: BrowserSectionProps) {
           <p className="text-xs text-muted-foreground">Comma-separated list of domains to ignore</p>
           <textarea
             className="h-20 w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-xs outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 dark:bg-input/30"
-            defaultValue={config.excludedDomains.join(', ')}
-            onBlur={(e) => {
-              const domains = e.target.value
+            value={domainsDraft}
+            onChange={(e) => setDomainsDraft(e.target.value)}
+            onBlur={() => {
+              const domains = domainsDraft
                 .split(',')
                 .map((d) => d.trim())
                 .filter(Boolean);
@@ -53,9 +61,10 @@ export function BrowserSection({ config }: BrowserSectionProps) {
           <p className="text-xs text-muted-foreground">Comma-separated list of file extensions to ignore</p>
           <textarea
             className="h-20 w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-xs outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 dark:bg-input/30"
-            defaultValue={config.excludedExtensions.join(', ')}
-            onBlur={(e) => {
-              const extensions = e.target.value
+            value={extensionsDraft}
+            onChange={(e) => setExtensionsDraft(e.target.value)}
+            onBlur={() => {
+              const extensions = extensionsDraft
                 .split(',')
                 .map((ext) => ext.trim())
                 .filter(Boolean);

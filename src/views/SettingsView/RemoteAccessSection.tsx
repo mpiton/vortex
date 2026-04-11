@@ -14,12 +14,12 @@ interface RemoteAccessSectionProps {
 export function RemoteAccessSection({ config }: RemoteAccessSectionProps) {
   const [showApiKey, setShowApiKey] = useState(false);
 
-  const { mutate } = useTauriMutation<AppConfig, AppConfigPatch>('settings_update', {
+  const { mutate } = useTauriMutation<AppConfig, { patch: AppConfigPatch }>('settings_update', {
     invalidateKeys: [['settings_get']],
   });
 
   const handleChange = <K extends keyof AppConfig>(key: K, value: AppConfig[K]) => {
-    mutate({ [key]: value } as AppConfigPatch);
+    mutate({ patch: { [key]: value } as AppConfigPatch });
   };
 
   const maskedKey = '\u2022'.repeat(32);

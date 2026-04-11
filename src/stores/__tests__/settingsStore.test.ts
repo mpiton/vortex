@@ -62,7 +62,7 @@ describe('useSettingsStore — updateConfig', () => {
     vi.mocked(tauriInvoke).mockResolvedValueOnce(null);
     useSettingsStore.setState({ config: baseConfig, isLoading: false });
     await useSettingsStore.getState().updateConfig({ theme: 'dark' });
-    expect(tauriInvoke).toHaveBeenCalledWith('settings_update', { theme: 'dark' });
+    expect(tauriInvoke).toHaveBeenCalledWith('settings_update', { patch: { theme: 'dark' } });
   });
 
   it('should merge partial config on success', async () => {

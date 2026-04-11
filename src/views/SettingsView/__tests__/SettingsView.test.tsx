@@ -6,13 +6,14 @@ import { SettingsView } from '../SettingsView';
 import type { AppConfig } from '@/types/settings';
 
 const mockInvoke = vi.hoisted(() => vi.fn());
+const mockListen = vi.hoisted(() => vi.fn().mockResolvedValue(vi.fn()));
 
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: mockInvoke,
 }));
 
 vi.mock('@tauri-apps/api/event', () => ({
-  listen: vi.fn().mockResolvedValue(vi.fn()),
+  listen: mockListen,
 }));
 
 const mockConfig: AppConfig = {
@@ -82,6 +83,7 @@ describe('SettingsView', () => {
     expect(screen.getByRole('button', { name: /Remote Access/ })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Browser/ })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Appearance/ })).toBeInTheDocument();
+    expect(mockListen).toHaveBeenCalledWith('settings-updated', expect.any(Function));
   });
 
   it('should show General section by default', async () => {
