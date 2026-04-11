@@ -8,6 +8,7 @@ interface ResolvedLinksSectionProps {
   groupingMode: GroupingMode;
   selectedIds: string[];
   onSelectIds: (ids: string[]) => void;
+  onMediaClick?: (link: ResolvedLink) => void;
 }
 
 function getGroupKey(link: ResolvedLink, mode: GroupingMode): string {
@@ -67,6 +68,7 @@ export function ResolvedLinksSection({
   groupingMode,
   selectedIds,
   onSelectIds,
+  onMediaClick,
 }: ResolvedLinksSectionProps) {
   const filtered = applyFilter(links, filter);
   const grouped = groupLinks(filtered, groupingMode);
@@ -118,6 +120,7 @@ export function ResolvedLinksSection({
                   link={link}
                   selected={selectedIds.includes(link.id)}
                   onSelect={() => handleLinkToggle(link.id)}
+                  onMediaClick={onMediaClick}
                 />
               ))}
             </div>

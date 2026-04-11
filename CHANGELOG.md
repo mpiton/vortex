@@ -103,3 +103,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Auto-opens when a download is selected, closeable via X button
   - `useDownloadDetail` hook wrapping TanStack Query with 500ms staleTime
   - `useSpeedHistory` hook sampling speed from store at 2s intervals
+- Link Grabber View: paste zone, URL validation, link analysis pipeline, package grouping
+  - PasteZone with textarea + drag-and-drop URL input
+  - FilterBar: All | Online | Offline | Media filter tabs
+  - PackageGrouping: group by hostname, extension, or type
+  - ActionsBar: Select All, Start Selected, Start All Online, Clear
+  - LinkRow with status icons, filename/URL display, media badge
+  - ResolvedLinksSection with grouping, multi-select, and group toggle
+  - URL validation for http/https/ftp/magnet protocols (case-insensitive)
+  - `useTauriMutation` for `link_resolve` and `download_start` commands
+- Media Grabber UI: modal dialog for media download options (Task 21)
+  - MediaGrabberDialog: orchestrates quality/format/audio/subtitle/playlist selection
+  - QualitySelector: grid of video qualities (360p-4K) with resolution, fps, bitrate
+  - AudioOnlySection: toggle + audio format selection (M4A, MP3, OGG, WAV, OPUS)
+  - SubtitleSelector: multi-select checkbox list of available languages
+  - PlaylistSection: scrollable list with individual/bulk select for playlist items
+  - SizeEstimate: real-time download size estimation based on quality and duration
+  - MediaPreview: thumbnail + title display with broken image fallback
+  - `useMediaMetadata` hook fetching metadata via Tauri IPC
+  - Integration in LinkGrabberView via clickable media button in LinkRow
+  - shadcn/ui Dialog, Card, Skeleton components added to UI library
