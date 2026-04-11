@@ -47,10 +47,17 @@ describe("PackageGrouping", () => {
     const onModeChange = vi.fn();
     render(<PackageGrouping mode="none" onModeChange={onModeChange} />);
 
-    // Simulate keyboard interaction to trigger value change via the combobox
     const trigger = screen.getByRole("combobox");
     await user.click(trigger);
-    // Radix Select portal may not render in jsdom — verify the trigger is accessible
-    expect(trigger).toBeInTheDocument();
+
+    // Try to find an option in the portal
+    const option = await screen.findByText("By Hostname").catch(() => null);
+    if (option) {
+      await user.click(option);
+      expect(onModeChange).toHaveBeenCalledWith("hostname");
+    } else {
+      // Radix Select portal doesn't render in jsdom — verify trigger is at least interactive
+      expect(trigger).toHaveAttribute("aria-expanded", "true");
+    }
   });
 });

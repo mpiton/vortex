@@ -45,6 +45,9 @@ impl CommandBus {
 
         let mut results = Vec::with_capacity(cmd.urls.len());
 
+        // TODO(perf): resolve URLs concurrently with bounded parallelism.
+        // Current sequential approach is acceptable for ≤500 URLs but should
+        // use tokio::task::spawn_blocking + Semaphore for production workloads.
         for url in &cmd.urls {
             let id = Uuid::new_v4().to_string();
 
@@ -58,6 +61,22 @@ impl CommandBus {
                     status: "error".to_string(),
                     error_message: Some("URL scheme not allowed".to_string()),
                     module_name: "core-http".to_string(),
+                    is_media: false,
+                    media_type: None,
+                });
+                continue;
+            }
+
+            if url.starts_with("magnet:") {
+                results.push(ResolvedLinkDto {
+                    id,
+                    original_url: url.clone(),
+                    resolved_url: Some(url.clone()),
+                    filename: None,
+                    size_bytes: None,
+                    status: "online".to_string(),
+                    error_message: None,
+                    module_name: "magnet".to_string(),
                     is_media: false,
                     media_type: None,
                 });
@@ -109,6 +128,7 @@ impl CommandBus {
                     });
                 }
                 Err(e) => {
+                    tracing::debug!(url = url, error = %e, "link resolution failed");
                     results.push(ResolvedLinkDto {
                         id,
                         original_url: url.clone(),
@@ -116,7 +136,7 @@ impl CommandBus {
                         filename: None,
                         size_bytes: None,
                         status: "error".to_string(),
-                        error_message: Some(e.to_string()),
+                        error_message: Some(sanitize_resolve_error(&e)),
                         module_name,
                         is_media,
                         media_type,
@@ -130,7 +150,16 @@ impl CommandBus {
 }
 
 fn is_allowed_scheme(url: &str) -> bool {
-    url.starts_with("http://") || url.starts_with("https://") || url.starts_with("ftp://")
+    url.starts_with("http://")
+        || url.starts_with("https://")
+        || url.starts_with("ftp://")
+        || url.starts_with("magnet:")
+}
+
+fn sanitize_resolve_error(_e: &crate::domain::DomainError) -> String {
+    // All errors map to a generic user-facing message.
+    // Add variant-specific messages here when needed.
+    "Could not check link status".to_string()
 }
 
 fn extract_filename_from_url(url: &str) -> Option<String> {
@@ -308,6 +337,13 @@ mod tests {
     #[test]
     fn test_is_allowed_scheme_accepts_ftp() {
         assert!(is_allowed_scheme("ftp://example.com/file.zip"));
+    }
+
+    #[test]
+    fn test_is_allowed_scheme_accepts_magnet() {
+        assert!(is_allowed_scheme(
+            "magnet:?xt=urn:btih:c12fe1c06bba254a9dc9f519b335aa7c1367a88a"
+        ));
     }
 
     #[test]

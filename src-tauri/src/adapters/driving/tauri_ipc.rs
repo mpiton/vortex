@@ -16,6 +16,7 @@ use crate::application::commands::{
     ResolvedLinkDto, ResumeAllDownloadsCommand, ResumeDownloadCommand, RetryDownloadCommand,
     SetPriorityCommand, StartDownloadCommand, UninstallPluginCommand,
 };
+use crate::application::error::AppError;
 use crate::application::queries::{
     CountDownloadsByStateQuery, GetDownloadDetailQuery, GetDownloadsQuery, ListPluginsQuery,
 };
@@ -297,9 +298,12 @@ pub async fn link_resolve(
         .command_bus
         .handle_resolve_links(cmd)
         .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "link resolution failed");
-            "Failed to resolve links".to_string()
+        .map_err(|e| match &e {
+            AppError::Validation(msg) => msg.clone(),
+            other => {
+                tracing::error!(error = %other, "link resolution failed");
+                "Failed to resolve links".to_string()
+            }
         })
 }
 

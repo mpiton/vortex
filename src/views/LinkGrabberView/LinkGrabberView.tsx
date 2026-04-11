@@ -40,7 +40,8 @@ export function LinkGrabberView() {
         u.startsWith("http://") ||
         u.startsWith("https://") ||
         u.startsWith("ftp://") ||
-        u.startsWith("magnet:?"),
+        u.startsWith("magnet:") ||
+        u.startsWith("container:"),
     );
     if (validUrls.length > 0) {
       resolveLinks({ urls: validUrls });
@@ -68,13 +69,14 @@ export function LinkGrabberView() {
     <div className="flex h-full flex-col gap-4 p-4">
       <div className="flex items-center justify-between">
         <h1 className="text-lg font-bold">Link Grabber</h1>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2" title="Coming in a future update">
           <label className="text-sm" htmlFor="clipboard-toggle">
             Clipboard Monitoring
           </label>
           <Switch
             id="clipboard-toggle"
             checked={clipboardMonitoringEnabled}
+            disabled
             onCheckedChange={async (enabled) => {
               await tauriInvoke("command_toggle_clipboard_monitoring", {
                 enabled,

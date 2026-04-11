@@ -68,9 +68,7 @@ describe("PasteZone", () => {
     const onPasteUrls = vi.fn();
     render(<PasteZone onPasteUrls={onPasteUrls} />);
 
-    const dropZone = screen
-      .getByRole("textbox")
-      .closest("div.rounded-lg") as HTMLElement;
+    const dropZone = screen.getByTestId("paste-drop-zone");
 
     const dlcFile = new File(["content"], "links.dlc", {
       type: "application/octet-stream",

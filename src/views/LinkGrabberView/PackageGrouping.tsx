@@ -15,9 +15,11 @@ interface PackageGroupingProps {
 export function PackageGrouping({ mode, onModeChange }: PackageGroupingProps) {
   return (
     <div className="flex items-center gap-2">
-      <label className="text-sm font-semibold">Group Into Packages:</label>
+      <label id="grouping-label" className="text-sm font-semibold">
+        Group Into Packages:
+      </label>
       <Select value={mode} onValueChange={(v) => onModeChange(v as GroupingMode)}>
-        <SelectTrigger className="w-40">
+        <SelectTrigger className="w-40" aria-labelledby="grouping-label">
           <SelectValue />
         </SelectTrigger>
         <SelectContent>

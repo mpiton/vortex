@@ -44,9 +44,13 @@ export function LinkRow({ link, selected, onSelect }: LinkRowProps) {
       {statusIconMap[link.status]}
       <Tooltip>
         <TooltipTrigger asChild>
-          <p className="min-w-0 flex-1 truncate text-sm">
-            {link.filename ?? link.originalUrl}
-          </p>
+          <span
+            role="button"
+            tabIndex={0}
+            className="min-w-0 flex-1 truncate text-sm font-semibold"
+          >
+            {link.filename || link.originalUrl}
+          </span>
         </TooltipTrigger>
         <TooltipContent>{link.originalUrl}</TooltipContent>
       </Tooltip>

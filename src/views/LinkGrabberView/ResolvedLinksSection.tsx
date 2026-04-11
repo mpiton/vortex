@@ -14,7 +14,8 @@ function getGroupKey(link: ResolvedLink, mode: GroupingMode): string {
   switch (mode) {
     case "hostname": {
       try {
-        return new URL(link.originalUrl).hostname;
+        const hostname = new URL(link.originalUrl).hostname;
+        return hostname || "Unknown";
       } catch {
         return "Unknown";
       }

@@ -7,8 +7,10 @@ interface PasteZoneProps {
 }
 
 export function extractUrls(text: string): string[] {
-  const matches = text.match(/(https?:\/\/[^\s]+|ftp:\/\/[^\s]+|magnet:\?[^\s]+)/gi);
-  return matches ?? [];
+  const matches = text.match(
+    /(https?:\/\/[^\s]+|ftp:\/\/[^\s]+|magnet:\?[^\s]+)/gi,
+  );
+  return (matches ?? []).map((url) => url.replace(/[),.;:>\]}"'!?]+$/, ""));
 }
 
 export function PasteZone({ onPasteUrls, isLoading }: PasteZoneProps) {
@@ -64,6 +66,7 @@ export function PasteZone({ onPasteUrls, isLoading }: PasteZoneProps) {
 
   return (
     <div
+      data-testid="paste-drop-zone"
       className={`rounded-lg border-2 border-dashed p-6 transition-colors ${
         isDragging
           ? "border-accent bg-accent/10"
