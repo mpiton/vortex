@@ -1,6 +1,28 @@
 //! YouTube URL detection and classification.
 //!
 //! Pure logic, no WASM or subprocess required — unit-testable natively.
+//!
+//! ## Design
+//!
+//! URL matching is a two-step process:
+//!
+//! 1. **Host validation** ([`validate_and_split`]) — parses the URL, strips
+//!    userinfo and port, lowercases the host, and checks it against an
+//!    explicit allowlist ([`is_youtube_host_string`]). This single chokepoint
+//!    blocks substring smuggling (`example.com/?next=youtube.com/…`) and
+//!    gracefully handles `user:pass@host:port` authorities.
+//!
+//! 2. **Path-based regex matching** — the remaining path+query is matched
+//!    against compiled regexes that only care about the *path*, not the host.
+//!    This means `youtube.com`, `www.youtube.com`, `m.youtube.com`,
+//!    `music.youtube.com`, `youtube-nocookie.com`, and `youtu.be` all share
+//!    the same regex set, and port/userinfo variations cannot break the
+//!    pattern match because they have already been stripped by step 1.
+//!
+//! YouTube video and playlist IDs are case-sensitive (`dQw4w9WgXcQ` differs
+//! from `dqw4w9wgxcq`), so the path is passed to the regexes **with case
+//! preserved**. Textual keywords (`watch`, `shorts`, `playlist`, `channel`,
+//! `user`, `c`) use the `(?i)` inline flag to stay case-insensitive.
 
 use std::sync::OnceLock;
 
@@ -28,48 +50,94 @@ pub fn is_youtube_url(url: &str) -> bool {
 
 /// Classify the URL into a [`UrlKind`].
 ///
-/// Recognises all standard YouTube hosts (youtube.com, youtu.be, m.youtube.com,
-/// music.youtube.com, www.youtube.com, youtube-nocookie.com) and common path
-/// patterns. The URL is first normalised so that userinfo (`user:pass@`) and
-/// explicit ports (`:443`) do not break the regex matchers downstream.
+/// Recognises all standard YouTube hosts (youtube.com, www.youtube.com,
+/// m.youtube.com, music.youtube.com, youtube-nocookie.com, youtu.be) and
+/// common path patterns. Handles URLs with explicit ports (`:443`) and
+/// userinfo (`user:pass@`) without breaking pattern matching.
 pub fn classify_url(url: &str) -> UrlKind {
-    let Some(normalized) = normalize_for_matching(url) else {
+    let Some((host_lower, path_and_query)) = validate_and_split(url) else {
         return UrlKind::Unknown;
     };
 
-    if short_host_regex().is_match(&normalized) {
-        return UrlKind::Video;
+    // youtu.be short links: the path itself is the video id.
+    if host_lower == "youtu.be" {
+        return if extract_youtu_be_id(path_and_query).is_some() {
+            UrlKind::Video
+        } else {
+            UrlKind::Unknown
+        };
     }
 
-    if shorts_path_regex().is_match(&normalized) {
+    // youtube.com family: discriminate by path. Order matters — /shorts/ and
+    // /playlist must be checked before the generic /watch pattern so that
+    // mixed URLs (e.g. /watch?v=X&list=Y) resolve to Video, not Playlist,
+    // but dedicated /playlist URLs resolve to Playlist.
+    if shorts_id_regex().is_match(path_and_query) {
         return UrlKind::Shorts;
     }
-
-    if playlist_path_regex().is_match(&normalized) {
+    if playlist_id_regex().is_match(path_and_query) {
         return UrlKind::Playlist;
     }
-
-    if watch_path_regex().is_match(&normalized) {
+    if watch_id_regex().is_match(path_and_query) {
         return UrlKind::Video;
     }
-
-    if channel_path_regex().is_match(&normalized) {
+    if channel_path_regex().is_match(path_and_query) {
         return UrlKind::Channel;
     }
 
     UrlKind::Unknown
 }
 
-/// Rebuild a YouTube URL in canonical form — lowercase scheme+host, no
-/// userinfo, no port, path+query preserved — suitable for regex matching.
+/// Extract the video id from a `watch?v=...`, `youtu.be/...`, or
+/// `shorts/...` URL.
 ///
-/// Returns `None` when the host is not a recognised YouTube authority or
-/// when the URL has no scheme separator. This is the single chokepoint that
-/// enforces host validation; all classification and id-extraction funnels
-/// through it.
-fn normalize_for_matching(url: &str) -> Option<String> {
+/// Returns `None` if the URL has no video id or is not hosted on a recognised
+/// YouTube domain. The id is returned in its original case.
+pub fn extract_video_id(url: &str) -> Option<String> {
+    let (host_lower, path_and_query) = validate_and_split(url)?;
+
+    if host_lower == "youtu.be" {
+        return extract_youtu_be_id(path_and_query).map(String::from);
+    }
+
+    if let Some(caps) = watch_id_regex().captures(path_and_query) {
+        return caps.get(1).map(|m| m.as_str().to_string());
+    }
+
+    if let Some(caps) = shorts_id_regex().captures(path_and_query) {
+        return caps.get(1).map(|m| m.as_str().to_string());
+    }
+
+    None
+}
+
+/// Extract the playlist id from a `playlist?list=...` URL.
+///
+/// Host-validated and stripped of userinfo/port, just like
+/// [`extract_video_id`]. The id is returned in its original case.
+pub fn extract_playlist_id(url: &str) -> Option<String> {
+    let (_host_lower, path_and_query) = validate_and_split(url)?;
+    playlist_id_regex()
+        .captures(path_and_query)
+        .and_then(|c| c.get(1).map(|m| m.as_str().to_string()))
+}
+
+// ── Internals ─────────────────────────────────────────────────────────────────
+
+/// Parse a URL, validate its host against the YouTube allowlist, and split
+/// off the path+query component.
+///
+/// Returns `Some((lowercased_host, path_and_query))` on success. The path is
+/// returned as a borrow of the trimmed input so that case is preserved —
+/// video/playlist IDs must round-trip exactly.
+///
+/// Returns `None` if the URL lacks a scheme separator, has no authority,
+/// or the authority's host is not in [`is_youtube_host_string`]. This is
+/// the single chokepoint for host validation — every public function in
+/// this module routes through it.
+fn validate_and_split(url: &str) -> Option<(String, &str)> {
     let trimmed = url.trim();
-    let (scheme, after_scheme) = trimmed.split_once("://")?;
+    let (_scheme, after_scheme) = trimmed.split_once("://")?;
     if after_scheme.is_empty() {
         return None;
     }
@@ -79,10 +147,13 @@ fn normalize_for_matching(url: &str) -> Option<String> {
         .unwrap_or(after_scheme.len());
     let (authority, path_and_rest) = after_scheme.split_at(path_start);
 
+    // Strip `user:pass@` userinfo if present.
     let host_port = authority
         .rsplit_once('@')
         .map(|(_, rest)| rest)
         .unwrap_or(authority);
+    // Strip `:port` suffix if present. IPv6 addresses are bracketed, so a
+    // plain `rsplit_once(':')` is enough for YouTube hosts (never IPv6).
     let host = host_port
         .rsplit_once(':')
         .map(|(h, _)| h)
@@ -97,96 +168,7 @@ fn normalize_for_matching(url: &str) -> Option<String> {
         return None;
     }
 
-    Some(format!(
-        "{}://{}{}",
-        scheme.to_ascii_lowercase(),
-        host_lower,
-        path_and_rest.to_ascii_lowercase()
-    ))
-}
-
-/// Extract the video id from a `watch?v=...`, `youtu.be/...`, or `shorts/...` URL.
-///
-/// Returns `None` if the URL has no video id or is not hosted on a recognised
-/// YouTube domain. The host is parsed and matched exactly — not via substring
-/// search — so that a URL like `https://example.com/?next=youtube.com/watch?v=x`
-/// cannot leak through. YouTube video ids preserve case, so the lookup is done
-/// on the case-preserved input even though the host comparison is lowercased.
-pub fn extract_video_id(url: &str) -> Option<String> {
-    let trimmed = url.trim();
-    let host = extract_host(trimmed)?.to_ascii_lowercase();
-
-    if !is_youtube_host_string(&host) {
-        return None;
-    }
-
-    if let Some(caps) = watch_id_regex().captures(trimmed) {
-        return caps.get(1).map(|m| m.as_str().to_string());
-    }
-
-    if let Some(caps) = short_host_id_regex().captures(trimmed) {
-        return caps.get(1).map(|m| m.as_str().to_string());
-    }
-
-    if let Some(caps) = shorts_id_regex().captures(trimmed) {
-        return caps.get(1).map(|m| m.as_str().to_string());
-    }
-
-    None
-}
-
-/// Extract the playlist id from a `playlist?list=...` URL.
-///
-/// Trimmed + host-validated in the same way as [`extract_video_id`].
-pub fn extract_playlist_id(url: &str) -> Option<String> {
-    let trimmed = url.trim();
-    let host = extract_host(trimmed)?.to_ascii_lowercase();
-
-    if !is_youtube_host_string(&host) {
-        return None;
-    }
-
-    playlist_id_regex()
-        .captures(trimmed)
-        .and_then(|c| c.get(1).map(|m| m.as_str().to_string()))
-}
-
-// ── Host detection ────────────────────────────────────────────────────────────
-
-/// Parse the host component out of a URL-shaped string.
-///
-/// Does the minimum work needed to answer "what authority does this URL
-/// refer to": splits on `://`, then on the first `/`, `?`, or `#`, strips
-/// any `user:pass@` prefix, and drops an explicit port. Returns `None` if
-/// the input has no scheme separator or no authority.
-///
-/// This deliberately avoids pulling in the `url` crate — it would add ~200 KB
-/// to the WASM binary for a job that is a handful of string splits.
-fn extract_host(url: &str) -> Option<&str> {
-    let after_scheme = url.split_once("://")?.1;
-    if after_scheme.is_empty() {
-        return None;
-    }
-    let end = after_scheme
-        .find(['/', '?', '#'])
-        .unwrap_or(after_scheme.len());
-    let authority = &after_scheme[..end];
-    // Strip `user:pass@` userinfo if present.
-    let host_port = authority
-        .rsplit_once('@')
-        .map(|(_, rest)| rest)
-        .unwrap_or(authority);
-    // Strip `:port` suffix if present. IPv6 addresses are bracketed, so a
-    // plain `rsplit_once(':')` is enough for YouTube hosts (never IPv6).
-    let host = host_port
-        .rsplit_once(':')
-        .map(|(h, _)| h)
-        .unwrap_or(host_port);
-    if host.is_empty() {
-        None
-    } else {
-        Some(host)
-    }
+    Some((host_lower, path_and_rest))
 }
 
 /// Exact-match the (already lowercased) host against recognised YouTube
@@ -206,55 +188,65 @@ fn is_youtube_host_string(host_lower: &str) -> bool {
     )
 }
 
-// ── Cached regexes ────────────────────────────────────────────────────────────
-
-fn watch_path_regex() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"youtube\.com/watch\?.*v=[A-Za-z0-9_-]{6,}").unwrap())
+/// Extract the video id from a `youtu.be` path (`/VIDEO_ID` or
+/// `/VIDEO_ID?query`). Returns the slice of `path_and_query` that contains
+/// the id — preserving case — on success.
+fn extract_youtu_be_id(path_and_query: &str) -> Option<&str> {
+    let after_slash = path_and_query.strip_prefix('/')?;
+    let id_end = after_slash
+        .find(['/', '?', '#'])
+        .unwrap_or(after_slash.len());
+    let id = &after_slash[..id_end];
+    if is_valid_video_id(id) {
+        Some(id)
+    } else {
+        None
+    }
 }
+
+/// A plausible YouTube id: at least 6 characters from the base64url
+/// alphabet minus padding. Real YouTube ids are exactly 11 characters but
+/// we stay lenient for forward compatibility.
+fn is_valid_video_id(id: &str) -> bool {
+    id.len() >= 6
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+// ── Cached path-based regexes ─────────────────────────────────────────────────
+//
+// These operate on the path+query slice returned by `validate_and_split`,
+// not on full URLs. The `(?i)` flag makes the textual keywords
+// (`watch`, `shorts`, `playlist`, `channel`, `user`, `c`) case-insensitive
+// while preserving the case of the captured id.
 
 fn watch_id_regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"youtube\.com/watch\?(?:[^&]*&)*v=([A-Za-z0-9_-]{6,})").unwrap())
-}
-
-fn short_host_regex() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"://youtu\.be/[A-Za-z0-9_-]{6,}").unwrap())
-}
-
-fn short_host_id_regex() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"://youtu\.be/([A-Za-z0-9_-]{6,})").unwrap())
-}
-
-fn shorts_path_regex() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"youtube\.com/shorts/[A-Za-z0-9_-]{6,}").unwrap())
+    RE.get_or_init(|| {
+        Regex::new(r"(?i)^/watch\?(?:[^&#]*&)*v=([A-Za-z0-9_-]{6,})").unwrap()
+    })
 }
 
 fn shorts_id_regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"youtube\.com/shorts/([A-Za-z0-9_-]{6,})").unwrap())
-}
-
-fn playlist_path_regex() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"youtube\.com/playlist\?.*list=[A-Za-z0-9_-]+").unwrap())
+    RE.get_or_init(|| Regex::new(r"(?i)^/shorts/([A-Za-z0-9_-]{6,})").unwrap())
 }
 
 fn playlist_id_regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(r"youtube\.com/playlist\?(?:[^&]*&)*list=([A-Za-z0-9_-]+)").unwrap()
+        Regex::new(r"(?i)^/playlist\?(?:[^&#]*&)*list=([A-Za-z0-9_-]+)").unwrap()
     })
 }
 
 fn channel_path_regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(r"youtube\.com/(?:@[A-Za-z0-9_.-]+|channel/[A-Za-z0-9_-]+|user/[A-Za-z0-9_-]+|c/[A-Za-z0-9_-]+)")
-            .unwrap()
+        Regex::new(
+            r"(?i)^/(?:@[A-Za-z0-9_.-]+|channel/[A-Za-z0-9_-]+|user/[A-Za-z0-9_-]+|c/[A-Za-z0-9_-]+)",
+        )
+        .unwrap()
     })
 }
 
@@ -275,6 +267,9 @@ mod tests {
     #[case("https://www.youtube.com/playlist?list=PLxxxxxx")]
     #[case("https://www.youtube.com/@MrBeast")]
     #[case("https://www.youtube.com/channel/UC_x5XG1OV2P6uZZ5FSM9Ttw")]
+    // youtube-nocookie — both the bare domain and the www. variant
+    #[case("https://www.youtube-nocookie.com/watch?v=dQw4w9WgXcQ")]
+    #[case("https://youtube-nocookie.com/watch?v=dQw4w9WgXcQ")]
     fn detects_valid_youtube_urls(#[case] url: &str) {
         assert!(is_youtube_url(url), "expected YouTube URL: {url}");
     }
@@ -384,6 +379,72 @@ mod tests {
     fn classifies_unknown_for_non_youtube() {
         assert_eq!(classify_url("https://vimeo.com/12345"), UrlKind::Unknown);
     }
+
+    // ── youtube-nocookie.com — full extraction coverage ──────────────────────
+
+    #[test]
+    fn classifies_youtube_nocookie_watch_as_video() {
+        assert_eq!(
+            classify_url("https://www.youtube-nocookie.com/watch?v=dQw4w9WgXcQ"),
+            UrlKind::Video
+        );
+    }
+
+    #[test]
+    fn extracts_video_id_from_youtube_nocookie() {
+        assert_eq!(
+            extract_video_id("https://www.youtube-nocookie.com/watch?v=dQw4w9WgXcQ"),
+            Some("dQw4w9WgXcQ".to_string())
+        );
+    }
+
+    // ── Port / userinfo consistency between classify and extract ─────────────
+
+    #[test]
+    fn extracts_video_id_from_url_with_port() {
+        assert_eq!(
+            extract_video_id("https://www.youtube.com:443/watch?v=dQw4w9WgXcQ"),
+            Some("dQw4w9WgXcQ".to_string())
+        );
+    }
+
+    #[test]
+    fn extracts_video_id_from_url_with_userinfo() {
+        assert_eq!(
+            extract_video_id("https://user:pass@www.youtube.com/watch?v=dQw4w9WgXcQ"),
+            Some("dQw4w9WgXcQ".to_string())
+        );
+    }
+
+    #[test]
+    fn extracts_playlist_id_from_url_with_port() {
+        assert_eq!(
+            extract_playlist_id("https://www.youtube.com:443/playlist?list=PLxyz123"),
+            Some("PLxyz123".to_string())
+        );
+    }
+
+    // ── Case sensitivity: mixed-case path keywords ───────────────────────────
+
+    #[test]
+    fn accepts_mixed_case_watch_keyword() {
+        assert_eq!(
+            classify_url("https://www.youtube.com/WATCH?v=dQw4w9WgXcQ"),
+            UrlKind::Video
+        );
+    }
+
+    #[test]
+    fn preserves_case_of_video_id() {
+        // The id is case-sensitive — a lowercased result would be a
+        // different video on YouTube.
+        assert_eq!(
+            extract_video_id("https://www.youtube.com/watch?v=dQw4w9WgXcQ"),
+            Some("dQw4w9WgXcQ".to_string())
+        );
+    }
+
+    // ── Existing extraction tests ────────────────────────────────────────────
 
     #[test]
     fn extracts_video_id_from_watch_url() {

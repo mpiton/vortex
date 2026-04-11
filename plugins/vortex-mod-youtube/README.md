@@ -27,10 +27,18 @@ The resulting WASM binary is at `target/wasm32-wasip1/release/vortex_mod_youtube
 
 ## Install
 
-The Vortex plugin loader expects the binary filename to match the plugin name
-from `plugin.toml` (directory naming convention enforced in
-`src-tauri/src/adapters/driven/plugin/manifest.rs`). Copy the manifest and
-rename the build artifact to match the directory:
+The Vortex plugin loader enforces two rules (see
+`src-tauri/src/adapters/driven/plugin/manifest.rs` for the exact validation):
+
+1. The plugin directory name must match the `name` field in `plugin.toml`.
+2. The directory must contain exactly one `.wasm` file — the filename itself
+   is not pinned, so `vortex_mod_youtube.wasm` and `vortex-mod-youtube.wasm`
+   are both accepted as long as there is only one of them.
+
+Cargo produces `target/wasm32-wasip1/release/vortex_mod_youtube.wasm`
+(underscores — Cargo's default crate-name-to-artifact mapping). The
+instructions below rename it to match the directory purely as a convention;
+you may leave the underscore form if you prefer.
 
 ```bash
 mkdir -p ~/.config/vortex/plugins/vortex-mod-youtube
@@ -41,7 +49,7 @@ cp target/wasm32-wasip1/release/vortex_mod_youtube.wasm \
 
 Final layout:
 
-```
+```text
 ~/.config/vortex/plugins/vortex-mod-youtube/
   ├── plugin.toml
   └── vortex-mod-youtube.wasm
