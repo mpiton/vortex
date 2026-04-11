@@ -9,10 +9,8 @@ use crate::domain::error::DomainError;
 use crate::domain::ports::driven::ClipboardObserver;
 
 /// Strips common trailing punctuation that is not part of the URL.
-/// Strips common trailing punctuation that is not part of the URL.
-/// Keeps `]` to preserve IPv6 host URLs (e.g. `http://[::1]/path`).
 static URL_REGEX: LazyLock<regex::Regex> = LazyLock::new(|| {
-    regex::Regex::new(r"(https?://|ftp://|magnet:\?)[^\s]+[^\s.,)>;:'\x22]")
+    regex::Regex::new(r"(https?://|ftp://|magnet:\?)[^\s]*[^\s.,)\]>;:'\x22]")
         .expect("URL regex is a compile-time constant")
 });
 
@@ -211,10 +209,17 @@ mod tests {
     }
 
     #[test]
-    fn test_url_extraction_preserves_ipv6_bracket() {
-        let text = "http://[::1]:8080/path";
+    fn test_url_extraction_strips_trailing_bracket() {
+        let text = "[https://example.com/file.zip]";
         let urls = TauriClipboardObserver::extract_urls(text);
-        assert_eq!(urls, vec!["http://[::1]:8080/path"]);
+        assert_eq!(urls, vec!["https://example.com/file.zip"]);
+    }
+
+    #[test]
+    fn test_url_extraction_short_host() {
+        let text = "tiny host: http://a";
+        let urls = TauriClipboardObserver::extract_urls(text);
+        assert_eq!(urls, vec!["http://a"]);
     }
 
     #[test]
