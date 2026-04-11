@@ -1,25 +1,19 @@
 import { Loader2, Check, X, AlertCircle } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { formatBytes } from "@/lib/format";
 import type { ResolvedLink } from "./types";
 
 interface LinkRowProps {
   link: ResolvedLink;
   selected: boolean;
   onSelect: () => void;
-}
-
-export function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  if (bytes < 1024 * 1024 * 1024)
-    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+  onMediaClick?: (link: ResolvedLink) => void;
 }
 
 const statusIconMap = {
@@ -29,7 +23,7 @@ const statusIconMap = {
   error: <AlertCircle className="h-4 w-4 text-yellow-500" />,
 };
 
-export function LinkRow({ link, selected, onSelect }: LinkRowProps) {
+export function LinkRow({ link, selected, onSelect, onMediaClick }: LinkRowProps) {
   return (
     <div
       className={`flex items-center gap-3 rounded p-2 transition-colors hover:bg-muted ${
@@ -62,7 +56,17 @@ export function LinkRow({ link, selected, onSelect }: LinkRowProps) {
         </span>
       )}
       {link.isMedia && (
-        <Badge variant="outline">{link.mediaType ?? "Media"}</Badge>
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-6 px-2 text-xs"
+          onClick={(e) => {
+            e.stopPropagation();
+            onMediaClick?.(link);
+          }}
+        >
+          {link.mediaType ?? "Media"}
+        </Button>
       )}
     </div>
   );

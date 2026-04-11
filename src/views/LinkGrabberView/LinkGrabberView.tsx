@@ -8,13 +8,18 @@ import { FilterBar } from "./FilterBar";
 import { PackageGrouping } from "./PackageGrouping";
 import { ActionsBar } from "./ActionsBar";
 import { ResolvedLinksSection } from "./ResolvedLinksSection";
+import { MediaGrabberDialog } from "./MediaGrabberDialog";
 import type { ResolvedLink, FilterType, GroupingMode } from "./types";
+import type { MediaGrabberOptions } from "@/types/media";
 
 export function LinkGrabberView() {
   const [resolvedLinks, setResolvedLinks] = useState<ResolvedLink[]>([]);
   const [filter, setFilter] = useState<FilterType>("all");
   const [selectedLinkIds, setSelectedLinkIds] = useState<string[]>([]);
   const [groupingMode, setGroupingMode] = useState<GroupingMode>("hostname");
+  const [selectedMediaLink, setSelectedMediaLink] =
+    useState<ResolvedLink | null>(null);
+  const [mediaGrabberOpen, setMediaGrabberOpen] = useState(false);
 
   const clipboardMonitoringEnabled = useSettingsStore(
     (s) => s.config?.clipboardMonitoring ?? false,
@@ -33,6 +38,11 @@ export function LinkGrabberView() {
   const { mutate: startDownload } = useTauriMutation<unknown, { url: string }>(
     "download_start",
   );
+
+  const { mutate: startMediaDownload } = useTauriMutation<
+    unknown,
+    { url: string; mediaOptions: MediaGrabberOptions }
+  >("download_start");
 
   const handlePasteUrls = (urls: string[]) => {
     // TODO: container: entries need a dedicated backend command for decryption
@@ -62,6 +72,20 @@ export function LinkGrabberView() {
       if (link.status === "online" && link.resolvedUrl) {
         startDownload({ url: link.resolvedUrl });
       }
+    }
+  };
+
+  const handleMediaClick = (link: ResolvedLink) => {
+    setSelectedMediaLink(link);
+    setMediaGrabberOpen(true);
+  };
+
+  const handleMediaGrabberConfirm = (options: MediaGrabberOptions) => {
+    if (selectedMediaLink?.originalUrl) {
+      startMediaDownload({
+        url: selectedMediaLink.originalUrl,
+        mediaOptions: options,
+      });
     }
   };
 
@@ -111,8 +135,17 @@ export function LinkGrabberView() {
             groupingMode={groupingMode}
             selectedIds={selectedLinkIds}
             onSelectIds={setSelectedLinkIds}
+            onMediaClick={handleMediaClick}
           />
         </>
+      )}
+      {selectedMediaLink && (
+        <MediaGrabberDialog
+          link={selectedMediaLink}
+          open={mediaGrabberOpen}
+          onOpenChange={setMediaGrabberOpen}
+          onConfirm={handleMediaGrabberConfirm}
+        />
       )}
     </div>
   );
