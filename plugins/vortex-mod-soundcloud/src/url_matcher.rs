@@ -47,13 +47,23 @@ pub fn classify_url(url: &str) -> UrlKind {
         return UrlKind::Unknown;
     }
 
-    // Strip query string and trailing slash.
-    let path_only = path.split('?').next().unwrap_or("").trim_end_matches('/');
+    let path_only = normalize_path(path);
     let segments: Vec<&str> = path_only
         .trim_start_matches('/')
         .split('/')
         .filter(|s| !s.is_empty())
         .collect();
+
+    // `on.soundcloud.com/<token>` is a URL-shortener: the single-segment
+    // path is a redirect token, not a user slug, so it resolves to a
+    // track (the host resolver follows the redirect). Classify it as
+    // Track so that `ensure_track` accepts it downstream.
+    if host_lower == "on.soundcloud.com" {
+        return match segments.as_slice() {
+            [_token] => UrlKind::Track,
+            _ => UrlKind::Unknown,
+        };
+    }
 
     match segments.as_slice() {
         [] => UrlKind::Unknown,
@@ -65,6 +75,17 @@ pub fn classify_url(url: &str) -> UrlKind {
         [_user, _slug] => UrlKind::Track,
         _ => UrlKind::Unknown,
     }
+}
+
+/// Strip the query string, fragment, and trailing slash from a raw
+/// path-and-query slice. Fragments are stripped first because a URL of
+/// the form `path?q#frag` keeps the fragment *after* the query, and a
+/// URL of the form `path#frag?q` (technically malformed but tolerated
+/// by some clients) is handled by the same two-pass split.
+fn normalize_path(path: &str) -> &str {
+    let no_frag = path.split('#').next().unwrap_or("");
+    let no_query = no_frag.split('?').next().unwrap_or("");
+    no_query.trim_end_matches('/')
 }
 
 fn is_soundcloud_host(host: &str) -> bool {
@@ -120,6 +141,15 @@ mod tests {
     #[case("https://api.soundcloud.com/tracks/123", UrlKind::Unknown)]
     #[case("ftp://soundcloud.com/forss", UrlKind::Unknown)]
     #[case("not a url", UrlKind::Unknown)]
+    // Fragment stripping: collections with `#...` must not be
+    // misclassified as tracks just because the path has two segments.
+    #[case("https://soundcloud.com/forss/likes#recent", UrlKind::Playlist)]
+    #[case("https://soundcloud.com/forss#bio", UrlKind::Artist)]
+    #[case("https://soundcloud.com/forss/flickermood#t=30", UrlKind::Track)]
+    // on.soundcloud.com short links are redirect tokens → Track
+    #[case("https://on.soundcloud.com/AbCdEfGhIj", UrlKind::Track)]
+    #[case("https://on.soundcloud.com/AbCdEfGhIj?si=xyz", UrlKind::Track)]
+    #[case("https://on.soundcloud.com/", UrlKind::Unknown)]
     fn test_classify_url(#[case] url: &str, #[case] expected: UrlKind) {
         assert_eq!(classify_url(url), expected);
     }

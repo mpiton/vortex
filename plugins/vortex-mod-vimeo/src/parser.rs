@@ -187,11 +187,15 @@ pub fn parse_player_config(raw: &str) -> Result<PlayerConfig, PluginError> {
 pub fn extract_player_config_from_html(html: &str) -> Result<&str, PluginError> {
     // Prefer the canonical assignment pattern; fall back to "playerConfig ="
     // in case Vimeo ever drops the `window.` prefix.
+    //
+    // Both markers require that the next character is not an identifier
+    // continuation (alphanumeric or `_`), so that similarly named
+    // variables like `window.playerConfigVersion` or
+    // `playerConfigDetail =` do not match before the real assignment.
     const CANONICAL: &str = "window.playerConfig";
     const FALLBACK: &str = "playerConfig =";
-    let start_marker = html
-        .find(CANONICAL)
-        .or_else(|| html.find(FALLBACK))
+    let start_marker = find_at_word_boundary(html, CANONICAL)
+        .or_else(|| find_at_word_boundary(html, FALLBACK))
         .ok_or(PluginError::PlayerConfigNotFound)?;
 
     // Find the first `{` after the marker.
@@ -232,6 +236,31 @@ pub fn extract_player_config_from_html(html: &str) -> Result<&str, PluginError> 
 }
 
 // ── Request builders ──────────────────────────────────────────────────────────
+
+/// Return the byte offset of the first occurrence of `needle` in
+/// `haystack` that is **not** followed by an identifier continuation
+/// character (`[A-Za-z0-9_]`). This is equivalent to a word boundary
+/// on the right-hand side of the needle — the left-hand side does not
+/// need a boundary because both markers here start with a literal
+/// character (`w` or `p`) that is already preceded by whitespace or
+/// punctuation in every realistic HTML context.
+fn find_at_word_boundary(haystack: &str, needle: &str) -> Option<usize> {
+    let mut start = 0usize;
+    while start < haystack.len() {
+        let rel = haystack[start..].find(needle)?;
+        let abs = start + rel;
+        let after = abs + needle.len();
+        let next_ok = haystack
+            .as_bytes()
+            .get(after)
+            .is_none_or(|b| !(b.is_ascii_alphanumeric() || *b == b'_'));
+        if next_ok {
+            return Some(abs);
+        }
+        start = abs + needle.len();
+    }
+    None
+}
 
 pub fn build_oembed_request(video_url: &str) -> Result<String, PluginError> {
     let url = format!(
@@ -411,6 +440,33 @@ mod tests {
         let html = r#"<meta name="playerConfig" content="legacy"><script>window.playerConfig = {"n":1};</script>"#;
         let json = extract_player_config_from_html(html).unwrap();
         assert_eq!(json, r#"{"n":1}"#);
+    }
+
+    #[test]
+    fn extract_player_config_skips_similar_prefixes() {
+        // `window.playerConfigVersion` must NOT be mistaken for the
+        // real `window.playerConfig` assignment.
+        let html = r#"
+            <script>
+              window.playerConfigVersion = {"legacy": true};
+              window.playerConfig = {"real": true};
+            </script>
+        "#;
+        let json = extract_player_config_from_html(html).unwrap();
+        assert_eq!(json, r#"{"real": true}"#);
+    }
+
+    #[test]
+    fn extract_player_config_skips_similar_prefixes_for_fallback_marker() {
+        // Fallback `playerConfig =` must also observe the word boundary.
+        let html = r#"
+            <script>
+              playerConfigDetail = {"legacy": true};
+              playerConfig = {"real": true};
+            </script>
+        "#;
+        let json = extract_player_config_from_html(html).unwrap();
+        assert_eq!(json, r#"{"real": true}"#);
     }
 
     #[test]

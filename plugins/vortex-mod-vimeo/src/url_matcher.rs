@@ -44,7 +44,7 @@ pub fn classify_url(url: &str) -> UrlKind {
         return UrlKind::Unknown;
     }
 
-    let path_only = path.split('?').next().unwrap_or("").trim_end_matches('/');
+    let path_only = normalize_path(path);
 
     // player.vimeo.com/video/<id>
     if host_lower == "player.vimeo.com" {
@@ -68,6 +68,15 @@ pub fn classify_url(url: &str) -> UrlKind {
     UrlKind::Unknown
 }
 
+/// Strip query string, fragment, and trailing slash from a raw
+/// path-and-query slice. `path#frag?q` (malformed but tolerated) is
+/// handled by splitting on `#` first.
+fn normalize_path(path: &str) -> &str {
+    let no_frag = path.split('#').next().unwrap_or("");
+    let no_query = no_frag.split('?').next().unwrap_or("");
+    no_query.trim_end_matches('/')
+}
+
 fn is_vimeo_host(host: &str) -> bool {
     matches!(
         host,
@@ -86,8 +95,11 @@ fn private_video_regex() -> &'static Regex {
 }
 
 fn showcase_or_album_regex() -> &'static Regex {
+    // Fully anchored — trailing junk like `/foo/bar` after the numeric
+    // ID must not match. Callers normalise query/fragment/trailing
+    // slash before passing the path to this regex.
     static R: OnceLock<Regex> = OnceLock::new();
-    R.get_or_init(|| Regex::new(r"^/(?:showcase|album)/(\d+)").unwrap())
+    R.get_or_init(|| Regex::new(r"^/(?:showcase|album)/(\d+)$").unwrap())
 }
 
 fn player_video_regex() -> &'static Regex {
@@ -99,7 +111,7 @@ fn player_video_regex() -> &'static Regex {
 /// not a video / private-video shape. Used by the oEmbed request builder.
 pub fn extract_video_id(url: &str) -> Option<String> {
     let (_, path) = validate_and_split(url)?;
-    let path_only = path.split('?').next().unwrap_or("").trim_end_matches('/');
+    let path_only = normalize_path(path);
 
     if let Some(caps) = private_video_regex().captures(path_only) {
         return caps.get(1).map(|m| m.as_str().to_string());
@@ -116,7 +128,7 @@ pub fn extract_video_id(url: &str) -> Option<String> {
 /// Extract the numeric showcase / album ID from a URL or return `None`.
 pub fn extract_showcase_id(url: &str) -> Option<String> {
     let (_, path) = validate_and_split(url)?;
-    let path_only = path.split('?').next().unwrap_or("").trim_end_matches('/');
+    let path_only = normalize_path(path);
     showcase_or_album_regex()
         .captures(path_only)
         .and_then(|c| c.get(1).map(|m| m.as_str().to_string()))
@@ -160,6 +172,15 @@ mod tests {
     #[case("https://vimeo.com/user/foo", UrlKind::Unknown)]
     #[case("https://example.com/?u=vimeo.com/123", UrlKind::Unknown)]
     #[case("not a url", UrlKind::Unknown)]
+    // Fragment stripping: `#t=30s` timestamps must not reclassify the URL.
+    #[case("https://vimeo.com/123456789#t=30", UrlKind::Video)]
+    #[case(
+        "https://vimeo.com/123456789/abcdef1234#comment",
+        UrlKind::PrivateVideo
+    )]
+    #[case("https://vimeo.com/showcase/98765#intro", UrlKind::Showcase)]
+    // Showcase regex is anchored — junk after the numeric id is rejected.
+    #[case("https://vimeo.com/showcase/98765/extra/segments", UrlKind::Unknown)]
     fn test_classify_url(#[case] url: &str, #[case] expected: UrlKind) {
         assert_eq!(classify_url(url), expected);
     }

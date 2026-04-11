@@ -10,7 +10,8 @@ use crate::parser::{
 use crate::url_matcher::extract_video_id;
 use crate::{
     build_media_variants_response, build_single_video_response, ensure_single_video,
-    ensure_vimeo_url, filter_audio_only, handle_can_handle, handle_supports_playlist,
+    filter_audio_only, handle_can_handle, handle_supports_playlist, pick_variant_for_quality,
+    MediaVariant, MediaVariantsResponse,
 };
 
 #[host_fn]
@@ -31,10 +32,17 @@ pub fn supports_playlist(url: String) -> FnResult<String> {
 
 #[plugin_fn]
 pub fn extract_links(url: String) -> FnResult<String> {
-    ensure_vimeo_url(&url).map_err(error_to_fn_error)?;
+    // Use `ensure_single_video` rather than `ensure_vimeo_url` so that
+    // showcase URLs are rejected at the entrypoint and never reach
+    // `build_single_video_response`. Showcase extraction is handled by
+    // `extract_playlist`, which currently returns a clear unsupported
+    // error until the token-gated showcase endpoint is wired up.
+    ensure_single_video(&url).map_err(error_to_fn_error)?;
 
     let oembed = fetch_oembed(&url)?;
-    let response = build_single_video_response(oembed);
+    // Pass the original URL through so private share links
+    // (`vimeo.com/<id>/<hash>`) retain their hash token.
+    let response = build_single_video_response(oembed, &url);
     Ok(serde_json::to_string(&response)?)
 }
 
@@ -51,7 +59,13 @@ pub fn get_media_variants(url: String) -> FnResult<String> {
     } else {
         variants
     };
-    Ok(serde_json::to_string(&filtered)?)
+    // Honour the user-configured `default_quality` by hoisting the
+    // best matching variant to the head of the list. The host renders
+    // the first entry as the default selection in the UI, so a stable
+    // ordering plus a hoist gives us both deterministic output and
+    // respect for the configured preference.
+    let reordered = apply_quality_preference(filtered);
+    Ok(serde_json::to_string(&reordered)?)
 }
 
 #[plugin_fn]
@@ -105,6 +119,41 @@ fn fetch_player_config(video_id: &str) -> FnResult<crate::parser::PlayerConfig> 
             parse_player_config(json).map_err(error_to_fn_error)
         }
     }
+}
+
+/// Hoist the variant matching the user's `default_quality` preference
+/// to the front of the list. The remaining entries keep their original
+/// sort order from `build_media_variants_response`. If the config key
+/// is missing, empty, or matches no progressive variant, the list is
+/// returned unchanged.
+fn apply_quality_preference(mut response: MediaVariantsResponse) -> MediaVariantsResponse {
+    let preferred = default_quality_preference();
+    if preferred.is_empty() {
+        return response;
+    }
+    let Some(target_url) =
+        pick_variant_for_quality(&response.variants, &preferred).map(|v| v.url.clone())
+    else {
+        return response;
+    };
+    // Re-order in place: pull the match out, push it to the front.
+    if let Some(pos) = response
+        .variants
+        .iter()
+        .position(|v: &MediaVariant| v.url == target_url)
+    {
+        let picked = response.variants.remove(pos);
+        response.variants.insert(0, picked);
+    }
+    response
+}
+
+fn default_quality_preference() -> String {
+    // SAFETY: identical host-function invariants to
+    // `audio_only_preference` below — the host symbol is registered,
+    // the ABI is `(I64) -> I64`, capability gating is manifest-driven,
+    // and the returned string is owned.
+    unsafe { get_config("default_quality".to_string()) }.unwrap_or_default()
 }
 
 fn audio_only_preference() -> bool {

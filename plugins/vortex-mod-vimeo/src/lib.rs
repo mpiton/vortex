@@ -67,14 +67,22 @@ pub enum VariantKind {
 // ── Routing helpers ──────────────────────────────────────────────────────────
 
 pub fn handle_can_handle(url: &str) -> String {
+    // Showcase URLs are intentionally excluded until
+    // `extract_playlist` is implemented — advertising support would
+    // produce a false-positive followed by a runtime `UnsupportedUrl`.
     bool_to_string(matches!(
         url_matcher::classify_url(url),
-        UrlKind::Video | UrlKind::PrivateVideo | UrlKind::Showcase
+        UrlKind::Video | UrlKind::PrivateVideo
     ))
 }
 
 pub fn handle_supports_playlist(url: &str) -> String {
-    bool_to_string(matches!(url_matcher::classify_url(url), UrlKind::Showcase))
+    // Same rationale as `handle_can_handle`: showcase enumeration
+    // requires an access-token endpoint that is not wired in this MVP.
+    // Report `false` so the host never routes showcase URLs to a
+    // handler that can only fail.
+    let _ = url_matcher::classify_url(url);
+    bool_to_string(false)
 }
 
 fn bool_to_string(b: bool) -> String {
@@ -86,9 +94,11 @@ fn bool_to_string(b: bool) -> String {
 }
 
 pub fn ensure_vimeo_url(url: &str) -> Result<UrlKind, PluginError> {
+    // Showcase URLs are not accepted here so that `extract_links` and
+    // the routing contract stay in sync with `handle_can_handle`.
     match url_matcher::classify_url(url) {
-        kind @ (UrlKind::Video | UrlKind::PrivateVideo | UrlKind::Showcase) => Ok(kind),
-        UrlKind::Unknown => Err(PluginError::UnsupportedUrl(url.to_string())),
+        kind @ (UrlKind::Video | UrlKind::PrivateVideo) => Ok(kind),
+        UrlKind::Showcase | UrlKind::Unknown => Err(PluginError::UnsupportedUrl(url.to_string())),
     }
 }
 
@@ -101,17 +111,27 @@ pub fn ensure_single_video(url: &str) -> Result<UrlKind, PluginError> {
 
 // ── Response builders ─────────────────────────────────────────────────────────
 
-/// Build a single-video [`ExtractLinksResponse`] from an oEmbed payload.
+/// Build a single-video [`ExtractLinksResponse`] from an oEmbed payload
+/// and the **original source URL** the caller resolved against.
 ///
-/// The oEmbed response provides everything needed for the video card
-/// (title, description, uploader, thumbnail, duration), and the
-/// `video_id` field lets the caller reconstruct the canonical permalink.
-pub fn build_single_video_response(oembed: OembedResponse) -> ExtractLinksResponse {
+/// Private share links (`vimeo.com/<id>/<hash>`) carry an auth token in
+/// the second path segment — reconstructing the URL from `video_id`
+/// alone would drop that hash, and the resulting permalink would no
+/// longer open the same video. So the caller must pass the original
+/// URL in as `source_url`, and this function preserves it verbatim
+/// except when it is empty (in which case it falls back to the
+/// `https://vimeo.com/<id>` permalink derived from the oEmbed payload).
+pub fn build_single_video_response(
+    oembed: OembedResponse,
+    source_url: &str,
+) -> ExtractLinksResponse {
     let id = oembed.video_id.map(|id| id.to_string()).unwrap_or_default();
-    let url = if id.is_empty() {
-        String::new()
-    } else {
+    let url = if !source_url.is_empty() {
+        source_url.to_string()
+    } else if !id.is_empty() {
         format!("https://vimeo.com/{id}")
+    } else {
+        String::new()
     };
     let link = MediaLink {
         id,
@@ -174,7 +194,13 @@ fn pick_cdn(hls: &parser::HlsEntry) -> Option<String> {
             return Some(entry.url.clone());
         }
     }
-    hls.cdns.values().next().map(|e| e.url.clone())
+    // `HashMap::values().next()` is non-deterministic: the chosen CDN
+    // would change across runs even when the rest of the variant list
+    // is intentionally stable. Iterate over the keys and pick the
+    // lexicographically smallest one so the fallback is reproducible
+    // and matches the sort applied to progressive variants.
+    let min_key = hls.cdns.keys().min()?;
+    hls.cdns.get(min_key).map(|e| e.url.clone())
 }
 
 fn progressive_to_variant(entry: ProgressiveEntry) -> MediaVariant {
@@ -311,14 +337,6 @@ mod tests {
     }
 
     #[test]
-    fn supports_playlist_true_for_showcase() {
-        assert_eq!(
-            handle_supports_playlist("https://vimeo.com/showcase/1"),
-            "true"
-        );
-    }
-
-    #[test]
     fn supports_playlist_false_for_video() {
         assert_eq!(
             handle_supports_playlist("https://vimeo.com/123456789"),
@@ -328,7 +346,7 @@ mod tests {
 
     #[test]
     fn build_single_video_response_populates_fields() {
-        let r = build_single_video_response(sample_oembed());
+        let r = build_single_video_response(sample_oembed(), "https://vimeo.com/123456789");
         assert_eq!(r.kind, "video");
         assert_eq!(r.videos.len(), 1);
         let v = &r.videos[0];
@@ -337,6 +355,25 @@ mod tests {
         assert_eq!(v.url, "https://vimeo.com/123456789");
         assert_eq!(v.uploader.as_deref(), Some("Blender Foundation"));
         assert_eq!(v.duration, Some(52));
+    }
+
+    #[test]
+    fn build_single_video_response_preserves_private_share_hash() {
+        // For private share links the hash token must not be dropped.
+        let source_url = "https://vimeo.com/123456789/abcdef1234";
+        let r = build_single_video_response(sample_oembed(), source_url);
+        assert_eq!(
+            r.videos[0].url, source_url,
+            "private share URL must be preserved verbatim"
+        );
+    }
+
+    #[test]
+    fn build_single_video_response_falls_back_when_source_empty() {
+        // When the caller has no source URL (e.g. internal batch),
+        // the oEmbed video_id is used to reconstruct a public permalink.
+        let r = build_single_video_response(sample_oembed(), "");
+        assert_eq!(r.videos[0].url, "https://vimeo.com/123456789");
     }
 
     #[test]
@@ -454,10 +491,63 @@ mod tests {
 
     #[test]
     fn json_serialisation_of_extract_links_response() {
-        let r = build_single_video_response(sample_oembed());
+        let r = build_single_video_response(sample_oembed(), "https://vimeo.com/123456789");
         let json = serde_json::to_string(&r).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed["kind"], "video");
         assert_eq!(parsed["videos"][0]["title"], "Sintel trailer");
+    }
+
+    #[test]
+    fn supports_playlist_false_for_showcase_until_implemented() {
+        assert_eq!(
+            handle_supports_playlist("https://vimeo.com/showcase/98765"),
+            "false",
+            "Showcase must not be advertised as playlist-supported"
+        );
+    }
+
+    #[test]
+    fn can_handle_rejects_showcase_until_implemented() {
+        assert_eq!(
+            handle_can_handle("https://vimeo.com/showcase/98765"),
+            "false"
+        );
+    }
+
+    #[test]
+    fn ensure_vimeo_url_rejects_showcase() {
+        let err = ensure_vimeo_url("https://vimeo.com/showcase/98765").unwrap_err();
+        assert!(matches!(err, PluginError::UnsupportedUrl(_)));
+    }
+
+    #[test]
+    fn pick_cdn_is_deterministic_without_default() {
+        // When `default_cdn` is missing, we must pick the
+        // lexicographically smallest key so the result is stable
+        // across runs.
+        let mut cdns = HashMap::new();
+        cdns.insert(
+            "z_akamai".into(),
+            CdnEntry {
+                url: "https://z.example/m.m3u8".into(),
+                avc_url: None,
+            },
+        );
+        cdns.insert(
+            "a_fastly".into(),
+            CdnEntry {
+                url: "https://a.example/m.m3u8".into(),
+                avc_url: None,
+            },
+        );
+        let hls = HlsEntry {
+            cdns,
+            default_cdn: None,
+        };
+        // Run multiple times to catch order instability.
+        for _ in 0..5 {
+            assert_eq!(pick_cdn(&hls).as_deref(), Some("https://a.example/m.m3u8"));
+        }
     }
 }

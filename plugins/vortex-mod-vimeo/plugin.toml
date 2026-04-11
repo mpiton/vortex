@@ -13,5 +13,9 @@ min_vortex_version = "0.1.0"
 http = true
 
 [config]
+# `default_quality` is honoured by `get_media_variants`: the variant
+# whose height is closest to (but not exceeding) the preference is
+# hoisted to the head of the returned list, becoming the default
+# selection in the host UI.
 default_quality = { type = "string", default = "720p", options = ["360p", "480p", "720p", "1080p", "2K", "4K"] }
 extract_audio_only = { type = "boolean", default = false }

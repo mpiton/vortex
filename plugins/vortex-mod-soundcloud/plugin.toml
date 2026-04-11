@@ -20,4 +20,4 @@ http = true
 [config]
 preferred_format = { type = "string", default = "mp3", options = ["mp3", "ogg", "wav"] }
 quality = { type = "string", default = "high", options = ["low", "medium", "high"] }
-client_id = { type = "string", default = "", description = "SoundCloud API client_id (auto-discovered if empty)" }
+client_id = { type = "string", default = "", description = "SoundCloud API client_id — required; the plugin does not auto-discover it. Requests fail with 401/403 until a valid value is provided." }

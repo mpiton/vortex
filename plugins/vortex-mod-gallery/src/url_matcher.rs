@@ -8,9 +8,15 @@
 use std::sync::OnceLock;
 
 use regex::Regex;
+use serde::Serialize;
 
 /// Gallery provider for a given URL.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// This is the single canonical `Provider` type for the crate —
+/// `link.rs` re-exports it so that all modules (url_matcher, filter,
+/// providers, lib.rs) share the same definition and cannot drift.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Provider {
     /// Imgur album or gallery: `imgur.com/a/<id>` or `imgur.com/gallery/<id>`
     Imgur,
@@ -24,7 +30,7 @@ pub enum Provider {
 
 pub fn classify_url(url: &str) -> Option<Provider> {
     let (host_lower, path) = validate_and_split(url)?;
-    let path_only = path.split('?').next().unwrap_or("").trim_end_matches('/');
+    let path_only = normalize_path(path);
 
     if is_imgur_host(&host_lower) && imgur_regex().is_match(path_only) {
         return Some(Provider::Imgur);
@@ -46,7 +52,7 @@ pub fn is_recognised_provider(url: &str) -> bool {
 
 pub fn extract_imgur_id(url: &str) -> Option<String> {
     let (_, path) = validate_and_split(url)?;
-    let path_only = path.split('?').next().unwrap_or("").trim_end_matches('/');
+    let path_only = normalize_path(path);
     imgur_regex()
         .captures(path_only)
         .and_then(|c| c.get(1).map(|m| m.as_str().to_string()))
@@ -58,21 +64,34 @@ pub fn extract_reddit_permalink(url: &str) -> Option<String> {
     if !is_reddit_host(&host) {
         return None;
     }
-    let path_only = path.split('?').next().unwrap_or("").trim_end_matches('/');
-    if reddit_regex().is_match(path_only) {
-        Some(format!("https://www.reddit.com{path_only}.json"))
-    } else {
-        None
+    let path_only = normalize_path(path);
+    if !reddit_regex().is_match(path_only) {
+        return None;
     }
+    // Reddit's JSON endpoint is `<permalink>.json`. Users sometimes
+    // paste the already-terminated `.json` URL; appending another
+    // `.json` would produce a `title.json.json` request that 404s, so
+    // we detect that case and pass the path through unchanged.
+    let already_json = path_only.ends_with(".json");
+    let suffix = if already_json { "" } else { ".json" };
+    Some(format!("https://www.reddit.com{path_only}{suffix}"))
 }
 
 pub fn extract_flickr_album_id(url: &str) -> Option<(String, String)> {
     let (_, path) = validate_and_split(url)?;
-    let path_only = path.split('?').next().unwrap_or("").trim_end_matches('/');
+    let path_only = normalize_path(path);
     let caps = flickr_regex().captures(path_only)?;
     let user = caps.get(1)?.as_str().to_string();
     let album = caps.get(2)?.as_str().to_string();
     Some((user, album))
+}
+
+/// Strip `?query`, `#fragment`, and trailing `/` from the raw path.
+/// Fragments are split first so that `path?q#frag` still works.
+fn normalize_path(path: &str) -> &str {
+    let no_frag = path.split('#').next().unwrap_or("");
+    let no_query = no_frag.split('?').next().unwrap_or("");
+    no_query.trim_end_matches('/')
 }
 
 fn is_imgur_host(host: &str) -> bool {

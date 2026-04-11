@@ -20,11 +20,16 @@ SoundCloud WASM plugin for [Vortex](https://github.com/mpiton/vortex).
 
 ```bash
 rustup target add wasm32-wasip1
-cargo build --release
+cargo build --release --target wasm32-wasip1
 ```
 
 The resulting WASM binary is at
 `target/wasm32-wasip1/release/vortex_mod_soundcloud.wasm`.
+
+> Note: the crate ships a `.cargo/config.toml` that sets
+> `target = "wasm32-wasip1"`, so `cargo build --release` alone also
+> works inside the crate directory. The explicit flag above is given
+> so that the command works from any working directory.
 
 ## Install
 

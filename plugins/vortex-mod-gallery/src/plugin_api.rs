@@ -69,7 +69,10 @@ pub fn extract_links(url: String) -> FnResult<String> {
     };
 
     let album_id = album_id_for(provider, &url);
-    let min_res = read_config_or("min_resolution", "0x0");
+    // Keep the runtime fallback in sync with the `min_resolution`
+    // default declared in `plugin.toml` — 800×600. If the manifest is
+    // ever edited, update this literal at the same time.
+    let min_res = read_config_or("min_resolution", "800x600");
     let auto_name = read_bool_config("auto_name", true);
 
     let response = finalize_links(provider, &album_id, images, &min_res, auto_name)
@@ -91,7 +94,10 @@ pub fn extract_generic(url: String) -> FnResult<String> {
     let body = http_get(build_generic_request(&url))?;
     let images = parse_generic_html(&body, &url);
 
-    let min_res = read_config_or("min_resolution", "0x0");
+    // Keep the runtime fallback in sync with the `min_resolution`
+    // default declared in `plugin.toml` — 800×600. If the manifest is
+    // ever edited, update this literal at the same time.
+    let min_res = read_config_or("min_resolution", "800x600");
     let auto_name = read_bool_config("auto_name", true);
     let album_id = "page";
 

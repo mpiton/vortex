@@ -32,9 +32,16 @@ pub fn parse_min_resolution(input: &str) -> Result<(u32, u32), PluginError> {
     Ok((w, h))
 }
 
-/// Drop images strictly smaller than `min_w × min_h`. Images with
-/// unknown dimensions (both fields None) are kept — the downstream
-/// downloader re-checks during HEAD.
+/// Drop images strictly smaller than `min_w × min_h`.
+///
+/// Policy for partial information:
+///
+/// - Both dimensions unknown → keep (benefit-of-the-doubt; downstream
+///   HEAD check can re-verify).
+/// - Both known → drop if either axis is below the minimum.
+/// - Only one axis known → drop if *that* axis is below its minimum,
+///   otherwise keep. A known small width is a firm "too small" signal
+///   and should not leak through just because the height is missing.
 pub fn filter_by_min_resolution(links: Vec<ImageLink>, min_w: u32, min_h: u32) -> Vec<ImageLink> {
     if min_w == 0 && min_h == 0 {
         return links;
@@ -43,8 +50,9 @@ pub fn filter_by_min_resolution(links: Vec<ImageLink>, min_w: u32, min_h: u32) -
         .into_iter()
         .filter(|l| match (l.width, l.height) {
             (Some(w), Some(h)) => w >= min_w && h >= min_h,
-            // Unknown dimensions are kept (benefit-of-the-doubt).
-            _ => true,
+            (Some(w), None) => w >= min_w,
+            (None, Some(h)) => h >= min_h,
+            (None, None) => true,
         })
         .collect()
 }
@@ -143,6 +151,23 @@ mod tests {
         let out = filter_by_min_resolution(input, 800, 600);
         let urls: Vec<_> = out.iter().map(|l| l.url.as_str()).collect();
         assert_eq!(urls, vec!["b.jpg", "c.jpg", "d.jpg"]);
+    }
+
+    #[test]
+    fn filter_by_min_resolution_drops_known_partial_below_threshold() {
+        // A firmly-known small width must drop even if height is
+        // unknown — the old policy leaked such images through because
+        // "any partial info" was treated as "benefit of the doubt".
+        let input = vec![
+            link("small-w.jpg", Some(400), None), // drop (width too small)
+            link("big-w.jpg", Some(1920), None),  // keep
+            link("small-h.jpg", None, Some(300)), // drop (height too small)
+            link("big-h.jpg", None, Some(1080)),  // keep
+            link("both-none.jpg", None, None),    // keep (unknown)
+        ];
+        let out = filter_by_min_resolution(input, 800, 600);
+        let urls: Vec<_> = out.iter().map(|l| l.url.as_str()).collect();
+        assert_eq!(urls, vec!["big-w.jpg", "big-h.jpg", "both-none.jpg"]);
     }
 
     #[test]

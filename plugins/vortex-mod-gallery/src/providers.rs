@@ -283,23 +283,43 @@ fn unescape_amp(url: &str) -> String {
 }
 
 fn looks_like_image_url(url: &str) -> bool {
-    let lower = url.to_ascii_lowercase();
+    // Strip the query and fragment before inspecting the extension so
+    // that `https://cdn/example.jpg?sig=xyz#frag` is still recognised.
+    let stripped = url
+        .split('#')
+        .next()
+        .unwrap_or("")
+        .split('?')
+        .next()
+        .unwrap_or("");
+    let lower = stripped.to_ascii_lowercase();
     lower.ends_with(".jpg")
         || lower.ends_with(".jpeg")
         || lower.ends_with(".png")
         || lower.ends_with(".gif")
         || lower.ends_with(".webp")
+        || lower.ends_with(".avif")
 }
 
 // ── Flickr ───────────────────────────────────────────────────────────────────
 
 /// Matches Flickr REST `flickr.photosets.getPhotos` JSON response when
 /// `format=json&nojsoncallback=1` is passed.
+///
+/// `photoset` is optional because Flickr's `{"stat":"fail"}` error
+/// envelopes (bad API key, private album, non-existent photoset) omit
+/// the field entirely — a mandatory field would surface those as JSON
+/// parse failures instead of clean provider errors.
 #[derive(Debug, Deserialize)]
 struct FlickrResponse {
-    photoset: FlickrPhotoset,
+    #[serde(default)]
+    photoset: Option<FlickrPhotoset>,
     #[serde(default)]
     stat: Option<String>,
+    #[serde(default)]
+    code: Option<u16>,
+    #[serde(default)]
+    message: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -362,14 +382,33 @@ fn urlencode_query(s: &str) -> String {
 pub fn parse_flickr_photoset(raw: &str) -> Result<Vec<ImageLink>, PluginError> {
     let parsed: FlickrResponse =
         serde_json::from_str(raw).map_err(|e| PluginError::ParseJson(e.to_string()))?;
+
+    // Check the API envelope status BEFORE touching `photoset`, so that
+    // `{"stat":"fail"}` responses surface as a provider error with the
+    // Flickr error code / message instead of an unwrap panic or a
+    // misleading JSON parse failure.
+    if parsed.stat.as_deref() == Some("fail") {
+        return Err(PluginError::HttpStatus {
+            status: parsed.code.unwrap_or(400),
+            message: parsed
+                .message
+                .unwrap_or_else(|| "Flickr API returned stat=fail".into()),
+        });
+    }
     if !matches!(parsed.stat.as_deref(), Some("ok") | None) {
         return Err(PluginError::HttpStatus {
             status: 400,
             message: format!("Flickr stat={:?}", parsed.stat),
         });
     }
-    Ok(parsed
-        .photoset
+
+    // `photoset` is now only absent for malformed success envelopes —
+    // treat that as an empty album rather than an error.
+    let Some(photoset) = parsed.photoset else {
+        return Ok(Vec::new());
+    };
+
+    Ok(photoset
         .photo
         .into_iter()
         .filter_map(|p| {
@@ -419,17 +458,27 @@ pub fn build_generic_request(page_url: &str) -> Result<String, PluginError> {
 }
 
 /// Scrape `<img>` tags from an HTML page. Relative URLs are resolved
-/// against `base_url` (scheme + host, no path). Non-http(s) URL schemes
-/// like `data:`, `blob:`, `javascript:`, `mailto:` are skipped before
-/// resolution so they cannot accidentally become `<origin>/data:…`
-/// entries.
+/// against `base_url`:
+///
+/// - absolute URLs are passed through verbatim
+/// - protocol-relative URLs (`//cdn.example.com/a.jpg`) inherit the
+///   **scheme of the page URL** (not a hardcoded `https:`)
+/// - root-relative paths (`/foo.png`) are resolved against the origin
+/// - page-relative paths (`images/4.jpg`) are resolved against the
+///   page's **directory** (everything up to and including the last
+///   `/`) so `<img src="a.jpg">` on `https://example.com/gallery/p.html`
+///   becomes `https://example.com/gallery/a.jpg`, not
+///   `https://example.com/a.jpg`
+///
+/// Non-http(s) URL schemes like `data:`, `blob:`, `javascript:`,
+/// `mailto:` are dropped before resolution.
 pub fn parse_generic_html(html: &str, base_url: &str) -> Vec<ImageLink> {
-    let base = extract_origin(base_url);
+    let ctx = UrlContext::from_page_url(base_url);
     img_src_regex()
         .captures_iter(html)
         .filter_map(|c| c.get(1).map(|m| m.as_str().to_string()))
         .filter(|raw| !has_non_http_scheme(raw))
-        .map(|raw| resolve_url(&raw, &base))
+        .map(|raw| ctx.resolve(&raw))
         .filter(|url| is_http_url(url))
         .map(|url| ImageLink {
             url,
@@ -439,6 +488,90 @@ pub fn parse_generic_html(html: &str, base_url: &str) -> Vec<ImageLink> {
             filename: None,
         })
         .collect()
+}
+
+/// Parsed view of a page URL, split into the pieces the generic
+/// resolver actually needs.
+#[derive(Debug, Default)]
+struct UrlContext {
+    /// `"http"` or `"https"`, lowercased. Empty if the input wasn't
+    /// a well-formed http(s) URL — the resolver then degrades to
+    /// leaving relative URLs untouched (and they get dropped by
+    /// `is_http_url`).
+    scheme: String,
+    /// `<scheme>://<host>` — no path, no query, no fragment.
+    origin: String,
+    /// `<scheme>://<host>/<dir>/` — the page directory, always ending
+    /// in `/`. Used for page-relative resolution.
+    base_dir: String,
+}
+
+impl UrlContext {
+    fn from_page_url(url: &str) -> Self {
+        let (scheme, rest) = match url.split_once("://") {
+            Some((s, r)) => (s.to_ascii_lowercase(), r),
+            None => return Self::default(),
+        };
+        if !matches!(scheme.as_str(), "http" | "https") {
+            return Self::default();
+        }
+        // `rest` looks like `host/path?q#f` or just `host`.
+        let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+        let host = &rest[..authority_end];
+        if host.is_empty() {
+            return Self::default();
+        }
+        let origin = format!("{scheme}://{host}");
+
+        // Extract the path (before `?` and `#`), then keep everything
+        // up to and including the last `/` as the base directory.
+        let path_start = authority_end;
+        let after_authority = &rest[path_start..];
+        let path_only = after_authority
+            .split('#')
+            .next()
+            .unwrap_or("")
+            .split('?')
+            .next()
+            .unwrap_or("");
+        let dir = match path_only.rfind('/') {
+            Some(idx) => &path_only[..=idx],
+            None => "/",
+        };
+        let base_dir = format!("{origin}{dir}");
+
+        Self {
+            scheme,
+            origin,
+            base_dir,
+        }
+    }
+
+    fn resolve(&self, raw: &str) -> String {
+        if raw.starts_with("http://") || raw.starts_with("https://") {
+            raw.to_string()
+        } else if let Some(tail) = raw.strip_prefix("//") {
+            // Protocol-relative: inherit the page scheme instead of
+            // hardcoding https so http-only pages keep working.
+            let scheme = if self.scheme.is_empty() {
+                "https"
+            } else {
+                &self.scheme
+            };
+            format!("{scheme}://{tail}")
+        } else if raw.starts_with('/') {
+            // Root-relative: attach to the origin.
+            format!("{}{}", self.origin, raw)
+        } else if self.base_dir.is_empty() {
+            // No base directory to resolve against — return the raw
+            // path; `is_http_url` will drop it.
+            raw.to_string()
+        } else {
+            // Page-relative: attach to the page directory so nested
+            // pages keep their asset paths intact.
+            format!("{}{}", self.base_dir, raw)
+        }
+    }
 }
 
 /// Return true if the raw href is a non-resolvable scheme such as
@@ -473,38 +606,6 @@ fn has_non_http_scheme(raw: &str) -> bool {
     }
     let lower = scheme.to_ascii_lowercase();
     lower != "http" && lower != "https"
-}
-
-fn extract_origin(url: &str) -> String {
-    if let Some(rest) = url
-        .strip_prefix("https://")
-        .or_else(|| url.strip_prefix("http://"))
-    {
-        let host = rest.split('/').next().unwrap_or(rest);
-        let scheme = if url.starts_with("https") {
-            "https"
-        } else {
-            "http"
-        };
-        format!("{scheme}://{host}")
-    } else {
-        String::new()
-    }
-}
-
-fn resolve_url(raw: &str, origin: &str) -> String {
-    if raw.starts_with("http://") || raw.starts_with("https://") {
-        raw.to_string()
-    } else if raw.starts_with("//") {
-        format!("https:{raw}")
-    } else if raw.starts_with('/') {
-        format!("{origin}{raw}")
-    } else {
-        // Relative path — attach to origin + `/` as a best-effort. The
-        // plugin doesn't have a full URL resolver and this branch is
-        // rarely hit for real gallery sites.
-        format!("{origin}/{raw}")
-    }
 }
 
 fn is_http_url(url: &str) -> bool {
@@ -676,7 +777,7 @@ mod tests {
 
     // ── Generic HTML ───────────────────────────────────────────────────────
     #[test]
-    fn generic_html_scrapes_img_tags() {
+    fn generic_html_scrapes_img_tags_page_relative() {
         let html = r#"
             <html>
               <body>
@@ -688,7 +789,9 @@ mod tests {
               </body>
             </html>
         "#;
-        let links = parse_generic_html(html, "https://example.com/page");
+        // The page lives in `/gallery/` so `relative/4.gif` should
+        // resolve against that directory, not the origin root.
+        let links = parse_generic_html(html, "https://example.com/gallery/page.html");
         let urls: Vec<_> = links.iter().map(|l| l.url.as_str()).collect();
         assert_eq!(
             urls,
@@ -696,9 +799,34 @@ mod tests {
                 "https://cdn.example.com/1.jpg",
                 "https://example.com/rel/2.png",
                 "https://cdn2.example.com/3.webp",
-                "https://example.com/relative/4.gif",
+                "https://example.com/gallery/relative/4.gif",
             ]
         );
+    }
+
+    #[test]
+    fn generic_html_protocol_relative_inherits_http_scheme() {
+        // Page served over plain HTTP must NOT upgrade protocol-relative
+        // images to https — that would break http-only assets.
+        let html = r#"<img src="//cdn.example.com/a.jpg">"#;
+        let links = parse_generic_html(html, "http://example.com/page");
+        assert_eq!(links[0].url, "http://cdn.example.com/a.jpg");
+    }
+
+    #[test]
+    fn generic_html_root_page_page_relative_uses_origin_root() {
+        // When the page has no directory segment, relative paths
+        // resolve against `/` directly.
+        let html = r#"<img src="foo.jpg">"#;
+        let links = parse_generic_html(html, "https://example.com");
+        assert_eq!(links[0].url, "https://example.com/foo.jpg");
+    }
+
+    #[test]
+    fn url_context_ignores_query_and_fragment_on_base() {
+        let ctx = UrlContext::from_page_url("https://example.com/a/b?q=1#f");
+        assert_eq!(ctx.origin, "https://example.com");
+        assert_eq!(ctx.base_dir, "https://example.com/a/");
     }
 
     #[test]
@@ -715,12 +843,41 @@ mod tests {
     }
 
     #[test]
-    fn extract_origin_strips_path() {
-        assert_eq!(
-            extract_origin("https://example.com/page/foo?bar=1"),
-            "https://example.com"
-        );
-        assert_eq!(extract_origin("http://a.b/c"), "http://a.b");
+    fn flickr_failure_envelope_surfaces_as_provider_error() {
+        // Bad API key / private album / missing set → `stat: "fail"`
+        // with no `photoset` field. Must map to PluginError::HttpStatus.
+        let raw = r#"{
+            "stat": "fail",
+            "code": 100,
+            "message": "Invalid API Key"
+        }"#;
+        let err = parse_flickr_photoset(raw).unwrap_err();
+        match err {
+            PluginError::HttpStatus { status, message } => {
+                assert_eq!(status, 100);
+                assert_eq!(message, "Invalid API Key");
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reddit_fallback_detects_image_with_query_string() {
+        // Reddit single-image submissions without a `preview` field
+        // use the submission URL directly. That URL may carry a CDN
+        // signing query string, so the extension check must ignore it.
+        let raw = r#"[
+            {"data": {"children": [
+                {"data": {
+                    "title": "shot",
+                    "url": "https://i.redd.it/example.png?sig=abc123"
+                }}
+            ]}},
+            {"data": {"children": []}}
+        ]"#;
+        let links = parse_reddit_submission(raw).unwrap();
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].url, "https://i.redd.it/example.png?sig=abc123");
     }
 
     #[test]

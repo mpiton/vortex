@@ -56,17 +56,21 @@ pub struct MediaLink {
 /// later will force an explicit decision here instead of silently
 /// accepting it.
 pub fn handle_can_handle(url: &str) -> String {
+    // Artist profiles are *not* reported as handleable yet because
+    // `extract_playlist` currently returns `UnsupportedUrl` for
+    // `ResolveResponse::User` — advertising support would produce a
+    // false-positive capability detection and a runtime failure.
+    // Re-enable `UrlKind::Artist` here once artist pagination is wired.
     let kind = url_matcher::classify_url(url);
-    bool_to_string(matches!(
-        kind,
-        UrlKind::Track | UrlKind::Playlist | UrlKind::Artist
-    ))
+    bool_to_string(matches!(kind, UrlKind::Track | UrlKind::Playlist))
 }
 
-/// Returns `"true"` if the URL refers to a playlist or artist profile.
+/// Returns `"true"` only if the URL refers to an explicit playlist /
+/// set / likes / tracks / albums collection. Artist profiles are
+/// intentionally excluded until artist pagination ships.
 pub fn handle_supports_playlist(url: &str) -> String {
     let kind = url_matcher::classify_url(url);
-    bool_to_string(matches!(kind, UrlKind::Playlist | UrlKind::Artist))
+    bool_to_string(matches!(kind, UrlKind::Playlist))
 }
 
 fn bool_to_string(b: bool) -> String {
@@ -78,11 +82,17 @@ fn bool_to_string(b: bool) -> String {
 }
 
 /// Reject URLs that are not a supported SoundCloud resource.
+///
+/// Artist profiles (`UrlKind::Artist`) are not accepted here until the
+/// follow-up `/users/<id>/tracks` pagination is implemented — accepting
+/// them would make `extract_links` fail with `UnsupportedUrl` *after*
+/// the routing contract claimed to handle the URL, which is worse than
+/// rejecting early.
 pub fn ensure_soundcloud_url(url: &str) -> Result<UrlKind, PluginError> {
     let kind = url_matcher::classify_url(url);
     match kind {
-        UrlKind::Track | UrlKind::Playlist | UrlKind::Artist => Ok(kind),
-        UrlKind::Unknown => Err(PluginError::UnsupportedUrl(url.to_string())),
+        UrlKind::Track | UrlKind::Playlist => Ok(kind),
+        UrlKind::Artist | UrlKind::Unknown => Err(PluginError::UnsupportedUrl(url.to_string())),
     }
 }
 
@@ -95,7 +105,7 @@ pub fn ensure_track(url: &str) -> Result<(), PluginError> {
 
 pub fn ensure_playlist(url: &str) -> Result<(), PluginError> {
     match url_matcher::classify_url(url) {
-        UrlKind::Playlist | UrlKind::Artist => Ok(()),
+        UrlKind::Playlist => Ok(()),
         _ => Err(PluginError::UnsupportedUrl(url.to_string())),
     }
 }
@@ -210,6 +220,23 @@ mod tests {
     }
 
     #[test]
+    fn can_handle_rejects_artist_profile_until_pagination_lands() {
+        // Artist profiles are intentionally excluded — extracting them
+        // requires a second `/users/<id>/tracks` pagination call which
+        // is not implemented yet, so advertising support would produce
+        // a false-positive followed by a runtime error.
+        assert_eq!(handle_can_handle("https://soundcloud.com/forss"), "false");
+    }
+
+    #[test]
+    fn can_handle_accepts_on_short_link() {
+        assert_eq!(
+            handle_can_handle("https://on.soundcloud.com/AbCdEfGhIj"),
+            "true"
+        );
+    }
+
+    #[test]
     fn supports_playlist_true_for_sets() {
         assert_eq!(
             handle_supports_playlist("https://soundcloud.com/forss/sets/soulhack"),
@@ -223,6 +250,20 @@ mod tests {
             handle_supports_playlist("https://soundcloud.com/forss/flickermood"),
             "false"
         );
+    }
+
+    #[test]
+    fn supports_playlist_false_for_artist_profile() {
+        assert_eq!(
+            handle_supports_playlist("https://soundcloud.com/forss"),
+            "false"
+        );
+    }
+
+    #[test]
+    fn ensure_soundcloud_url_rejects_artist_profile() {
+        let err = ensure_soundcloud_url("https://soundcloud.com/forss").unwrap_err();
+        assert!(matches!(err, PluginError::UnsupportedUrl(_)));
     }
 
     #[test]

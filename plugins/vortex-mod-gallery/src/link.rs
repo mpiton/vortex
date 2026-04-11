@@ -1,6 +1,15 @@
 //! Shared image-link type used across providers.
+//!
+//! The `Provider` enum lives in `url_matcher.rs` (it's the classifier
+//! output) and is re-exported here as `link::Provider` so that any
+//! module depending on `link.rs` — notably `filter.rs` — sees exactly
+//! the same type the matcher produces. Keeping a single canonical
+//! definition prevents the two-enum drift hazard flagged during PR
+//! review.
 
 use serde::Serialize;
+
+pub use crate::url_matcher::Provider;
 
 /// A single image discovered by a provider.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -15,27 +24,4 @@ pub struct ImageLink {
     pub title: Option<String>,
     /// Auto-generated filename, if [`crate::filter::auto_name`] ran.
     pub filename: Option<String>,
-}
-
-/// Gallery provider that produced an [`ImageLink`]. Mirrored in
-/// `url_matcher::Provider` — re-exported here so `filter.rs` can depend
-/// on `link.rs` without a circular import.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Provider {
-    Imgur,
-    Reddit,
-    Flickr,
-    Generic,
-}
-
-impl From<crate::url_matcher::Provider> for Provider {
-    fn from(p: crate::url_matcher::Provider) -> Self {
-        match p {
-            crate::url_matcher::Provider::Imgur => Self::Imgur,
-            crate::url_matcher::Provider::Reddit => Self::Reddit,
-            crate::url_matcher::Provider::Flickr => Self::Flickr,
-            crate::url_matcher::Provider::Generic => Self::Generic,
-        }
-    }
 }

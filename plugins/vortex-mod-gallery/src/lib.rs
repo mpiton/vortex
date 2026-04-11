@@ -21,7 +21,10 @@ mod plugin_api;
 use serde::Serialize;
 
 use crate::error::PluginError;
-use crate::link::{ImageLink, Provider as LinkProvider};
+// `link::Provider` is the canonical `url_matcher::Provider` re-exported
+// through `link.rs` — importing from either path resolves to the same
+// type, so there is no `From` conversion needed here.
+use crate::link::ImageLink;
 use crate::url_matcher::Provider;
 
 // ── IPC DTOs ──────────────────────────────────────────────────────────────────
@@ -29,7 +32,7 @@ use crate::url_matcher::Provider;
 #[derive(Debug, Serialize, PartialEq, Eq)]
 pub struct ExtractLinksResponse {
     pub kind: &'static str,
-    pub provider: LinkProvider,
+    pub provider: Provider,
     pub images: Vec<ImageLink>,
 }
 
@@ -79,12 +82,11 @@ pub fn finalize_links(
     let filtered = filter::filter_by_min_resolution(deduped, min_w, min_h);
 
     let images: Vec<ImageLink> = if auto_name_enabled {
-        let link_provider: LinkProvider = provider.into();
         filtered
             .into_iter()
             .enumerate()
             .map(|(idx, mut link)| {
-                link.filename = Some(filter::auto_name(link_provider, album_id, idx, &link.url));
+                link.filename = Some(filter::auto_name(provider, album_id, idx, &link.url));
                 link
             })
             .collect()
@@ -94,7 +96,7 @@ pub fn finalize_links(
 
     Ok(ExtractLinksResponse {
         kind: "gallery",
-        provider: provider.into(),
+        provider,
         images,
     })
 }
@@ -172,7 +174,7 @@ mod tests {
         let resp =
             finalize_links(Provider::Imgur, "abcd", sample_images(), "800x600", true).unwrap();
         assert_eq!(resp.kind, "gallery");
-        assert_eq!(resp.provider, LinkProvider::Imgur);
+        assert_eq!(resp.provider, Provider::Imgur);
         // 4 input → dedupe to 3 → filter drops 400x300 → 2 kept
         assert_eq!(resp.images.len(), 2);
         assert_eq!(
