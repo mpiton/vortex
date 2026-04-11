@@ -20,14 +20,17 @@ pub fn spawn_notification_bridge(app_handle: AppHandle, event_bus: &dyn EventBus
             }
         }
         DomainEvent::DownloadFailed { id, error } => {
-            // Truncate and sanitize error to avoid leaking internal details
-            // (paths, credentials) in desktop notifications visible on lock screen
-            let safe_error: String = error.chars().take(100).collect();
+            // Don't expose raw error details in desktop notifications
+            // (could contain paths, credentials). Full error is in app logs.
+            tracing::error!(download_id = id.0, error = %error, "download failed");
             if let Err(e) = app_handle
                 .notification()
                 .builder()
                 .title("Download Failed")
-                .body(format!("Download #{}: {safe_error}", id.0))
+                .body(format!(
+                    "Download #{} failed (details available in app logs)",
+                    id.0
+                ))
                 .show()
             {
                 warn!("Failed to show error notification: {e}");
