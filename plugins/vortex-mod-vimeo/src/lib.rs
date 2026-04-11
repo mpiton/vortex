@@ -76,12 +76,13 @@ pub fn handle_can_handle(url: &str) -> String {
     ))
 }
 
-pub fn handle_supports_playlist(url: &str) -> String {
+pub fn handle_supports_playlist(_url: &str) -> String {
     // Same rationale as `handle_can_handle`: showcase enumeration
     // requires an access-token endpoint that is not wired in this MVP.
-    // Report `false` so the host never routes showcase URLs to a
-    // handler that can only fail.
-    let _ = url_matcher::classify_url(url);
+    // The URL is intentionally ignored — we unconditionally report
+    // `false` so the host never routes showcase URLs to a handler
+    // that can only fail. Re-introduce a URL inspection here once
+    // `extract_playlist` grows a working showcase backend.
     bool_to_string(false)
 }
 
@@ -93,19 +94,32 @@ fn bool_to_string(b: bool) -> String {
     }
 }
 
+/// Reject URLs that are not a single-video resource.
+///
+/// With the current [`UrlKind`] set (`Video`, `PrivateVideo`,
+/// `Showcase`, `Unknown`), this is functionally equivalent to
+/// [`ensure_single_video`] — both gate on the same variants because
+/// showcase extraction is not implemented. The two functions are kept
+/// as distinct names for call-site clarity: `ensure_vimeo_url` is
+/// used at the top-level routing boundary (e.g. by a future
+/// `extract_links` that supports playlists), while
+/// `ensure_single_video` is used by handlers that specifically need a
+/// single-video resource (`get_media_variants`). When showcase
+/// support lands, `ensure_vimeo_url` will accept `Showcase` too and
+/// the two will diverge.
 pub fn ensure_vimeo_url(url: &str) -> Result<UrlKind, PluginError> {
-    // Showcase URLs are not accepted here so that `extract_links` and
-    // the routing contract stay in sync with `handle_can_handle`.
-    match url_matcher::classify_url(url) {
-        kind @ (UrlKind::Video | UrlKind::PrivateVideo) => Ok(kind),
-        UrlKind::Showcase | UrlKind::Unknown => Err(PluginError::UnsupportedUrl(url.to_string())),
-    }
+    ensure_single_video(url)
 }
 
+/// Reject URLs that are not a Video or PrivateVideo. Callers that need
+/// to operate on a single-video resource (progressive variants, HLS,
+/// oEmbed) should call this instead of [`ensure_vimeo_url`] so that
+/// future expansion of the routing contract does not accidentally let
+/// showcase URLs reach a single-video code path.
 pub fn ensure_single_video(url: &str) -> Result<UrlKind, PluginError> {
     match url_matcher::classify_url(url) {
         kind @ (UrlKind::Video | UrlKind::PrivateVideo) => Ok(kind),
-        _ => Err(PluginError::UnsupportedUrl(url.to_string())),
+        UrlKind::Showcase | UrlKind::Unknown => Err(PluginError::UnsupportedUrl(url.to_string())),
     }
 }
 

@@ -85,7 +85,11 @@ pub fn auto_name(provider: Provider, album_id: &str, index: usize, url: &str) ->
 }
 
 fn guess_ext_from_url(url: &str) -> Option<&str> {
-    let path = url.split('?').next().unwrap_or(url);
+    // Strip the fragment first, then the query — an input like
+    // `image.avif#foo` would otherwise leave `avif#foo` in `ext`
+    // and fail the alphanumeric check.
+    let without_frag = url.split('#').next().unwrap_or(url);
+    let path = without_frag.split('?').next().unwrap_or(without_frag);
     let dot = path.rfind('.')?;
     let ext = &path[dot + 1..];
     if (1..=5).contains(&ext.len()) && ext.chars().all(|c| c.is_ascii_alphanumeric()) {
@@ -213,6 +217,19 @@ mod tests {
         assert_eq!(
             guess_ext_from_url("https://x.com/a.webp?sig=abc"),
             Some("webp")
+        );
+    }
+
+    #[test]
+    fn guess_ext_strips_fragment() {
+        assert_eq!(guess_ext_from_url("https://x.com/a.avif#foo"), Some("avif"));
+    }
+
+    #[test]
+    fn guess_ext_strips_fragment_and_query() {
+        assert_eq!(
+            guess_ext_from_url("https://x.com/a.png?v=2#frag"),
+            Some("png")
         );
     }
 }

@@ -548,7 +548,13 @@ impl UrlContext {
     }
 
     fn resolve(&self, raw: &str) -> String {
-        if raw.starts_with("http://") || raw.starts_with("https://") {
+        // Scheme detection must be case-insensitive: URL schemes are
+        // defined as case-insensitive by RFC 3986, and HTML authors
+        // sometimes write `HTTP://` (especially hand-edited legacy
+        // pages). A `starts_with("http://")` check would miss those
+        // and wrongly treat them as relative paths, prepending the
+        // page directory and producing a malformed URL.
+        if is_absolute_http_url(raw) {
             raw.to_string()
         } else if let Some(tail) = raw.strip_prefix("//") {
             // Protocol-relative: inherit the page scheme instead of
@@ -609,7 +615,18 @@ fn has_non_http_scheme(raw: &str) -> bool {
 }
 
 fn is_http_url(url: &str) -> bool {
-    url.starts_with("http://") || url.starts_with("https://")
+    is_absolute_http_url(url)
+}
+
+/// Return `true` if `url` starts with an absolute `http://` or
+/// `https://` scheme, **ignoring case**. RFC 3986 §3.1 defines URL
+/// schemes as case-insensitive; some hand-edited HTML in the wild
+/// uses uppercase schemes (`HTTP://example.com/a.jpg`), and a
+/// case-sensitive check would route those into the relative-URL
+/// branch and produce malformed output.
+fn is_absolute_http_url(url: &str) -> bool {
+    let lower = url.chars().take(8).collect::<String>().to_ascii_lowercase();
+    lower.starts_with("http://") || lower.starts_with("https://")
 }
 
 #[cfg(test)]
@@ -820,6 +837,17 @@ mod tests {
         let html = r#"<img src="foo.jpg">"#;
         let links = parse_generic_html(html, "https://example.com");
         assert_eq!(links[0].url, "https://example.com/foo.jpg");
+    }
+
+    #[test]
+    fn generic_html_accepts_uppercase_scheme() {
+        // Legacy pages sometimes ship `HTTP://` / `HTTPS://` — scheme
+        // detection must be case-insensitive so the URL is not routed
+        // through the relative-URL branch.
+        let html = r#"<img src="HTTPS://cdn.example.com/A.jpg">"#;
+        let links = parse_generic_html(html, "https://example.com/page");
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].url, "HTTPS://cdn.example.com/A.jpg");
     }
 
     #[test]

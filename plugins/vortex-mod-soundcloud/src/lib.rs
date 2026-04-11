@@ -136,7 +136,14 @@ pub fn track_to_link(track: Track) -> MediaLink {
 /// CDN shape might. Guard with a word-boundary check (end-of-string or
 /// a `.`, `/`, `?`) so only true `-large` markers are upgraded.
 fn upgrade_artwork(url: String) -> String {
-    if let Some(idx) = url.find("-large") {
+    // Use `rfind` so the scan starts from the end of the URL. This
+    // matters because a single URL can contain multiple occurrences of
+    // `-large` (e.g. inside a track slug like
+    // `/user/too-large-a-track/artworks-000-large.jpg`) and only the
+    // trailing one actually identifies the artwork size suffix. A
+    // `find` starting from the left would incorrectly upgrade the
+    // earlier match.
+    if let Some(idx) = url.rfind("-large") {
         let after = url
             .as_bytes()
             .get(idx + "-large".len())
@@ -167,10 +174,13 @@ pub fn build_playlist_response(playlist: ApiPlaylist) -> ExtractLinksResponse {
 /// Map a resolved response to an [`ExtractLinksResponse`].
 ///
 /// Returns an error for `User` responses because turning an artist
-/// profile into a track list requires a second API call (`/users/<id>/tracks`)
-/// which the plugin currently delegates to a dedicated code path — the
-/// top-level `plugin_api::extract_playlist` handler issues that request.
-/// `Unknown` kinds are rejected so that callers get a clear error.
+/// profile into a track list requires a second `/users/<id>/tracks`
+/// pagination call that is not implemented yet. Both `extract_links`
+/// and `extract_playlist` currently reject artist URLs outright — the
+/// error message must *not* redirect the caller to `extract_playlist`,
+/// because that handler would also return `UnsupportedUrl` for this
+/// variant. `Unknown` kinds are rejected with a plain error so that
+/// callers get a clear error.
 pub fn response_to_extract_links(
     resolved: ResolveResponse,
 ) -> Result<ExtractLinksResponse, PluginError> {
@@ -178,7 +188,7 @@ pub fn response_to_extract_links(
         ResolveResponse::Track(t) => Ok(build_single_track_response(t)),
         ResolveResponse::Playlist(p) => Ok(build_playlist_response(p)),
         ResolveResponse::User(u) => Err(PluginError::UnsupportedUrl(format!(
-            "artist profile '{}' — call extract_playlist for the track listing",
+            "artist profile '{}' is not supported yet — artist pagination is not implemented",
             u.username
         ))),
         ResolveResponse::Unknown => Err(PluginError::UnsupportedUrl(
@@ -312,6 +322,22 @@ mod tests {
             link.artwork_url.as_deref(),
             Some("https://i1.sndcdn.com/artworks-12345-t500x500?v=2"),
             "query string boundary should still trigger upgrade"
+        );
+    }
+
+    #[test]
+    fn track_to_link_upgrades_trailing_large_when_earlier_large_exists() {
+        // A URL that contains `-large` as part of an earlier slug must
+        // not cause the upgrade to rewrite the slug — `rfind` targets
+        // the trailing size suffix.
+        let mut t = sample_track();
+        t.artwork_url =
+            Some("https://i1.sndcdn.com/too-large-a-track/artworks-999-large.jpg".into());
+        let link = track_to_link(t);
+        assert_eq!(
+            link.artwork_url.as_deref(),
+            Some("https://i1.sndcdn.com/too-large-a-track/artworks-999-t500x500.jpg"),
+            "only the trailing -large suffix should be rewritten"
         );
     }
 

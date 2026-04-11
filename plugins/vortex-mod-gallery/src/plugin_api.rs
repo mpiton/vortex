@@ -144,12 +144,27 @@ fn album_id_for(provider: Provider, url: &str) -> String {
             .map(|(_, a)| a)
             .unwrap_or_default(),
         Provider::Reddit => {
-            // Use the final path segment as a readable album id.
-            url.trim_end_matches('/')
-                .rsplit('/')
-                .next()
-                .unwrap_or("reddit")
-                .to_string()
+            // Derive the album id from the *canonical* permalink
+            // returned by `extract_reddit_permalink`, not from the raw
+            // input URL. The raw URL can carry a `?utm_source=...`
+            // query string or `#comment` fragment, both of which would
+            // leak into the generated filename if we used the input
+            // verbatim. The permalink has already been normalised (no
+            // query, no fragment, trailing `.json` appended), so
+            // stripping the `.json` suffix and taking the final path
+            // segment yields a clean `t3_<id>`-style album id.
+            extract_reddit_permalink(url)
+                .as_deref()
+                .map(|permalink| {
+                    permalink
+                        .trim_end_matches(".json")
+                        .trim_end_matches('/')
+                        .rsplit('/')
+                        .next()
+                        .unwrap_or("reddit")
+                        .to_string()
+                })
+                .unwrap_or_else(|| "reddit".to_string())
         }
         Provider::Generic => "page".to_string(),
     }

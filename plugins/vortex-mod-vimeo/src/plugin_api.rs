@@ -156,7 +156,26 @@ fn default_quality_preference() -> String {
     unsafe { get_config("default_quality".to_string()) }.unwrap_or_default()
 }
 
+/// Accepted truthy string values for boolean config keys sourced via
+/// `get_config("extract_audio_only")` and any future boolean host
+/// setting. The comparison is case-insensitive (values are lowercased
+/// before the match), and any value outside this list falls back to
+/// the documented default of `false`.
+///
+/// Keeping this list in one place makes the convention discoverable
+/// and prevents drift if another config key later adopts the same
+/// parser.
+const TRUTHY_VALUES: &[&str] = &["true", "1", "yes"];
+
+fn is_truthy(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    TRUTHY_VALUES.iter().any(|&v| v == lower)
+}
+
 fn audio_only_preference() -> bool {
+    // Reads `get_config("extract_audio_only")` and interprets the
+    // returned string via [`is_truthy`] / [`TRUTHY_VALUES`].
+    //
     // SAFETY: `get_config` is registered host-side before plugin exports
     // run (see src-tauri/src/adapters/driven/plugin/host_functions.rs:
     // `make_get_config_function`). Invariants:
@@ -169,7 +188,7 @@ fn audio_only_preference() -> bool {
     //      `extract_audio_only`.
     //   4. Inputs/outputs are owned JSON strings — no aliasing concerns.
     let value = unsafe { get_config("extract_audio_only".to_string()) }.unwrap_or_default();
-    matches!(value.to_ascii_lowercase().as_str(), "true" | "1" | "yes")
+    is_truthy(&value)
 }
 
 fn error_to_fn_error(err: PluginError) -> WithReturnCode<extism_pdk::Error> {

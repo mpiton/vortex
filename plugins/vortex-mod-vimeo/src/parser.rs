@@ -238,12 +238,14 @@ pub fn extract_player_config_from_html(html: &str) -> Result<&str, PluginError> 
 // ── Request builders ──────────────────────────────────────────────────────────
 
 /// Return the byte offset of the first occurrence of `needle` in
-/// `haystack` that is **not** followed by an identifier continuation
-/// character (`[A-Za-z0-9_]`). This is equivalent to a word boundary
-/// on the right-hand side of the needle — the left-hand side does not
-/// need a boundary because both markers here start with a literal
-/// character (`w` or `p`) that is already preceded by whitespace or
-/// punctuation in every realistic HTML context.
+/// `haystack` that is **not** followed by a JavaScript identifier
+/// continuation character (`[A-Za-z0-9_$]`). JavaScript allows `$` as
+/// an identifier character, so `window.playerConfig$legacy` must not
+/// satisfy the word boundary for `window.playerConfig`. The check
+/// uses a right-hand boundary only — the left-hand side does not need
+/// one because both markers here start with a literal character
+/// (`w` or `p`) that is already preceded by whitespace or punctuation
+/// in every realistic HTML context.
 fn find_at_word_boundary(haystack: &str, needle: &str) -> Option<usize> {
     let mut start = 0usize;
     while start < haystack.len() {
@@ -253,13 +255,24 @@ fn find_at_word_boundary(haystack: &str, needle: &str) -> Option<usize> {
         let next_ok = haystack
             .as_bytes()
             .get(after)
-            .is_none_or(|b| !(b.is_ascii_alphanumeric() || *b == b'_'));
+            .is_none_or(|b| !is_js_ident_continue(*b));
         if next_ok {
             return Some(abs);
         }
         start = abs + needle.len();
     }
     None
+}
+
+/// JavaScript ASCII identifier-continuation check.
+///
+/// Full Unicode identifiers are out of scope for the HTML-embedded
+/// `playerConfig` marker scan — Vimeo's page always uses plain ASCII
+/// for the assignment — but `$` must be included alongside the
+/// standard `[A-Za-z0-9_]` class because it is a legal identifier
+/// character in JavaScript and appears in minified bundles.
+fn is_js_ident_continue(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_' || b == b'$'
 }
 
 pub fn build_oembed_request(video_url: &str) -> Result<String, PluginError> {
@@ -449,6 +462,21 @@ mod tests {
         let html = r#"
             <script>
               window.playerConfigVersion = {"legacy": true};
+              window.playerConfig = {"real": true};
+            </script>
+        "#;
+        let json = extract_player_config_from_html(html).unwrap();
+        assert_eq!(json, r#"{"real": true}"#);
+    }
+
+    #[test]
+    fn extract_player_config_rejects_dollar_sign_identifier_continuation() {
+        // `$` is a legal JavaScript identifier character, so
+        // `window.playerConfig$legacy` must not be mistaken for
+        // `window.playerConfig`.
+        let html = r#"
+            <script>
+              window.playerConfig$legacy = {"legacy": true};
               window.playerConfig = {"real": true};
             </script>
         "#;

@@ -112,19 +112,27 @@ fn is_flickr_host(host: &str) -> bool {
     matches!(host, "flickr.com" | "www.flickr.com" | "m.flickr.com")
 }
 
+// Each provider regex anchors the captured segment to a **segment
+// boundary** — either end-of-string or a `/` — so malformed paths
+// like `/gallery/abc-typo` (where `-typo` is supposed to be part of
+// the same segment) or `/albums/123junk` are rejected instead of
+// producing a partial match that the extractor would happily use.
+// Callers pre-normalise the path with `normalize_path`, so fragment
+// and query are already stripped by the time the regex runs.
+
 fn imgur_regex() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();
-    R.get_or_init(|| Regex::new(r"^/(?:a|gallery)/([A-Za-z0-9]+)").unwrap())
+    R.get_or_init(|| Regex::new(r"^/(?:a|gallery)/([A-Za-z0-9]+)(?:$|/)").unwrap())
 }
 
 fn reddit_regex() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();
-    R.get_or_init(|| Regex::new(r"^/r/[A-Za-z0-9_]+/comments/[A-Za-z0-9]+").unwrap())
+    R.get_or_init(|| Regex::new(r"^/r/[A-Za-z0-9_]+/comments/[A-Za-z0-9]+(?:$|/)").unwrap())
 }
 
 fn flickr_regex() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();
-    R.get_or_init(|| Regex::new(r"^/photos/([^/]+)/albums/(\d+)").unwrap())
+    R.get_or_init(|| Regex::new(r"^/photos/([^/]+)/albums/(\d+)(?:$|/)").unwrap())
 }
 
 fn validate_and_split(url: &str) -> Option<(String, &str)> {
@@ -169,6 +177,42 @@ mod tests {
     #[case("not a url", None)]
     fn test_classify_url(#[case] url: &str, #[case] expected: Option<Provider>) {
         assert_eq!(classify_url(url), expected);
+    }
+
+    #[test]
+    fn classify_url_rejects_malformed_imgur_with_junk_suffix() {
+        // The segment-boundary anchor rejects trailing junk: the
+        // `abc` is a valid id but `abc-typo` is not a separate segment.
+        assert_eq!(
+            classify_url("https://imgur.com/a/abc-typo"),
+            Some(Provider::Generic)
+        );
+    }
+
+    #[test]
+    fn classify_url_rejects_malformed_flickr_album_suffix() {
+        assert_eq!(
+            classify_url("https://www.flickr.com/photos/bob/albums/123junk"),
+            Some(Provider::Generic)
+        );
+    }
+
+    #[test]
+    fn classify_url_rejects_malformed_reddit_permalink_suffix() {
+        assert_eq!(
+            classify_url("https://www.reddit.com/r/pics/comments/1abcjunk-extra"),
+            Some(Provider::Generic)
+        );
+    }
+
+    #[test]
+    fn classify_url_accepts_imgur_with_trailing_slash() {
+        // The `(?:$|/)` anchor still permits a trailing slash after a
+        // valid id segment.
+        assert_eq!(
+            classify_url("https://imgur.com/a/abcd123/"),
+            Some(Provider::Imgur)
+        );
     }
 
     #[test]
