@@ -7,14 +7,16 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use tauri::State;
+use tracing;
 
 use crate::application::command_bus::CommandBus;
 use crate::application::commands::{
     CancelDownloadCommand, DisablePluginCommand, EnablePluginCommand, InstallPluginCommand,
-    PauseAllDownloadsCommand, PauseDownloadCommand, RemoveDownloadCommand,
-    ResumeAllDownloadsCommand, ResumeDownloadCommand, RetryDownloadCommand, SetPriorityCommand,
-    StartDownloadCommand, UninstallPluginCommand,
+    PauseAllDownloadsCommand, PauseDownloadCommand, RemoveDownloadCommand, ResolveLinksCommand,
+    ResolvedLinkDto, ResumeAllDownloadsCommand, ResumeDownloadCommand, RetryDownloadCommand,
+    SetPriorityCommand, StartDownloadCommand, UninstallPluginCommand,
 };
+use crate::application::error::AppError;
 use crate::application::queries::{
     CountDownloadsByStateQuery, GetDownloadDetailQuery, GetDownloadsQuery, ListPluginsQuery,
 };
@@ -284,6 +286,25 @@ pub async fn plugin_list(state: State<'_, AppState>) -> Result<Vec<PluginViewDto
         .handle_list_plugins(ListPluginsQuery)
         .await
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn link_resolve(
+    state: State<'_, AppState>,
+    urls: Vec<String>,
+) -> Result<Vec<ResolvedLinkDto>, String> {
+    let cmd = ResolveLinksCommand { urls };
+    state
+        .command_bus
+        .handle_resolve_links(cmd)
+        .await
+        .map_err(|e| match &e {
+            AppError::Validation(msg) => msg.clone(),
+            other => {
+                tracing::error!(error = %other, "link resolution failed");
+                "Failed to resolve links".to_string()
+            }
+        })
 }
 
 fn parse_download_state(s: &str) -> Option<DownloadState> {

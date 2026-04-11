@@ -8,6 +8,7 @@ mod install_plugin;
 mod pause_all;
 mod pause_download;
 mod remove_download;
+mod resolve_links;
 mod resume_all;
 mod resume_download;
 mod retry_download;
@@ -102,6 +103,14 @@ pub struct RemoveDownloadCommand {
     pub delete_files: bool,
 }
 impl Command for RemoveDownloadCommand {}
+
+#[derive(Debug)]
+pub struct ResolveLinksCommand {
+    pub urls: Vec<String>,
+}
+impl Command for ResolveLinksCommand {}
+
+pub use resolve_links::ResolvedLinkDto;
 
 // Handler: task 23 (settings)
 #[derive(Debug)]
