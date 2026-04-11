@@ -8,7 +8,6 @@
     "core:tray:default",
     "notification:allow-notify",
     "notification:allow-request-permission",
-    "notification:allow-is-permission-granted",
-    "pilot:default"
+    "notification:allow-is-permission-granted"
   ]
 }
