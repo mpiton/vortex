@@ -153,3 +153,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - AppearanceSection: theme selector, 6 accent color presets, compact mode, language selector
   - Event-based cache invalidation for settings changes from external sources
   - 35 frontend tests (SettingsView + 6 sections + settingsStore)
+- YouTube WASM Plugin (Task 24)
+  - New `plugins/vortex-mod-youtube/` crate targeting `wasm32-wasip1` via `extism-pdk` 1.4
+  - `plugin.toml` manifest declaring `subprocess = ["yt-dlp"]` (least-privilege, no HTTP capability)
+  - `url_matcher` module: regex-based classification of youtube.com / youtu.be / shorts / playlist / channel URLs with video and playlist ID extraction
+  - `metadata` module: serde-based parsing of `yt-dlp --dump-json` (single video) and `--flat-playlist` (JSONL + envelope formats) with automatic audio-only / video-only / muxed classification via `vcodec`/`acodec` inspection
+  - `quality_manager` module: format selection by target resolution (360p → 4320p + `Best`) with height-bucket fallback and user container preference (mp4/webm/mkv); audio-only picks highest `abr`
+  - `extractor` module: pure helpers to build yt-dlp subprocess requests with `--` sentinel (defense-in-depth against option injection) and parse `SubprocessResponse` envelopes with UTF-8-safe stderr truncation
+  - `plugin_api` module (WASM-only, gated behind `cfg(target_family = "wasm")`): `#[plugin_fn]` exports for `can_handle`, `supports_playlist`, `extract_links`, `get_media_variants`, `extract_playlist`; `#[host_fn] extern "ExtismHost"` import of `run_subprocess` with documented safety invariants
+  - `PluginError` enum with `thiserror`: `SerdeJson(#[from])` preserves error source chain; dedicated variants for parse errors, subprocess failures, host response errors, unsupported URLs, and quality mismatches
+  - 77 native unit tests covering all pure-logic modules (url_matcher, metadata, quality_manager, extractor, ipc handlers) — runs on `x86_64-unknown-linux-gnu` without a WASM runtime
+  - Release WASM binary: 1.2 MB stripped with LTO + `opt-level = "z"`
