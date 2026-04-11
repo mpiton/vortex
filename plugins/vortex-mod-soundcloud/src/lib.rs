@@ -92,21 +92,38 @@ pub fn ensure_soundcloud_url(url: &str) -> Result<UrlKind, PluginError> {
     let kind = url_matcher::classify_url(url);
     match kind {
         UrlKind::Track | UrlKind::Playlist => Ok(kind),
-        UrlKind::Artist | UrlKind::Unknown => Err(PluginError::UnsupportedUrl(url.to_string())),
+        // Artist is a recognised SoundCloud URL but the kind we cannot
+        // service yet — surface the kind so callers can tell this
+        // apart from "not a SoundCloud URL at all".
+        UrlKind::Artist => Err(PluginError::UnsupportedResourceKind {
+            kind,
+            url: url.to_string(),
+        }),
+        UrlKind::Unknown => Err(PluginError::UnsupportedUrl(url.to_string())),
     }
 }
 
 pub fn ensure_track(url: &str) -> Result<(), PluginError> {
-    match url_matcher::classify_url(url) {
+    let kind = url_matcher::classify_url(url);
+    match kind {
         UrlKind::Track => Ok(()),
-        _ => Err(PluginError::UnsupportedUrl(url.to_string())),
+        UrlKind::Playlist | UrlKind::Artist => Err(PluginError::UnsupportedResourceKind {
+            kind,
+            url: url.to_string(),
+        }),
+        UrlKind::Unknown => Err(PluginError::UnsupportedUrl(url.to_string())),
     }
 }
 
 pub fn ensure_playlist(url: &str) -> Result<(), PluginError> {
-    match url_matcher::classify_url(url) {
+    let kind = url_matcher::classify_url(url);
+    match kind {
         UrlKind::Playlist => Ok(()),
-        _ => Err(PluginError::UnsupportedUrl(url.to_string())),
+        UrlKind::Track | UrlKind::Artist => Err(PluginError::UnsupportedResourceKind {
+            kind,
+            url: url.to_string(),
+        }),
+        UrlKind::Unknown => Err(PluginError::UnsupportedUrl(url.to_string())),
     }
 }
 
@@ -136,25 +153,53 @@ pub fn track_to_link(track: Track) -> MediaLink {
 /// CDN shape might. Guard with a word-boundary check (end-of-string or
 /// a `.`, `/`, `?`) so only true `-large` markers are upgraded.
 fn upgrade_artwork(url: String) -> String {
-    // Use `rfind` so the scan starts from the end of the URL. This
-    // matters because a single URL can contain multiple occurrences of
-    // `-large` (e.g. inside a track slug like
-    // `/user/too-large-a-track/artworks-000-large.jpg`) and only the
-    // trailing one actually identifies the artwork size suffix. A
-    // `find` starting from the left would incorrectly upgrade the
-    // earlier match.
-    if let Some(idx) = url.rfind("-large") {
-        let after = url
+    // The `-large` marker is always inside the URL *path* — never in
+    // the query string or fragment — but user-supplied URLs can carry
+    // `?ref=-large-thing` or `#anchor-large` metadata that would
+    // otherwise fool an `rfind` scan run over the full URL. So split
+    // the URL into `(path, suffix)` first, run the rewrite only on
+    // the path, and reattach `suffix` unchanged.
+    //
+    // The path part also uses `rfind` (not `find`) because a single
+    // path can legitimately contain multiple `-large` occurrences —
+    // for example the track slug `/user/too-large-a-track/artworks-
+    // 000-large.jpg` — and only the trailing one identifies the
+    // artwork size suffix.
+    let (path, suffix) = split_url_suffix(&url);
+    if let Some(idx) = path.rfind("-large") {
+        let after = path
             .as_bytes()
             .get(idx + "-large".len())
             .copied()
             .unwrap_or(0);
-        let boundary = matches!(after, 0 | b'.' | b'/' | b'?' | b'#');
+        // End-of-path also counts as a boundary because the suffix
+        // (query/fragment) follows immediately after.
+        let boundary = matches!(after, 0 | b'.' | b'/');
         if boundary {
-            return format!("{}-t500x500{}", &url[..idx], &url[idx + "-large".len()..]);
+            return format!(
+                "{}-t500x500{}{}",
+                &path[..idx],
+                &path[idx + "-large".len()..],
+                suffix
+            );
         }
     }
     url
+}
+
+/// Split a URL into `(path_part, query_and_fragment_suffix)`. The
+/// suffix includes the leading `?` or `#` so that reassembly is just
+/// concatenation. If the URL has neither, `suffix` is an empty slice.
+fn split_url_suffix(url: &str) -> (&str, &str) {
+    let query_pos = url.find('?');
+    let fragment_pos = url.find('#');
+    let split = match (query_pos, fragment_pos) {
+        (Some(q), Some(f)) => q.min(f),
+        (Some(q), None) => q,
+        (None, Some(f)) => f,
+        (None, None) => return (url, ""),
+    };
+    url.split_at(split)
 }
 
 pub fn build_single_track_response(track: Track) -> ExtractLinksResponse {
@@ -271,9 +316,49 @@ mod tests {
     }
 
     #[test]
-    fn ensure_soundcloud_url_rejects_artist_profile() {
+    fn ensure_soundcloud_url_rejects_artist_profile_as_unsupported_resource_kind() {
+        // Artist is a *recognised* SoundCloud URL but the handler
+        // cannot service it yet — callers should see
+        // `UnsupportedResourceKind`, not the "not a SoundCloud URL"
+        // `UnsupportedUrl` variant.
         let err = ensure_soundcloud_url("https://soundcloud.com/forss").unwrap_err();
+        assert!(matches!(
+            err,
+            PluginError::UnsupportedResourceKind {
+                kind: UrlKind::Artist,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn ensure_soundcloud_url_rejects_non_soundcloud_as_unsupported_url() {
+        let err = ensure_soundcloud_url("https://example.com/").unwrap_err();
         assert!(matches!(err, PluginError::UnsupportedUrl(_)));
+    }
+
+    #[test]
+    fn ensure_track_rejects_playlist_as_kind_mismatch() {
+        let err = ensure_track("https://soundcloud.com/forss/sets/soulhack").unwrap_err();
+        assert!(matches!(
+            err,
+            PluginError::UnsupportedResourceKind {
+                kind: UrlKind::Playlist,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn ensure_playlist_rejects_track_as_kind_mismatch() {
+        let err = ensure_playlist("https://soundcloud.com/forss/flickermood").unwrap_err();
+        assert!(matches!(
+            err,
+            PluginError::UnsupportedResourceKind {
+                kind: UrlKind::Track,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -322,6 +407,36 @@ mod tests {
             link.artwork_url.as_deref(),
             Some("https://i1.sndcdn.com/artworks-12345-t500x500?v=2"),
             "query string boundary should still trigger upgrade"
+        );
+    }
+
+    #[test]
+    fn track_to_link_does_not_upgrade_large_in_query_string() {
+        // A `-large` token inside the query string is metadata, not an
+        // artwork suffix — the path itself has the modern `-t500x500`
+        // marker and must be left untouched.
+        let mut t = sample_track();
+        t.artwork_url =
+            Some("https://i1.sndcdn.com/artworks-12345-t500x500.jpg?ref=-large-thing".into());
+        let link = track_to_link(t);
+        assert_eq!(
+            link.artwork_url.as_deref(),
+            Some("https://i1.sndcdn.com/artworks-12345-t500x500.jpg?ref=-large-thing"),
+            "query string `-large` must not be rewritten"
+        );
+    }
+
+    #[test]
+    fn track_to_link_upgrades_large_even_when_query_string_present() {
+        // A legitimate `-large` path suffix must still be upgraded
+        // when the URL also carries a query string.
+        let mut t = sample_track();
+        t.artwork_url = Some("https://i1.sndcdn.com/artworks-12345-large.jpg?v=2".into());
+        let link = track_to_link(t);
+        assert_eq!(
+            link.artwork_url.as_deref(),
+            Some("https://i1.sndcdn.com/artworks-12345-t500x500.jpg?v=2"),
+            "path -large suffix must be rewritten while query string is preserved"
         );
     }
 
@@ -388,7 +503,11 @@ mod tests {
     }
 
     #[test]
-    fn response_to_extract_links_user_routes_to_extract_playlist() {
+    fn response_to_extract_links_user_rejects_artist_profile_until_pagination() {
+        // Artist profiles are rejected by both `extract_links` and
+        // `extract_playlist` until artist pagination is implemented.
+        // The error message must not redirect the caller to
+        // `extract_playlist` (which also rejects this kind).
         let err = response_to_extract_links(ResolveResponse::User(crate::api::User {
             id: 1,
             username: "forss".into(),
@@ -396,7 +515,16 @@ mod tests {
             avatar_url: None,
         }))
         .unwrap_err();
-        assert!(matches!(err, PluginError::UnsupportedUrl(_)));
+        match err {
+            PluginError::UnsupportedUrl(msg) => {
+                assert!(
+                    !msg.contains("extract_playlist"),
+                    "error message must not suggest extract_playlist"
+                );
+                assert!(msg.contains("not supported") || msg.contains("not implemented"));
+            }
+            other => panic!("expected UnsupportedUrl, got {other:?}"),
+        }
     }
 
     #[test]

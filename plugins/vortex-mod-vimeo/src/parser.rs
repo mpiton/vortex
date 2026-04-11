@@ -167,7 +167,93 @@ pub struct VideoMeta {
 }
 
 pub fn parse_player_config(raw: &str) -> Result<PlayerConfig, PluginError> {
-    serde_json::from_str(raw).map_err(|e| PluginError::ParseJson(e.to_string()))
+    // Vimeo's `/config` endpoint returns strict JSON, so the happy
+    // path is a direct `serde_json::from_str`. But the HTML-embedded
+    // player config (the fallback path used when /config is blocked
+    // or geo-rewritten) is a JavaScript object literal, and that
+    // format tolerates single-quoted strings — serde_json does not.
+    //
+    // When the strict parse fails, attempt a best-effort normalisation
+    // from JS object literal → JSON: convert unescaped `'` tokens
+    // outside already-double-quoted strings into `"`. The result is
+    // then re-parsed with serde_json. The normalisation is safe in
+    // the sense that a well-formed JSON input passes through
+    // unchanged (no `'` outside strings, so nothing to rewrite).
+    match serde_json::from_str(raw) {
+        Ok(cfg) => Ok(cfg),
+        Err(_) => {
+            let normalised = js_object_literal_to_json(raw);
+            serde_json::from_str(&normalised).map_err(|e| PluginError::ParseJson(e.to_string()))
+        }
+    }
+}
+
+/// Convert a JavaScript object literal into valid JSON by rewriting
+/// single-quoted string delimiters to double quotes.
+///
+/// The scanner walks the bytes tracking whether we are currently
+/// inside a `"`-delimited string (so `"don't"` is not rewritten) and
+/// whether the previous character was a backslash (so `\'` inside a
+/// single-quoted string keeps its meaning as an escaped quote). When
+/// a `'` is encountered outside a double-quoted string, the scanner
+/// toggles a `in_single` flag and emits `"` instead. Escape sequences
+/// inside a single-quoted string are re-emitted verbatim, except that
+/// `\'` becomes `'` (a literal apostrophe inside what is now a
+/// double-quoted string).
+///
+/// This handles the shapes the balanced-brace extractor can return:
+/// - pure JSON (pass-through — no `'` to rewrite)
+/// - JS object with single-quoted strings (`{'url':'a.mp4'}`)
+/// - mixed (`{'a':"b",'c':1}`)
+///
+/// It does **not** handle keyword identifiers as keys
+/// (`{url: 'a'}` — no quotes around `url`), because Vimeo's player
+/// config always quotes its keys. If that ever changes, extend this
+/// function to also rewrite `[A-Za-z_][A-Za-z0-9_]*\s*:` key shapes.
+fn js_object_literal_to_json(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut in_double = false;
+    let mut in_single = false;
+    let mut escaped = false;
+
+    for b in input.bytes() {
+        if escaped {
+            // Inside a single-quoted string, `\'` collapses to `'`
+            // (literal apostrophe). Inside a double-quoted string,
+            // every escape is preserved verbatim.
+            if in_single && b == b'\'' {
+                out.push('\'');
+            } else {
+                out.push('\\');
+                out.push(b as char);
+            }
+            escaped = false;
+            continue;
+        }
+        match b {
+            b'\\' if in_double || in_single => {
+                escaped = true;
+            }
+            b'"' if !in_single => {
+                in_double = !in_double;
+                out.push('"');
+            }
+            b'\'' if !in_double => {
+                // Toggle the single-quote state and emit a double
+                // quote in its place.
+                in_single = !in_single;
+                out.push('"');
+            }
+            // Inside a single-quoted string, a literal `"` character
+            // must be escaped when emitted into the JSON output so
+            // the reparser does not see it as an end-of-string.
+            b'"' if in_single => {
+                out.push_str("\\\"");
+            }
+            _ => out.push(b as char),
+        }
+    }
+    out
 }
 
 /// Extract the `{…}` block from a `window.playerConfig = {…};` assignment
@@ -391,6 +477,70 @@ mod tests {
         let json = r#"{"type": "photo", "title": "x"}"#;
         let err = parse_oembed(json).unwrap_err();
         assert!(matches!(err, PluginError::UnsupportedUrl(_)));
+    }
+
+    #[test]
+    fn parse_player_config_accepts_single_quoted_js_literal() {
+        // Vimeo's HTML-embedded player config can be a JS object
+        // literal with single-quoted strings. `parse_player_config`
+        // must normalise this into JSON before handing it to serde.
+        let raw = r#"{
+            'request': {
+                'files': {
+                    'progressive': [
+                        {
+                            'profile': 164,
+                            'quality': '720p',
+                            'width': 1280,
+                            'height': 720,
+                            'fps': 24.0,
+                            'mime': 'video/mp4',
+                            'url': 'https://vod.vimeo.com/720.mp4'
+                        }
+                    ]
+                }
+            }
+        }"#;
+        let c = parse_player_config(raw).unwrap();
+        assert_eq!(c.request.files.progressive.len(), 1);
+        assert_eq!(c.request.files.progressive[0].quality, "720p");
+        assert_eq!(
+            c.request.files.progressive[0].url,
+            "https://vod.vimeo.com/720.mp4"
+        );
+    }
+
+    #[test]
+    fn parse_player_config_accepts_mixed_quoting() {
+        let raw = r#"{
+            "request": {
+                "files": {
+                    'progressive': [
+                        {"profile": 1, "quality": "360p", "url": 'https://vod.vimeo.com/360.mp4'}
+                    ]
+                }
+            }
+        }"#;
+        let c = parse_player_config(raw).unwrap();
+        assert_eq!(
+            c.request.files.progressive[0].url,
+            "https://vod.vimeo.com/360.mp4"
+        );
+    }
+
+    #[test]
+    fn js_object_literal_preserves_double_quoted_apostrophe() {
+        let input = r#"{"title":"don't stop"}"#;
+        let out = js_object_literal_to_json(input);
+        // Strict JSON pass-through — no `'` outside strings, nothing rewritten.
+        assert_eq!(out, input);
+    }
+
+    #[test]
+    fn js_object_literal_converts_escaped_single_quote() {
+        let input = r#"{'title':'it\'s fine'}"#;
+        let out = js_object_literal_to_json(input);
+        assert_eq!(out, r#"{"title":"it's fine"}"#);
     }
 
     #[test]

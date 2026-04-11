@@ -156,8 +156,27 @@ struct RedditPost {
     is_gallery: Option<bool>,
     #[serde(default)]
     media_metadata: Option<HashMap<String, RedditMediaMeta>>,
+    /// Gallery ordering — a sibling of `media_metadata` that carries
+    /// the ordered `media_id` sequence. Present only on native Reddit
+    /// galleries; older scraped posts may be missing it, in which
+    /// case callers fall back to a URL-sorted enumeration of
+    /// `media_metadata`.
+    #[serde(default)]
+    gallery_data: Option<RedditGalleryData>,
     #[serde(default)]
     preview: Option<RedditPreview>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RedditGalleryData {
+    #[serde(default)]
+    items: Vec<RedditGalleryItem>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RedditGalleryItem {
+    #[serde(default)]
+    media_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -225,6 +244,37 @@ pub fn parse_reddit_submission(raw: &str) -> Result<Vec<ImageLink>, PluginError>
     // Case 1: native Reddit gallery (`is_gallery=true` + `media_metadata`)
     if post.is_gallery.unwrap_or(false) {
         if let Some(meta) = &post.media_metadata {
+            // Prefer the post's explicit ordering via
+            // `gallery_data.items` — each item carries a `media_id`
+            // that indexes into `media_metadata`. This preserves the
+            // submission sequence the uploader chose.
+            if let Some(gallery) = &post.gallery_data {
+                if !gallery.items.is_empty() {
+                    let ordered: Vec<ImageLink> = gallery
+                        .items
+                        .iter()
+                        .filter_map(|item| item.media_id.as_ref())
+                        .filter_map(|id| {
+                            let entry = meta.get(id)?;
+                            let s = entry.s.as_ref()?;
+                            s.u.as_ref().map(|u| ImageLink {
+                                url: unescape_amp(u),
+                                width: s.x,
+                                height: s.y,
+                                title: title.clone(),
+                                filename: None,
+                            })
+                        })
+                        .collect();
+                    if !ordered.is_empty() {
+                        return Ok(ordered);
+                    }
+                }
+            }
+
+            // Fallback: `gallery_data` is missing (older posts, some
+            // scrapes) — enumerate `media_metadata` and sort by URL
+            // so the output is at least deterministic across runs.
             let mut links: Vec<ImageLink> = meta
                 .values()
                 .filter_map(|item| {
@@ -238,8 +288,6 @@ pub fn parse_reddit_submission(raw: &str) -> Result<Vec<ImageLink>, PluginError>
                     })
                 })
                 .collect();
-            // media_metadata is a HashMap with no guaranteed order; sort
-            // by URL so the output is deterministic across runs.
             links.sort_by(|a, b| a.url.cmp(&b.url));
             return Ok(links);
         }
@@ -334,14 +382,27 @@ struct FlickrPhoto {
     id: Option<String>,
     #[serde(default)]
     title: Option<String>,
+    // Original-size URL and its dimensions. Flickr returns dimensions
+    // as either a JSON number or a string depending on the extras
+    // requested — `extract_dim` normalises both shapes.
     #[serde(default)]
     url_o: Option<String>,
     #[serde(default)]
-    url_l: Option<String>,
+    width_o: Option<serde_json::Value>,
     #[serde(default)]
     height_o: Option<serde_json::Value>,
+    // Large-size URL and its dimensions — the fallback we emit when
+    // `url_o` is missing (not every photoset exposes original-size
+    // downloads). Without the matching `width_l`/`height_l`, the
+    // downstream `min_resolution` filter would see `None, None` and
+    // either keep every large-only image or drop them all, depending
+    // on the filter's partial-dimension policy.
     #[serde(default)]
-    width_o: Option<serde_json::Value>,
+    url_l: Option<String>,
+    #[serde(default)]
+    width_l: Option<serde_json::Value>,
+    #[serde(default)]
+    height_l: Option<serde_json::Value>,
 }
 
 pub fn build_flickr_request(album_id: &str, api_key: &str) -> Result<String, PluginError> {
@@ -350,10 +411,19 @@ pub fn build_flickr_request(album_id: &str, api_key: &str) -> Result<String, Plu
     // `album_id` is matched by `(\d+)` in `url_matcher.rs` so it is
     // safe by construction, but encoding it costs nothing and matches
     // the hardening applied to SoundCloud and Vimeo.
+    //
+    // Extras: request URL + dimensions for both the original (`url_o`,
+    // `width_o`, `height_o`) and large (`url_l`, `width_l`, `height_l`)
+    // sizes. The parser prefers `url_o` but falls back to `url_l` when
+    // the original is not published — and it must read the matching
+    // width/height fields so images aren't wrongly dropped by the
+    // `min_resolution` filter for missing dimensions.
+    let extras = urlencode_query("url_o,width_o,height_o,url_l,width_l,height_l");
     let url = format!(
-        "https://api.flickr.com/services/rest/?method=flickr.photosets.getPhotos&api_key={}&photoset_id={}&format=json&nojsoncallback=1&extras=url_o%2Curl_l",
+        "https://api.flickr.com/services/rest/?method=flickr.photosets.getPhotos&api_key={}&photoset_id={}&format=json&nojsoncallback=1&extras={}",
         urlencode_query(api_key),
         urlencode_query(album_id),
+        extras,
     );
     let req = HttpRequest {
         method: "GET".into(),
@@ -412,11 +482,25 @@ pub fn parse_flickr_photoset(raw: &str) -> Result<Vec<ImageLink>, PluginError> {
         .photo
         .into_iter()
         .filter_map(|p| {
-            let url = p.url_o.or(p.url_l)?;
+            // Prefer the original-size URL with its matching
+            // `width_o`/`height_o`; fall back to the large-size URL
+            // with `width_l`/`height_l` so the dimensions we emit
+            // always describe the URL we emit, not a different size.
+            // Reading `width_o` when `url_l` is used would populate
+            // the link with stale (or missing) dimensions and either
+            // under-filter or wrongly drop images in
+            // `filter_by_min_resolution`.
+            let (url, width, height) = if let Some(url_o) = p.url_o {
+                (url_o, extract_dim(&p.width_o), extract_dim(&p.height_o))
+            } else if let Some(url_l) = p.url_l {
+                (url_l, extract_dim(&p.width_l), extract_dim(&p.height_l))
+            } else {
+                return None;
+            };
             Some(ImageLink {
                 url,
-                width: extract_dim(&p.width_o),
-                height: extract_dim(&p.height_o),
+                width,
+                height,
                 title: p.title.or_else(|| p.id.clone()),
                 filename: None,
             })
@@ -734,6 +818,62 @@ mod tests {
     }
 
     #[test]
+    fn reddit_gallery_preserves_post_ordering_via_gallery_data() {
+        // With `gallery_data.items` present, the parser must walk the
+        // items in order, looking up each `media_id` in
+        // `media_metadata`. This preserves the submission's image
+        // sequence regardless of HashMap iteration order.
+        //
+        // `id_z` is intentionally lexicographically *after* `id_a` so
+        // that a URL-sort fallback would produce the opposite order.
+        let raw = r#"[
+            {"data": {"children": [
+                {"data": {
+                    "title": "ordered post",
+                    "is_gallery": true,
+                    "gallery_data": {"items": [
+                        {"media_id": "id_z"},
+                        {"media_id": "id_a"}
+                    ]},
+                    "media_metadata": {
+                        "id_a": {"s": {"u": "https://preview.redd.it/a.jpg", "x": 100, "y": 100}},
+                        "id_z": {"s": {"u": "https://preview.redd.it/z.jpg", "x": 200, "y": 200}}
+                    }
+                }}
+            ]}},
+            {"data": {"children": []}}
+        ]"#;
+        let links = parse_reddit_submission(raw).unwrap();
+        assert_eq!(links.len(), 2);
+        assert_eq!(links[0].url, "https://preview.redd.it/z.jpg");
+        assert_eq!(links[1].url, "https://preview.redd.it/a.jpg");
+    }
+
+    #[test]
+    fn reddit_gallery_falls_back_to_url_sort_when_gallery_data_missing() {
+        // No `gallery_data` — the parser falls back to the
+        // deterministic URL-sorted enumeration of `media_metadata`.
+        let raw = r#"[
+            {"data": {"children": [
+                {"data": {
+                    "title": "legacy post",
+                    "is_gallery": true,
+                    "media_metadata": {
+                        "id_z": {"s": {"u": "https://preview.redd.it/z.jpg", "x": 200, "y": 200}},
+                        "id_a": {"s": {"u": "https://preview.redd.it/a.jpg", "x": 100, "y": 100}}
+                    }
+                }}
+            ]}},
+            {"data": {"children": []}}
+        ]"#;
+        let links = parse_reddit_submission(raw).unwrap();
+        assert_eq!(links.len(), 2);
+        // URL-sorted: a.jpg comes before z.jpg
+        assert_eq!(links[0].url, "https://preview.redd.it/a.jpg");
+        assert_eq!(links[1].url, "https://preview.redd.it/z.jpg");
+    }
+
+    #[test]
     fn reddit_empty_listing_is_not_an_error() {
         let raw = r#"[{"data": {"children": []}}, {"data": {"children": []}}]"#;
         let links = parse_reddit_submission(raw).unwrap();
@@ -756,8 +896,8 @@ mod tests {
                     "id": "2",
                     "title": "pic2",
                     "url_l": "https://live.staticflickr.com/2_l.jpg",
-                    "width_o": 2048,
-                    "height_o": 1365
+                    "width_l": 2048,
+                    "height_l": 1365
                 }
             ]
         },
@@ -789,7 +929,70 @@ mod tests {
         let req = build_flickr_request("72177", "KEY").unwrap();
         assert!(req.contains("photoset_id=72177"));
         assert!(req.contains("api_key=KEY"));
-        assert!(req.contains("extras=url_o%2Curl_l"));
+        // Extras now includes both `url_o`/`width_o`/`height_o` and
+        // `url_l`/`width_l`/`height_l` so the parser can emit
+        // matching dimensions regardless of which URL size is used.
+        assert!(req.contains("url_o"));
+        assert!(req.contains("width_o"));
+        assert!(req.contains("height_o"));
+        assert!(req.contains("url_l"));
+        assert!(req.contains("width_l"));
+        assert!(req.contains("height_l"));
+    }
+
+    #[test]
+    fn flickr_url_l_reads_matching_large_dimensions() {
+        // When `url_l` is the emitted URL, the parser must read
+        // `width_l`/`height_l` (not `width_o`/`height_o`) so the
+        // dimensions describe the image we actually download.
+        let raw = r#"{
+            "photoset": {
+                "photo": [
+                    {
+                        "id": "1",
+                        "title": "large-only",
+                        "url_l": "https://live.staticflickr.com/1_l.jpg",
+                        "width_l": 1024,
+                        "height_l": 768
+                    }
+                ]
+            },
+            "stat": "ok"
+        }"#;
+        let links = parse_flickr_photoset(raw).unwrap();
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].url, "https://live.staticflickr.com/1_l.jpg");
+        assert_eq!(links[0].width, Some(1024));
+        assert_eq!(links[0].height, Some(768));
+    }
+
+    #[test]
+    fn flickr_url_o_does_not_leak_large_dimensions() {
+        // Defensive: when `url_o` is available the parser uses
+        // `width_o`/`height_o`, not any `width_l`/`height_l` that may
+        // happen to coexist in the JSON.
+        let raw = r#"{
+            "photoset": {
+                "photo": [
+                    {
+                        "id": "1",
+                        "title": "both-sizes",
+                        "url_o": "https://live.staticflickr.com/1.jpg",
+                        "width_o": 4000,
+                        "height_o": 3000,
+                        "url_l": "https://live.staticflickr.com/1_l.jpg",
+                        "width_l": 1024,
+                        "height_l": 768
+                    }
+                ]
+            },
+            "stat": "ok"
+        }"#;
+        let links = parse_flickr_photoset(raw).unwrap();
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].url, "https://live.staticflickr.com/1.jpg");
+        assert_eq!(links[0].width, Some(4000));
+        assert_eq!(links[0].height, Some(3000));
     }
 
     // ── Generic HTML ───────────────────────────────────────────────────────
