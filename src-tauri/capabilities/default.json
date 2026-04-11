@@ -4,6 +4,9 @@
   "description": "Default capabilities for Vortex",
   "windows": ["main"],
   "permissions": [
-    "core:default"
+    "core:default",
+    "core:tray:default",
+    "clipboard-manager:allow-read-text",
+    "notification:default"
   ]
 }

@@ -1,5 +1,6 @@
 import { useLayoutStore } from "@/stores/layout-store";
 import { useDownloadStore, selectTotalSpeed, selectActiveCount } from "@/stores/downloadStore";
+import { ClipboardIndicator } from '@/components/ClipboardIndicator';
 
 function Dot() {
   return <span className="text-[10px] text-border">·</span>;
@@ -24,6 +25,8 @@ export function StatusBar() {
         <span className="text-text-dim">Limit: {limitLabel}</span>
         <Dot />
         <span className="text-text-dim">{freeSpace} free</span>
+        <Dot />
+        <ClipboardIndicator />
       </div>
       <div className="flex items-center gap-4">
         <span className="text-text-ghost">vortex v{appVersion}</span>

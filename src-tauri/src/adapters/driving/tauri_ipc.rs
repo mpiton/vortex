@@ -307,6 +307,39 @@ pub async fn link_resolve(
         })
 }
 
+// ── Clipboard ────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn clipboard_toggle(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    enabled: bool,
+) -> Result<bool, String> {
+    let result = state
+        .command_bus
+        .handle_toggle_clipboard(enabled)
+        .map_err(|e| e.to_string())?;
+
+    // Notify frontend of state change
+    use tauri::Emitter;
+    let _ = app.emit(
+        "clipboard-monitoring-changed",
+        serde_json::json!({ "enabled": result }),
+    );
+
+    Ok(result)
+}
+
+#[tauri::command]
+pub async fn clipboard_state(state: State<'_, AppState>) -> Result<bool, String> {
+    let config = state
+        .command_bus
+        .config_store()
+        .get_config()
+        .map_err(|e| e.to_string())?;
+    Ok(config.clipboard_monitoring)
+}
+
 fn parse_download_state(s: &str) -> Option<DownloadState> {
     match s.to_lowercase().as_str() {
         "queued" => Some(DownloadState::Queued),

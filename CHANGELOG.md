@@ -123,3 +123,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `useMediaMetadata` hook fetching metadata via Tauri IPC
   - Integration in LinkGrabberView via clickable media button in LinkRow
   - shadcn/ui Dialog, Card, Skeleton components added to UI library
+- Clipboard Observer & System Tray (Task 22)
+  - Clipboard monitoring adapter: polls system clipboard every 500ms via `tauri-plugin-clipboard-manager`
+  - URL extraction from clipboard text via regex (http, https, ftp, magnet protocols)
+  - Duplicate URL detection with seen-set deduplication
+  - Toggle clipboard monitoring via `clipboard_toggle` IPC command with config persistence
+  - `ClipboardUrlDetected` domain event for frontend notification of detected URLs
+  - System tray with menu: Pause All, Resume All, Clipboard Monitoring toggle, Open Window, Quit
+  - Tray icon click opens/focuses main window
+  - Desktop notification bridge: notifies on download completion and failure via `tauri-plugin-notification`
+  - `ClipboardIndicator` component in StatusBar showing monitoring state with toggle
+  - `useClipboardMonitoring` React hook with optimistic state updates
+  - Vitest test infrastructure: jsdom environment, setup file, Tauri API mocks
+  - Frontend tests for ClipboardIndicator (4 tests) and useClipboardMonitoring (4 tests)
