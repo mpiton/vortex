@@ -43,7 +43,7 @@ export function DownloadsSection({ config }: DownloadsSectionProps) {
           max={32}
         />
         <SettingNumberInput
-          label="Speed limit (MB/s)"
+          label="Speed limit (MiB/s)"
           description="0 = unlimited"
           value={speedLimitMb}
           onChange={(v) =>

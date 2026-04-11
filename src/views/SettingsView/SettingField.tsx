@@ -52,6 +52,7 @@ export function SettingNumberInput({
     const num = Number(localValue);
     if (!Number.isNaN(num) && localValue !== '') {
       const clamped = Math.min(max ?? num, Math.max(min ?? num, num));
+      setLocalValue(String(clamped));
       onChange(clamped);
     } else {
       setLocalValue(String(value));

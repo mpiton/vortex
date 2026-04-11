@@ -3,52 +3,52 @@
 use crate::application::command_bus::CommandBus;
 use crate::application::error::AppError;
 use crate::domain::event::DomainEvent;
-use crate::domain::model::config::{AppConfig, ConfigPatch};
+use crate::domain::model::config::AppConfig;
 
-/// Validate a `ConfigPatch` before applying.
-/// Returns `Err(AppError::Validation)` on invalid values.
-fn validate_patch(patch: &ConfigPatch) -> Result<(), AppError> {
-    if let Some(ref pt) = patch.proxy_type
-        && !matches!(pt.as_str(), "none" | "http" | "socks5")
-    {
+/// Validate the merged configuration after applying a patch.
+/// Returns `Err(AppError::Validation)` on invalid combined state.
+fn validate_config(config: &AppConfig) -> Result<(), AppError> {
+    if !matches!(config.proxy_type.as_str(), "none" | "http" | "socks5") {
         return Err(AppError::Validation(format!(
-            "proxy_type must be none, http, or socks5, got '{pt}'"
+            "proxy_type must be none, http, or socks5, got '{}'",
+            config.proxy_type
         )));
     }
-    if let Some(ref t) = patch.theme
-        && !matches!(t.as_str(), "light" | "dark" | "auto")
-    {
+    if !matches!(config.theme.as_str(), "light" | "dark" | "auto") {
         return Err(AppError::Validation(format!(
-            "theme must be light, dark, or auto, got '{t}'"
+            "theme must be light, dark, or auto, got '{}'",
+            config.theme
         )));
     }
-    if let Some(port) = patch.web_interface_port
-        && port < 1024
-    {
+    if config.web_interface_port < 1024 {
         return Err(AppError::Validation(format!(
-            "web_interface_port must be >= 1024, got {port}"
+            "web_interface_port must be >= 1024, got {}",
+            config.web_interface_port
         )));
     }
-    if let Some(max) = patch.max_concurrent_downloads
-        && !(1..=100).contains(&max)
-    {
+    if !(1..=100).contains(&config.max_concurrent_downloads) {
         return Err(AppError::Validation(format!(
-            "max_concurrent_downloads must be 1-100, got {max}"
+            "max_concurrent_downloads must be 1-100, got {}",
+            config.max_concurrent_downloads
         )));
     }
-    if let Some(seg) = patch.max_segments_per_download
-        && !(1..=32).contains(&seg)
-    {
+    if !(1..=32).contains(&config.max_segments_per_download) {
         return Err(AppError::Validation(format!(
-            "max_segments_per_download must be 1-32, got {seg}"
+            "max_segments_per_download must be 1-32, got {}",
+            config.max_segments_per_download
         )));
     }
-    if let Some(t) = patch.connection_timeout_seconds
-        && !(5..=300).contains(&t)
-    {
+    if !(5..=300).contains(&config.connection_timeout_seconds) {
         return Err(AppError::Validation(format!(
-            "connection_timeout_seconds must be 5-300, got {t}"
+            "connection_timeout_seconds must be 5-300, got {}",
+            config.connection_timeout_seconds
         )));
+    }
+    // Cross-field: proxy URL required when proxy is enabled
+    if config.proxy_type != "none" && config.proxy_url.as_ref().is_none_or(|u| u.is_empty()) {
+        return Err(AppError::Validation(
+            "proxy_url is required when proxy_type is not 'none'".to_string(),
+        ));
     }
     Ok(())
 }
@@ -58,7 +58,12 @@ impl CommandBus {
         &self,
         cmd: super::UpdateConfigCommand,
     ) -> Result<AppConfig, AppError> {
-        validate_patch(&cmd.patch)?;
+        // Merge patch with current config and validate the result
+        let current = self.config_store().get_config()?;
+        let mut merged = current;
+        crate::domain::model::config::apply_patch(&mut merged, &cmd.patch);
+        validate_config(&merged)?;
+
         let updated = self.config_store().update_config(cmd.patch)?;
         self.event_bus().publish(DomainEvent::SettingsUpdated);
         Ok(updated)
@@ -338,5 +343,37 @@ mod tests {
 
         let result = bus.handle_update_config(cmd);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_handle_update_config_rejects_proxy_without_url() {
+        let bus = make_command_bus();
+        let cmd = UpdateConfigCommand {
+            patch: ConfigPatch {
+                proxy_type: Some("http".to_string()),
+                // proxy_url not set → merged config has None
+                ..Default::default()
+            },
+        };
+
+        let result = bus.handle_update_config(cmd);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("proxy_url"));
+    }
+
+    #[test]
+    fn test_handle_update_config_accepts_proxy_with_url() {
+        let bus = make_command_bus();
+        let cmd = UpdateConfigCommand {
+            patch: ConfigPatch {
+                proxy_type: Some("http".to_string()),
+                proxy_url: Some(Some("http://proxy:8080".to_string())),
+                ..Default::default()
+            },
+        };
+
+        let result = bus.handle_update_config(cmd).unwrap();
+        assert_eq!(result.proxy_type, "http");
+        assert_eq!(result.proxy_url, Some("http://proxy:8080".to_string()));
     }
 }

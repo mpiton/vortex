@@ -99,7 +99,7 @@ describe('DownloadsSection', () => {
     renderWithQuery(<DownloadsSection config={mockConfig} />);
     expect(screen.getByText('Max concurrent downloads')).toBeInTheDocument();
     expect(screen.getByText('Max segments per download')).toBeInTheDocument();
-    expect(screen.getByText('Speed limit (MB/s)')).toBeInTheDocument();
+    expect(screen.getByText('Speed limit (MiB/s)')).toBeInTheDocument();
   });
 
   it('should render toggle settings', () => {

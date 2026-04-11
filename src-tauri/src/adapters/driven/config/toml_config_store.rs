@@ -57,6 +57,10 @@ impl TomlConfigStore {
 
 impl ConfigStore for TomlConfigStore {
     fn get_config(&self) -> Result<AppConfig, DomainError> {
+        let _guard = self
+            .lock
+            .lock()
+            .map_err(|e| DomainError::StorageError(format!("config lock poisoned: {e}")))?;
         let config = self.read_or_default()?;
         if !self.path.exists() {
             self.write_config(&config)?;

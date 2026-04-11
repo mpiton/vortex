@@ -6666,6 +6666,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "tauri-plugin-pilot"
+version = "0.3.0"
+source = "git+https://github.com/mpiton/tauri-pilot#571761e3a053daa5322ce60c296c4bedfce988c2"
+dependencies = [
+ "libc",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-plugin",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "tauri-runtime"
 version = "2.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7537,6 +7552,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-clipboard-manager",
  "tauri-plugin-notification",
+ "tauri-plugin-pilot",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",

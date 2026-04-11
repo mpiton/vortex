@@ -16,11 +16,11 @@ interface AppearanceSectionProps {
 
 const LOCALES = [
   { value: 'en', label: 'English' },
-  { value: 'fr', label: 'Francais' },
+  { value: 'fr', label: 'Français' },
   { value: 'de', label: 'Deutsch' },
-  { value: 'es', label: 'Espanol' },
-  { value: 'ja', label: 'Japanese' },
-  { value: 'zh', label: 'Chinese' },
+  { value: 'es', label: 'Español' },
+  { value: 'ja', label: '日本語' },
+  { value: 'zh', label: '中文' },
 ] as const;
 
 export function AppearanceSection({ config }: AppearanceSectionProps) {
