@@ -136,3 +136,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `useClipboardMonitoring` React hook with server-confirmed state updates
   - Vitest test infrastructure: jsdom environment, setup file, Tauri API mocks
   - Frontend tests for ClipboardIndicator (4 tests) and useClipboardMonitoring (4 tests)
+- Settings View (Task 23)
+  - Expanded `AppConfig` domain model from 9 to 32 fields across 6 categories
+  - `ConfigPatch` with `apply_patch()` utility for partial config updates
+  - `TomlConfigStore` adapter: read/write `~/.config/vortex/config.toml` with atomic writes and auto-defaults
+  - `UpdateConfigCommand` handler with input validation (proxy_type, theme, port bounds, limits)
+  - `SettingsUpdated` domain event with Tauri bridge forwarding
+  - Settings IPC: `settings_get` query + `settings_update` command with camelCase DTO serialization
+  - SettingsView with 6-tab sidebar layout (General, Downloads, Network, Remote Access, Browser, Appearance)
+  - Shared `SettingToggle` and `SettingNumberInput` field components
+  - GeneralSection: download directory, 7 toggle settings
+  - DownloadsSection: 5 numeric settings with MB/s speed limit conversion, 2 toggles
+  - NetworkSection: proxy type selector with conditional URL, user-agent, DoH, timeout
+  - RemoteAccessSection: security warning, web interface/REST API/WebSocket toggles, API key display with show/hide/copy/regenerate
+  - BrowserSection: min file size, excluded domains/extensions via comma-separated textarea
+  - AppearanceSection: theme selector, 6 accent color presets, compact mode, language selector
+  - Event-based cache invalidation for settings changes from external sources
+  - 35 frontend tests (SettingsView + 6 sections + settingsStore)

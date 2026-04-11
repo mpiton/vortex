@@ -17,6 +17,7 @@ mod start_download;
 mod toggle_clipboard;
 mod toggle_plugin;
 mod uninstall_plugin;
+mod update_config;
 
 use std::path::PathBuf;
 
@@ -115,7 +116,6 @@ pub use resolve_links::ResolvedLinkDto;
 
 // Handler: task 23 (settings)
 #[derive(Debug)]
-#[expect(dead_code)]
 pub struct UpdateConfigCommand {
     pub patch: ConfigPatch,
 }

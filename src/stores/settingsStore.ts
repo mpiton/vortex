@@ -1,19 +1,6 @@
 import { create } from 'zustand';
 import { tauriInvoke } from '@/api/client';
-
-interface AppConfig {
-  downloadDir: string | null;
-  maxConcurrentDownloads: number;
-  maxSegmentsPerDownload: number;
-  speedLimitBytesPerSec: number | null;
-  autoExtract: boolean;
-  theme: string;
-  locale: string;
-  clipboardMonitoring: boolean;
-  minimizeToTray: boolean;
-}
-
-type AppConfigPatch = Partial<AppConfig>;
+import type { AppConfig, AppConfigPatch } from '@/types/settings';
 
 interface SettingsStoreState {
   config: AppConfig | null;

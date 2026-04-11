@@ -34,6 +34,7 @@ fn event_name(event: &DomainEvent) -> &'static str {
         DomainEvent::PluginUnloaded { .. } => "plugin-unloaded",
         DomainEvent::PackageCreated { .. } => "package-created",
         DomainEvent::ClipboardUrlDetected { .. } => "clipboard-url-detected",
+        DomainEvent::SettingsUpdated => "settings-updated",
     }
 }
 
@@ -86,6 +87,7 @@ fn event_payload(event: &DomainEvent) -> serde_json::Value {
         DomainEvent::PluginUnloaded { name } => json!({ "name": name }),
         DomainEvent::PackageCreated { id, name } => json!({ "id": id.to_string(), "name": name }),
         DomainEvent::ClipboardUrlDetected { urls } => json!({ "urls": urls }),
+        DomainEvent::SettingsUpdated => json!({}),
     }
 }
 

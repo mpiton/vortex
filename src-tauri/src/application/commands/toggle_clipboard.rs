@@ -285,33 +285,7 @@ mod tests {
 
         fn update_config(&self, patch: ConfigPatch) -> Result<AppConfig, DomainError> {
             let mut config = self.config.lock().unwrap();
-            if let Some(dir) = patch.download_dir {
-                config.download_dir = dir;
-            }
-            if let Some(max) = patch.max_concurrent_downloads {
-                config.max_concurrent_downloads = max;
-            }
-            if let Some(max) = patch.max_segments_per_download {
-                config.max_segments_per_download = max;
-            }
-            if let Some(limit) = patch.speed_limit_bytes_per_sec {
-                config.speed_limit_bytes_per_sec = limit;
-            }
-            if let Some(auto) = patch.auto_extract {
-                config.auto_extract = auto;
-            }
-            if let Some(theme) = patch.theme {
-                config.theme = theme;
-            }
-            if let Some(locale) = patch.locale {
-                config.locale = locale;
-            }
-            if let Some(monitoring) = patch.clipboard_monitoring {
-                config.clipboard_monitoring = monitoring;
-            }
-            if let Some(minimize) = patch.minimize_to_tray {
-                config.minimize_to_tray = minimize;
-            }
+            crate::domain::model::config::apply_patch(&mut config, &patch);
             Ok(config.clone())
         }
     }

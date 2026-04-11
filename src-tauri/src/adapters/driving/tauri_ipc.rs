@@ -14,7 +14,7 @@ use crate::application::commands::{
     CancelDownloadCommand, DisablePluginCommand, EnablePluginCommand, InstallPluginCommand,
     PauseAllDownloadsCommand, PauseDownloadCommand, RemoveDownloadCommand, ResolveLinksCommand,
     ResolvedLinkDto, ResumeAllDownloadsCommand, ResumeDownloadCommand, RetryDownloadCommand,
-    SetPriorityCommand, StartDownloadCommand, UninstallPluginCommand,
+    SetPriorityCommand, StartDownloadCommand, UninstallPluginCommand, UpdateConfigCommand,
 };
 use crate::application::error::AppError;
 use crate::application::queries::{
@@ -24,6 +24,7 @@ use crate::application::query_bus::QueryBus;
 use crate::application::read_models::download_detail_view::DownloadDetailViewDto;
 use crate::application::read_models::download_view::DownloadViewDto;
 use crate::application::read_models::plugin_view::PluginViewDto;
+use crate::domain::model::config::{AppConfig, ConfigPatch};
 use crate::domain::model::download::{DownloadId, DownloadState};
 use crate::domain::model::views::{DownloadFilter, SortDirection, SortField, SortOrder};
 
@@ -341,6 +342,211 @@ pub async fn clipboard_state(state: State<'_, AppState>) -> Result<bool, String>
         .map_err(|e| e.to_string())?;
     Ok(config.clipboard_monitoring)
 }
+
+// ── Settings DTOs ────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SettingsDto {
+    // General
+    pub download_dir: Option<String>,
+    pub start_minimized: bool,
+    pub notifications_enabled: bool,
+    pub auto_extract: bool,
+    pub clipboard_monitoring: bool,
+    pub sound_enabled: bool,
+    pub confirm_delete: bool,
+    pub subfolder_per_package: bool,
+
+    // Downloads
+    pub max_concurrent_downloads: u32,
+    pub max_segments_per_download: u32,
+    pub speed_limit_bytes_per_sec: Option<u64>,
+    pub max_retries: u32,
+    pub retry_delay_seconds: u32,
+    pub verify_checksums: bool,
+    pub pre_allocate_space: bool,
+
+    // Network
+    pub proxy_type: String,
+    pub proxy_url: Option<String>,
+    pub user_agent: String,
+    pub dns_over_https: bool,
+    pub connection_timeout_seconds: u32,
+
+    // Remote Access
+    pub web_interface_enabled: bool,
+    pub web_interface_port: u16,
+    pub rest_api_enabled: bool,
+    pub api_key: String,
+    pub websocket_enabled: bool,
+
+    // Browser Integration
+    pub min_file_size_mb: f64,
+    pub excluded_domains: Vec<String>,
+    pub excluded_extensions: Vec<String>,
+
+    // Appearance
+    pub theme: String,
+    pub accent_color: String,
+    pub compact_mode: bool,
+    pub locale: String,
+}
+
+impl From<AppConfig> for SettingsDto {
+    fn from(c: AppConfig) -> Self {
+        Self {
+            download_dir: c.download_dir,
+            start_minimized: c.start_minimized,
+            notifications_enabled: c.notifications_enabled,
+            auto_extract: c.auto_extract,
+            clipboard_monitoring: c.clipboard_monitoring,
+            sound_enabled: c.sound_enabled,
+            confirm_delete: c.confirm_delete,
+            subfolder_per_package: c.subfolder_per_package,
+            max_concurrent_downloads: c.max_concurrent_downloads,
+            max_segments_per_download: c.max_segments_per_download,
+            speed_limit_bytes_per_sec: c.speed_limit_bytes_per_sec,
+            max_retries: c.max_retries,
+            retry_delay_seconds: c.retry_delay_seconds,
+            verify_checksums: c.verify_checksums,
+            pre_allocate_space: c.pre_allocate_space,
+            proxy_type: c.proxy_type,
+            proxy_url: c.proxy_url,
+            user_agent: c.user_agent,
+            dns_over_https: c.dns_over_https,
+            connection_timeout_seconds: c.connection_timeout_seconds,
+            web_interface_enabled: c.web_interface_enabled,
+            web_interface_port: c.web_interface_port,
+            rest_api_enabled: c.rest_api_enabled,
+            api_key: c.api_key,
+            websocket_enabled: c.websocket_enabled,
+            min_file_size_mb: c.min_file_size_mb,
+            excluded_domains: c.excluded_domains,
+            excluded_extensions: c.excluded_extensions,
+            theme: c.theme,
+            accent_color: c.accent_color,
+            compact_mode: c.compact_mode,
+            locale: c.locale,
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigPatchDto {
+    // General
+    pub download_dir: Option<Option<String>>,
+    pub start_minimized: Option<bool>,
+    pub notifications_enabled: Option<bool>,
+    pub auto_extract: Option<bool>,
+    pub clipboard_monitoring: Option<bool>,
+    pub sound_enabled: Option<bool>,
+    pub confirm_delete: Option<bool>,
+    pub subfolder_per_package: Option<bool>,
+
+    // Downloads
+    pub max_concurrent_downloads: Option<u32>,
+    pub max_segments_per_download: Option<u32>,
+    pub speed_limit_bytes_per_sec: Option<Option<u64>>,
+    pub max_retries: Option<u32>,
+    pub retry_delay_seconds: Option<u32>,
+    pub verify_checksums: Option<bool>,
+    pub pre_allocate_space: Option<bool>,
+
+    // Network
+    pub proxy_type: Option<String>,
+    pub proxy_url: Option<Option<String>>,
+    pub user_agent: Option<String>,
+    pub dns_over_https: Option<bool>,
+    pub connection_timeout_seconds: Option<u32>,
+
+    // Remote Access
+    pub web_interface_enabled: Option<bool>,
+    pub web_interface_port: Option<u16>,
+    pub rest_api_enabled: Option<bool>,
+    pub api_key: Option<String>,
+    pub websocket_enabled: Option<bool>,
+
+    // Browser Integration
+    pub min_file_size_mb: Option<f64>,
+    pub excluded_domains: Option<Vec<String>>,
+    pub excluded_extensions: Option<Vec<String>>,
+
+    // Appearance
+    pub theme: Option<String>,
+    pub accent_color: Option<String>,
+    pub compact_mode: Option<bool>,
+    pub locale: Option<String>,
+}
+
+impl From<ConfigPatchDto> for ConfigPatch {
+    fn from(d: ConfigPatchDto) -> Self {
+        Self {
+            download_dir: d.download_dir,
+            start_minimized: d.start_minimized,
+            notifications_enabled: d.notifications_enabled,
+            auto_extract: d.auto_extract,
+            clipboard_monitoring: d.clipboard_monitoring,
+            sound_enabled: d.sound_enabled,
+            confirm_delete: d.confirm_delete,
+            subfolder_per_package: d.subfolder_per_package,
+            max_concurrent_downloads: d.max_concurrent_downloads,
+            max_segments_per_download: d.max_segments_per_download,
+            speed_limit_bytes_per_sec: d.speed_limit_bytes_per_sec,
+            max_retries: d.max_retries,
+            retry_delay_seconds: d.retry_delay_seconds,
+            verify_checksums: d.verify_checksums,
+            pre_allocate_space: d.pre_allocate_space,
+            proxy_type: d.proxy_type,
+            proxy_url: d.proxy_url,
+            user_agent: d.user_agent,
+            dns_over_https: d.dns_over_https,
+            connection_timeout_seconds: d.connection_timeout_seconds,
+            web_interface_enabled: d.web_interface_enabled,
+            web_interface_port: d.web_interface_port,
+            rest_api_enabled: d.rest_api_enabled,
+            api_key: d.api_key,
+            websocket_enabled: d.websocket_enabled,
+            min_file_size_mb: d.min_file_size_mb,
+            excluded_domains: d.excluded_domains,
+            excluded_extensions: d.excluded_extensions,
+            theme: d.theme,
+            accent_color: d.accent_color,
+            compact_mode: d.compact_mode,
+            locale: d.locale,
+        }
+    }
+}
+
+// ── Settings IPC Commands ────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn settings_get(state: State<'_, AppState>) -> Result<SettingsDto, String> {
+    state
+        .command_bus
+        .config_store()
+        .get_config()
+        .map(SettingsDto::from)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn settings_update(
+    state: State<'_, AppState>,
+    patch: ConfigPatchDto,
+) -> Result<SettingsDto, String> {
+    let cmd = UpdateConfigCommand {
+        patch: patch.into(),
+    };
+    state
+        .command_bus
+        .handle_update_config(cmd)
+        .map(SettingsDto::from)
+        .map_err(|e| e.to_string())
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────
 
 fn parse_download_state(s: &str) -> Option<DownloadState> {
     match s.to_lowercase().as_str() {
