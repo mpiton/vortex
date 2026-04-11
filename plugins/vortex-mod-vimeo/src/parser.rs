@@ -416,7 +416,8 @@ fn find_assignment_marker(
 }
 
 /// Return `true` if `gap` contains at least one bare `=` character
-/// that is **not** part of a comparison or arrow-function operator.
+/// that is **not** part of a comparison or arrow-function operator
+/// **and** is not inside a JavaScript string literal.
 ///
 /// JavaScript operators that contain `=` but are not plain assignment:
 ///
@@ -431,10 +432,44 @@ fn find_assignment_marker(
 /// as an assignment operator (including compound forms like `+=`
 /// that are unlikely to introduce a `{…}` block on their right-hand
 /// side but would still be a real assignment if they did).
+///
+/// String-state tracking is required because a code snippet such as
+/// `const msg = "window.playerConfig = ..."` would otherwise fool
+/// the scanner: the `=` inside the string literal is not a real
+/// assignment, and picking it would point the brace-balancing
+/// scanner at the wrong `{…}` block. The scanner tracks both `"` and
+/// `'` delimiters plus `\` escapes, matching the policy the rest of
+/// this module uses for HTML-embedded JS.
 fn gap_contains_assignment(gap: &str) -> bool {
     let bytes = gap.as_bytes();
+    let mut in_double = false;
+    let mut in_single = false;
+    let mut escaped = false;
     for i in 0..bytes.len() {
-        if bytes[i] != b'=' {
+        let b = bytes[i];
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        let in_str = in_double || in_single;
+        // Handle string state before the `=` check so that quote
+        // delimiters themselves do not trigger a false reject.
+        if in_str && b == b'\\' {
+            escaped = true;
+            continue;
+        }
+        if b == b'"' && !in_single {
+            in_double = !in_double;
+            continue;
+        }
+        if b == b'\'' && !in_double {
+            in_single = !in_single;
+            continue;
+        }
+        if in_str {
+            continue;
+        }
+        if b != b'=' {
             continue;
         }
         let prev = if i == 0 { 0 } else { bytes[i - 1] };
@@ -839,6 +874,45 @@ mod tests {
         assert!(gap_contains_assignment(" = "));
         assert!(gap_contains_assignment("="));
         assert!(gap_contains_assignment("\t= \n"));
+    }
+
+    #[test]
+    fn gap_contains_assignment_ignores_equals_inside_string_literals() {
+        // `=` inside a double-quoted string literal is not an
+        // assignment — it is data. The scanner must ignore it so
+        // that a decoy `"window.playerConfig = ..."` string cannot
+        // fool the marker check.
+        assert!(!gap_contains_assignment(
+            r#" msg = "not = here" "#.split('=').next().unwrap()
+        ));
+        assert!(!gap_contains_assignment(r#" "has = inside" "#));
+        assert!(!gap_contains_assignment(r#" 'single = quoted' "#));
+        // A real `=` *after* the string must still be detected.
+        assert!(gap_contains_assignment(r#" "prefix" = "#));
+    }
+
+    #[test]
+    fn gap_contains_assignment_handles_escaped_quotes() {
+        // Escaped quote inside a string does not close the string,
+        // so the `=` that follows is still inside the literal.
+        assert!(!gap_contains_assignment(r#" "it \"= inside\"" "#));
+    }
+
+    #[test]
+    fn extract_player_config_skips_decoy_inside_string_literal() {
+        // A JavaScript snippet that embeds the playerConfig marker
+        // inside a string literal must not be picked as the real
+        // assignment site. The decoy `=` inside the string is now
+        // ignored, so the balanced-brace scanner reaches the real
+        // assignment below.
+        let html = r#"
+            <script>
+              const msg = "debug: window.playerConfig = bogus";
+              window.playerConfig = {"real": true};
+            </script>
+        "#;
+        let json = extract_player_config_from_html(html).unwrap();
+        assert_eq!(json, r#"{"real": true}"#);
     }
 
     #[test]
