@@ -127,9 +127,21 @@ pub fn verify_all_parts_present(parts: &[PathBuf]) -> Result<Vec<PathBuf>, Domai
     });
     let baseline: u32 = if has_zero_part { 0 } else { 1 };
 
-    // Find first numeric part (skip unnumbered terminals like "archive.rar")
+    // Find first numeric part, skipping terminal .rar/.zip entries
+    // (whose digits come from the basename, not a part number)
     let first_numeric = parts.iter().find_map(|p| {
         let name = p.file_name()?.to_str()?;
+        let ext = Path::new(name).extension()?.to_str()?;
+        // Terminal .rar/.zip without digits in extension → skip
+        if ext.eq_ignore_ascii_case("rar") || ext.eq_ignore_ascii_case("zip") {
+            // But keep .partNN.rar which has digits BEFORE .rar
+            let stem = Path::new(name).file_stem()?.to_str()?;
+            let stem_ext = Path::new(stem).extension()?.to_str()?;
+            // If the part before .rar has digits (e.g., "part01"), keep it
+            if !stem_ext.chars().any(|c| c.is_ascii_digit()) {
+                return None;
+            }
+        }
         let num = extract_part_number(name)?;
         Some((p, num))
     });
