@@ -76,10 +76,12 @@ pub fn run() {
             std::fs::create_dir_all(&plugins_dir)?;
 
             // ── Database ────────────────────────────────────────────
-            // SAFETY: block_on is safe here because Tauri's tokio runtime is
-            // already running when setup() executes, and the inner future does
-            // not block back on this thread.
-            let db = tauri::async_runtime::block_on(async {
+            // block_on enters the Tauri tokio runtime for async DB setup.
+            // We also capture the Handle so we can keep the runtime context
+            // active for the rest of setup (needed by tokio::spawn in
+            // event bus subscribers).
+            let (db, rt_handle) = tauri::async_runtime::block_on(async {
+                let handle = tokio::runtime::Handle::current();
                 let db = connection::establish_connection(
                     db_path
                         .to_str()
@@ -90,8 +92,9 @@ pub fn run() {
                 connection::run_migrations(&db)
                     .await
                     .map_err(|e| e.to_string())?;
-                Ok::<_, String>(db)
+                Ok::<_, String>((db, handle))
             })?;
+            let _rt_guard = rt_handle.enter();
 
             // ── Driven adapters ─────────────────────────────────────
             let event_bus: Arc<dyn EventBus> = Arc::new(TokioEventBus::new(256));
