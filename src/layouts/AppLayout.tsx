@@ -5,11 +5,29 @@ import { StatusBar } from "./StatusBar";
 import { ROUTES } from "@/types/layout";
 import { useDownloadProgress } from "@/hooks/useDownloadProgress";
 import { useDownloadEvents } from "@/hooks/useDownloadEvents";
+import { useAppEffects } from "@/hooks/useAppEffects";
+import { useTauriQuery } from "@/api/hooks";
+import { useSettingsStore } from "@/stores/settingsStore";
+import type { AppConfig } from "@/types/settings";
 
 export function AppLayout() {
   const navigate = useNavigate();
+  const setConfig = useSettingsStore((s) => s.setConfig);
   useDownloadProgress();
   useDownloadEvents();
+  useAppEffects();
+
+  const { data: config } = useTauriQuery<AppConfig>(
+    'settings_get',
+    undefined,
+    { queryKey: ['settings_get'], staleTime: 30_000 },
+  );
+
+  useEffect(() => {
+    if (config) {
+      setConfig(config);
+    }
+  }, [config, setConfig]);
 
   useEffect(() => {
     function handleKeydown(event: KeyboardEvent) {

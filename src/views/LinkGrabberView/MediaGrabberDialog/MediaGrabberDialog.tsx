@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import {
   Dialog,
   DialogContent,
@@ -31,6 +32,7 @@ export function MediaGrabberDialog({
   onOpenChange,
   onConfirm,
 }: MediaGrabberDialogProps) {
+  const { t } = useTranslation();
   const [qualitySelection, setQualitySelection] = useState("1080p");
   const [formatSelection, setFormatSelection] = useState("mp4");
   const [audioOnly, setAudioOnly] = useState(false);
@@ -79,7 +81,7 @@ export function MediaGrabberDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[80vh] max-w-2xl overflow-y-auto">
         <DialogHeader>
-          <DialogTitle>Media Grabber Options</DialogTitle>
+          <DialogTitle>{t('mediaGrabber.title')}</DialogTitle>
         </DialogHeader>
 
         {isLoading ? (
@@ -139,12 +141,12 @@ export function MediaGrabberDialog({
           <div className="space-y-3 text-center">
             <p className="text-sm text-muted-foreground">
               {isError
-                ? "Failed to load media metadata"
-                : "No metadata available for this link"}
+                ? t('mediaGrabber.failedToLoad')
+                : t('mediaGrabber.noMetadata')}
             </p>
             {isError && (
               <Button variant="outline" size="sm" onClick={() => refetch()}>
-                Retry
+                {t('mediaGrabber.retry')}
               </Button>
             )}
           </div>
@@ -152,10 +154,10 @@ export function MediaGrabberDialog({
 
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>
-            Cancel
+            {t('mediaGrabber.cancel')}
           </Button>
           <Button onClick={handleConfirm} disabled={isLoading || !metadata}>
-            Download
+            {t('mediaGrabber.download')}
           </Button>
         </DialogFooter>
       </DialogContent>

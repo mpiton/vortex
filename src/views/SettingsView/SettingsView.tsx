@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Settings2, Download, Globe, Link, MonitorSmartphone, Palette } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
+import { useTranslation } from 'react-i18next';
 import { listen } from '@tauri-apps/api/event';
 import { useTauriQuery } from '@/api/hooks';
 import type { AppConfig, SettingTab } from '@/types/settings';
@@ -14,13 +15,13 @@ import { RemoteAccessSection } from './RemoteAccessSection';
 import { BrowserSection } from './BrowserSection';
 import { AppearanceSection } from './AppearanceSection';
 
-const TABS: { id: SettingTab; label: string; icon: typeof Settings2 }[] = [
-  { id: 'general', label: 'General', icon: Settings2 },
-  { id: 'downloads', label: 'Downloads', icon: Download },
-  { id: 'network', label: 'Network', icon: Globe },
-  { id: 'remote', label: 'Remote Access', icon: Link },
-  { id: 'browser', label: 'Browser', icon: MonitorSmartphone },
-  { id: 'appearance', label: 'Appearance', icon: Palette },
+const TABS: { id: SettingTab; labelKey: string; icon: typeof Settings2 }[] = [
+  { id: 'general', labelKey: 'settings.tabs.general', icon: Settings2 },
+  { id: 'downloads', labelKey: 'settings.tabs.downloads', icon: Download },
+  { id: 'network', labelKey: 'settings.tabs.network', icon: Globe },
+  { id: 'remote', labelKey: 'settings.tabs.remote', icon: Link },
+  { id: 'browser', labelKey: 'settings.tabs.browser', icon: MonitorSmartphone },
+  { id: 'appearance', labelKey: 'settings.tabs.appearance', icon: Palette },
 ];
 
 function SectionContent({ tab, config }: { tab: SettingTab; config: AppConfig }) {
@@ -43,6 +44,7 @@ function SectionContent({ tab, config }: { tab: SettingTab; config: AppConfig })
 export function SettingsView() {
   const [activeTab, setActiveTab] = useState<SettingTab>('general');
   const queryClient = useQueryClient();
+  const { t } = useTranslation();
 
   const { data: config, isLoading } = useTauriQuery<AppConfig>(
     'settings_get',
@@ -79,9 +81,9 @@ export function SettingsView() {
   if (!config) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-4 p-4">
-        <p className="text-sm text-destructive">Failed to load settings</p>
+        <p className="text-sm text-destructive">{t('common.failedToLoadSettings')}</p>
         <Button variant="outline" onClick={() => queryClient.invalidateQueries({ queryKey: ['settings_get'] })}>
-          Retry
+          {t('common.retry')}
         </Button>
       </div>
     );
@@ -90,7 +92,7 @@ export function SettingsView() {
   return (
     <div className="flex h-full gap-4 p-4">
       <nav className="flex w-48 shrink-0 flex-col gap-1">
-        {TABS.map(({ id, label, icon: Icon }) => (
+        {TABS.map(({ id, labelKey, icon: Icon }) => (
           <Button
             key={id}
             variant={activeTab === id ? 'default' : 'ghost'}
@@ -98,7 +100,7 @@ export function SettingsView() {
             onClick={() => setActiveTab(id)}
           >
             <Icon className="size-4" />
-            {label}
+            {t(labelKey)}
           </Button>
         ))}
       </nav>

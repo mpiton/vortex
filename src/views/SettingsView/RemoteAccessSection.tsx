@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useTauriMutation } from '@/api/hooks';
 import type { AppConfig, AppConfigPatch } from '@/types/settings';
 import { Input } from '@/components/ui/input';
@@ -12,6 +13,7 @@ interface RemoteAccessSectionProps {
 }
 
 export function RemoteAccessSection({ config }: RemoteAccessSectionProps) {
+  const { t } = useTranslation();
   const [showApiKey, setShowApiKey] = useState(false);
 
   const { mutate } = useTauriMutation<AppConfig, { patch: AppConfigPatch }>('settings_update', {
@@ -27,31 +29,30 @@ export function RemoteAccessSection({ config }: RemoteAccessSectionProps) {
   return (
     <div className="space-y-6">
       <div>
-        <h2 className="text-lg font-semibold">Remote Access</h2>
-        <p className="text-sm text-muted-foreground">Web interface and API configuration</p>
+        <h2 className="text-lg font-semibold">{t('settings.remote.title')}</h2>
+        <p className="text-sm text-muted-foreground">{t('settings.remote.description')}</p>
       </div>
 
       <Card className="border-amber-500/50 bg-amber-500/5">
         <CardContent className="flex items-start gap-3 pt-0">
           <ShieldAlert className="mt-0.5 size-5 shrink-0 text-amber-500" />
           <p className="text-sm text-amber-700 dark:text-amber-400">
-            Enabling remote access exposes your download manager to the network.
-            Make sure to use a strong API key and restrict access to trusted networks.
+            {t('settings.remote.warning')}
           </p>
         </CardContent>
       </Card>
 
       <div className="space-y-1">
         <SettingToggle
-          label="Web interface"
-          description="Enable the browser-based control panel"
+          label={t('settings.remote.webInterface')}
+          description={t('settings.remote.webInterfaceDesc')}
           checked={config.webInterfaceEnabled}
           onCheckedChange={(v) => handleChange('webInterfaceEnabled', v)}
         />
 
         {config.webInterfaceEnabled && (
           <SettingNumberInput
-            label="Web interface port"
+            label={t('settings.remote.webInterfacePort')}
             value={config.webInterfacePort}
             onChange={(v) => handleChange('webInterfacePort', v)}
             min={1024}
@@ -60,15 +61,15 @@ export function RemoteAccessSection({ config }: RemoteAccessSectionProps) {
         )}
 
         <SettingToggle
-          label="REST API"
-          description="Enable the HTTP REST API for third-party integrations"
+          label={t('settings.remote.restApi')}
+          description={t('settings.remote.restApiDesc')}
           checked={config.restApiEnabled}
           onCheckedChange={(v) => handleChange('restApiEnabled', v)}
         />
 
         <SettingToggle
-          label="WebSocket"
-          description="Enable real-time WebSocket events"
+          label={t('settings.remote.websocket')}
+          description={t('settings.remote.websocketDesc')}
           checked={config.websocketEnabled}
           onCheckedChange={(v) => handleChange('websocketEnabled', v)}
         />
@@ -76,7 +77,7 @@ export function RemoteAccessSection({ config }: RemoteAccessSectionProps) {
 
       {config.restApiEnabled && (
         <div className="space-y-2">
-          <p className="text-sm font-medium">API Key</p>
+          <p className="text-sm font-medium">{t('settings.remote.apiKey')}</p>
           <div className="flex gap-2">
             <Input
               readOnly
@@ -86,7 +87,7 @@ export function RemoteAccessSection({ config }: RemoteAccessSectionProps) {
             <Button
               variant="outline"
               size="icon"
-              aria-label={showApiKey ? 'Hide API key' : 'Show API key'}
+              aria-label={showApiKey ? t('settings.remote.hideApiKey') : t('settings.remote.showApiKey')}
               onClick={() => setShowApiKey((v) => !v)}
             >
               {showApiKey ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
@@ -94,7 +95,7 @@ export function RemoteAccessSection({ config }: RemoteAccessSectionProps) {
             <Button
               variant="outline"
               size="icon"
-              aria-label="Copy API key"
+              aria-label={t('settings.remote.copyApiKey')}
               onClick={() => navigator.clipboard.writeText(config.apiKey)}
             >
               <Copy className="size-4" />
@@ -102,7 +103,7 @@ export function RemoteAccessSection({ config }: RemoteAccessSectionProps) {
             <Button
               variant="outline"
               size="icon"
-              aria-label="Regenerate API key"
+              aria-label={t('settings.remote.regenerateApiKey')}
               onClick={() => handleChange('apiKey', crypto.randomUUID())}
             >
               <RefreshCw className="size-4" />

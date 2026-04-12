@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next';
 import { useTauriMutation } from '@/api/hooks';
 import type { AppConfig, AppConfigPatch } from '@/types/settings';
 import { SettingToggle, SettingNumberInput } from './SettingField';
@@ -7,6 +8,7 @@ interface DownloadsSectionProps {
 }
 
 export function DownloadsSection({ config }: DownloadsSectionProps) {
+  const { t } = useTranslation();
   const { mutate } = useTauriMutation<AppConfig, { patch: AppConfigPatch }>('settings_update', {
     invalidateKeys: [['settings_get']],
   });
@@ -22,29 +24,29 @@ export function DownloadsSection({ config }: DownloadsSectionProps) {
   return (
     <div className="space-y-6">
       <div>
-        <h2 className="text-lg font-semibold">Downloads</h2>
-        <p className="text-sm text-muted-foreground">Download engine configuration</p>
+        <h2 className="text-lg font-semibold">{t('settings.downloads.title')}</h2>
+        <p className="text-sm text-muted-foreground">{t('settings.downloads.description')}</p>
       </div>
 
       <div className="space-y-1">
         <SettingNumberInput
-          label="Max concurrent downloads"
+          label={t('settings.downloads.maxConcurrent')}
           value={config.maxConcurrentDownloads}
           onChange={(v) => handleChange('maxConcurrentDownloads', v)}
           min={1}
           max={100}
         />
         <SettingNumberInput
-          label="Max segments per download"
-          description="Number of parallel connections per file"
+          label={t('settings.downloads.maxSegments')}
+          description={t('settings.downloads.maxSegmentsDesc')}
           value={config.maxSegmentsPerDownload}
           onChange={(v) => handleChange('maxSegmentsPerDownload', v)}
           min={1}
           max={32}
         />
         <SettingNumberInput
-          label="Speed limit (MiB/s)"
-          description="0 = unlimited"
+          label={t('settings.downloads.speedLimit')}
+          description={t('settings.downloads.speedLimitDesc')}
           value={speedLimitMb}
           onChange={(v) =>
             handleChange('speedLimitBytesPerSec', v === 0 ? null : Math.round(v * 1048576))
@@ -53,14 +55,14 @@ export function DownloadsSection({ config }: DownloadsSectionProps) {
           step={0.5}
         />
         <SettingNumberInput
-          label="Max retries"
+          label={t('settings.downloads.maxRetries')}
           value={config.maxRetries}
           onChange={(v) => handleChange('maxRetries', v)}
           min={0}
           max={100}
         />
         <SettingNumberInput
-          label="Retry delay (seconds)"
+          label={t('settings.downloads.retryDelay')}
           value={config.retryDelaySeconds}
           onChange={(v) => handleChange('retryDelaySeconds', v)}
           min={0}
@@ -70,14 +72,14 @@ export function DownloadsSection({ config }: DownloadsSectionProps) {
 
       <div className="space-y-1">
         <SettingToggle
-          label="Verify checksums"
-          description="Verify file integrity after download"
+          label={t('settings.downloads.verifyChecksums')}
+          description={t('settings.downloads.verifyChecksumsDesc')}
           checked={config.verifyChecksums}
           onCheckedChange={(v) => handleChange('verifyChecksums', v)}
         />
         <SettingToggle
-          label="Pre-allocate space"
-          description="Reserve disk space before downloading"
+          label={t('settings.downloads.preAllocate')}
+          description={t('settings.downloads.preAllocateDesc')}
           checked={config.preAllocateSpace}
           onCheckedChange={(v) => handleChange('preAllocateSpace', v)}
         />

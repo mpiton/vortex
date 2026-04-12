@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useTauriMutation } from '@/api/hooks';
 import type { AppConfig, AppConfigPatch } from '@/types/settings';
 import { SettingNumberInput } from './SettingField';
@@ -8,6 +9,7 @@ interface BrowserSectionProps {
 }
 
 export function BrowserSection({ config }: BrowserSectionProps) {
+  const { t } = useTranslation();
   const { mutate } = useTauriMutation<AppConfig, { patch: AppConfigPatch }>('settings_update', {
     invalidateKeys: [['settings_get']],
   });
@@ -25,14 +27,14 @@ export function BrowserSection({ config }: BrowserSectionProps) {
   return (
     <div className="space-y-6">
       <div>
-        <h2 className="text-lg font-semibold">Browser Integration</h2>
-        <p className="text-sm text-muted-foreground">Browser extension capture settings</p>
+        <h2 className="text-lg font-semibold">{t('settings.browser.title')}</h2>
+        <p className="text-sm text-muted-foreground">{t('settings.browser.description')}</p>
       </div>
 
       <div className="space-y-4">
         <SettingNumberInput
-          label="Minimum file size (MB)"
-          description="Only capture files larger than this"
+          label={t('settings.browser.minFileSize')}
+          description={t('settings.browser.minFileSizeDesc')}
           value={config.minFileSizeMb}
           onChange={(v) => handleChange('minFileSizeMb', v)}
           min={0}
@@ -40,8 +42,8 @@ export function BrowserSection({ config }: BrowserSectionProps) {
         />
 
         <div className="space-y-1">
-          <p className="text-sm font-medium">Excluded domains</p>
-          <p className="text-xs text-muted-foreground">Comma-separated list of domains to ignore</p>
+          <p className="text-sm font-medium">{t('settings.browser.excludedDomains')}</p>
+          <p className="text-xs text-muted-foreground">{t('settings.browser.excludedDomainsDesc')}</p>
           <textarea
             className="h-20 w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-xs outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 dark:bg-input/30"
             value={domainsDraft}
@@ -57,8 +59,8 @@ export function BrowserSection({ config }: BrowserSectionProps) {
         </div>
 
         <div className="space-y-1">
-          <p className="text-sm font-medium">Excluded extensions</p>
-          <p className="text-xs text-muted-foreground">Comma-separated list of file extensions to ignore</p>
+          <p className="text-sm font-medium">{t('settings.browser.excludedExtensions')}</p>
+          <p className="text-xs text-muted-foreground">{t('settings.browser.excludedExtensionsDesc')}</p>
           <textarea
             className="h-20 w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-xs outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 dark:bg-input/30"
             value={extensionsDraft}

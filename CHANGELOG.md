@@ -184,3 +184,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `VortexArchiveExtractor` composite: format routing, recursive extraction with configurable depth
   - `ExtractArchiveCommand` CQRS handler with `spawn_blocking` for CPU-bound extraction
   - `ListArchiveContentsQuery` handler for archive preview without extraction
+- i18n & advanced theming (Task 27)
+  - `react-i18next` + `i18next` + `i18next-browser-languagedetector` installed for internationalisation
+  - `src/i18n/i18n.ts`: i18next instance initialized with `LanguageDetector` (localStorage → navigator fallback)
+  - `src/i18n/locales/en.json` and `src/i18n/locales/fr.json`: complete English and French translations covering navigation, all settings sections, downloads search, and media grabber dialogs
+  - `src/hooks/useLanguage.ts`: `useLanguage()` hook for language switching — calls `i18n.changeLanguage()` and persists `locale` to backend config via `settingsStore.updateConfig()`
+  - `src/hooks/useAppEffects.ts`: `useAppEffects()` hook applying DOM side-effects on config changes — toggles `compact-mode` class on `<body>` and sets `--color-accent` CSS variable on `:root`
+  - All hardcoded UI strings replaced with `t('key')` calls: navigation labels (Sidebar), settings tabs and all 6 settings sections, downloads search bar, media grabber dialog
+  - `src/types/layout.ts`: `RouteConfig.label` renamed to `labelKey` (i18n translation key), Sidebar uses `t(route.labelKey)`
+  - `src/App.tsx`: `import './i18n/i18n'` added as first import to ensure i18n is initialized before rendering
+  - `src/layouts/AppLayout.tsx`: loads `settings_get` on mount, feeds result to `settingsStore` for `useAppEffects` to pick up initial compact mode and accent color
+  - `src/index.css`: `body.compact-mode` selector with reduced font size, line height, and spacing overrides
+  - Accent color runtime: changing accent color preset updates `--color-accent` CSS variable immediately without reload
+  - `UpdateConfigCommand` locale validation: rejects locales not in `["en", "fr", "de", "es", "ja", "zh"]`
+  - `src/test-setup.ts`: global `react-i18next` mock returning English translation values via key lookup so all existing tests continue passing
+  - 17 new frontend tests: `useLanguage` (4), `useAppEffects` (5), translation key parity en↔fr (8)
+  - 2 new Rust tests: `test_handle_update_config_rejects_invalid_locale`, `test_handle_update_config_accepts_valid_locale`
+- Release & distribution pipeline (Task 28)
+  - `.github/workflows/release.yml`: triggered on `v*.*.*` tags, 6 jobs
+    - `create-release`: extracts changelog body from CHANGELOG.md, creates GitHub Release
+    - `build-tauri-linux`: builds .deb and .rpm, uploads to release
+    - `build-tauri-macos`: builds .dmg with code signing + notarization via xcrun notarytool, uploads to release
+    - `build-tauri-windows`: builds .msi with certificate import, uploads to release
+    - `publish-flatpak`: builds Flatpak bundle from manifest, uploads to release
+    - `update-updater`: generates `latest.json` updater manifest and uploads to release
+  - Tauri in-app updater configured in `tauri.conf.json` (plugins.updater, endpoint → GitHub Releases)
+  - `tauri-plugin-updater` added to Cargo.toml dependencies
+  - `contrib/vortex.service` — systemd user unit for headless/autostart scenarios
+  - `contrib/vortex.desktop` — Freedesktop .desktop entry (MimeType magnet + uri-list)
+  - `contrib/flatpak/org.vortex.Vortex.yml` — Flatpak manifest (runtime 23.08, Rust + Node 22 SDK)
+  - `contrib/icons/README.md` — icon generation instructions via `npx tauri icon`
+  - `contrib/winget/Vortex.yaml` — Winget manifest template (TODO placeholders for future submission)
+  - `contrib/homebrew/vortex.rb` — Homebrew cask template (TODO placeholders for future submission)

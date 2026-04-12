@@ -1,5 +1,6 @@
+import { useTranslation } from 'react-i18next';
 import type { DownloadDetailView } from '@/types/download';
-import { formatBytes } from '@/lib/format';
+import { formatBytes, formatDate } from '@/lib/format';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 
 interface FileInfoSectionProps {
@@ -33,14 +34,15 @@ function getMimeType(fileName: string): string {
 }
 
 export function FileInfoSection({ download }: FileInfoSectionProps) {
+  const { t, i18n } = useTranslation();
   const mimeType = getMimeType(download.fileName);
 
   return (
     <section className="space-y-3">
-      <h3 className="text-sm font-semibold">File Info</h3>
+      <h3 className="text-sm font-semibold">{t('downloads.fileInfo')}</h3>
       <div className="space-y-2 text-xs">
         <div>
-          <p className="text-muted-foreground">Name</p>
+          <p className="text-muted-foreground">{t('downloads.fileName')}</p>
           <Tooltip>
             <TooltipTrigger asChild>
               <p className="font-mono truncate max-w-full cursor-default">{download.fileName}</p>
@@ -51,15 +53,19 @@ export function FileInfoSection({ download }: FileInfoSectionProps) {
           </Tooltip>
         </div>
         <div>
-          <p className="text-muted-foreground">Size</p>
+          <p className="text-muted-foreground">{t('downloads.fileSize')}</p>
           <p className="font-mono">{formatBytes(download.totalBytes)}</p>
         </div>
         <div>
-          <p className="text-muted-foreground">MIME Type</p>
+          <p className="text-muted-foreground">{t('downloads.mimeType')}</p>
           <p className="font-mono">{mimeType}</p>
         </div>
         <div>
-          <p className="text-muted-foreground">Destination</p>
+          <p className="text-muted-foreground">{t('downloads.added')}</p>
+          <p className="font-mono">{formatDate(download.createdAt, i18n.language)}</p>
+        </div>
+        <div>
+          <p className="text-muted-foreground">{t('downloads.destination')}</p>
           <Tooltip>
             <TooltipTrigger asChild>
               <p className="font-mono truncate max-w-full cursor-default">{download.destinationPath}</p>

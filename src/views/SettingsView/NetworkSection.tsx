@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useTauriMutation } from '@/api/hooks';
 import type { AppConfig, AppConfigPatch, ProxyType } from '@/types/settings';
 import { Input } from '@/components/ui/input';
@@ -16,6 +17,7 @@ interface NetworkSectionProps {
 }
 
 export function NetworkSection({ config }: NetworkSectionProps) {
+  const { t } = useTranslation();
   const { mutate } = useTauriMutation<AppConfig, { patch: AppConfigPatch }>('settings_update', {
     invalidateKeys: [['settings_get']],
   });
@@ -33,14 +35,14 @@ export function NetworkSection({ config }: NetworkSectionProps) {
   return (
     <div className="space-y-6">
       <div>
-        <h2 className="text-lg font-semibold">Network</h2>
-        <p className="text-sm text-muted-foreground">Proxy and connection settings</p>
+        <h2 className="text-lg font-semibold">{t('settings.network.title')}</h2>
+        <p className="text-sm text-muted-foreground">{t('settings.network.description')}</p>
       </div>
 
       <div className="space-y-4">
         <div className="flex items-center justify-between gap-4 py-2">
           <div>
-            <p className="text-sm font-medium">Proxy type</p>
+            <p className="text-sm font-medium">{t('settings.network.proxyType')}</p>
           </div>
           <Select
             value={config.proxyType}
@@ -50,19 +52,19 @@ export function NetworkSection({ config }: NetworkSectionProps) {
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="none">None</SelectItem>
-              <SelectItem value="http">HTTP</SelectItem>
-              <SelectItem value="socks5">SOCKS5</SelectItem>
+              <SelectItem value="none">{t('settings.network.proxyNone')}</SelectItem>
+              <SelectItem value="http">{t('settings.network.proxyHttp')}</SelectItem>
+              <SelectItem value="socks5">{t('settings.network.proxySocks5')}</SelectItem>
             </SelectContent>
           </Select>
         </div>
 
         {config.proxyType !== 'none' && (
           <div className="space-y-1">
-            <p className="text-sm font-medium">Proxy URL</p>
+            <p className="text-sm font-medium">{t('settings.network.proxyUrl')}</p>
             <Input
               value={proxyUrlDraft}
-              placeholder="http://proxy:8080"
+              placeholder={t('settings.network.proxyUrlPlaceholder')}
               onChange={(e) => setProxyUrlDraft(e.target.value)}
               onBlur={() => handleChange('proxyUrl', proxyUrlDraft || null)}
             />
@@ -70,7 +72,7 @@ export function NetworkSection({ config }: NetworkSectionProps) {
         )}
 
         <div className="space-y-1">
-          <p className="text-sm font-medium">User agent</p>
+          <p className="text-sm font-medium">{t('settings.network.userAgent')}</p>
           <Input
             value={userAgentDraft}
             onChange={(e) => setUserAgentDraft(e.target.value)}
@@ -79,14 +81,14 @@ export function NetworkSection({ config }: NetworkSectionProps) {
         </div>
 
         <SettingToggle
-          label="DNS over HTTPS"
-          description="Use encrypted DNS queries"
+          label={t('settings.network.dnsOverHttps')}
+          description={t('settings.network.dnsOverHttpsDesc')}
           checked={config.dnsOverHttps}
           onCheckedChange={(v) => handleChange('dnsOverHttps', v)}
         />
 
         <SettingNumberInput
-          label="Connection timeout (seconds)"
+          label={t('settings.network.connectionTimeout')}
           value={config.connectionTimeoutSeconds}
           onChange={(v) => handleChange('connectionTimeoutSeconds', v)}
           min={5}
