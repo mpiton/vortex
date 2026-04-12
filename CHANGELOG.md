@@ -217,6 +217,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `contrib/winget/Vortex.yaml` — Winget manifest template (TODO placeholders for future submission)
   - `contrib/homebrew/vortex.rb` — Homebrew cask template (TODO placeholders for future submission)
 
+### Changed
+- `KeyringCredentialStore` replaces `NoopCredentialStore` as the default credential adapter (#35)
+  - Credentials now persist in the OS keychain (macOS Keychain, Linux Secret Service/keyutils, Windows Credential Manager)
+  - `NoopCredentialStore` remains available for tests
+
 ### Fixed
 - **CRITICAL**: All 22 IPC commands now work — `AppState` is constructed and registered via `.manage()` in the Tauri setup closure (#27)
   - Database connection (SQLite WAL mode) with migrations run at startup
@@ -225,5 +230,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Event bridges (Tauri webview + desktop notifications) connected to domain event bus
   - Plugin hot-reload watcher started with tracing on failure
   - Shared `reqwest::Client` between HTTP metadata port and download engine
-  - `NoopCredentialStore` stub until keyring-rs integration
+  - `NoopCredentialStore` stub for tests (replaced by `KeyringCredentialStore` as default in #35)
   - `InMemoryStatsRepository` stub until SQLite implementation (with `saturating_add` for overflow safety)
