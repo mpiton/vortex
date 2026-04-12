@@ -300,11 +300,14 @@ pub fn extract_player_config_from_html(html: &str) -> Result<&str, PluginError> 
             .or_else(|| find_assignment_marker(html, FALLBACK, RequireAssignment::No))
             .ok_or(PluginError::PlayerConfigNotFound)?;
 
-    // Find the first `{` after the marker.
+    // Find the first `{` after the marker that is outside any string
+    // literal. A plain `rest.find('{')` would pick up `{` inside a
+    // string like `"style={...}"`, pointing the balanced-brace scanner
+    // at the wrong position. Since the marker search guarantees we are
+    // outside a string at `needle_end`, the walk starts clean.
     let needle_end = start_marker + needle_len;
-    let rest = &html[needle_end..];
-    let brace_rel = rest.find('{').ok_or(PluginError::PlayerConfigNotFound)?;
-    let brace_start = needle_end + brace_rel;
+    let brace_start = find_brace_outside_strings(html.as_bytes(), needle_end)
+        .ok_or(PluginError::PlayerConfigNotFound)?;
 
     // Walk the bytes, counting unescaped braces outside string literals.
     let bytes = html.as_bytes();
@@ -352,139 +355,214 @@ enum RequireAssignment {
     No,
 }
 
-/// Return the byte offset and length of the first occurrence of
-/// `needle` in `haystack` that:
+/// Find the first `needle` occurrence in `haystack` that:
 ///
-/// 1. is bounded on **both** sides by non-JavaScript-identifier
-///    characters, so `mywindow.playerConfig` and
-///    `window.playerConfigVersion` do not match; and
-/// 2. if `require_assignment == Yes`, is followed (before the next
-///    `{`) by an `=` operator, so `console.log(window.playerConfig)`
-///    and similar non-assignment references are filtered out.
+/// 1. is **outside** any JavaScript string literal (both `"` and `'`
+///    delimiters are tracked from position 0 so the quote state is
+///    never lost — a marker that appears inside a string like
+///    `"debug: window.playerConfig = ..."` is skipped);
+/// 2. is bounded on **both** sides by non-identifier characters; and
+/// 3. if `require_assignment == Yes`, is followed (before the first
+///    `{` that is also outside any string) by a bare `=` operator
+///    that is not part of `==`, `===`, `!=`, `!==`, `<=`, `>=`, `=>`.
 ///
-/// JavaScript identifier-continuation characters are `[A-Za-z0-9_$]`
-/// — the `$` must be included because it is a legal identifier
-/// character and appears in minified bundles.
+/// The function does a **single pass** over the haystack, tracking
+/// JavaScript string state throughout, so there is no need to slice
+/// a gap and re-parse it. This eliminates the class of bugs where
+/// a gap substring resets quote state at its start.
 ///
-/// Returns `(byte_offset, needle_length)` so the caller can walk
-/// forward from the end of the needle without re-measuring it.
+/// Returns `(byte_offset, needle_length)`.
 fn find_assignment_marker(
     haystack: &str,
     needle: &str,
     require_assignment: RequireAssignment,
 ) -> Option<(usize, usize)> {
     let bytes = haystack.as_bytes();
-    let mut start = 0usize;
-    while start < haystack.len() {
-        let rel = haystack[start..].find(needle)?;
-        let abs = start + rel;
-        let after = abs + needle.len();
-
-        // Left boundary: the byte immediately before `abs` must not
-        // be an identifier continuation. At offset 0 there is no
-        // preceding byte, so the boundary is trivially satisfied.
-        let left_ok = abs == 0 || !is_js_ident_continue(bytes[abs - 1]);
-
-        // Right boundary: the byte at `after` must not be an
-        // identifier continuation (end-of-string is fine).
-        let right_ok = bytes.get(after).is_none_or(|b| !is_js_ident_continue(*b));
-
-        if left_ok && right_ok {
-            let assignment_ok = match require_assignment {
-                RequireAssignment::No => true,
-                RequireAssignment::Yes => {
-                    // Scan the gap between the needle end and the
-                    // next `{` for a **plain** `=` operator. If there
-                    // is no `{` at all after the needle, this cannot
-                    // be an assignment site — fall through to the
-                    // next candidate.
-                    let gap_rest = &haystack[after..];
-                    if let Some(brace_rel) = gap_rest.find('{') {
-                        gap_contains_assignment(&gap_rest[..brace_rel])
-                    } else {
-                        false
-                    }
-                }
-            };
-            if assignment_ok {
-                return Some((abs, needle.len()));
-            }
-        }
-        start = abs + needle.len();
+    let needle_bytes = needle.as_bytes();
+    let nlen = needle_bytes.len();
+    if nlen == 0 || bytes.len() < nlen {
+        return None;
     }
-    None
-}
 
-/// Return `true` if `gap` contains at least one bare `=` character
-/// that is **not** part of a comparison or arrow-function operator
-/// **and** is not inside a JavaScript string literal.
-///
-/// JavaScript operators that contain `=` but are not plain assignment:
-///
-/// - `==`, `===` — loose / strict equality
-/// - `!=`, `!==` — loose / strict inequality
-/// - `<=`, `>=` — less / greater or equal
-/// - `=>` — arrow function
-///
-/// A plain `=` is identified by checking its neighbours: the
-/// preceding byte must not be `=`, `!`, `<`, or `>`, and the
-/// following byte must not be `=` or `>`. Anything else is accepted
-/// as an assignment operator (including compound forms like `+=`
-/// that are unlikely to introduce a `{…}` block on their right-hand
-/// side but would still be a real assignment if they did).
-///
-/// String-state tracking is required because a code snippet such as
-/// `const msg = "window.playerConfig = ..."` would otherwise fool
-/// the scanner: the `=` inside the string literal is not a real
-/// assignment, and picking it would point the brace-balancing
-/// scanner at the wrong `{…}` block. The scanner tracks both `"` and
-/// `'` delimiters plus `\` escapes, matching the policy the rest of
-/// this module uses for HTML-embedded JS.
-fn gap_contains_assignment(gap: &str) -> bool {
-    let bytes = gap.as_bytes();
     let mut in_double = false;
     let mut in_single = false;
     let mut escaped = false;
-    for i in 0..bytes.len() {
+    let mut i = 0;
+
+    while i < bytes.len() {
         let b = bytes[i];
+
+        // Handle escape inside strings.
         if escaped {
             escaped = false;
+            i += 1;
             continue;
         }
         let in_str = in_double || in_single;
-        // Handle string state before the `=` check so that quote
-        // delimiters themselves do not trigger a false reject.
         if in_str && b == b'\\' {
             escaped = true;
+            i += 1;
             continue;
         }
         if b == b'"' && !in_single {
             in_double = !in_double;
+            i += 1;
             continue;
         }
         if b == b'\'' && !in_double {
             in_single = !in_single;
+            i += 1;
+            continue;
+        }
+        // Skip all bytes inside strings — the needle, `=`, and `{`
+        // must all be outside strings to count.
+        if in_str {
+            i += 1;
+            continue;
+        }
+
+        // Outside any string: check if needle starts here.
+        if i + nlen <= bytes.len() && bytes[i..i + nlen] == *needle_bytes {
+            let abs = i;
+            let after = abs + nlen;
+
+            // Left boundary.
+            let left_ok = abs == 0 || !is_js_ident_continue(bytes[abs - 1]);
+            // Right boundary.
+            let right_ok = bytes.get(after).is_none_or(|b| !is_js_ident_continue(*b));
+
+            if left_ok && right_ok {
+                let assignment_ok = match require_assignment {
+                    RequireAssignment::No => true,
+                    RequireAssignment::Yes => {
+                        // Continue the *same* string-state walk from
+                        // `after` (which is guaranteed outside any
+                        // string at this point) to find the first `{`
+                        // outside strings, checking for a bare `=`
+                        // along the way.
+                        gap_has_assignment_then_brace(bytes, after)
+                    }
+                };
+                if assignment_ok {
+                    return Some((abs, nlen));
+                }
+            }
+            // Skip past the needle so the outer loop resumes after it
+            // (prevents re-matching the same position).
+            i = after;
+            continue;
+        }
+
+        i += 1;
+    }
+    None
+}
+
+/// Starting from `start` (guaranteed outside any string by the caller),
+/// walk `bytes` tracking JS string state. Return `true` if a bare `=`
+/// (outside strings, not part of `==`/`===`/`!=`/`!==`/`<=`/`>=`/`=>`)
+/// is found before the first `{` (also outside strings). Return `false`
+/// if `{` arrives before `=`, or if there is no `{` at all.
+fn gap_has_assignment_then_brace(bytes: &[u8], start: usize) -> bool {
+    let mut in_double = false;
+    let mut in_single = false;
+    let mut escaped = false;
+    let mut found_eq = false;
+    let mut i = start;
+
+    while i < bytes.len() {
+        let b = bytes[i];
+        if escaped {
+            escaped = false;
+            i += 1;
+            continue;
+        }
+        let in_str = in_double || in_single;
+        if in_str && b == b'\\' {
+            escaped = true;
+            i += 1;
+            continue;
+        }
+        if b == b'"' && !in_single {
+            in_double = !in_double;
+            i += 1;
+            continue;
+        }
+        if b == b'\'' && !in_double {
+            in_single = !in_single;
+            i += 1;
             continue;
         }
         if in_str {
+            i += 1;
             continue;
         }
-        if b != b'=' {
-            continue;
+        // Outside any string.
+        if b == b'{' {
+            return found_eq;
         }
-        let prev = if i == 0 { 0 } else { bytes[i - 1] };
-        let next = bytes.get(i + 1).copied().unwrap_or(0);
-        // Reject `==`, `===`, `!=`, `!==`, `<=`, `>=` on the left.
-        if matches!(prev, b'=' | b'!' | b'<' | b'>') {
-            continue;
+        if b == b'=' {
+            let prev = if i == start { 0 } else { bytes[i - 1] };
+            let next = bytes.get(i + 1).copied().unwrap_or(0);
+            if !matches!(prev, b'=' | b'!' | b'<' | b'>') && !matches!(next, b'=' | b'>') {
+                found_eq = true;
+            }
         }
-        // Reject `==`, `===` on the right and arrow-function `=>`.
-        if matches!(next, b'=' | b'>') {
-            continue;
-        }
-        return true;
+        i += 1;
     }
     false
+}
+
+/// Find the first `{` in `bytes` starting from `start` that is
+/// outside any JS string literal. Returns `None` if there is no `{`
+/// outside strings. The caller must ensure `start` is outside a
+/// string (this invariant is upheld by `find_assignment_marker`,
+/// which only yields needle positions that are outside strings).
+fn find_brace_outside_strings(bytes: &[u8], start: usize) -> Option<usize> {
+    let mut in_double = false;
+    let mut in_single = false;
+    let mut escaped = false;
+    let mut i = start;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if escaped {
+            escaped = false;
+            i += 1;
+            continue;
+        }
+        let in_str = in_double || in_single;
+        if in_str && b == b'\\' {
+            escaped = true;
+            i += 1;
+            continue;
+        }
+        if b == b'"' && !in_single {
+            in_double = !in_double;
+            i += 1;
+            continue;
+        }
+        if b == b'\'' && !in_double {
+            in_single = !in_single;
+            i += 1;
+            continue;
+        }
+        if !in_str && b == b'{' {
+            return Some(i);
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Standalone wrapper around `gap_has_assignment_then_brace` for
+/// direct unit testing. The gap is treated as starting outside any
+/// string — the `find_assignment_marker` single-pass scan guarantees
+/// this invariant for real call sites. A trailing `{` sentinel is
+/// appended so the helper can terminate.
+#[cfg(test)]
+fn gap_contains_assignment(gap: &str) -> bool {
+    let with_brace = format!("{gap}{{");
+    gap_has_assignment_then_brace(with_brace.as_bytes(), 0)
 }
 
 /// JavaScript ASCII identifier-continuation check.
@@ -896,6 +974,23 @@ mod tests {
         // Escaped quote inside a string does not close the string,
         // so the `=` that follows is still inside the literal.
         assert!(!gap_contains_assignment(r#" "it \"= inside\"" "#));
+    }
+
+    #[test]
+    fn extract_player_config_skips_marker_inside_already_open_string() {
+        // The marker `window.playerConfig` appears inside a string
+        // that was already open before the marker starts. The
+        // single-pass scanner must track string state from position 0
+        // so it knows the marker is still inside the string, even
+        // though `gap_contains_assignment` starts clean.
+        let html = r#"
+            <script>
+              var x = "testing window.playerConfig = {bad: true} still in string";
+              window.playerConfig = {"real": true};
+            </script>
+        "#;
+        let json = extract_player_config_from_html(html).unwrap();
+        assert_eq!(json, r#"{"real": true}"#);
     }
 
     #[test]
