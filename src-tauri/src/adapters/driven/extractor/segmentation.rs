@@ -84,10 +84,24 @@ pub fn verify_all_parts_present(parts: &[PathBuf]) -> Result<Vec<PathBuf>, Domai
         }
 
         if i > 0 {
+            let curr_name = part.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            let curr_ext = Path::new(curr_name)
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("");
+            let curr_num = extract_part_number(curr_name);
+
+            // Skip continuity check for terminal segments without a part number
+            // (e.g., .rar in legacy sets, .zip in split ZIP sets)
+            if curr_num.is_none()
+                && (curr_ext.eq_ignore_ascii_case("rar") || curr_ext.eq_ignore_ascii_case("zip"))
+            {
+                continue;
+            }
+
             let prev_num = extract_part_number(parts[i - 1].file_name().unwrap().to_str().unwrap())
                 .unwrap_or(0);
-            let curr_num =
-                extract_part_number(part.file_name().unwrap().to_str().unwrap()).unwrap_or(0);
+            let curr_num = curr_num.unwrap_or(0);
 
             if curr_num != prev_num + 1 {
                 missing.push(
@@ -232,18 +246,28 @@ fn detect_zip(file_path: &Path, file_name: &str) -> Result<Option<Vec<PathBuf>>,
         return scan_parts(parent, base_name, ".zip.", "");
     }
 
-    // Try z01, z02 format
+    // Try z01, z02 format (also handle terminal .zip input)
     let re_z = Regex::new(r"^(.+)\.z(\d+)$")
         .map_err(|e| DomainError::StorageError(format!("Regex error: {}", e)))?;
 
-    if let Some(caps) = re_z.captures(file_name) {
-        let base_name = &caps[1];
+    // Derive base_name from either .zNN or .zip input
+    let base_name_for_z = re_z
+        .captures(file_name)
+        .map(|caps| caps[1].to_string())
+        .or_else(|| file_name.strip_suffix(".zip").map(|b| b.to_string()));
+
+    if let Some(base_name) = base_name_for_z {
         let mut parts = Vec::new();
-        let pattern = Regex::new(&format!(r"^{}\.z\d+$", regex::escape(base_name)))
+        let pattern = Regex::new(&format!(r"^{}\.z\d+$", regex::escape(&base_name)))
             .map_err(|e| DomainError::StorageError(format!("Regex error: {}", e)))?;
         scan_directory(parent, &mut parts, |name| pattern.is_match(name))?;
 
         if !parts.is_empty() {
+            // Include the terminal .zip file
+            let zip_path = parent.join(format!("{}.zip", base_name));
+            if zip_path.exists() {
+                parts.push(zip_path);
+            }
             sort_parts_numerically(&mut parts);
             return Ok(Some(parts));
         }
@@ -306,12 +330,26 @@ where
 }
 
 /// Sort archive parts in numerical order by extracted part numbers.
+///
+/// Files without a numeric part (e.g., `.rar` in a legacy set) sort first.
+/// Terminal `.zip` segments (no digits in extension) sort last.
 fn sort_parts_numerically(parts: &mut [PathBuf]) {
-    parts.sort_by_key(|p| {
-        p.file_name()
-            .and_then(|n| n.to_str())
-            .and_then(extract_part_number)
-            .unwrap_or(0)
+    parts.sort_by(|a, b| {
+        let key = |p: &PathBuf| -> i64 {
+            let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            let ext = Path::new(name)
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("");
+            match extract_part_number(name) {
+                Some(n) => i64::from(n),
+                // .rar without digits → sort first (-1)
+                // .zip without digits → sort last (i64::MAX)
+                None if ext.eq_ignore_ascii_case("zip") => i64::MAX,
+                None => -1,
+            }
+        };
+        key(a).cmp(&key(b))
     });
 }
 

@@ -47,6 +47,14 @@ impl ZipHandler {
         dest_dir: &Path,
         password: Option<&str>,
     ) -> Result<ExtractSummary, DomainError> {
+        // Reject if dest_dir itself is a symlink
+        if dest_dir.is_symlink() {
+            return Err(DomainError::StorageError(format!(
+                "destination is a symlink: {}",
+                dest_dir.display()
+            )));
+        }
+
         let start = Instant::now();
         let mut extracted_files = 0usize;
         let mut extracted_bytes = 0u64;
