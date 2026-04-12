@@ -15,6 +15,7 @@ use domain::ports::driven::{
 // Public API — concrete types for app wiring (main.rs, Tauri setup, integration tests)
 pub use adapters::driven::clipboard::TauriClipboardObserver;
 pub use adapters::driven::config::TomlConfigStore;
+pub use adapters::driven::credential::KeyringCredentialStore;
 pub use adapters::driven::credential::NoopCredentialStore;
 pub use adapters::driven::event::TokioEventBus;
 pub use adapters::driven::event::spawn_tauri_event_bridge;
@@ -103,8 +104,7 @@ pub fn run() {
             let http_client: Arc<dyn HttpClient> =
                 Arc::new(ReqwestHttpClient::with_client(reqwest_client.clone()));
             let config_store: Arc<dyn ConfigStore> = Arc::new(TomlConfigStore::new(config_path));
-            // TODO: replace with keyring-rs CredentialStore once implemented
-            let credential_store: Arc<dyn CredentialStore> = Arc::new(NoopCredentialStore);
+            let credential_store: Arc<dyn CredentialStore> = Arc::new(KeyringCredentialStore);
             let clipboard_observer: Arc<dyn ClipboardObserver> =
                 Arc::new(TauriClipboardObserver::new(app_handle.clone()));
             let archive_extractor: Arc<dyn ArchiveExtractor> =
