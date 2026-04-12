@@ -216,3 +216,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `contrib/icons/README.md` — icon generation instructions via `npx tauri icon`
   - `contrib/winget/Vortex.yaml` — Winget manifest template (TODO placeholders for future submission)
   - `contrib/homebrew/vortex.rb` — Homebrew cask template (TODO placeholders for future submission)
+
+### Fixed
+- **CRITICAL**: All 22 IPC commands now work — `AppState` is constructed and registered via `.manage()` in the Tauri setup closure (#27)
+  - Database connection (SQLite WAL mode) with migrations run at startup
+  - All driven adapters wired: event bus, file storage, HTTP client, config store, clipboard observer, plugin loader, download engine, archive extractor
+  - CQRS buses (CommandBus + QueryBus) assembled from 15 driven ports
+  - Event bridges (Tauri webview + desktop notifications) connected to domain event bus
+  - Plugin hot-reload watcher started with tracing on failure
+  - Shared `reqwest::Client` between HTTP metadata port and download engine
+  - `NoopCredentialStore` stub until keyring-rs integration
+  - `InMemoryStatsRepository` stub until SQLite implementation (with `saturating_add` for overflow safety)
