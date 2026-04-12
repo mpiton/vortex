@@ -71,8 +71,8 @@ impl SevenZHandler {
             let target_path = dest_dir.join(&safe_path);
 
             // Reject symlinks in the destination tree to prevent traversal
-            if target_path.is_symlink() {
-                warn!("skipping symlink target: {}", target_path.display());
+            if reject_symlinked_ancestors(dest_dir, &target_path) || target_path.is_symlink() {
+                warn!("skipping symlink in path: {}", target_path.display());
                 warnings.push(format!("skipped symlink: {}", target_path.display()));
                 return Ok(true);
             }
@@ -191,6 +191,20 @@ impl SevenZHandler {
 
         Ok(entries)
     }
+}
+
+/// Check that no ancestor between dest_dir and target is a symlink.
+fn reject_symlinked_ancestors(dest_dir: &Path, target: &Path) -> bool {
+    let mut current = dest_dir.to_path_buf();
+    if let Ok(rel) = target.strip_prefix(dest_dir) {
+        for component in rel.parent().into_iter().flat_map(|p| p.components()) {
+            current.push(component);
+            if current.symlink_metadata().is_ok_and(|m| m.is_symlink()) {
+                return true; // Found a symlinked ancestor
+            }
+        }
+    }
+    false
 }
 
 /// Parse a path string and prevent directory traversal attacks.

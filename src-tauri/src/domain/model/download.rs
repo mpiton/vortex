@@ -715,4 +715,15 @@ mod tests {
         assert_eq!(d.state(), DownloadState::Extracting);
         assert_eq!(event, DomainEvent::DownloadExtracting { id: DownloadId(1) });
     }
+
+    #[test]
+    fn test_start_extracting_from_completed() {
+        let mut d = make_download();
+        d.start().unwrap();
+        d.complete().unwrap();
+        assert_eq!(d.state(), DownloadState::Completed);
+        let event = d.start_extracting().unwrap();
+        assert_eq!(d.state(), DownloadState::Extracting);
+        assert_eq!(event, DomainEvent::DownloadExtracting { id: DownloadId(1) });
+    }
 }

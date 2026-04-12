@@ -99,6 +99,18 @@ pub fn verify_all_parts_present(parts: &[PathBuf]) -> Result<Vec<PathBuf>, Domai
         }
     }
 
+    // Check if the first part starts at the expected number (0 or 1)
+    if let Some(first) = parts.first()
+        && let Some(first_num) = first
+            .file_name()
+            .and_then(|n| n.to_str())
+            .and_then(extract_part_number)
+        && first_num > 1
+        && let Some(parent) = first.parent()
+    {
+        missing.push(parent.join(format!("{:02}", first_num - 1)));
+    }
+
     if !missing.is_empty() {
         let missing_names: Vec<String> = missing
             .iter()
@@ -142,10 +154,13 @@ fn detect_rar_legacy(
     file_name: &str,
 ) -> Result<Option<Vec<PathBuf>>, DomainError> {
     // Match: name.rar or name.r00, name.r01, etc.
-    if !file_name.ends_with(".rar")
-        && !file_name
-            .ends_with(|c: char| c.is_ascii_digit() && file_name.chars().rev().nth(1) == Some('r'))
-    {
+    let ext = Path::new(file_name)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("");
+    let is_rar_ext = ext == "rar"
+        || (ext.starts_with('r') && ext.len() > 1 && ext[1..].chars().all(|c| c.is_ascii_digit()));
+    if !is_rar_ext {
         return Ok(None);
     }
 
@@ -226,6 +241,11 @@ fn detect_zip(file_path: &Path, file_name: &str) -> Result<Option<Vec<PathBuf>>,
 
         if !parts.is_empty() {
             sort_parts_numerically(&mut parts);
+            // Add the terminal .zip file (comes last in extraction order)
+            let zip_path = parent.join(format!("{}.zip", base_name));
+            if zip_path.exists() {
+                parts.push(zip_path);
+            }
             return Ok(Some(parts));
         }
     }
@@ -301,8 +321,10 @@ fn sort_parts_numerically(parts: &mut [PathBuf]) {
 /// Extracts the *last* digit run to avoid confusion when the
 /// base name itself contains digits (e.g., "game2.part03.rar" → 03).
 fn extract_part_number(file_name: &str) -> Option<u32> {
-    let re = Regex::new(r"(\d+)[^/\\]*$").ok()?;
-    re.captures(file_name)?[1].parse::<u32>().ok()
+    let re = Regex::new(r"(\d+)").ok()?;
+    re.find_iter(file_name)
+        .last()
+        .and_then(|m| m.as_str().parse::<u32>().ok())
 }
 
 /// Check if RAR multi-part files exist for the given base name.

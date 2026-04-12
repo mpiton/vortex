@@ -13,6 +13,20 @@ use zip::ZipArchive;
 use crate::domain::error::DomainError;
 use crate::domain::model::archive::{ArchiveEntry, ExtractSummary};
 
+/// Check that no ancestor between dest_dir and target is a symlink.
+fn reject_symlinked_ancestors(dest_dir: &Path, target: &Path) -> bool {
+    let mut current = dest_dir.to_path_buf();
+    if let Ok(rel) = target.strip_prefix(dest_dir) {
+        for component in rel.parent().into_iter().flat_map(|p| p.components()) {
+            current.push(component);
+            if current.symlink_metadata().is_ok_and(|m| m.is_symlink()) {
+                return true; // Found a symlinked ancestor
+            }
+        }
+    }
+    false
+}
+
 /// ZIP archive handler — extract and list ZIP files.
 #[derive(Default)]
 pub struct ZipHandler;
@@ -71,6 +85,16 @@ impl ZipHandler {
             };
 
             let target_path = dest_dir.join(enclosed);
+
+            // Check for symlinked ancestors before creating parent directories or files
+            if reject_symlinked_ancestors(dest_dir, &target_path) {
+                warn!(
+                    "skipping entry with symlinked ancestor: {}",
+                    target_path.display()
+                );
+                warnings.push(format!("skipped symlinked path: {}", target_path.display()));
+                continue;
+            }
 
             // Extract directory or file
             if entry.is_dir() {

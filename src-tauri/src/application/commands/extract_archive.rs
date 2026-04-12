@@ -54,11 +54,25 @@ impl CommandBus {
         let extractor = self.archive_extractor_arc();
         let password = cmd.password.clone();
 
-        let result = tokio::task::spawn_blocking(move || {
+        let join_result = tokio::task::spawn_blocking(move || {
             extractor.extract(&file_path, &dest_dir, password.as_deref())
         })
-        .await
-        .map_err(|e| AppError::Storage(format!("extraction task failed: {}", e)))?;
+        .await;
+
+        // Handle spawn_blocking join failure (task panic/cancellation)
+        let result = match join_result {
+            Ok(r) => r,
+            Err(e) => {
+                let msg = format!("extraction task panicked: {}", e);
+                download.fail(msg.clone())?;
+                self.download_repo().save(&download)?;
+                self.event_bus().publish(DomainEvent::DownloadFailed {
+                    id: cmd.download_id,
+                    error: msg.clone(),
+                });
+                return Err(AppError::Storage(msg));
+            }
+        };
 
         match result {
             Ok(summary) => {

@@ -96,20 +96,29 @@ impl VortexArchiveExtractor {
     }
 
     /// Recursively extract archives found within the extracted output.
+    ///
+    /// Returns `(warnings, total_files, total_bytes)` rolled up from all
+    /// nested extractions so the caller can merge them into the top-level summary.
     fn extract_recursive(
         &self,
         dest_dir: &Path,
         password: Option<&str>,
         depth: u32,
-    ) -> Result<Vec<String>, DomainError> {
+    ) -> Result<(Vec<String>, usize, u64), DomainError> {
         if depth >= self.config.max_recursion_depth {
-            return Ok(vec![format!(
-                "max recursion depth ({}) reached",
-                self.config.max_recursion_depth
-            )]);
+            return Ok((
+                vec![format!(
+                    "max recursion depth ({}) reached",
+                    self.config.max_recursion_depth
+                )],
+                0,
+                0,
+            ));
         }
 
         let mut warnings = Vec::new();
+        let mut total_files = 0usize;
+        let mut total_bytes = 0u64;
         let nested_archives = find_archives_in_dir(dest_dir)?;
 
         for archive_path in nested_archives {
@@ -131,10 +140,14 @@ impl VortexArchiveExtractor {
 
             match self.extract_by_format(format, &archive_path, &nested_dest, password) {
                 Ok(summary) => {
+                    total_files += summary.extracted_files;
+                    total_bytes += summary.extracted_bytes;
                     warnings.extend(summary.warnings);
                     // Recurse deeper into the newly extracted directory
-                    let nested_warnings =
+                    let (nested_warnings, nested_files, nested_bytes) =
                         self.extract_recursive(&nested_dest, password, depth + 1)?;
+                    total_files += nested_files;
+                    total_bytes += nested_bytes;
                     warnings.extend(nested_warnings);
                 }
                 Err(e) => {
@@ -147,7 +160,7 @@ impl VortexArchiveExtractor {
             }
         }
 
-        Ok(warnings)
+        Ok((warnings, total_files, total_bytes))
     }
 }
 
@@ -189,7 +202,10 @@ impl ArchiveExtractor for VortexArchiveExtractor {
 
         // Recursive extraction if enabled
         if self.config.recursive_extraction {
-            let recursive_warnings = self.extract_recursive(dest_dir, password, 0)?;
+            let (recursive_warnings, recursive_files, recursive_bytes) =
+                self.extract_recursive(dest_dir, password, 0)?;
+            summary.extracted_files += recursive_files;
+            summary.extracted_bytes += recursive_bytes;
             summary.warnings.extend(recursive_warnings);
         }
 
