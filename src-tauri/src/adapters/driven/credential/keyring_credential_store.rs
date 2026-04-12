@@ -100,13 +100,19 @@ impl CredentialStore for KeyringCredentialStore {
         pass_entry
             .set_password(credential.password())
             .map_err(|e| {
-                if let Err(cleanup_err) = user_entry.delete_credential() {
-                    tracing::warn!(
-                        service = service,
-                        error = sanitize_keyring_error(service, "cleanup", &cleanup_err),
-                        "password write failed and username cleanup also failed — \
-                         orphaned username entry may remain in keychain"
-                    );
+                // Best-effort rollback: delete both entries to avoid leaving
+                // stale data (e.g. old password) when overwriting a credential.
+                for (entry_name, entry) in [("username", &user_entry), ("password", &pass_entry)] {
+                    if let Err(cleanup_err) = entry.delete_credential()
+                        && !matches!(cleanup_err, keyring::Error::NoEntry)
+                    {
+                        tracing::warn!(
+                            service = service,
+                            entry = entry_name,
+                            error = sanitize_keyring_error(service, "cleanup", &cleanup_err),
+                            "password write failed and credential cleanup also failed"
+                        );
+                    }
                 }
                 DomainError::StorageError(sanitize_keyring_error(service, "write", &e))
             })?;
