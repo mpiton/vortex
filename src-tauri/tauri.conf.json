@@ -33,5 +33,14 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/mpiton/vortex/releases/latest/download/latest.json"
+      ],
+      "dialog": true,
+      "pubkey": "REPLACE_BEFORE_FIRST_RELEASE__run_npx_tauri_signer_generate"
+    }
   }
 }

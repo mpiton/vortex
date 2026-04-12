@@ -1,3 +1,13 @@
+export function formatDate(timestampMs: number, locale: string): string {
+  return new Intl.DateTimeFormat(locale, {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(new Date(timestampMs));
+}
+
 export function formatEta(seconds: number | null | undefined): string {
   if (seconds === null || seconds === undefined || seconds <= 0) return '—';
 

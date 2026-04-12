@@ -20,6 +20,12 @@ fn validate_config(config: &AppConfig) -> Result<(), AppError> {
             config.theme
         )));
     }
+    if !matches!(config.locale.as_str(), "en" | "fr") {
+        return Err(AppError::Validation(format!(
+            "locale must be one of en, fr, got '{}'",
+            config.locale
+        )));
+    }
     if config.web_interface_port < 1024 {
         return Err(AppError::Validation(format!(
             "web_interface_port must be >= 1024, got {}",
@@ -416,5 +422,35 @@ mod tests {
         let result = bus.handle_update_config(cmd).unwrap();
         assert_eq!(result.proxy_type, "http");
         assert_eq!(result.proxy_url, Some("http://proxy:8080".to_string()));
+    }
+
+    #[test]
+    fn test_handle_update_config_rejects_invalid_locale() {
+        let bus = make_command_bus();
+        let cmd = UpdateConfigCommand {
+            patch: ConfigPatch {
+                locale: Some("xx".to_string()),
+                ..Default::default()
+            },
+        };
+
+        let result = bus.handle_update_config(cmd);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("locale"));
+    }
+
+    #[test]
+    fn test_handle_update_config_accepts_valid_locale() {
+        let bus = make_command_bus();
+        for locale in ["en", "fr"] {
+            let cmd = UpdateConfigCommand {
+                patch: ConfigPatch {
+                    locale: Some(locale.to_string()),
+                    ..Default::default()
+                },
+            };
+            let result = bus.handle_update_config(cmd).unwrap();
+            assert_eq!(result.locale, locale);
+        }
     }
 }

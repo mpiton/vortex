@@ -1,4 +1,5 @@
 import { NavLink } from "react-router";
+import { useTranslation } from 'react-i18next';
 import { ROUTES } from "@/types/layout";
 import { cn } from "@/lib/utils";
 
@@ -6,6 +7,8 @@ import { cn } from "@/lib/utils";
 const GROUP_BREAKS = new Set([3, 6]);
 
 export function Sidebar() {
+  const { t } = useTranslation();
+
   return (
     <aside className="flex h-full w-[58px] flex-col items-center bg-sidebar-bg py-3.5 select-none shrink-0">
       {/* Logo */}
@@ -22,7 +25,7 @@ export function Sidebar() {
             )}
             <NavLink
               to={route.path}
-              title={route.label}
+              title={t(route.labelKey)}
               className={({ isActive }) =>
                 cn(
                   "flex h-10 w-10 items-center justify-center rounded-lg transition-colors",
@@ -34,7 +37,7 @@ export function Sidebar() {
               }
             >
               <route.icon className="h-[18px] w-[18px]" strokeWidth={1.8} aria-hidden="true" />
-              <span className="sr-only">{route.label}</span>
+              <span className="sr-only">{t(route.labelKey)}</span>
             </NavLink>
           </div>
         ))}

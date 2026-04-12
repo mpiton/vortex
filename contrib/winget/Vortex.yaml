@@ -1,0 +1,30 @@
+# TODO: Submit to https://github.com/microsoft/winget-pkgs when releasing to the Microsoft Store
+# Replace all TODO placeholders with real values before submitting.
+
+PackageIdentifier: mpiton.Vortex
+PackageVersion: TODO  # e.g. 1.0.0
+PackageLocale: en-US
+Publisher: mpiton
+PublisherUrl: https://github.com/mpiton
+PublisherSupportUrl: https://github.com/mpiton/vortex/issues
+PackageName: Vortex
+PackageUrl: https://github.com/mpiton/vortex
+License: GPL-3.0-only
+LicenseUrl: https://github.com/mpiton/vortex/blob/main/LICENSE
+ShortDescription: Open-source download manager
+Description: >
+  Vortex is an open-source desktop download manager built with Tauri 2.
+  It supports segmented downloads, a plugin system (WASM), clipboard monitoring,
+  and a range of archive formats.
+Tags:
+  - download
+  - manager
+  - network
+  - media
+Installers:
+  - Architecture: x64
+    InstallerType: msi
+    InstallerUrl: TODO  # e.g. https://github.com/mpiton/vortex/releases/download/v1.0.0/Vortex_1.0.0_x64_en-US.msi
+    InstallerSha256: TODO  # sha256 of the .msi file
+ManifestType: singleton
+ManifestVersion: 1.6.0

@@ -1,3 +1,4 @@
+import './i18n/i18n';
 import { BrowserRouter, Routes, Route, Navigate } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { AppLayout } from "@/layouts/AppLayout";

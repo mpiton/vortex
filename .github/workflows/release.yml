@@ -1,0 +1,308 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+*'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  create-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      release_id: ${{ steps.create_release.outputs.id }}
+      upload_url: ${{ steps.create_release.outputs.upload_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract version and changelog
+        id: meta
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          VERSION="${TAG_NAME#v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          BODY=$(sed -n "/^## \[$VERSION\]/,/^## \[/{ /^## \[$VERSION\]/d; /^## \[/d; p }" CHANGELOG.md)
+          if [ -z "$BODY" ]; then
+            BODY="Release $VERSION"
+          fi
+          {
+            echo "body<<EOF"
+            echo "$BODY"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        id: create_release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Vortex ${{ github.ref_name }}
+          body: ${{ steps.meta.outputs.body }}
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  build-tauri-linux:
+    name: Build (Linux)
+    needs: create-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            libssl-dev \
+            libappindicator3-dev \
+            librsvg2-dev
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Build Tauri app
+        run: npx tauri build
+
+      - name: Upload .deb to release
+        uses: softprops/action-gh-release@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          files: src-tauri/target/release/bundle/deb/*.deb
+
+      - name: Upload .rpm to release
+        uses: softprops/action-gh-release@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          files: src-tauri/target/release/bundle/rpm/*.rpm
+
+  build-tauri-macos:
+    name: Build (macOS)
+    needs: create-release
+    runs-on: macos-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Import code signing certificate
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_KEYCHAIN_PASSWD: ${{ secrets.MACOS_KEYCHAIN_PASSWD }}
+          MACOS_CERTIFICATE_PASSWD: ${{ secrets.MACOS_CERTIFICATE_PASSWD }}
+        run: |
+          echo "$MACOS_CERTIFICATE" | base64 --decode > certificate.p12
+          security create-keychain -p "$MACOS_KEYCHAIN_PASSWD" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "$MACOS_KEYCHAIN_PASSWD" build.keychain
+          security import certificate.p12 \
+            -k build.keychain \
+            -P "$MACOS_CERTIFICATE_PASSWD" \
+            -T /usr/bin/codesign
+          security set-key-partition-list \
+            -S apple-tool:,apple: \
+            -s -k "$MACOS_KEYCHAIN_PASSWD" build.keychain
+          rm certificate.p12
+
+      - name: Build Tauri app
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: npx tauri build
+
+      - name: Notarize .dmg
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          DMG=$(find src-tauri/target/release/bundle/dmg -name '*.dmg' | head -1)
+          xcrun notarytool submit "$DMG" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_ID_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait
+          xcrun stapler staple "$DMG"
+
+      - name: Upload .dmg to release
+        uses: softprops/action-gh-release@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          files: src-tauri/target/release/bundle/dmg/*.dmg
+
+  build-tauri-windows:
+    name: Build (Windows)
+    needs: create-release
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Import signing certificate
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+        run: |
+          $cert = [System.Convert]::FromBase64String("$env:WINDOWS_CERTIFICATE")
+          [System.IO.File]::WriteAllBytes("certificate.p12", $cert)
+
+      - name: Build Tauri app
+        env:
+          WINDOWS_CERTIFICATE_FILE: certificate.p12
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWD }}
+          WINDOWS_SIGNING_THUMBPRINT: ${{ secrets.WINDOWS_SIGNING_THUMBPRINT }}
+        run: npx tauri build
+
+      - name: Clean up certificate
+        if: always()
+        run: Remove-Item -Path certificate.p12 -ErrorAction SilentlyContinue
+
+      - name: Upload .msi to release
+        uses: softprops/action-gh-release@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          files: src-tauri/target/release/bundle/msi/*.msi
+
+  publish-flatpak:
+    name: Publish Flatpak
+    needs: create-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Flatpak tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y flatpak flatpak-builder
+          flatpak remote-add --if-not-exists --user flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+
+      - name: Build Flatpak bundle
+        run: |
+          flatpak-builder --force-clean --user --install-deps-from=flathub \
+            _flatpak_build contrib/flatpak/org.vortex.Vortex.yml
+          flatpak build-bundle \
+            ~/.local/share/flatpak/repo \
+            vortex.flatpak \
+            org.vortex.Vortex
+
+      - name: Upload .flatpak to release
+        uses: softprops/action-gh-release@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          files: vortex.flatpak
+
+  update-updater:
+    name: Update updater manifest
+    needs: [build-tauri-linux, build-tauri-macos, build-tauri-windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download signature files from release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          mkdir -p sigs
+          gh release download "$TAG_NAME" --pattern '*.sig' --dir sigs || true
+
+      - name: Generate latest.json
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          VERSION="${TAG_NAME#v}"
+          PUB_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          NOTES=$(sed -n "/^## \[$VERSION\]/,/^## \[/{ /^## \[$VERSION\]/d; /^## \[/d; p }" CHANGELOG.md | head -20)
+          REPO="https://github.com/mpiton/vortex"
+
+          # Read signatures from .sig files uploaded by tauri build
+          LINUX_SIG=$(cat sigs/*amd64*.sig 2>/dev/null || echo "")
+          MACOS_SIG=$(cat sigs/*x64*.dmg.sig 2>/dev/null || echo "")
+          MACOS_ARM_SIG=$(cat sigs/*aarch64*.dmg.sig 2>/dev/null || echo "")
+          WINDOWS_SIG=$(cat sigs/*x64*.msi.sig 2>/dev/null || echo "")
+
+          cat > latest.json <<EOF
+          {
+            "version": "$VERSION",
+            "notes": $(echo "$NOTES" | python3 -c "import sys, json; print(json.dumps(sys.stdin.read().strip()))"),
+            "pub_date": "$PUB_DATE",
+            "platforms": {
+              "linux-x86_64": {
+                "url": "$REPO/releases/download/$TAG_NAME/vortex_${VERSION}_amd64.deb",
+                "signature": "$LINUX_SIG"
+              },
+              "darwin-x86_64": {
+                "url": "$REPO/releases/download/$TAG_NAME/Vortex_${VERSION}_x64.dmg",
+                "signature": "$MACOS_SIG"
+              },
+              "darwin-aarch64": {
+                "url": "$REPO/releases/download/$TAG_NAME/Vortex_${VERSION}_aarch64.dmg",
+                "signature": "$MACOS_ARM_SIG"
+              },
+              "windows-x86_64": {
+                "url": "$REPO/releases/download/$TAG_NAME/Vortex_${VERSION}_x64_en-US.msi",
+                "signature": "$WINDOWS_SIG"
+              }
+            }
+          }
+          EOF
+
+      - name: Upload latest.json to release
+        uses: softprops/action-gh-release@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          files: latest.json

@@ -1,0 +1,138 @@
+{
+  "nav": {
+    "downloads": "Téléchargements",
+    "linkGrabber": "Capteur de liens",
+    "packages": "Paquets",
+    "accounts": "Comptes",
+    "captcha": "Captcha",
+    "plugins": "Plugins",
+    "scheduler": "Planificateur",
+    "history": "Historique",
+    "statistics": "Statistiques",
+    "settings": "Paramètres"
+  },
+  "settings": {
+    "tabs": {
+      "general": "Général",
+      "downloads": "Téléchargements",
+      "network": "Réseau",
+      "remote": "Accès distant",
+      "browser": "Navigateur",
+      "appearance": "Apparence"
+    },
+    "general": {
+      "title": "Général",
+      "description": "Paramètres de base de l'application",
+      "downloadDir": "Dossier de téléchargement",
+      "downloadDirPlaceholder": "Dossier de téléchargement par défaut",
+      "browse": "Parcourir",
+      "startMinimized": "Démarrer minimisé",
+      "startMinimizedDesc": "Démarrer l'application minimisée dans la barre des tâches",
+      "notifications": "Notifications",
+      "notificationsDesc": "Afficher les notifications bureau pour les téléchargements terminés",
+      "autoExtract": "Extraction automatique",
+      "autoExtractDesc": "Extraire automatiquement les archives après téléchargement",
+      "clipboardMonitoring": "Surveillance du presse-papiers",
+      "clipboardMonitoringDesc": "Surveiller le presse-papiers pour les liens téléchargeables",
+      "soundEffects": "Effets sonores",
+      "soundEffectsDesc": "Jouer des sons lors des événements de téléchargement",
+      "confirmDelete": "Confirmer avant suppression",
+      "confirmDeleteDesc": "Demander confirmation avant de supprimer des téléchargements",
+      "subfolderPerPackage": "Sous-dossier par paquet",
+      "subfolderPerPackageDesc": "Créer un dossier séparé pour chaque paquet de téléchargement"
+    },
+    "downloads": {
+      "title": "Téléchargements",
+      "description": "Configuration du moteur de téléchargement",
+      "maxConcurrent": "Téléchargements simultanés max",
+      "maxSegments": "Segments max par téléchargement",
+      "maxSegmentsDesc": "Nombre de connexions parallèles par fichier",
+      "speedLimit": "Limite de vitesse (Mio/s)",
+      "speedLimitDesc": "0 = illimité",
+      "maxRetries": "Tentatives max",
+      "retryDelay": "Délai de tentative (secondes)",
+      "verifyChecksums": "Vérifier les sommes de contrôle",
+      "verifyChecksumsDesc": "Vérifier l'intégrité du fichier après téléchargement",
+      "preAllocate": "Pré-allouer l'espace",
+      "preAllocateDesc": "Réserver l'espace disque avant le téléchargement"
+    },
+    "network": {
+      "title": "Réseau",
+      "description": "Paramètres de proxy et de connexion",
+      "proxyType": "Type de proxy",
+      "proxyNone": "Aucun",
+      "proxyHttp": "HTTP",
+      "proxySocks5": "SOCKS5",
+      "proxyUrl": "URL du proxy",
+      "userAgent": "Agent utilisateur",
+      "dnsOverHttps": "DNS sur HTTPS",
+      "dnsOverHttpsDesc": "Utiliser des requêtes DNS chiffrées",
+      "connectionTimeout": "Délai de connexion (secondes)"
+    },
+    "remote": {
+      "title": "Accès distant",
+      "description": "Configuration de l'interface web et de l'API",
+      "warning": "L'activation de l'accès distant expose votre gestionnaire de téléchargements au réseau. Utilisez une clé API robuste et limitez l'accès aux réseaux de confiance.",
+      "webInterface": "Interface web",
+      "webInterfaceDesc": "Activer le panneau de contrôle basé sur navigateur",
+      "webInterfacePort": "Port de l'interface web",
+      "restApi": "API REST",
+      "restApiDesc": "Activer l'API REST HTTP pour les intégrations tierces",
+      "websocket": "WebSocket",
+      "websocketDesc": "Activer les événements WebSocket en temps réel",
+      "apiKey": "Clé API",
+      "showApiKey": "Afficher la clé API",
+      "hideApiKey": "Masquer la clé API",
+      "copyApiKey": "Copier la clé API",
+      "regenerateApiKey": "Régénérer la clé API"
+    },
+    "browser": {
+      "title": "Intégration navigateur",
+      "description": "Paramètres de capture de l'extension navigateur",
+      "minFileSize": "Taille minimale de fichier (Mo)",
+      "minFileSizeDesc": "Ne capturer que les fichiers plus grands que ça",
+      "excludedDomains": "Domaines exclus",
+      "excludedDomainsDesc": "Liste de domaines à ignorer, séparés par des virgules",
+      "excludedExtensions": "Extensions exclues",
+      "excludedExtensionsDesc": "Liste d'extensions de fichiers à ignorer, séparées par des virgules"
+    },
+    "appearance": {
+      "title": "Apparence",
+      "description": "Préférences de thème et d'affichage",
+      "theme": "Thème",
+      "themeLight": "Clair",
+      "themeDark": "Sombre",
+      "themeAuto": "Auto",
+      "accentColor": "Couleur d'accentuation",
+      "customHexColor": "Couleur hex personnalisée",
+      "customHexColorPlaceholder": "#RRVVBB",
+      "customHexColorInvalid": "Couleur hex invalide — utilisez #RVB ou #RRVVBB",
+      "colorPreview": "Aperçu de la couleur",
+      "compactMode": "Mode compact",
+      "compactModeDesc": "Réduire les espacements et les tailles de police",
+      "language": "Langue"
+    }
+  },
+  "downloads": {
+    "searchPlaceholder": "Rechercher des téléchargements...",
+    "searchAriaLabel": "Rechercher des téléchargements",
+    "fileInfo": "Informations fichier",
+    "fileName": "Nom",
+    "fileSize": "Taille",
+    "mimeType": "Type MIME",
+    "added": "Ajouté",
+    "destination": "Destination"
+  },
+  "mediaGrabber": {
+    "title": "Options du capteur multimédia",
+    "failedToLoad": "Échec du chargement des métadonnées multimédia",
+    "noMetadata": "Aucune métadonnée disponible pour ce lien",
+    "retry": "Réessayer",
+    "cancel": "Annuler",
+    "download": "Télécharger"
+  },
+  "common": {
+    "retry": "Réessayer",
+    "failedToLoadSettings": "Échec du chargement des paramètres"
+  }
+}

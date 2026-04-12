@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next';
 import { useTauriMutation } from '@/api/hooks';
 import type { AppConfig, AppConfigPatch } from '@/types/settings';
 import { Input } from '@/components/ui/input';
@@ -10,6 +11,7 @@ interface GeneralSectionProps {
 }
 
 export function GeneralSection({ config }: GeneralSectionProps) {
+  const { t } = useTranslation();
   const { mutate } = useTauriMutation<AppConfig, { patch: AppConfigPatch }>('settings_update', {
     invalidateKeys: [['settings_get']],
   });
@@ -21,20 +23,20 @@ export function GeneralSection({ config }: GeneralSectionProps) {
   return (
     <div className="space-y-6">
       <div>
-        <h2 className="text-lg font-semibold">General</h2>
-        <p className="text-sm text-muted-foreground">Basic application settings</p>
+        <h2 className="text-lg font-semibold">{t('settings.general.title')}</h2>
+        <p className="text-sm text-muted-foreground">{t('settings.general.description')}</p>
       </div>
 
       <div className="space-y-1">
-        <p className="text-sm font-medium">Download directory</p>
+        <p className="text-sm font-medium">{t('settings.general.downloadDir')}</p>
         <div className="flex gap-2">
           <Input
             readOnly
             value={config.downloadDir ?? ''}
-            placeholder="Default download directory"
+            placeholder={t('settings.general.downloadDirPlaceholder')}
             className="flex-1"
           />
-          <Button variant="outline" size="icon" aria-label="Browse" disabled>
+          <Button variant="outline" size="icon" aria-label={t('settings.general.browse')} disabled>
             <FolderOpen className="size-4" />
           </Button>
         </div>
@@ -42,44 +44,44 @@ export function GeneralSection({ config }: GeneralSectionProps) {
 
       <div className="space-y-1">
         <SettingToggle
-          label="Start minimized"
-          description="Start the app minimized to the system tray"
+          label={t('settings.general.startMinimized')}
+          description={t('settings.general.startMinimizedDesc')}
           checked={config.startMinimized}
           onCheckedChange={(v) => handleChange('startMinimized', v)}
         />
         <SettingToggle
-          label="Notifications"
-          description="Show desktop notifications for completed downloads"
+          label={t('settings.general.notifications')}
+          description={t('settings.general.notificationsDesc')}
           checked={config.notificationsEnabled}
           onCheckedChange={(v) => handleChange('notificationsEnabled', v)}
         />
         <SettingToggle
-          label="Auto extract"
-          description="Automatically extract archives after download"
+          label={t('settings.general.autoExtract')}
+          description={t('settings.general.autoExtractDesc')}
           checked={config.autoExtract}
           onCheckedChange={(v) => handleChange('autoExtract', v)}
         />
         <SettingToggle
-          label="Clipboard monitoring"
-          description="Watch clipboard for downloadable links"
+          label={t('settings.general.clipboardMonitoring')}
+          description={t('settings.general.clipboardMonitoringDesc')}
           checked={config.clipboardMonitoring}
           onCheckedChange={(v) => handleChange('clipboardMonitoring', v)}
         />
         <SettingToggle
-          label="Sound effects"
-          description="Play sounds on download events"
+          label={t('settings.general.soundEffects')}
+          description={t('settings.general.soundEffectsDesc')}
           checked={config.soundEnabled}
           onCheckedChange={(v) => handleChange('soundEnabled', v)}
         />
         <SettingToggle
-          label="Confirm before delete"
-          description="Ask for confirmation before deleting downloads"
+          label={t('settings.general.confirmDelete')}
+          description={t('settings.general.confirmDeleteDesc')}
           checked={config.confirmDelete}
           onCheckedChange={(v) => handleChange('confirmDelete', v)}
         />
         <SettingToggle
-          label="Subfolder per package"
-          description="Create a separate folder for each download package"
+          label={t('settings.general.subfolderPerPackage')}
+          description={t('settings.general.subfolderPerPackageDesc')}
           checked={config.subfolderPerPackage}
           onCheckedChange={(v) => handleChange('subfolderPerPackage', v)}
         />

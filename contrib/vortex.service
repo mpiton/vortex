@@ -1,0 +1,15 @@
+[Unit]
+Description=Vortex Download Manager
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/vortex
+Restart=on-failure
+RestartSec=5s
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=vortex
+
+[Install]
+WantedBy=graphical-session.target

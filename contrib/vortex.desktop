@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Vortex
+GenericName=Download Manager
+Comment=Open-source download manager
+Exec=vortex %U
+Icon=vortex
+Categories=Utility;Network;FileTransfer;
+Keywords=download;media;manager;
+MimeType=text/uri-list;x-scheme-handler/magnet;
+StartupNotify=true
+Terminal=false
