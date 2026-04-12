@@ -2,6 +2,7 @@
 
 pub mod clipboard;
 pub mod config;
+pub mod credential;
 pub mod event;
 pub mod extractor;
 pub mod filesystem;
@@ -9,4 +10,5 @@ pub mod network;
 pub mod notification;
 pub mod plugin;
 pub mod sqlite;
+pub mod stats;
 pub mod tray;
