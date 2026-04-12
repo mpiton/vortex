@@ -20,6 +20,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Verify updater pubkey is configured
+        run: |
+          if grep -q 'REPLACE_BEFORE_FIRST_RELEASE' src-tauri/tauri.conf.json; then
+            echo "ERROR: Updater pubkey is still a placeholder."
+            echo "Run 'npx tauri signer generate' and update src-tauri/tauri.conf.json"
+            exit 1
+          fi
+
       - name: Extract version and changelog
         id: meta
         env:
@@ -81,6 +89,9 @@ jobs:
           workspaces: src-tauri
 
       - name: Build Tauri app
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_KEY_PASSWORD: ${{ secrets.TAURI_KEY_PASSWORD }}
         run: npx tauri build
 
       - name: Upload .deb to release
@@ -94,6 +105,12 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           files: src-tauri/target/release/bundle/rpm/*.rpm
+
+      - name: Upload .sig files to release
+        uses: softprops/action-gh-release@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          files: src-tauri/target/release/bundle/**/*.sig
 
   build-tauri-macos:
     name: Build (macOS)
@@ -144,6 +161,8 @@ jobs:
           APPLE_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_KEY_PASSWORD: ${{ secrets.TAURI_KEY_PASSWORD }}
         run: npx tauri build --target universal-apple-darwin
 
       - name: Notarize .dmg
@@ -165,6 +184,12 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           files: src-tauri/target/release/bundle/dmg/*.dmg
+
+      - name: Upload .sig files to release
+        uses: softprops/action-gh-release@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          files: src-tauri/target/release/bundle/**/*.sig
 
   build-tauri-windows:
     name: Build (Windows)
@@ -201,6 +226,8 @@ jobs:
           WINDOWS_CERTIFICATE_FILE: certificate.p12
           WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWD }}
           WINDOWS_SIGNING_THUMBPRINT: ${{ secrets.WINDOWS_SIGNING_THUMBPRINT }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_KEY_PASSWORD: ${{ secrets.TAURI_KEY_PASSWORD }}
         run: npx tauri build
 
       - name: Clean up certificate
@@ -212,6 +239,12 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           files: src-tauri/target/release/bundle/msi/*.msi
+
+      - name: Upload .sig files to release
+        uses: softprops/action-gh-release@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          files: src-tauri/target/release/bundle/**/*.sig
 
   publish-flatpak:
     name: Publish Flatpak

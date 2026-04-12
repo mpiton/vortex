@@ -22,9 +22,12 @@ export function useLanguage(): UseLanguageReturn {
   };
 
   const base = i18n.language.split('-')[0] || i18n.language;
+  const current: Language = (AVAILABLE_LANGUAGES as readonly string[]).includes(base)
+    ? (base as Language)
+    : 'en';
 
   return {
-    current: base as Language,
+    current,
     setLanguage,
     availableLanguages: AVAILABLE_LANGUAGES,
   };
