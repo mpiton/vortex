@@ -37,6 +37,14 @@ impl SevenZHandler {
         let mut extracted_bytes = 0u64;
         let mut warnings = Vec::new();
 
+        // Reject if dest_dir itself is a symlink
+        if dest_dir.is_symlink() {
+            return Err(DomainError::StorageError(format!(
+                "destination is a symlink: {}",
+                dest_dir.display()
+            )));
+        }
+
         // Ensure destination directory exists
         fs::create_dir_all(dest_dir)
             .map_err(|e| DomainError::StorageError(format!("failed to create dest dir: {}", e)))?;

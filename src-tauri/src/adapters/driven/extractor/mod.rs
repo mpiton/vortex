@@ -253,14 +253,9 @@ fn find_archives_in_dir(dir: &Path) -> Result<Vec<PathBuf>, DomainError> {
             .map_err(|e| DomainError::StorageError(format!("failed to read dir entry: {}", e)))?;
 
         let path = entry.path();
-        if path.is_file() {
-            if let Ok(Some(_)) = detector::detect_format(&path) {
-                archives.push(path);
-            }
-        } else if path.is_dir() {
-            // Recurse into subdirectories
-            let sub_archives = find_archives_in_dir(&path)?;
-            archives.extend(sub_archives);
+        // Only scan immediate files — recursive depth is managed by extract_recursive
+        if path.is_file() && detector::detect_format(&path).is_ok_and(|f| f.is_some()) {
+            archives.push(path);
         }
     }
 

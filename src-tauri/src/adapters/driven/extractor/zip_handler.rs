@@ -86,8 +86,8 @@ impl ZipHandler {
 
             let target_path = dest_dir.join(enclosed);
 
-            // Check for symlinked ancestors before creating parent directories or files
-            if reject_symlinked_ancestors(dest_dir, &target_path) {
+            // Reject symlinks: ancestors AND target itself
+            if reject_symlinked_ancestors(dest_dir, &target_path) || target_path.is_symlink() {
                 warn!(
                     "skipping entry with symlinked ancestor: {}",
                     target_path.display()

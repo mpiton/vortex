@@ -168,29 +168,33 @@ fn detect_rar_legacy(
         .parent()
         .ok_or_else(|| DomainError::StorageError("No parent directory".to_string()))?;
 
-    // Check for .r00, .r01 pattern
-    if let Some(base_name) = file_name.strip_suffix(".rar") {
-        let re = Regex::new(&format!(r"^{}\.(r\d+)$", regex::escape(base_name)))
+    // Derive base_name from .rar suffix or .rNN suffix
+    let base_name = if let Some(base) = file_name.strip_suffix(".rar") {
+        base
+    } else {
+        // Strip .rNN suffix (e.g., "archive.r00" → "archive")
+        let re_rnn = Regex::new(r"^(.+)\.r\d+$")
             .map_err(|e| DomainError::StorageError(format!("Regex error: {}", e)))?;
-
-        let mut parts = Vec::new();
-        scan_directory(parent, &mut parts, |name| re.is_match(name))?;
-
-        if !parts.is_empty() {
-            sort_parts_numerically(&mut parts);
-            parts.insert(0, file_path.to_path_buf());
-            return Ok(Some(parts));
+        match re_rnn.captures(file_name) {
+            Some(caps) => caps.get(1).map_or("", |m| m.as_str()),
+            None => return Ok(None),
         }
+    };
 
-        // Check if there are any .r00/.r01 style parts
-        if has_rar_parts(parent, base_name)? {
-            let mut all_parts = vec![file_path.to_path_buf()];
-            let re_parts = Regex::new(&format!(r"^{}\.(r\d+)$", regex::escape(base_name)))
-                .map_err(|e| DomainError::StorageError(format!("Regex error: {}", e)))?;
-            scan_directory(parent, &mut all_parts, |name| re_parts.is_match(name))?;
-            sort_parts_numerically(&mut all_parts);
-            return Ok(Some(all_parts));
-        }
+    if base_name.is_empty() {
+        return Ok(None);
+    }
+
+    // Collect .rar + all .rNN parts
+    let re = Regex::new(&format!(r"^{}\.(?:rar|r\d+)$", regex::escape(base_name)))
+        .map_err(|e| DomainError::StorageError(format!("Regex error: {}", e)))?;
+
+    let mut parts = Vec::new();
+    scan_directory(parent, &mut parts, |name| re.is_match(name))?;
+
+    if parts.len() > 1 {
+        sort_parts_numerically(&mut parts);
+        return Ok(Some(parts));
     }
 
     Ok(None)
@@ -241,11 +245,6 @@ fn detect_zip(file_path: &Path, file_name: &str) -> Result<Option<Vec<PathBuf>>,
 
         if !parts.is_empty() {
             sort_parts_numerically(&mut parts);
-            // Add the terminal .zip file (comes last in extraction order)
-            let zip_path = parent.join(format!("{}.zip", base_name));
-            if zip_path.exists() {
-                parts.push(zip_path);
-            }
             return Ok(Some(parts));
         }
     }
