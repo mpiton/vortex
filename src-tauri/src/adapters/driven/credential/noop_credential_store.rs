@@ -24,11 +24,19 @@ impl CredentialStore for NoopCredentialStore {
         Ok(None)
     }
 
-    fn store(&self, _service: &str, _credential: &Credential) -> Result<(), DomainError> {
+    fn store(&self, service: &str, _credential: &Credential) -> Result<(), DomainError> {
+        tracing::warn!(
+            service,
+            "credential write ignored: keyring store is not yet implemented"
+        );
         Ok(())
     }
 
-    fn delete(&self, _service: &str) -> Result<(), DomainError> {
+    fn delete(&self, service: &str) -> Result<(), DomainError> {
+        tracing::warn!(
+            service,
+            "credential delete ignored: keyring store is not yet implemented"
+        );
         Ok(())
     }
 }

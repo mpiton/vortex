@@ -1,16 +1,21 @@
+use std::path::Path;
+use std::str::FromStr;
+use std::time::Duration;
+
 use sea_orm::SqlxSqliteConnector;
 use sea_orm::sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sea_orm::{ConnectionTrait, DatabaseConnection, Statement};
 use sea_orm_migration::MigratorTrait;
-use std::str::FromStr;
-use std::time::Duration;
 
 use super::migrations::Migrator;
 
-pub async fn establish_connection(db_path: &str) -> Result<DatabaseConnection, sea_orm::DbErr> {
+pub async fn establish_connection(db_path: &Path) -> Result<DatabaseConnection, sea_orm::DbErr> {
+    let db_str = db_path
+        .to_str()
+        .ok_or_else(|| sea_orm::DbErr::Custom("database path is not valid UTF-8".to_string()))?;
     // Per-connection PRAGMA via SqliteConnectOptions ensures every pool
     // connection enforces FK constraints, not just the first one.
-    let sqlite_opts = SqliteConnectOptions::from_str(&format!("sqlite://{}?mode=rwc", db_path))
+    let sqlite_opts = SqliteConnectOptions::from_str(&format!("sqlite://{}?mode=rwc", db_str))
         .map_err(|e| sea_orm::DbErr::Conn(sea_orm::RuntimeErr::Internal(e.to_string())))?
         .pragma("foreign_keys", "ON");
 
@@ -93,9 +98,7 @@ mod tests {
         let db_path = dir.join("test.db");
         let _ = std::fs::remove_file(&db_path);
 
-        let db = establish_connection(db_path.to_str().unwrap())
-            .await
-            .unwrap();
+        let db = establish_connection(&db_path).await.unwrap();
 
         let result = db
             .query_one(Statement::from_string(

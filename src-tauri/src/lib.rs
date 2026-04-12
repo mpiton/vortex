@@ -82,13 +82,9 @@ pub fn run() {
             // event bus subscribers).
             let (db, rt_handle) = tauri::async_runtime::block_on(async {
                 let handle = tokio::runtime::Handle::current();
-                let db = connection::establish_connection(
-                    db_path
-                        .to_str()
-                        .ok_or_else(|| "non-UTF-8 database path".to_string())?,
-                )
-                .await
-                .map_err(|e| e.to_string())?;
+                let db = connection::establish_connection(&db_path)
+                    .await
+                    .map_err(|e| e.to_string())?;
                 connection::run_migrations(&db)
                     .await
                     .map_err(|e| e.to_string())?;
@@ -107,6 +103,7 @@ pub fn run() {
             let http_client: Arc<dyn HttpClient> =
                 Arc::new(ReqwestHttpClient::with_client(reqwest_client.clone()));
             let config_store: Arc<dyn ConfigStore> = Arc::new(TomlConfigStore::new(config_path));
+            // TODO: replace with keyring-rs CredentialStore once implemented
             let credential_store: Arc<dyn CredentialStore> = Arc::new(NoopCredentialStore);
             let clipboard_observer: Arc<dyn ClipboardObserver> =
                 Arc::new(TauriClipboardObserver::new(app_handle.clone()));
@@ -138,6 +135,15 @@ pub fn run() {
                 file_storage.clone(),
                 event_bus.clone(),
                 4,
+            ));
+
+            // ── Queue manager ──────────────────────────────────────
+            // Listens to domain events and auto-schedules queued downloads.
+            let queue_manager = Arc::new(QueueManager::new(
+                download_repo.clone(),
+                download_engine.clone(),
+                event_bus.clone(),
+                4, // TODO: read max_concurrent from config
             ));
 
             // ── CQRS buses ──────────────────────────────────────────
@@ -176,6 +182,10 @@ pub fn run() {
             // ── Event bridges (domain events → frontend + desktop) ──
             spawn_tauri_event_bridge(app_handle.clone(), event_bus.as_ref());
             spawn_notification_bridge(app_handle, event_bus.as_ref());
+
+            // ── Queue manager event listener ────────────────────────
+            queue_manager.clone().start_listening();
+            app.manage(queue_manager);
 
             // ── Plugin hot-reload watcher ────────────────────────────
             // Kept alive by moving into a managed resource; dropped on app exit.

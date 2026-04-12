@@ -97,9 +97,11 @@ fn test_appstate_wiring_with_in_memory_db() {
         archive_extractor,
     ));
 
-    // Verify buses are accessible
-    assert!(Arc::strong_count(&command_bus) >= 1);
-    assert!(Arc::strong_count(&query_bus) >= 1);
+    // Verify command bus is wired (exercise a read through it)
+    let _config = command_bus
+        .config_store()
+        .get_config()
+        .expect("config load");
 
     // Verify query bus can execute a read query (empty DB → empty results)
     let downloads = query_bus

@@ -76,7 +76,8 @@ impl StatsRepository for InMemoryStatsRepository {
             total_files: accumulator.total_files,
             avg_speed,
             peak_speed: accumulator.peak_speed,
-            success_rate: 100.0,
+            // TODO: track failures to compute a real 0.0–1.0 fraction
+            success_rate: 0.0,
             daily_volumes: vec![],
             top_hosts: vec![],
         })
