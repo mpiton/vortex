@@ -1,0 +1,21 @@
+[plugin]
+name = "vortex-mod-vimeo"
+version = "1.0.0"
+category = "crawler"
+author = "vortex-community"
+description = "Vimeo public/private videos with quality selection"
+license = "GPL-3.0"
+min_vortex_version = "0.1.0"
+
+[capabilities]
+# Vimeo parsing needs oEmbed JSON plus the public player config JSON.
+# Both are fetched via the host `http_request` host function.
+http = true
+
+[config]
+# `default_quality` is honoured by `get_media_variants`: the variant
+# whose height is closest to (but not exceeding) the preference is
+# hoisted to the head of the returned list, becoming the default
+# selection in the host UI.
+default_quality = { type = "string", default = "720p", options = ["360p", "480p", "720p", "1080p", "2K", "4K"] }
+extract_audio_only = { type = "boolean", default = false }

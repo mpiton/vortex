@@ -1,0 +1,23 @@
+[plugin]
+name = "vortex-mod-soundcloud"
+version = "1.0.0"
+category = "crawler"
+author = "vortex-community"
+description = "SoundCloud tracks, playlists, and artist profiles"
+license = "GPL-3.0"
+min_vortex_version = "0.1.0"
+
+[capabilities]
+# SoundCloud uses the public resolve API over HTTPS. The plugin delegates
+# all network access to the host via `http_request`, so it never touches
+# sockets directly — all SSRF/egress rules are enforced host-side.
+http = true
+
+# NOTE: Forward-compatible config documentation. The current manifest
+# parser only consumes `[plugin]` and `[capabilities]`. Values below
+# describe the contract this plugin expects the settings UI to expose
+# when manifest schema support lands.
+[config]
+preferred_format = { type = "string", default = "mp3", options = ["mp3", "ogg", "wav"] }
+quality = { type = "string", default = "high", options = ["low", "medium", "high"] }
+client_id = { type = "string", default = "", description = "SoundCloud API client_id — required; the plugin does not auto-discover it. Requests fail with 401/403 until a valid value is provided." }
