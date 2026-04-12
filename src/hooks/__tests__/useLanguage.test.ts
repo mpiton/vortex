@@ -31,7 +31,7 @@ describe('useLanguage', () => {
     const { result } = renderHook(() => useLanguage());
 
     await act(async () => {
-      result.current.setLanguage('fr');
+      await result.current.setLanguage('fr');
     });
 
     expect(mockUpdateConfig).toHaveBeenCalledWith({ locale: 'fr' });
@@ -41,7 +41,7 @@ describe('useLanguage', () => {
     const { result } = renderHook(() => useLanguage());
 
     await act(async () => {
-      result.current.setLanguage('en');
+      await result.current.setLanguage('en');
     });
 
     expect(mockUpdateConfig).toHaveBeenCalledWith({ locale: 'en' });

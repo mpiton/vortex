@@ -42,7 +42,7 @@ modules:
       - npm ci --offline
       - npm run build
       - cargo build --release --manifest-path src-tauri/Cargo.toml
-      - install -Dm755 src-tauri/target/release/vortex /app/bin/vortex
+      - install -Dm755 /run/build/vortex/cargo-target/release/vortex /app/bin/vortex
       - install -Dm644 contrib/vortex.desktop /app/share/applications/org.vortex.Vortex.desktop
       - install -Dm644 src-tauri/icons/128x128.png /app/share/icons/hicolor/128x128/apps/org.vortex.Vortex.png
       - install -Dm644 src-tauri/icons/32x32.png /app/share/icons/hicolor/32x32/apps/org.vortex.Vortex.png

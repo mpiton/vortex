@@ -64,7 +64,7 @@ export function NetworkSection({ config }: NetworkSectionProps) {
             <p className="text-sm font-medium">{t('settings.network.proxyUrl')}</p>
             <Input
               value={proxyUrlDraft}
-              placeholder="http://proxy:8080"
+              placeholder={t('settings.network.proxyUrlPlaceholder')}
               onChange={(e) => setProxyUrlDraft(e.target.value)}
               onBlur={() => handleChange('proxyUrl', proxyUrlDraft || null)}
             />

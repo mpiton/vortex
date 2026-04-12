@@ -14,6 +14,16 @@ function getAllKeys(obj: NestedRecord, prefix = ''): string[] {
   });
 }
 
+function getAllEntries(obj: NestedRecord, prefix = ''): [string, string][] {
+  return Object.entries(obj).flatMap(([key, value]) => {
+    const fullKey = prefix ? `${prefix}.${key}` : key;
+    if (typeof value === 'object' && value !== null) {
+      return getAllEntries(value as NestedRecord, fullKey);
+    }
+    return [[fullKey, value as string]] as [string, string][];
+  });
+}
+
 describe('i18n translation files', () => {
   it('should have all English keys present in French', () => {
     const enKeys = getAllKeys(en as NestedRecord);
@@ -32,13 +42,21 @@ describe('i18n translation files', () => {
   });
 
   it('should have non-empty values for all English keys', () => {
-    const enKeys = getAllKeys(en as NestedRecord);
-    expect(enKeys.length).toBeGreaterThan(0);
+    const entries = getAllEntries(en as NestedRecord);
+    expect(entries.length).toBeGreaterThan(0);
+    for (const [key, value] of entries) {
+      expect(value, `English key "${key}" should be a non-empty string`).not.toBe('');
+      expect(typeof value, `English key "${key}" should be a string`).toBe('string');
+    }
   });
 
   it('should have non-empty values for all French keys', () => {
-    const frKeys = getAllKeys(fr as NestedRecord);
-    expect(frKeys.length).toBeGreaterThan(0);
+    const entries = getAllEntries(fr as NestedRecord);
+    expect(entries.length).toBeGreaterThan(0);
+    for (const [key, value] of entries) {
+      expect(value, `French key "${key}" should be a non-empty string`).not.toBe('');
+      expect(typeof value, `French key "${key}" should be a string`).toBe('string');
+    }
   });
 
   it('should have nav keys for all 10 routes', () => {

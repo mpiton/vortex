@@ -17,11 +17,19 @@ export function useAppEffects() {
     } else {
       document.body.classList.remove('compact-mode');
     }
+
+    return () => {
+      document.body.classList.remove('compact-mode');
+    };
   }, [config]);
 
   useEffect(() => {
     if (config === null) return;
 
     document.documentElement.style.setProperty('--color-accent', config.accentColor);
+
+    return () => {
+      document.documentElement.style.removeProperty('--color-accent');
+    };
   }, [config]);
 }

@@ -64,6 +64,7 @@
       "proxyHttp": "HTTP",
       "proxySocks5": "SOCKS5",
       "proxyUrl": "Proxy URL",
+      "proxyUrlPlaceholder": "http://proxy:8080",
       "userAgent": "User agent",
       "dnsOverHttps": "DNS over HTTPS",
       "dnsOverHttpsDesc": "Use encrypted DNS queries",

@@ -1,11 +1,13 @@
 import { useTranslation } from 'react-i18next';
 import { useSettingsStore } from '@/stores/settingsStore';
 
+// MVP: Only en/fr have translation files. Backend also accepts de, es, ja, zh.
+// Expand this list and add locale JSON files when adding new translations.
 const AVAILABLE_LANGUAGES = ['en', 'fr'] as const;
 export type Language = (typeof AVAILABLE_LANGUAGES)[number];
 
 interface UseLanguageReturn {
-  current: string;
+  current: Language;
   setLanguage: (lang: Language) => void;
   availableLanguages: readonly Language[];
 }
@@ -19,8 +21,10 @@ export function useLanguage(): UseLanguageReturn {
     updateConfig({ locale: lang });
   };
 
+  const base = i18n.language.split('-')[0] || i18n.language;
+
   return {
-    current: i18n.language,
+    current: base as Language,
     setLanguage,
     availableLanguages: AVAILABLE_LANGUAGES,
   };

@@ -114,7 +114,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-apple-darwin
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -144,7 +144,7 @@ jobs:
           APPLE_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-        run: npx tauri build
+        run: npx tauri build --target universal-apple-darwin
 
       - name: Notarize .dmg
         env:
@@ -230,12 +230,10 @@ jobs:
 
       - name: Build Flatpak bundle
         run: |
-          flatpak-builder --force-clean --user --install-deps-from=flathub \
+          mkdir -p _repo
+          flatpak-builder --force-clean --repo=_repo --user --install-deps-from=flathub \
             _flatpak_build contrib/flatpak/org.vortex.Vortex.yml
-          flatpak build-bundle \
-            ~/.local/share/flatpak/repo \
-            vortex.flatpak \
-            org.vortex.Vortex
+          flatpak build-bundle _repo vortex.flatpak org.vortex.Vortex
 
       - name: Upload .flatpak to release
         uses: softprops/action-gh-release@v2
@@ -274,6 +272,15 @@ jobs:
           MACOS_SIG=$(cat sigs/*x64*.dmg.sig 2>/dev/null || echo "")
           MACOS_ARM_SIG=$(cat sigs/*aarch64*.dmg.sig 2>/dev/null || echo "")
           WINDOWS_SIG=$(cat sigs/*x64*.msi.sig 2>/dev/null || echo "")
+
+          # Validate signatures
+          for sig_name in LINUX_SIG MACOS_SIG MACOS_ARM_SIG WINDOWS_SIG; do
+            eval "val=\$$sig_name"
+            if [ -z "$val" ]; then
+              echo "ERROR: Missing signature: $sig_name"
+              exit 1
+            fi
+          done
 
           cat > latest.json <<EOF
           {

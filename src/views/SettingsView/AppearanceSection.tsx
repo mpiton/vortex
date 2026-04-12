@@ -18,10 +18,10 @@ interface AppearanceSectionProps {
   config: AppConfig;
 }
 
-const LOCALES = [
-  { value: 'en', label: 'English' },
-  { value: 'fr', label: 'Français' },
-] as const;
+const LOCALE_LABELS: Record<string, string> = {
+  en: 'English',
+  fr: 'Français',
+};
 
 const HEX_REGEX = /^#([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6})$/;
 
@@ -36,7 +36,7 @@ function normalizeHex(value: string): string {
 
 export function AppearanceSection({ config }: AppearanceSectionProps) {
   const { t } = useTranslation();
-  const { setLanguage } = useLanguage();
+  const { setLanguage, availableLanguages } = useLanguage();
   const { mutate } = useTauriMutation<AppConfig, { patch: AppConfigPatch }>('settings_update', {
     invalidateKeys: [['settings_get']],
   });
@@ -107,7 +107,11 @@ export function AppearanceSection({ config }: AppearanceSectionProps) {
                     : 'border-transparent'
                 }`}
                 style={{ backgroundColor: preset.value }}
-                onClick={() => handleChange('accentColor', preset.value)}
+                onClick={() => {
+                  setHexError(false);
+                  setHexDraft('');
+                  handleChange('accentColor', preset.value);
+                }}
               />
             ))}
           </div>
@@ -155,8 +159,7 @@ export function AppearanceSection({ config }: AppearanceSectionProps) {
           <Select
             value={config.locale}
             onValueChange={(v) => {
-              const supportedLangs = ['en', 'fr'] as const;
-              const lang = supportedLangs.includes(v as Language) ? (v as Language) : 'en';
+              const lang = availableLanguages.includes(v as Language) ? (v as Language) : 'en';
               setLanguage(lang);
             }}
           >
@@ -164,9 +167,9 @@ export function AppearanceSection({ config }: AppearanceSectionProps) {
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              {LOCALES.map((loc) => (
-                <SelectItem key={loc.value} value={loc.value}>
-                  {loc.label}
+              {availableLanguages.map((lang) => (
+                <SelectItem key={lang} value={lang}>
+                  {LOCALE_LABELS[lang] ?? lang}
                 </SelectItem>
               ))}
             </SelectContent>

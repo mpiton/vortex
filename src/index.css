@@ -100,6 +100,7 @@
 
 body.compact-mode {
   --spacing-unit: 0.75;
+
   font-size: 0.875rem;
   line-height: 1.375rem;
 }
