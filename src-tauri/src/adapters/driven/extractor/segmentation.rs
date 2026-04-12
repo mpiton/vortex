@@ -127,18 +127,15 @@ pub fn verify_all_parts_present(parts: &[PathBuf]) -> Result<Vec<PathBuf>, Domai
     });
     let baseline: u32 = if has_zero_part { 0 } else { 1 };
 
-    // Find first numeric part, skipping terminal .rar/.zip entries
-    // (whose digits come from the basename, not a part number)
+    // Find first numbered segment, skipping terminal .rar/.zip entries.
     let first_numeric = parts.iter().find_map(|p| {
         let name = p.file_name()?.to_str()?;
         let ext = Path::new(name).extension()?.to_str()?;
-        // Terminal .rar/.zip without digits in extension → skip
+        // Skip terminal .rar/.zip unless the stem has a part-numbering pattern
         if ext.eq_ignore_ascii_case("rar") || ext.eq_ignore_ascii_case("zip") {
-            // But keep .partNN.rar which has digits BEFORE .rar
             let stem = Path::new(name).file_stem()?.to_str()?;
             let stem_ext = Path::new(stem).extension()?.to_str()?;
-            // If the part before .rar has digits (e.g., "part01"), keep it
-            if !stem_ext.chars().any(|c| c.is_ascii_digit()) {
+            if !is_part_pattern(stem_ext) {
                 return None;
             }
         }
@@ -379,6 +376,20 @@ fn sort_parts_numerically(parts: &mut [PathBuf]) {
         };
         key(a).cmp(&key(b))
     });
+}
+
+/// Check if a string looks like an archive part-numbering pattern.
+///
+/// Matches: "part01", "part1", "001", "01", "1" (pure digits or "part" prefix).
+/// Does NOT match: "game2", "v3", "data" (regular name fragments).
+fn is_part_pattern(s: &str) -> bool {
+    if s.chars().all(|c| c.is_ascii_digit()) && !s.is_empty() {
+        return true;
+    }
+    if let Some(rest) = s.strip_prefix("part") {
+        return !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit());
+    }
+    false
 }
 
 /// Cached regex for digit extraction.
