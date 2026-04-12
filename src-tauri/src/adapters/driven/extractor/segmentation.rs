@@ -6,9 +6,12 @@
 //! - 7z: `name.7z.001`, `name.7z.002`, ...
 //! - ZIP: `name.zip.001`, `name.zip.002`, ... or `name.z01`, `name.z02`, ...
 
-use crate::domain::error::DomainError;
-use regex::Regex;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+
+use regex::Regex;
+
+use crate::domain::error::DomainError;
 
 /// Detects if a file is part of a split archive set.
 ///
@@ -91,11 +94,12 @@ pub fn verify_all_parts_present(parts: &[PathBuf]) -> Result<Vec<PathBuf>, Domai
                 .unwrap_or("");
             let curr_num = extract_part_number(curr_name);
 
-            // Skip continuity check for terminal segments without a part number
-            // (e.g., .rar in legacy sets, .zip in split ZIP sets)
-            if curr_num.is_none()
-                && (curr_ext.eq_ignore_ascii_case("rar") || curr_ext.eq_ignore_ascii_case("zip"))
-            {
+            // Skip continuity check for terminal segments without a numeric part
+            // (e.g., "archive.rar" in legacy sets, "archive.zip" in split ZIP sets)
+            // But NOT for "archive.part01.rar" which has a numeric part.
+            let is_unnumbered_terminal = curr_num.is_none()
+                && (curr_ext.eq_ignore_ascii_case("rar") || curr_ext.eq_ignore_ascii_case("zip"));
+            if is_unnumbered_terminal {
                 continue;
             }
 
@@ -113,14 +117,29 @@ pub fn verify_all_parts_present(parts: &[PathBuf]) -> Result<Vec<PathBuf>, Domai
         }
     }
 
-    // Check if the first part starts at the expected number (0 or 1)
-    if let Some(first) = parts.first()
-        && let Some(first_num) = first
-            .file_name()
+    // Check if the first numeric part starts at the expected baseline.
+    // Determine baseline: 0 for 0-indexed sets (r00, r01, ...), 1 otherwise.
+    let has_zero_part = parts.iter().any(|p| {
+        p.file_name()
             .and_then(|n| n.to_str())
             .and_then(extract_part_number)
-        && first_num > 1
-        && let Some(parent) = first.parent()
+            == Some(0)
+    });
+    let baseline: u32 = if has_zero_part { 0 } else { 1 };
+
+    // Find first numeric part (skip terminal .rar/.zip)
+    let first_numeric = parts.iter().find_map(|p| {
+        let name = p.file_name()?.to_str()?;
+        let ext = Path::new(name).extension()?.to_str()?;
+        if ext.eq_ignore_ascii_case("rar") || ext.eq_ignore_ascii_case("zip") {
+            return None;
+        }
+        extract_part_number(name).map(|n| (p, n))
+    });
+
+    if let Some((part, first_num)) = first_numeric
+        && first_num > baseline
+        && let Some(parent) = part.parent()
     {
         missing.push(parent.join(format!("{:02}", first_num - 1)));
     }
@@ -353,37 +372,21 @@ fn sort_parts_numerically(parts: &mut [PathBuf]) {
     });
 }
 
+/// Cached regex for digit extraction.
+fn digit_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"(\d+)").unwrap())
+}
+
 /// Extract the trailing part number from an archive filename.
 ///
 /// Extracts the *last* digit run to avoid confusion when the
 /// base name itself contains digits (e.g., "game2.part03.rar" → 03).
 fn extract_part_number(file_name: &str) -> Option<u32> {
-    let re = Regex::new(r"(\d+)").ok()?;
-    re.find_iter(file_name)
+    digit_regex()
+        .find_iter(file_name)
         .last()
         .and_then(|m| m.as_str().parse::<u32>().ok())
-}
-
-/// Check if RAR multi-part files exist for the given base name.
-fn has_rar_parts(parent: &Path, base_name: &str) -> Result<bool, DomainError> {
-    let re = Regex::new(&format!(r"^{}\.(r\d+)$", regex::escape(base_name)))
-        .map_err(|e| DomainError::StorageError(format!("Regex error: {}", e)))?;
-
-    for entry in std::fs::read_dir(parent)
-        .map_err(|e| DomainError::StorageError(format!("Failed to read directory: {}", e)))?
-    {
-        let entry = entry.map_err(|e| {
-            DomainError::StorageError(format!("Failed to read directory entry: {}", e))
-        })?;
-
-        if let Some(file_name) = entry.path().file_name().and_then(|n| n.to_str())
-            && re.is_match(file_name)
-        {
-            return Ok(true);
-        }
-    }
-
-    Ok(false)
 }
 
 #[cfg(test)]
@@ -537,5 +540,84 @@ mod tests {
             parts[2].file_name().unwrap().to_str().unwrap(),
             "archive.part10.rar"
         );
+    }
+
+    #[test]
+    fn test_detect_legacy_rar_segments() {
+        let temp_dir = TempDir::new().unwrap();
+        let base = temp_dir.path();
+
+        // Create legacy RAR files: archive.rar, archive.r00, archive.r01
+        std::fs::write(base.join("archive.rar"), b"").unwrap();
+        std::fs::write(base.join("archive.r00"), b"").unwrap();
+        std::fs::write(base.join("archive.r01"), b"").unwrap();
+
+        let result = detect_segments(&base.join("archive.rar")).unwrap();
+        assert!(result.is_some());
+        let parts = result.unwrap();
+        assert_eq!(parts.len(), 3);
+
+        // .rar sorts first (terminal), then .r00, .r01
+        let names: Vec<&str> = parts
+            .iter()
+            .filter_map(|p| p.file_name()?.to_str())
+            .collect();
+        assert_eq!(names[0], "archive.rar");
+        assert_eq!(names[1], "archive.r00");
+        assert_eq!(names[2], "archive.r01");
+    }
+
+    #[test]
+    fn test_detect_legacy_rar_from_r00_entrypoint() {
+        let temp_dir = TempDir::new().unwrap();
+        let base = temp_dir.path();
+
+        std::fs::write(base.join("archive.rar"), b"").unwrap();
+        std::fs::write(base.join("archive.r00"), b"").unwrap();
+        std::fs::write(base.join("archive.r01"), b"").unwrap();
+
+        // Detecting from .r00 should find the same set
+        let result = detect_segments(&base.join("archive.r00")).unwrap();
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().len(), 3);
+    }
+
+    #[test]
+    fn test_detect_z_format_zip_segments() {
+        let temp_dir = TempDir::new().unwrap();
+        let base = temp_dir.path();
+
+        std::fs::write(base.join("archive.z01"), b"").unwrap();
+        std::fs::write(base.join("archive.z02"), b"").unwrap();
+        std::fs::write(base.join("archive.zip"), b"").unwrap();
+
+        let result = detect_segments(&base.join("archive.z01")).unwrap();
+        assert!(result.is_some());
+        let parts = result.unwrap();
+        assert_eq!(parts.len(), 3);
+
+        // .z01, .z02 first (numerically sorted), .zip last (terminal)
+        let names: Vec<&str> = parts
+            .iter()
+            .filter_map(|p| p.file_name()?.to_str())
+            .collect();
+        assert_eq!(names[0], "archive.z01");
+        assert_eq!(names[1], "archive.z02");
+        assert_eq!(names[2], "archive.zip");
+    }
+
+    #[test]
+    fn test_detect_z_format_from_zip_entrypoint() {
+        let temp_dir = TempDir::new().unwrap();
+        let base = temp_dir.path();
+
+        std::fs::write(base.join("archive.z01"), b"").unwrap();
+        std::fs::write(base.join("archive.z02"), b"").unwrap();
+        std::fs::write(base.join("archive.zip"), b"").unwrap();
+
+        // Detecting from .zip should find the .zNN siblings
+        let result = detect_segments(&base.join("archive.zip")).unwrap();
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().len(), 3);
     }
 }

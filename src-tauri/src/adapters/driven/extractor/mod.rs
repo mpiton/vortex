@@ -3,7 +3,7 @@
 //! Delegates to format-specific handlers (ZIP, TAR, RAR, 7z) and supports
 //! recursive extraction and split archive detection.
 
-// Module is fully implemented but not yet wired into the IPC layer.
+// TODO(task-27): remove #![allow(dead_code)] when extractor is wired into Tauri IPC
 #![allow(dead_code)]
 
 pub mod detector;
