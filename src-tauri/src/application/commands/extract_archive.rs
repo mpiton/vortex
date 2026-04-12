@@ -54,19 +54,32 @@ impl CommandBus {
         let extractor = self.archive_extractor_arc();
         let password = cmd.password.clone();
 
-        let summary = tokio::task::spawn_blocking(move || {
+        let result = tokio::task::spawn_blocking(move || {
             extractor.extract(&file_path, &dest_dir, password.as_deref())
         })
         .await
-        .map_err(|e| AppError::Storage(format!("extraction task failed: {}", e)))??;
+        .map_err(|e| AppError::Storage(format!("extraction task failed: {}", e)))?;
 
-        // Mark as completed again after extraction
-        download.complete()?;
-        self.download_repo().save(&download)?;
-        self.event_bus().publish(DomainEvent::DownloadCompleted {
-            id: cmd.download_id,
-        });
-
-        Ok(summary)
+        match result {
+            Ok(summary) => {
+                // Mark as completed after successful extraction
+                download.complete()?;
+                self.download_repo().save(&download)?;
+                self.event_bus().publish(DomainEvent::DownloadCompleted {
+                    id: cmd.download_id,
+                });
+                Ok(summary)
+            }
+            Err(e) => {
+                // Restore download to Error state so user can retry
+                download.fail(e.to_string())?;
+                self.download_repo().save(&download)?;
+                self.event_bus().publish(DomainEvent::DownloadFailed {
+                    id: cmd.download_id,
+                    error: e.to_string(),
+                });
+                Err(AppError::Storage(format!("extraction failed: {}", e)))
+            }
+        }
     }
 }

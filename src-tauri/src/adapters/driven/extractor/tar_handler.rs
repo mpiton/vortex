@@ -155,12 +155,15 @@ impl TarHandler {
                 DomainError::StorageError(format!("failed to read dir entry: {}", e))
             })?;
 
-            let metadata = entry.metadata().map_err(|e| {
+            // Use symlink_metadata to avoid following symlinks (prevents infinite loops)
+            let metadata = fs::symlink_metadata(entry.path()).map_err(|e| {
                 DomainError::StorageError(format!("failed to read metadata: {}", e))
             })?;
 
-            if metadata.is_dir() {
-                // Recursively count subdirectories
+            if metadata.is_symlink() {
+                // Skip symlinks to avoid cyclic traversal
+                continue;
+            } else if metadata.is_dir() {
                 let (sub_files, sub_bytes) = Self::count_extracted(&entry.path())?;
                 file_count += sub_files;
                 total_bytes += sub_bytes;

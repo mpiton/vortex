@@ -124,10 +124,15 @@ impl VortexArchiveExtractor {
                 DomainError::StorageError(format!("failed to create nested dest dir: {}", e))
             })?;
 
-            match self.extract(&archive_path, &nested_dest, password) {
+            let format = match detector::detect_format(&archive_path)? {
+                Some(f) => f,
+                None => continue,
+            };
+
+            match self.extract_by_format(format, &archive_path, &nested_dest, password) {
                 Ok(summary) => {
                     warnings.extend(summary.warnings);
-                    // Recurse deeper
+                    // Recurse deeper into the newly extracted directory
                     let nested_warnings =
                         self.extract_recursive(&nested_dest, password, depth + 1)?;
                     warnings.extend(nested_warnings);

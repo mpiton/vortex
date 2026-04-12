@@ -164,23 +164,9 @@ impl ZipHandler {
                 }
             };
 
-            // Extract modified timestamp from ZIP datetime (if available)
-            let modified_timestamp = entry.last_modified().map(|dt| {
-                // Convert zip::DateTime fields to approximate unix timestamp
-                let year = i64::from(dt.year());
-                let month = i64::from(dt.month());
-                let day = i64::from(dt.day());
-                let hour = i64::from(dt.hour());
-                let minute = i64::from(dt.minute());
-                let second = i64::from(dt.second());
-                // Rough approximation (ignoring leap years/seconds for listing purposes)
-                ((year - 1970) * 365 * 86400)
-                    + (month * 30 * 86400)
-                    + (day * 86400)
-                    + (hour * 3600)
-                    + (minute * 60)
-                    + second
-            });
+            // ZIP datetime conversion requires the `time` crate for accurate
+            // timestamps. Return None rather than an incorrect approximation.
+            let modified_timestamp: Option<i64> = None;
 
             entries.push(ArchiveEntry {
                 path: enclosed.to_path_buf(),

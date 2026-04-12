@@ -70,6 +70,13 @@ impl SevenZHandler {
 
             let target_path = dest_dir.join(&safe_path);
 
+            // Reject symlinks in the destination tree to prevent traversal
+            if target_path.is_symlink() {
+                warn!("skipping symlink target: {}", target_path.display());
+                warnings.push(format!("skipped symlink: {}", target_path.display()));
+                return Ok(true);
+            }
+
             // Extract directory or file
             if entry.is_directory {
                 if let Err(e) = fs::create_dir_all(&target_path) {

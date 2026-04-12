@@ -483,7 +483,7 @@ impl Download {
 
     pub fn start_extracting(&mut self) -> Result<DomainEvent, DomainError> {
         match self.state {
-            DownloadState::Downloading | DownloadState::Checking => {
+            DownloadState::Downloading | DownloadState::Checking | DownloadState::Completed => {
                 self.state = DownloadState::Extracting;
                 Ok(DomainEvent::DownloadExtracting { id: self.id })
             }

@@ -33,8 +33,13 @@ fn detect_by_magic_bytes(file_path: &Path) -> Result<Option<ArchiveFormat>, Doma
         .read(&mut buffer)
         .map_err(|e| DomainError::StorageError(format!("failed to read file: {}", e)))?;
 
-    // ZIP: [0x50, 0x4B, 0x03, 0x04]
-    if bytes_read >= 4 && buffer[0..4] == [0x50, 0x4B, 0x03, 0x04] {
+    // ZIP: PK\x03\x04 (local file header), PK\x05\x06 (empty archive / end of central dir),
+    // PK\x07\x08 (spanned archive)
+    if bytes_read >= 4
+        && buffer[0] == 0x50
+        && buffer[1] == 0x4B
+        && matches!(buffer[2], 0x03 | 0x05 | 0x07)
+    {
         return Ok(Some(ArchiveFormat::Zip));
     }
 
@@ -98,8 +103,9 @@ fn extension_matches(path: &Path) -> Option<ArchiveFormat> {
         return Some(ArchiveFormat::TarZstd);
     }
 
-    // Single-part extensions
-    match path.extension()?.to_string_lossy().as_ref() {
+    // Single-part extensions (case-insensitive)
+    let ext = path.extension()?.to_string_lossy().to_lowercase();
+    match ext.as_str() {
         "tar" => Some(ArchiveFormat::Tar),
         "zip" => Some(ArchiveFormat::Zip),
         "rar" => Some(ArchiveFormat::RarV5), // Default to v5 for .rar extension

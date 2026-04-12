@@ -220,7 +220,7 @@ fn detect_zip(file_path: &Path, file_name: &str) -> Result<Option<Vec<PathBuf>>,
     if let Some(caps) = re_z.captures(file_name) {
         let base_name = &caps[1];
         let mut parts = Vec::new();
-        let pattern = Regex::new(&format!(r"^{}\.\z\d+$", regex::escape(base_name)))
+        let pattern = Regex::new(&format!(r"^{}\.z\d+$", regex::escape(base_name)))
             .map_err(|e| DomainError::StorageError(format!("Regex error: {}", e)))?;
         scan_directory(parent, &mut parts, |name| pattern.is_match(name))?;
 
@@ -268,9 +268,6 @@ fn scan_directory<F>(
 where
     F: Fn(&str) -> bool,
 {
-    std::fs::read_dir(parent)
-        .map_err(|e| DomainError::StorageError(format!("Failed to read directory: {}", e)))?;
-
     for entry in std::fs::read_dir(parent)
         .map_err(|e| DomainError::StorageError(format!("Failed to read directory: {}", e)))?
     {
@@ -299,17 +296,13 @@ fn sort_parts_numerically(parts: &mut [PathBuf]) {
     });
 }
 
-/// Extract part number from archive filename pattern.
+/// Extract the trailing part number from an archive filename.
+///
+/// Extracts the *last* digit run to avoid confusion when the
+/// base name itself contains digits (e.g., "game2.part03.rar" → 03).
 fn extract_part_number(file_name: &str) -> Option<u32> {
-    // Extract number from patterns like:
-    // name.part01.rar -> 01
-    // name.7z.001 -> 001
-    // name.r01 -> 01
-    // name.z01 -> 01
-
-    let re = Regex::new(r"(\d+)").ok()?;
-    re.find(file_name)
-        .and_then(|m| m.as_str().parse::<u32>().ok())
+    let re = Regex::new(r"(\d+)[^/\\]*$").ok()?;
+    re.captures(file_name)?[1].parse::<u32>().ok()
 }
 
 /// Check if RAR multi-part files exist for the given base name.
