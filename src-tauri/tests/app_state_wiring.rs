@@ -9,9 +9,9 @@ use vortex_lib::domain::ports::driven::{
     HttpClient, PluginLoader, PluginReadRepository, StatsRepository,
 };
 use vortex_lib::{
-    CommandBus, ExtismPluginLoader, ExtractionConfig, FsFileStorage, InMemoryStatsRepository,
-    NoopCredentialStore, QueryBus, ReqwestHttpClient, SegmentedDownloadEngine, SharedHostResources,
-    SqliteDownloadReadRepo, SqliteDownloadRepo, SqliteHistoryRepo, TokioEventBus, TomlConfigStore,
+    CommandBus, ExtismPluginLoader, ExtractionConfig, FsFileStorage, NoopCredentialStore, QueryBus,
+    ReqwestHttpClient, SegmentedDownloadEngine, SharedHostResources, SqliteDownloadReadRepo,
+    SqliteDownloadRepo, SqliteHistoryRepo, SqliteStatsRepo, TokioEventBus, TomlConfigStore,
     VortexArchiveExtractor, connection,
 };
 
@@ -51,8 +51,8 @@ fn test_appstate_wiring_with_in_memory_db() {
     let download_repo: Arc<dyn DownloadRepository> = Arc::new(SqliteDownloadRepo::new(db.clone()));
     let download_read_repo: Arc<dyn DownloadReadRepository> =
         Arc::new(SqliteDownloadReadRepo::new(db.clone()));
-    let history_repo: Arc<dyn HistoryRepository> = Arc::new(SqliteHistoryRepo::new(db));
-    let stats_repo: Arc<dyn StatsRepository> = Arc::new(InMemoryStatsRepository::new());
+    let history_repo: Arc<dyn HistoryRepository> = Arc::new(SqliteHistoryRepo::new(db.clone()));
+    let stats_repo: Arc<dyn StatsRepository> = Arc::new(SqliteStatsRepo::new(db));
 
     // Plugin system
     let plugins_dir = tempfile::tempdir().expect("plugins dir");

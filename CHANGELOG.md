@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `SqliteStatsRepository` — persistent download statistics backed by SQLite (replaces in-memory stub)
 - Project scaffolding: Tauri 2 + React 19 + TypeScript + Tailwind CSS 4 + shadcn/ui
 - Nix flake for reproducible development environment
 - Hexagonal architecture folder structure for Rust backend
