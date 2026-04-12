@@ -4,6 +4,7 @@
 //! Handler implementations live in submodules and add methods to `CommandBus`.
 
 mod cancel_download;
+mod extract_archive;
 mod install_plugin;
 mod pause_all;
 mod pause_download;
@@ -120,3 +121,12 @@ pub struct UpdateConfigCommand {
     pub patch: ConfigPatch,
 }
 impl Command for UpdateConfigCommand {}
+
+// Handler: task 26 (archive extraction)
+#[derive(Debug)]
+pub struct ExtractArchiveCommand {
+    pub download_id: DownloadId,
+    pub password: Option<String>,
+    pub dest_dir: Option<PathBuf>,
+}
+impl Command for ExtractArchiveCommand {}

@@ -1,4 +1,5 @@
 pub mod account;
+pub mod archive;
 pub mod captcha;
 pub mod config;
 pub mod credential;
@@ -13,6 +14,7 @@ pub mod segment;
 pub mod views;
 
 pub use account::{Account, AccountType};
+pub use archive::{ArchiveEntry, ArchiveFormat, ExtractSummary, ExtractionConfig};
 pub use captcha::{CaptchaChallenge, CaptchaType};
 pub use config::{AppConfig, ConfigPatch};
 pub use credential::Credential;

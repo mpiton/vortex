@@ -172,3 +172,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Shared host-function envelope pattern: every plugin models `HttpRequest`/`HttpResponse` to mirror `src-tauri/src/adapters/driven/plugin/host_functions.rs`, with `HttpResponse::into_success_body()` mapping 401/403 → `PluginError::Private` and other non-2xx → `PluginError::HttpStatus`
   - `PluginError` per crate via `thiserror` with `SerdeJson(#[from])`, no `.unwrap()` in production paths, no `#[allow(dead_code)]`, no `unsafe` outside documented `#[host_fn]` call sites
   - Release WASM binaries: SoundCloud ~250 KB, Vimeo ~1.12 MB, Gallery ~1.14 MB (all stripped with LTO + `opt-level = "z"`)
+- Archive extractor module: native Rust extraction for ZIP, RAR, 7z, TAR (Task 26)
+  - Domain types: `ArchiveFormat` enum (9 variants), `ExtractSummary`, `ArchiveEntry`, `ExtractionConfig`
+  - `ArchiveExtractor` port trait with detect, extract, list_contents, detect_segments
+  - Format detection by magic bytes (ZIP, RAR v4/v5, 7z, TAR ustar) with extension fallback
+  - ZIP handler: `zip` crate with AES password support, path traversal protection via `enclosed_name()`
+  - TAR handler: plain TAR + GZ/BZ2/XZ/ZSTD compression via `flate2`/`bzip2`/`xz2`/`zstd`
+  - RAR handler: `unrar` crate for v4/v5 with password support and graceful error recovery
+  - 7z handler: `sevenz-rust2` (pure Rust) with password support and path safety validation
+  - Split archive detection: RAR parts (.partNN.rar), 7z segments (.7z.NNN), ZIP spans
+  - `VortexArchiveExtractor` composite: format routing, recursive extraction with configurable depth
+  - `ExtractArchiveCommand` CQRS handler with `spawn_blocking` for CPU-bound extraction
+  - `ListArchiveContentsQuery` handler for archive preview without extraction
