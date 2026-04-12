@@ -1,6 +1,7 @@
 #[cfg(test)]
 mod tests;
 
+pub mod archive_extractor;
 pub mod clipboard_observer;
 pub mod config_store;
 pub mod credential_store;
@@ -15,6 +16,7 @@ pub mod plugin_loader;
 pub mod plugin_read_repository;
 pub mod stats_repository;
 
+pub use archive_extractor::ArchiveExtractor;
 pub use clipboard_observer::ClipboardObserver;
 pub use config_store::ConfigStore;
 pub use credential_store::CredentialStore;

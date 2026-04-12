@@ -254,6 +254,45 @@ mod tests {
         dl
     }
 
+    struct FakeArchiveExtractor;
+    impl crate::domain::ports::driven::ArchiveExtractor for FakeArchiveExtractor {
+        fn detect_format(
+            &self,
+            _file_path: &std::path::Path,
+        ) -> Result<Option<crate::domain::model::archive::ArchiveFormat>, DomainError> {
+            Ok(None)
+        }
+        fn can_extract(&self, _file_path: &std::path::Path) -> Result<bool, DomainError> {
+            Ok(false)
+        }
+        fn extract(
+            &self,
+            _file_path: &std::path::Path,
+            _dest_dir: &std::path::Path,
+            _password: Option<&str>,
+        ) -> Result<crate::domain::model::archive::ExtractSummary, DomainError> {
+            Ok(crate::domain::model::archive::ExtractSummary {
+                extracted_files: 0,
+                extracted_bytes: 0,
+                duration_ms: 0,
+                warnings: vec![],
+            })
+        }
+        fn list_contents(
+            &self,
+            _file_path: &std::path::Path,
+            _password: Option<&str>,
+        ) -> Result<Vec<crate::domain::model::archive::ArchiveEntry>, DomainError> {
+            Ok(vec![])
+        }
+        fn detect_segments(
+            &self,
+            _file_path: &std::path::Path,
+        ) -> Result<Option<Vec<std::path::PathBuf>>, DomainError> {
+            Ok(None)
+        }
+    }
+
     fn make_command_bus(
         repo: Arc<MockDownloadRepo>,
     ) -> (CommandBus, Arc<MockDownloadEngine>, Arc<MockEventBus>) {
@@ -269,6 +308,7 @@ mod tests {
             Arc::new(MockConfigStore),
             Arc::new(MockCredentialStore),
             Arc::new(MockClipboardObserver),
+            Arc::new(FakeArchiveExtractor),
         );
         (bus, engine, event_bus)
     }

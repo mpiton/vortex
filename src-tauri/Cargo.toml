@@ -38,6 +38,14 @@ uuid = { version = "1.23.0", features = ["v4"] }
 tauri-plugin-clipboard-manager = "2"
 tauri-plugin-notification = "2"
 regex = "1"
+zip = "8.5.1"
+tar = "0.4.45"
+flate2 = "1.1.9"
+bzip2 = "0.6.1"
+xz2 = "0.1.7"
+zstd = "0.13.3"
+sevenz-rust2 = "0.20.2"
+unrar = "0.5.8"
 
 [target.'cfg(unix)'.dependencies]
 tauri-plugin-pilot = { git = "https://github.com/mpiton/tauri-pilot", version = "0.3.0" }

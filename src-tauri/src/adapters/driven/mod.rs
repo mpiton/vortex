@@ -3,6 +3,7 @@
 pub mod clipboard;
 pub mod config;
 pub mod event;
+pub mod extractor;
 pub mod filesystem;
 pub mod network;
 pub mod notification;

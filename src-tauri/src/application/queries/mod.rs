@@ -6,6 +6,7 @@
 mod count_by_state;
 mod get_download_detail;
 mod get_downloads;
+mod list_archive_contents;
 mod list_plugins;
 
 use crate::domain::model::download::DownloadId;
@@ -49,3 +50,11 @@ impl Query for ListPluginsQuery {}
 #[derive(Debug)]
 pub struct CountDownloadsByStateQuery;
 impl Query for CountDownloadsByStateQuery {}
+
+// Handler: task 26 (archive contents listing)
+#[derive(Debug)]
+pub struct ListArchiveContentsQuery {
+    pub file_path: String,
+    pub password: Option<String>,
+}
+impl Query for ListArchiveContentsQuery {}

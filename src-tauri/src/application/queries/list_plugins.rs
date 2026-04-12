@@ -23,6 +23,7 @@ mod tests {
     use crate::application::queries::ListPluginsQuery;
     use crate::application::query_bus::QueryBus;
     use crate::domain::error::DomainError;
+    use crate::domain::model::archive::ArchiveFormat;
     use crate::domain::model::download::DownloadId;
     use crate::domain::model::plugin::{PluginCategory, PluginInfo};
     use crate::domain::model::views::{
@@ -30,9 +31,50 @@ mod tests {
         StatsView,
     };
     use crate::domain::ports::driven::{
-        DownloadReadRepository, HistoryRepository, PluginReadRepository, StatsRepository,
+        ArchiveExtractor, DownloadReadRepository, HistoryRepository, PluginReadRepository,
+        StatsRepository,
     };
     use std::collections::HashMap;
+
+    struct FakeArchiveExtractor;
+    impl ArchiveExtractor for FakeArchiveExtractor {
+        fn detect_format(&self, _: &std::path::Path) -> Result<Option<ArchiveFormat>, DomainError> {
+            Ok(None)
+        }
+
+        fn can_extract(&self, _: &std::path::Path) -> Result<bool, DomainError> {
+            Ok(false)
+        }
+
+        fn extract(
+            &self,
+            _: &std::path::Path,
+            _: &std::path::Path,
+            _: Option<&str>,
+        ) -> Result<crate::domain::model::archive::ExtractSummary, DomainError> {
+            Ok(crate::domain::model::archive::ExtractSummary {
+                extracted_files: 0,
+                extracted_bytes: 0,
+                duration_ms: 0,
+                warnings: vec![],
+            })
+        }
+
+        fn list_contents(
+            &self,
+            _: &std::path::Path,
+            _: Option<&str>,
+        ) -> Result<Vec<crate::domain::model::archive::ArchiveEntry>, DomainError> {
+            Ok(vec![])
+        }
+
+        fn detect_segments(
+            &self,
+            _: &std::path::Path,
+        ) -> Result<Option<Vec<std::path::PathBuf>>, DomainError> {
+            Ok(None)
+        }
+    }
 
     struct MockDownloadReadRepo;
     impl DownloadReadRepository for MockDownloadReadRepo {
@@ -116,6 +158,7 @@ mod tests {
             Arc::new(MockHistoryRepo),
             Arc::new(MockStatsRepo),
             Arc::new(plugin_repo),
+            Arc::new(FakeArchiveExtractor),
         )
     }
 

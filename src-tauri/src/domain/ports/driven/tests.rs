@@ -450,6 +450,52 @@ impl DownloadEngine for FakeDownloadEngine {
     }
 }
 
+// ── FakeArchiveExtractor ────────────────────────────────────────
+
+struct FakeArchiveExtractor;
+
+impl ArchiveExtractor for FakeArchiveExtractor {
+    fn detect_format(
+        &self,
+        _file_path: &Path,
+    ) -> Result<Option<crate::domain::model::archive::ArchiveFormat>, DomainError> {
+        Ok(None)
+    }
+
+    fn can_extract(&self, _file_path: &Path) -> Result<bool, DomainError> {
+        Ok(false)
+    }
+
+    fn extract(
+        &self,
+        _file_path: &Path,
+        _dest_dir: &Path,
+        _password: Option<&str>,
+    ) -> Result<crate::domain::model::archive::ExtractSummary, DomainError> {
+        Ok(crate::domain::model::archive::ExtractSummary {
+            extracted_files: 0,
+            extracted_bytes: 0,
+            duration_ms: 0,
+            warnings: vec![],
+        })
+    }
+
+    fn list_contents(
+        &self,
+        _file_path: &Path,
+        _password: Option<&str>,
+    ) -> Result<Vec<crate::domain::model::archive::ArchiveEntry>, DomainError> {
+        Ok(vec![])
+    }
+
+    fn detect_segments(
+        &self,
+        _file_path: &Path,
+    ) -> Result<Option<Vec<std::path::PathBuf>>, DomainError> {
+        Ok(None)
+    }
+}
+
 // ── Send + Sync compile-time assertions ─────────────────────────
 
 fn assert_send_sync<T: Send + Sync>() {}
@@ -468,6 +514,7 @@ fn all_driven_port_mocks_are_send_sync() {
     assert_send_sync::<FakeClipboardObserver>();
     assert_send_sync::<FakePluginLoader>();
     assert_send_sync::<FakeDownloadEngine>();
+    assert_send_sync::<FakeArchiveExtractor>();
 }
 
 // ── Functional tests ────────────────────────────────────────────
