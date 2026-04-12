@@ -127,14 +127,11 @@ pub fn verify_all_parts_present(parts: &[PathBuf]) -> Result<Vec<PathBuf>, Domai
     });
     let baseline: u32 = if has_zero_part { 0 } else { 1 };
 
-    // Find first numeric part (skip terminal .rar/.zip)
+    // Find first numeric part (skip unnumbered terminals like "archive.rar")
     let first_numeric = parts.iter().find_map(|p| {
         let name = p.file_name()?.to_str()?;
-        let ext = Path::new(name).extension()?.to_str()?;
-        if ext.eq_ignore_ascii_case("rar") || ext.eq_ignore_ascii_case("zip") {
-            return None;
-        }
-        extract_part_number(name).map(|n| (p, n))
+        let num = extract_part_number(name)?;
+        Some((p, num))
     });
 
     if let Some((part, first_num)) = first_numeric
