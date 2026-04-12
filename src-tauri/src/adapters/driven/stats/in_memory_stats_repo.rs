@@ -76,8 +76,13 @@ impl StatsRepository for InMemoryStatsRepository {
             total_files: accumulator.total_files,
             avg_speed,
             peak_speed: accumulator.peak_speed,
-            // TODO: track failures to compute a real 0.0–1.0 fraction
-            success_rate: 0.0,
+            // Only completed downloads are recorded, so success_rate is 1.0
+            // when any exist. TODO: track failures to compute a real fraction.
+            success_rate: if accumulator.total_files > 0 {
+                1.0
+            } else {
+                0.0
+            },
             daily_volumes: vec![],
             top_hosts: vec![],
         })

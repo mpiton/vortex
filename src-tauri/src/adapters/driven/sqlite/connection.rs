@@ -10,13 +10,11 @@ use sea_orm_migration::MigratorTrait;
 use super::migrations::Migrator;
 
 pub async fn establish_connection(db_path: &Path) -> Result<DatabaseConnection, sea_orm::DbErr> {
-    let db_str = db_path
-        .to_str()
-        .ok_or_else(|| sea_orm::DbErr::Custom("database path is not valid UTF-8".to_string()))?;
-    // Per-connection PRAGMA via SqliteConnectOptions ensures every pool
-    // connection enforces FK constraints, not just the first one.
-    let sqlite_opts = SqliteConnectOptions::from_str(&format!("sqlite://{}?mode=rwc", db_str))
-        .map_err(|e| sea_orm::DbErr::Conn(sea_orm::RuntimeErr::Internal(e.to_string())))?
+    // Use filename() instead of URL interpolation — handles Windows paths,
+    // non-UTF-8 paths, and URI-reserved characters safely.
+    let sqlite_opts = SqliteConnectOptions::new()
+        .filename(db_path)
+        .create_if_missing(true)
         .pragma("foreign_keys", "ON");
 
     let pool = SqlitePoolOptions::new()
