@@ -230,5 +230,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Event bridges (Tauri webview + desktop notifications) connected to domain event bus
   - Plugin hot-reload watcher started with tracing on failure
   - Shared `reqwest::Client` between HTTP metadata port and download engine
-  - `NoopCredentialStore` stub until keyring-rs integration
+  - `NoopCredentialStore` stub for tests (replaced by `KeyringCredentialStore` as default in #35)
   - `InMemoryStatsRepository` stub until SQLite implementation (with `saturating_add` for overflow safety)

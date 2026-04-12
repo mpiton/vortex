@@ -103,7 +103,7 @@ impl CredentialStore for KeyringCredentialStore {
                 if let Err(cleanup_err) = user_entry.delete_credential() {
                     tracing::warn!(
                         service = service,
-                        error = %cleanup_err,
+                        error = sanitize_keyring_error(service, "cleanup", &cleanup_err),
                         "password write failed and username cleanup also failed — \
                          orphaned username entry may remain in keychain"
                     );
@@ -118,18 +118,17 @@ impl CredentialStore for KeyringCredentialStore {
         let user_entry = Self::username_entry(service)?;
         let pass_entry = Self::password_entry(service)?;
 
-        // Delete both entries; ignore NoEntry (already absent is fine).
-        if let Err(e) = user_entry.delete_credential()
-            && !matches!(e, keyring::Error::NoEntry)
-        {
-            return Err(DomainError::StorageError(sanitize_keyring_error(
-                service, "delete", &e,
-            )));
+        // Attempt both deletions before returning; ignore NoEntry (already absent).
+        let mut first_err: Option<keyring::Error> = None;
+        for entry in [&user_entry, &pass_entry] {
+            if let Err(e) = entry.delete_credential()
+                && !matches!(e, keyring::Error::NoEntry)
+                && first_err.is_none()
+            {
+                first_err = Some(e);
+            }
         }
-
-        if let Err(e) = pass_entry.delete_credential()
-            && !matches!(e, keyring::Error::NoEntry)
-        {
+        if let Some(e) = first_err {
             return Err(DomainError::StorageError(sanitize_keyring_error(
                 service, "delete", &e,
             )));
@@ -143,7 +142,48 @@ impl CredentialStore for KeyringCredentialStore {
 mod tests {
     use super::*;
 
-    // These tests require a running OS keychain backend and are skipped in CI.
+    #[test]
+    fn test_sanitize_ambiguous_hides_secrets() {
+        let fake_creds: Vec<Box<keyring::Credential>> = vec![];
+        let err = keyring::Error::Ambiguous(fake_creds);
+        let msg = sanitize_keyring_error("mega", "read", &err);
+        assert!(msg.contains("ambiguous"));
+        assert!(!msg.contains("secret"));
+        assert!(msg.contains("mega"));
+    }
+
+    #[test]
+    fn test_sanitize_bad_encoding_hides_raw_bytes() {
+        let err = keyring::Error::BadEncoding(vec![0xFF, 0xFE]);
+        let msg = sanitize_keyring_error("mega", "read", &err);
+        assert!(msg.contains("not valid UTF-8"));
+        assert!(!msg.contains("0xFF"));
+        assert!(!msg.contains("255"));
+    }
+
+    #[test]
+    fn test_sanitize_no_entry_passes_through() {
+        let err = keyring::Error::NoEntry;
+        let msg = sanitize_keyring_error("mega", "delete", &err);
+        assert!(msg.contains("No matching entry"));
+        assert!(msg.contains("mega"));
+    }
+
+    #[test]
+    fn test_sanitize_includes_service_and_operation() {
+        let err = keyring::Error::NoEntry;
+        let msg = sanitize_keyring_error("my-svc", "write", &err);
+        assert!(msg.contains("my-svc"));
+        assert!(msg.contains("write"));
+    }
+
+    // The CredentialStore trait contract (get/store/delete cycle) is tested in:
+    //   - domain/ports/driven/tests.rs with InMemoryCredentialStore (runs in CI)
+    //   - tests/app_state_wiring.rs with NoopCredentialStore (runs in CI)
+    //
+    // The tests below exercise the real OS keychain integration and are skipped
+    // in CI. keyring::mock has EntryOnly persistence (no cross-Entry storage),
+    // so it cannot be used for store→get flows that recreate entries.
     // Run locally with: cargo test -- --ignored keyring
 
     #[test]
@@ -153,43 +193,19 @@ mod tests {
         let service = "test-integration-cycle";
         let cred = Credential::new("alice", "s3cret");
 
-        // Clean slate
         let _ = store.delete(service);
 
-        // Store
         store.store(service, &cred).expect("store credential");
 
-        // Get
         let retrieved = store.get(service).expect("get credential");
         let retrieved = retrieved.expect("credential should exist");
         assert_eq!(retrieved.username(), "alice");
         assert_eq!(retrieved.password(), "s3cret");
 
-        // Delete
         store.delete(service).expect("delete credential");
 
-        // Verify gone
         let after_delete = store.get(service).expect("get after delete");
         assert!(after_delete.is_none());
-    }
-
-    #[test]
-    #[ignore = "requires OS keychain backend"]
-    fn test_get_returns_none_when_absent() {
-        let store = KeyringCredentialStore;
-        let result = store
-            .get("test-nonexistent-service")
-            .expect("get nonexistent");
-        assert!(result.is_none());
-    }
-
-    #[test]
-    #[ignore = "requires OS keychain backend"]
-    fn test_delete_absent_is_ok() {
-        let store = KeyringCredentialStore;
-        store
-            .delete("test-nonexistent-delete")
-            .expect("delete nonexistent should succeed");
     }
 
     #[test]
