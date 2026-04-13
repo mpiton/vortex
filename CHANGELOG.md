@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- `SqliteStatsRepository` — persistent download statistics backed by SQLite (replaces in-memory stub)
+- `SqliteStatsRepo` — persistent download statistics backed by SQLite (replaces in-memory stub)
 - Project scaffolding: Tauri 2 + React 19 + TypeScript + Tailwind CSS 4 + shadcn/ui
 - Nix flake for reproducible development environment
 - Hexagonal architecture folder structure for Rust backend
@@ -232,4 +232,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Plugin hot-reload watcher started with tracing on failure
   - Shared `reqwest::Client` between HTTP metadata port and download engine
   - `NoopCredentialStore` stub for tests (replaced by `KeyringCredentialStore` as default in #35)
-  - `InMemoryStatsRepository` stub for unit tests (replaced by `SqliteStatsRepository` as default in #36)
+  - `InMemoryStatsRepository` stub for unit tests (replaced by `SqliteStatsRepo` as default in #36)
