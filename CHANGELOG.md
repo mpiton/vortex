@@ -235,3 +235,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Shared `reqwest::Client` between HTTP metadata port and download engine
   - `NoopCredentialStore` stub for tests (replaced by `KeyringCredentialStore` as default in #35)
   - `InMemoryStatsRepository` stub for unit tests (replaced by `SqliteStatsRepo` as default in #36)
+- Status bar now shows real available disk space instead of `-- GB free` — new `status_bar_get` Tauri IPC command reads available bytes via `statvfs` (Unix) or `GetDiskFreeSpaceExW` (Windows) from the configured download directory, with fallback to the system Downloads folder then the current directory (#32)
+- Status bar text now follows the UI language — `AppLayout` syncs `settings_get.locale` into i18next on startup so all status bar strings (`statusBar.*`) render in the active language; English and French translations are complete (#32)
