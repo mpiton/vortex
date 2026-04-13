@@ -156,7 +156,7 @@ describe('SettingsView', () => {
   });
 
   it('should show error state with message when settings_get fails', async () => {
-    mockInvoke.mockRejectedValue('config store unavailable');
+    mockInvoke.mockRejectedValue(new Error('config store unavailable'));
 
     renderWithProviders();
 
@@ -170,7 +170,7 @@ describe('SettingsView', () => {
 
   it('should recover when retry button is clicked after transient error', async () => {
     const user = userEvent.setup();
-    mockInvoke.mockRejectedValueOnce('transient error');
+    mockInvoke.mockRejectedValueOnce(new Error('transient error'));
 
     renderWithProviders();
 
