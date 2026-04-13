@@ -31,13 +31,21 @@ vi.mock("react-i18next", async () => {
   };
 
   const t = (key: string, options?: Record<string, unknown>) => {
-    const template = lookupKey(translations[getMockLanguage()], key);
+    const language = getMockLanguage();
+    const count = options?.count;
+    const pluralKey =
+      typeof count === "number" ? `${key}_${count === 1 ? "one" : "other"}` : key;
+    const pluralTemplate = lookupKey(translations[language], pluralKey);
+    const template =
+      pluralTemplate !== pluralKey
+        ? pluralTemplate
+        : lookupKey(translations[language], key);
 
     if (!options) return template;
 
     return template.replace(/\{\{(\w+)\}\}/g, (_, name: string) => {
       const value = options[name];
-      return value == null ? `{{${name}}}` : String(value);
+      return value === null || value === undefined ? `{{${name}}}` : String(value);
     });
   };
 

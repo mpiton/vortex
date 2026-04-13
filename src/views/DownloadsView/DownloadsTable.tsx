@@ -45,6 +45,8 @@ import { ProgressCell } from './ProgressCell';
 import { SpeedCell } from './SpeedCell';
 import { EtaCell } from './EtaCell';
 
+type Translate = (key: string, options?: Record<string, unknown>) => string;
+
 interface DownloadsTableProps {
   downloads: DownloadView[];
   isLoading: boolean;
@@ -92,9 +94,10 @@ function useRowActions(): RowActions {
 
 interface ActionCellProps {
   download: DownloadView;
+  t: Translate;
 }
 
-function ActionCell({ download }: ActionCellProps) {
+function ActionCell({ download, t }: ActionCellProps) {
   const actions = useRowActions();
 
   return (
@@ -144,6 +147,7 @@ function ActionCell({ download }: ActionCellProps) {
             variant="ghost"
             size="icon"
             className="h-7 w-7"
+            aria-label={t('downloads.table.moreActions')}
             onClick={(e) => e.stopPropagation()}
           >
             <MoreHorizontal className="size-3.5" />
@@ -151,12 +155,12 @@ function ActionCell({ download }: ActionCellProps) {
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
           <DropdownMenuSub>
-            <DropdownMenuSubTrigger>Set Priority</DropdownMenuSubTrigger>
+            <DropdownMenuSubTrigger>{t('downloads.table.actions.setPriority')}</DropdownMenuSubTrigger>
             <DropdownMenuSubContent>
               {[
-                { label: 'High', value: 1 },
-                { label: 'Normal', value: 5 },
-                { label: 'Low', value: 10 },
+                { label: t('downloads.table.priority.high'), value: 1 },
+                { label: t('downloads.table.priority.normal'), value: 5 },
+                { label: t('downloads.table.priority.low'), value: 10 },
               ].map((p) => (
                 <DropdownMenuItem
                   key={p.value}
@@ -179,7 +183,7 @@ function ActionCell({ download }: ActionCellProps) {
             }}
           >
             <Trash2 className="size-3.5" />
-            Remove
+            {t('downloads.table.actions.remove')}
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
@@ -187,88 +191,90 @@ function ActionCell({ download }: ActionCellProps) {
   );
 }
 
-const columns: ColumnDef<DownloadView>[] = [
-  {
-    id: 'select',
-    header: ({ table }) => (
-      <Checkbox
-        checked={table.getIsAllRowsSelected()}
-        onCheckedChange={(checked) => table.toggleAllRowsSelected(!!checked)}
-        aria-label="Select all"
-      />
-    ),
-    cell: ({ row }) => (
-      <Checkbox
-        checked={row.getIsSelected()}
-        onCheckedChange={(checked) => row.toggleSelected(!!checked)}
-        onClick={(e) => e.stopPropagation()}
-        aria-label="Select row"
-      />
-    ),
-    enableSorting: false,
-  },
-  {
-    accessorKey: 'state',
-    header: 'State',
-    cell: ({ row }) => <StateIndicator state={row.original.state} />,
-  },
-  {
-    accessorKey: 'fileName',
-    header: 'Filename',
-    cell: ({ row }) => (
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <span className="block max-w-[200px] truncate">
-            {row.original.fileName}
-          </span>
-        </TooltipTrigger>
-        <TooltipContent>
-          <p className="max-w-[400px] break-all">{row.original.url}</p>
-        </TooltipContent>
-      </Tooltip>
-    ),
-  },
-  {
-    id: 'type',
-    header: 'Type',
-    cell: ({ row }) => {
-      const ext = extractExtension(row.original.fileName);
-      return ext ? <Badge variant="outline">{ext}</Badge> : null;
+function getColumns(t: Translate): ColumnDef<DownloadView>[] {
+  return [
+    {
+      id: 'select',
+      header: ({ table }) => (
+        <Checkbox
+          checked={table.getIsAllRowsSelected()}
+          onCheckedChange={(checked) => table.toggleAllRowsSelected(!!checked)}
+          aria-label={t('downloads.table.selectAll')}
+        />
+      ),
+      cell: ({ row }) => (
+        <Checkbox
+          checked={row.getIsSelected()}
+          onCheckedChange={(checked) => row.toggleSelected(!!checked)}
+          onClick={(e) => e.stopPropagation()}
+          aria-label={t('downloads.table.selectRow')}
+        />
+      ),
+      enableSorting: false,
     },
-  },
-  {
-    id: 'host',
-    header: 'Host',
-    cell: ({ row }) => (
-      <span className="text-xs text-muted-foreground">
-        {extractHostname(row.original.url)}
-      </span>
-    ),
-  },
-  {
-    accessorKey: 'progressPercent',
-    header: 'Progress',
-    cell: ({ row }) => <ProgressCell download={row.original} />,
-  },
-  {
-    id: 'speed',
-    header: 'Speed',
-    cell: ({ row }) => <SpeedCell downloadId={row.original.id} />,
-    enableSorting: false,
-  },
-  {
-    id: 'eta',
-    header: 'ETA',
-    cell: ({ row }) => <EtaCell downloadId={row.original.id} />,
-    enableSorting: false,
-  },
-  {
-    id: 'actions',
-    header: '',
-    cell: ({ row }) => <ActionCell download={row.original} />,
-    enableSorting: false,
-  },
-];
+    {
+      accessorKey: 'state',
+      header: t('downloads.table.columns.state'),
+      cell: ({ row }) => <StateIndicator state={row.original.state} />,
+    },
+    {
+      accessorKey: 'fileName',
+      header: t('downloads.table.columns.fileName'),
+      cell: ({ row }) => (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span className="block max-w-[200px] truncate">
+              {row.original.fileName}
+            </span>
+          </TooltipTrigger>
+          <TooltipContent>
+            <p className="max-w-[400px] break-all">{row.original.url}</p>
+          </TooltipContent>
+        </Tooltip>
+      ),
+    },
+    {
+      id: 'type',
+      header: t('downloads.table.columns.type'),
+      cell: ({ row }) => {
+        const ext = extractExtension(row.original.fileName);
+        return ext ? <Badge variant="outline">{ext}</Badge> : null;
+      },
+    },
+    {
+      id: 'host',
+      header: t('downloads.table.columns.host'),
+      cell: ({ row }) => (
+        <span className="text-xs text-muted-foreground">
+          {extractHostname(row.original.url)}
+        </span>
+      ),
+    },
+    {
+      accessorKey: 'progressPercent',
+      header: t('downloads.table.columns.progress'),
+      cell: ({ row }) => <ProgressCell download={row.original} />,
+    },
+    {
+      id: 'speed',
+      header: t('downloads.table.columns.speed'),
+      cell: ({ row }) => <SpeedCell downloadId={row.original.id} />,
+      enableSorting: false,
+    },
+    {
+      id: 'eta',
+      header: t('downloads.table.columns.eta'),
+      cell: ({ row }) => <EtaCell downloadId={row.original.id} />,
+      enableSorting: false,
+    },
+    {
+      id: 'actions',
+      header: '',
+      cell: ({ row }) => <ActionCell download={row.original} t={t} />,
+      enableSorting: false,
+    },
+  ];
+}
 
 export function DownloadsTable({
   downloads,
@@ -279,6 +285,7 @@ export function DownloadsTable({
   const { t } = useTranslation();
   const [sorting, setSorting] = useState<SortingState>([]);
   const tableContainerRef = useRef<HTMLDivElement>(null);
+  const columns = useMemo(() => getColumns(t), [t]);
 
   const invalidateKeys = useMemo(() => [downloadQueries.lists(), downloadQueries.countByState()] as const, []);
   const pauseMut = useTauriMutation<unknown, { id: string }>('download_pause', { invalidateKeys });

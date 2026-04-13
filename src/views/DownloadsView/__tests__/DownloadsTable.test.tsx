@@ -167,6 +167,36 @@ describe('DownloadsTable', () => {
     expect(screen.getByText('ETA')).toBeInTheDocument();
   });
 
+  it('should render French column headers when locale is fr', () => {
+    window.localStorage.setItem('i18nextLng', 'fr');
+
+    renderTable();
+
+    expect(screen.getByText('Nom du fichier')).toBeInTheDocument();
+    expect(screen.getByText('État')).toBeInTheDocument();
+    expect(screen.getByText('Type')).toBeInTheDocument();
+    expect(screen.getByText('Hôte')).toBeInTheDocument();
+    expect(screen.getByText('Progression')).toBeInTheDocument();
+    expect(screen.getByText('Vitesse')).toBeInTheDocument();
+    expect(screen.getByText('Temps restant')).toBeInTheDocument();
+  });
+
+  it('should render French action menu labels when locale is fr', async () => {
+    window.localStorage.setItem('i18nextLng', 'fr');
+    const user = userEvent.setup();
+
+    renderTable();
+
+    await user.click(screen.getAllByLabelText('Plus d’actions')[0]);
+    await user.click(screen.getByText('Définir la priorité'));
+
+    expect(screen.getByText('Définir la priorité')).toBeInTheDocument();
+    expect(screen.getByText('Haute')).toBeInTheDocument();
+    expect(screen.getByText('Normale')).toBeInTheDocument();
+    expect(screen.getByText('Basse')).toBeInTheDocument();
+    expect(screen.getByText('Supprimer')).toBeInTheDocument();
+  });
+
   it('should extract and show file type badge', () => {
     renderTable();
     expect(screen.getByText('ZIP')).toBeInTheDocument();

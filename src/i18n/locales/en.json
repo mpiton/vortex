@@ -135,9 +135,33 @@
       "resumeAll": "Resume All",
       "cancelSelected": "Cancel Selected"
     },
-    "selectedCount": "{{count}} selected",
+    "selectedCount_one": "{{count}} selected",
+    "selectedCount_other": "{{count}} selected",
     "empty": "No downloads",
-    "loading": "Loading..."
+    "loading": "Loading...",
+    "table": {
+      "selectAll": "Select all",
+      "selectRow": "Select row",
+      "moreActions": "More actions",
+      "columns": {
+        "state": "State",
+        "fileName": "Filename",
+        "type": "Type",
+        "host": "Host",
+        "progress": "Progress",
+        "speed": "Speed",
+        "eta": "ETA"
+      },
+      "actions": {
+        "setPriority": "Set Priority",
+        "remove": "Remove"
+      },
+      "priority": {
+        "high": "High",
+        "normal": "Normal",
+        "low": "Low"
+      }
+    }
   },
   "linkGrabber": {
     "clipboardMonitoringLabel": "Clipboard Monitoring",
@@ -168,7 +192,8 @@
   "statusBar": {
     "limit": "Limit: {{value}}",
     "freeSpace": "{{value}} free",
-    "activeCount": "{{count}} active",
+    "activeCount_one": "{{count}} active",
+    "activeCount_other": "{{count}} active",
     "clipboard": "Clipboard",
     "clipboardActive": "Clipboard monitoring active",
     "clipboardPaused": "Clipboard monitoring paused"

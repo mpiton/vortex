@@ -1,7 +1,8 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { StatusBar } from "../StatusBar";
+import { useDownloadStore } from "@/stores/downloadStore";
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(),
@@ -21,6 +22,19 @@ function renderWithProviders(ui: React.ReactElement) {
 }
 
 describe("StatusBar", () => {
+  beforeEach(() => {
+    useDownloadStore.setState({ countByState: {}, progressMap: {} });
+  });
+
+  it("should use the singular French label when one download is active", () => {
+    window.localStorage.setItem("i18nextLng", "fr");
+    useDownloadStore.setState({ countByState: { Downloading: 1 } });
+
+    renderWithProviders(<StatusBar />);
+
+    expect(screen.getByText("1 actif")).toBeInTheDocument();
+  });
+
   it("should render download speed", () => {
     renderWithProviders(<StatusBar />);
     expect(screen.getByText(/0\.0 MB\/s/)).toBeInTheDocument();

@@ -44,4 +44,13 @@ describe('ActionsBar', () => {
     await user.click(screen.getByText('Clear'));
     expect(useUiStore.getState().selectedDownloadIds).toEqual([]);
   });
+
+  it('should use the singular French label when one item is selected', () => {
+    window.localStorage.setItem('i18nextLng', 'fr');
+    useUiStore.setState({ selectedDownloadIds: ['1'] });
+
+    renderWithQuery(<ActionsBar />);
+
+    expect(screen.getByText('1 sélectionné')).toBeInTheDocument();
+  });
 });

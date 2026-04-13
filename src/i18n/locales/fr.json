@@ -135,9 +135,33 @@
       "resumeAll": "Tout reprendre",
       "cancelSelected": "Annuler la sélection"
     },
-    "selectedCount": "{{count}} sélectionnés",
+    "selectedCount_one": "{{count}} sélectionné",
+    "selectedCount_other": "{{count}} sélectionnés",
     "empty": "Aucun téléchargement",
-    "loading": "Chargement..."
+    "loading": "Chargement...",
+    "table": {
+      "selectAll": "Tout sélectionner",
+      "selectRow": "Sélectionner la ligne",
+      "moreActions": "Plus d’actions",
+      "columns": {
+        "state": "État",
+        "fileName": "Nom du fichier",
+        "type": "Type",
+        "host": "Hôte",
+        "progress": "Progression",
+        "speed": "Vitesse",
+        "eta": "Temps restant"
+      },
+      "actions": {
+        "setPriority": "Définir la priorité",
+        "remove": "Supprimer"
+      },
+      "priority": {
+        "high": "Haute",
+        "normal": "Normale",
+        "low": "Basse"
+      }
+    }
   },
   "linkGrabber": {
     "clipboardMonitoringLabel": "Surveillance du presse-papiers",
@@ -168,7 +192,8 @@
   "statusBar": {
     "limit": "Limite : {{value}}",
     "freeSpace": "{{value}} libres",
-    "activeCount": "{{count}} actifs",
+    "activeCount_one": "{{count}} actif",
+    "activeCount_other": "{{count}} actifs",
     "clipboard": "Presse-papiers",
     "clipboardActive": "Surveillance du presse-papiers active",
     "clipboardPaused": "Surveillance du presse-papiers en pause"
