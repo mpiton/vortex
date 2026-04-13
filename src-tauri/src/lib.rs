@@ -31,7 +31,7 @@ pub use adapters::driven::sqlite::connection;
 pub use adapters::driven::sqlite::download_read_repo::SqliteDownloadReadRepo;
 pub use adapters::driven::sqlite::download_repo::SqliteDownloadRepo;
 pub use adapters::driven::sqlite::history_repo::SqliteHistoryRepo;
-pub use adapters::driven::stats::InMemoryStatsRepository;
+pub use adapters::driven::sqlite::stats_repo::SqliteStatsRepo;
 pub use adapters::driven::tray::setup_system_tray;
 pub use application::command_bus::CommandBus;
 pub use application::error::AppError;
@@ -115,9 +115,9 @@ pub fn run() {
                 Arc::new(SqliteDownloadRepo::new(db.clone()));
             let download_read_repo: Arc<dyn DownloadReadRepository> =
                 Arc::new(SqliteDownloadReadRepo::new(db.clone()));
-            let history_repo: Arc<dyn HistoryRepository> = Arc::new(SqliteHistoryRepo::new(db));
-            // TODO: replace with SqliteStatsRepo once implemented
-            let stats_repo: Arc<dyn StatsRepository> = Arc::new(InMemoryStatsRepository::new());
+            let history_repo: Arc<dyn HistoryRepository> =
+                Arc::new(SqliteHistoryRepo::new(db.clone()));
+            let stats_repo: Arc<dyn StatsRepository> = Arc::new(SqliteStatsRepo::new(db));
 
             // ── Plugin system ───────────────────────────────────────
             let shared_resources = Arc::new(SharedHostResources::new());

@@ -10,5 +10,6 @@ pub mod network;
 pub mod notification;
 pub mod plugin;
 pub mod sqlite;
+#[cfg(test)]
 pub mod stats;
 pub mod tray;
