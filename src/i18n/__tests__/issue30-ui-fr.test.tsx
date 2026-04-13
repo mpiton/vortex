@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, cleanup } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { useDownloadStore } from "@/stores/downloadStore";
+import { useLayoutStore } from "@/stores/layout-store";
 import { useUiStore } from "@/stores/uiStore";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { DownloadsView } from "@/views/DownloadsView";
@@ -76,6 +78,13 @@ beforeEach(() => {
     filterBarExpanded: false,
   });
   useSettingsStore.setState({ config: null, isLoading: false, error: null });
+  useLayoutStore.setState({
+    speedLimit: 0,
+    freeSpace: "-- GB",
+    appVersion: "0.1.0",
+    sidebarCollapsed: false,
+  });
+  useDownloadStore.setState({ progressMap: {}, countByState: {} });
   cleanup();
 });
 
@@ -119,7 +128,7 @@ describe("issue #30 — French UI translations", () => {
     expect(screen.getByText("Limite : illimitée")).toBeInTheDocument();
     expect(screen.getByText("-- GB libres")).toBeInTheDocument();
     expect(screen.getByText("Presse-papiers")).toBeInTheDocument();
-    expect(screen.getByText("0 actifs")).toBeInTheDocument();
+    expect(screen.getByText("0 actif")).toBeInTheDocument();
   });
 
   it("renders placeholder views in French", () => {

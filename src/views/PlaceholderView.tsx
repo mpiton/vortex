@@ -1,9 +1,18 @@
 import type { LucideIcon } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
+type PlaceholderNavKey =
+  | "accounts"
+  | "captcha"
+  | "history"
+  | "packages"
+  | "plugins"
+  | "scheduler"
+  | "statistics";
+
 interface PlaceholderViewProps {
   icon: LucideIcon;
-  titleKey: string;
+  titleKey: `nav.${PlaceholderNavKey}`;
 }
 
 export function PlaceholderView({ icon: Icon, titleKey }: PlaceholderViewProps) {

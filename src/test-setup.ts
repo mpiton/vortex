@@ -1,6 +1,13 @@
 import "@testing-library/jest-dom/vitest";
 import { beforeEach, vi } from "vitest";
 
+function resolveMockLanguage(options?: Record<string, unknown>): "en" | "fr" {
+  const requestedLanguage = options?.lng;
+  if (requestedLanguage === "fr") return "fr";
+  if (requestedLanguage === "en") return "en";
+  return getMockLanguage();
+}
+
 function getMockLanguage(): "en" | "fr" {
   if (typeof window === "undefined") return "en";
   return window.localStorage.getItem("i18nextLng") === "fr" ? "fr" : "en";
@@ -31,10 +38,12 @@ vi.mock("react-i18next", async () => {
   };
 
   const t = (key: string, options?: Record<string, unknown>) => {
-    const language = getMockLanguage();
+    const language = resolveMockLanguage(options);
     const count = options?.count;
+    const pluralCategory =
+      typeof count === "number" ? new Intl.PluralRules(language).select(count) : null;
     const pluralKey =
-      typeof count === "number" ? `${key}_${count === 1 ? "one" : "other"}` : key;
+      pluralCategory === null ? key : `${key}_${pluralCategory}`;
     const pluralTemplate = lookupKey(translations[language], pluralKey);
     const template =
       pluralTemplate !== pluralKey
