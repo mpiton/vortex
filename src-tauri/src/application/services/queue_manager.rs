@@ -177,11 +177,15 @@ impl QueueManager {
                     self.download_repo.save(&download)?;
                 }
                 Err(e) => {
-                    tracing::warn!(
+                    // fail() accepts the same states as the if-matches guard above,
+                    // so this branch is unreachable in practice. Propagate to avoid
+                    // silently re-introducing the CQRS divergence if states diverge.
+                    tracing::error!(
                         download_id = id.0,
                         error = %e,
-                        "handle_download_failed: unexpected fail() transition error"
+                        "handle_download_failed: unexpected fail() transition error — download may be stuck"
                     );
+                    return Err(AppError::Domain(e));
                 }
             }
         }
