@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Switch } from "@/components/ui/switch";
 import { useTauriMutation } from "@/api/hooks";
 import { tauriInvoke } from "@/api/client";
@@ -13,6 +14,7 @@ import type { ResolvedLink, FilterType, GroupingMode } from "./types";
 import type { MediaGrabberOptions } from "@/types/media";
 
 export function LinkGrabberView() {
+  const { t } = useTranslation();
   const [resolvedLinks, setResolvedLinks] = useState<ResolvedLink[]>([]);
   const [resolveError, setResolveError] = useState<string | null>(null);
   const [filter, setFilter] = useState<FilterType>("all");
@@ -98,10 +100,10 @@ export function LinkGrabberView() {
   return (
     <div className="flex h-full flex-col gap-4 p-4">
       <div className="flex items-center justify-between">
-        <h1 className="text-lg font-bold">Link Grabber</h1>
-        <div className="flex items-center gap-2" title="Coming in a future update">
+        <h1 className="text-lg font-bold">{t("nav.linkGrabber")}</h1>
+        <div className="flex items-center gap-2" title={t("linkGrabber.clipboardComingSoon")}>
           <label className="text-sm" htmlFor="clipboard-toggle">
-            Clipboard Monitoring
+            {t("linkGrabber.clipboardMonitoringLabel")}
           </label>
           <Switch
             id="clipboard-toggle"

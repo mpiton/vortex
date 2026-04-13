@@ -122,7 +122,56 @@
     "fileSize": "Size",
     "mimeType": "MIME Type",
     "added": "Added",
-    "destination": "Destination"
+    "destination": "Destination",
+    "filters": {
+      "all": "All",
+      "active": "Active",
+      "queued": "Queued",
+      "done": "Done",
+      "failed": "Failed"
+    },
+    "actions": {
+      "pauseAll": "Pause All",
+      "resumeAll": "Resume All",
+      "cancelSelected": "Cancel Selected"
+    },
+    "selectedCount": "{{count}} selected",
+    "empty": "No downloads",
+    "loading": "Loading..."
+  },
+  "linkGrabber": {
+    "clipboardMonitoringLabel": "Clipboard Monitoring",
+    "pastePlaceholder": "Paste URLs here (one per line)…",
+    "analyze": "Analyze Links",
+    "resolving": "Resolving…",
+    "analyzeFailed": "Failed to analyze links. Please try again.",
+    "clipboardComingSoon": "Coming in a future update",
+    "filters": {
+      "all": "All",
+      "online": "Online",
+      "offline": "Offline",
+      "media": "Media"
+    },
+    "actions": {
+      "selectAll": "Select All ({{count}})",
+      "startSelected": "Start Selected ({{count}})",
+      "startAllOnline": "Start All Online"
+    },
+    "grouping": {
+      "label": "Group Into Packages:",
+      "none": "No Grouping",
+      "hostname": "By Hostname",
+      "extension": "By Extension",
+      "type": "By Type"
+    }
+  },
+  "statusBar": {
+    "limit": "Limit: {{value}}",
+    "freeSpace": "{{value}} free",
+    "activeCount": "{{count}} active",
+    "clipboard": "Clipboard",
+    "clipboardActive": "Clipboard monitoring active",
+    "clipboardPaused": "Clipboard monitoring paused"
   },
   "mediaGrabber": {
     "title": "Media Grabber Options",
@@ -134,6 +183,9 @@
   },
   "common": {
     "retry": "Retry",
-    "failedToLoadSettings": "Failed to load settings"
+    "failedToLoadSettings": "Failed to load settings",
+    "comingSoon": "Coming soon",
+    "clear": "Clear",
+    "unlimited": "unlimited"
   }
 }

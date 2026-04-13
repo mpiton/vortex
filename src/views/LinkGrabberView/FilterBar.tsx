@@ -1,4 +1,5 @@
 import { Button } from "@/components/ui/button";
+import { useTranslation } from "react-i18next";
 import type { FilterType } from "./types";
 
 interface FilterBarProps {
@@ -7,11 +8,12 @@ interface FilterBarProps {
 }
 
 export function FilterBar({ activeFilter, onFilterChange }: FilterBarProps) {
+  const { t } = useTranslation();
   const filters: { type: FilterType; label: string }[] = [
-    { type: "all", label: "All" },
-    { type: "online", label: "Online" },
-    { type: "offline", label: "Offline" },
-    { type: "media", label: "Media" },
+    { type: "all", label: t("linkGrabber.filters.all") },
+    { type: "online", label: t("linkGrabber.filters.online") },
+    { type: "offline", label: t("linkGrabber.filters.offline") },
+    { type: "media", label: t("linkGrabber.filters.media") },
   ];
 
   return (

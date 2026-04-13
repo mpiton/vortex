@@ -1,5 +1,6 @@
 import { useRef } from 'react';
 import { Pause, Play, X } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import { useTauriMutation } from '@/api/hooks';
 import { downloadQueries } from '@/api/queries';
@@ -11,6 +12,7 @@ const INVALIDATE_KEYS = [
 ] as const;
 
 export function ActionsBar() {
+  const { t } = useTranslation();
   const selectedDownloadIds = useUiStore((s) => s.selectedDownloadIds);
   const setSelectedDownloadIds = useUiStore((s) => s.setSelectedDownloadIds);
   const clearSelection = useUiStore((s) => s.clearSelection);
@@ -60,25 +62,25 @@ export function ActionsBar() {
       {hasSelection ? (
         <>
           <span className="text-sm text-muted-foreground">
-            {selectedDownloadIds.length} selected
+            {t('downloads.selectedCount', { count: selectedDownloadIds.length })}
           </span>
           <Button variant="ghost" size="sm" onClick={handleCancelSelected}>
             <X className="mr-1 h-4 w-4" />
-            Cancel Selected
+            {t('downloads.actions.cancelSelected')}
           </Button>
           <Button variant="ghost" size="sm" onClick={clearSelection}>
-            Clear
+            {t('common.clear')}
           </Button>
         </>
       ) : (
         <>
           <Button variant="ghost" size="sm" onClick={() => pauseAll.mutate()}>
             <Pause className="mr-1 h-4 w-4" />
-            Pause All
+            {t('downloads.actions.pauseAll')}
           </Button>
           <Button variant="ghost" size="sm" onClick={() => resumeAll.mutate()}>
             <Play className="mr-1 h-4 w-4" />
-            Resume All
+            {t('downloads.actions.resumeAll')}
           </Button>
         </>
       )}

@@ -7,6 +7,7 @@ import {
 } from '@tanstack/react-table';
 import type { ColumnDef, SortingState } from '@tanstack/react-table';
 import { useVirtualizer } from '@tanstack/react-virtual';
+import { useTranslation } from 'react-i18next';
 import {
   Pause,
   Play,
@@ -275,6 +276,7 @@ export function DownloadsTable({
   filter,
   searchQuery,
 }: DownloadsTableProps) {
+  const { t } = useTranslation();
   const [sorting, setSorting] = useState<SortingState>([]);
   const tableContainerRef = useRef<HTMLDivElement>(null);
 
@@ -376,7 +378,7 @@ export function DownloadsTable({
   if (isLoading) {
     return (
       <div className="flex flex-1 items-center justify-center">
-        <span className="text-sm text-muted-foreground">Loading...</span>
+        <span className="text-sm text-muted-foreground">{t('downloads.loading')}</span>
       </div>
     );
   }
@@ -384,7 +386,7 @@ export function DownloadsTable({
   if (filteredDownloads.length === 0) {
     return (
       <div className="flex flex-1 items-center justify-center">
-        <span className="text-sm text-muted-foreground">No downloads</span>
+        <span className="text-sm text-muted-foreground">{t('downloads.empty')}</span>
       </div>
     );
   }
