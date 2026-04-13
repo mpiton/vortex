@@ -607,11 +607,26 @@ fn parse_sort_direction(s: &str) -> SortDirection {
 }
 
 fn status_bar_path(download_dir: Option<&str>) -> Option<PathBuf> {
-    download_dir
-        .map(PathBuf::from)
+    configured_status_bar_path(download_dir)
         .or_else(dirs::download_dir)
         .or_else(|| std::env::current_dir().ok())
         .and_then(resolve_existing_disk_path)
+}
+
+fn configured_status_bar_path(download_dir: Option<&str>) -> Option<PathBuf> {
+    download_dir
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .and_then(|value| {
+            let path = PathBuf::from(value);
+            if path.is_absolute() {
+                Some(path)
+            } else if path.exists() {
+                std::env::current_dir().ok().map(|cwd| cwd.join(path))
+            } else {
+                None
+            }
+        })
 }
 
 fn resolve_existing_disk_path(path: PathBuf) -> Option<PathBuf> {
@@ -684,7 +699,29 @@ fn read_available_space(_: &Path) -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
-    use super::{read_available_space, resolve_existing_disk_path};
+    use super::{configured_status_bar_path, read_available_space, resolve_existing_disk_path};
+    use std::path::PathBuf;
+
+    #[test]
+    fn configured_status_bar_path_rejects_empty_values() {
+        assert!(configured_status_bar_path(Some("   ")).is_none());
+    }
+
+    #[test]
+    fn configured_status_bar_path_rejects_missing_relative_paths() {
+        assert!(configured_status_bar_path(Some("missing-relative-download-dir")).is_none());
+    }
+
+    #[test]
+    fn configured_status_bar_path_keeps_absolute_values() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let absolute_path = temp_dir.path().join("downloads");
+
+        let configured =
+            configured_status_bar_path(Some(absolute_path.to_str().expect("utf-8 path")));
+
+        assert_eq!(configured, Some(PathBuf::from(&absolute_path)));
+    }
 
     #[test]
     fn resolve_existing_disk_path_returns_existing_path_unchanged() {
