@@ -142,7 +142,11 @@ impl QueueManager {
         self.on_slot_freed().await
     }
 
-    pub async fn handle_download_failed(self: &Arc<Self>, id: DownloadId) -> Result<(), AppError> {
+    pub async fn handle_download_failed(
+        self: &Arc<Self>,
+        id: DownloadId,
+        error: String,
+    ) -> Result<(), AppError> {
         // Single find_by_id — avoids TOCTOU from double read
         let mut download = match self.download_repo.find_by_id(id)? {
             Some(d) => d,
@@ -164,6 +168,22 @@ impl QueueManager {
                 | DownloadState::Extracting
         ) {
             self.safe_decrement();
+            // Persist the Error state before attempting retry. The engine
+            // already emitted DownloadFailed to the Tauri bridge (UI update),
+            // but SQLite must be updated too to prevent the CQRS divergence
+            // where the download stays stuck as Downloading indefinitely.
+            match download.fail(error) {
+                Ok(_) => {
+                    self.download_repo.save(&download)?;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        download_id = id.0,
+                        error = %e,
+                        "handle_download_failed: unexpected fail() transition error"
+                    );
+                }
+            }
         }
 
         match download.retry() {
@@ -180,6 +200,7 @@ impl QueueManager {
                 Ok(())
             }
             Err(DomainError::MaxRetriesExceeded { .. }) => {
+                // Error state already persisted above via fail() — nothing more to save.
                 self.on_slot_freed().await?;
                 Ok(())
             }
@@ -251,8 +272,8 @@ impl QueueManager {
                     DomainEvent::DownloadCompleted { .. }
                     | DomainEvent::DownloadPaused { .. }
                     | DomainEvent::DownloadCancelled { .. } => self.decrement_and_schedule().await,
-                    DomainEvent::DownloadFailed { id, .. } => {
-                        self.handle_download_failed(*id).await
+                    DomainEvent::DownloadFailed { id, error } => {
+                        self.handle_download_failed(*id, error.clone()).await
                     }
                     DomainEvent::DownloadCreated { .. } | DomainEvent::DownloadRetrying { .. } => {
                         self.on_slot_freed().await
@@ -579,7 +600,9 @@ mod tests {
             1,
         );
 
-        qm.handle_download_failed(DownloadId(1)).await.unwrap();
+        qm.handle_download_failed(DownloadId(1), "circuit breaker".to_string())
+            .await
+            .unwrap();
 
         // Download should remain in Error state
         let saved = repo.find_by_id(DownloadId(1)).unwrap().unwrap();
@@ -646,7 +669,9 @@ mod tests {
             1,
         );
 
-        qm.handle_download_failed(DownloadId(1)).await.unwrap();
+        qm.handle_download_failed(DownloadId(1), "rollback".to_string())
+            .await
+            .unwrap();
 
         // No decrement — download was already Error (rollback), active stays 1
         assert_eq!(qm.active_count(), 1);
@@ -654,5 +679,76 @@ mod tests {
         // Download is in Retry state, waiting for backoff timer
         let saved = repo.find_by_id(DownloadId(1)).unwrap().unwrap();
         assert_eq!(saved.state(), DownloadState::Retry);
+    }
+
+    // --- Issue #46: CQRS state divergence ---
+
+    #[tokio::test]
+    async fn test_handle_download_failed_persists_error_state_when_downloading() {
+        // Regression for issue #46: when the engine task fails asynchronously
+        // (e.g. HEAD timeout), handle_download_failed must transition the download
+        // from Downloading → Error → Retry in SQLite, not leave it stuck as Downloading.
+        let mut d = make_download(1, 5, DownloadState::Queued);
+        d.start().unwrap(); // Simulate engine started → now Downloading in DB
+        assert_eq!(d.state(), DownloadState::Downloading);
+
+        let repo = Arc::new(MockDownloadRepo::new(vec![d]));
+        let engine = Arc::new(MockEngine::new());
+        let bus = Arc::new(MockEventBus::new());
+        let qm = make_manager(
+            Arc::clone(&repo),
+            Arc::clone(&engine),
+            Arc::clone(&bus),
+            3,
+            1,
+        );
+
+        qm.handle_download_failed(DownloadId(1), "HEAD request timeout".to_string())
+            .await
+            .unwrap();
+
+        let saved = repo.find_by_id(DownloadId(1)).unwrap().unwrap();
+        assert_ne!(
+            saved.state(),
+            DownloadState::Downloading,
+            "download must NOT stay stuck in Downloading state"
+        );
+        // With default max_retries (5) and 0 retries so far → should be Retry
+        assert_eq!(saved.state(), DownloadState::Retry);
+        assert_eq!(qm.active_count(), 0, "active slot must be freed");
+    }
+
+    #[tokio::test]
+    async fn test_handle_download_failed_transitions_to_error_when_max_retries_exceeded() {
+        // Regression for issue #46: when max retries = 0, the download must end in
+        // Error state (not Downloading) after the engine task fails.
+        let mut d = make_download(1, 5, DownloadState::Queued);
+        d = d.with_max_retries(0); // No retries allowed
+        d.start().unwrap();
+        assert_eq!(d.state(), DownloadState::Downloading);
+
+        let repo = Arc::new(MockDownloadRepo::new(vec![d]));
+        let engine = Arc::new(MockEngine::new());
+        let bus = Arc::new(MockEventBus::new());
+        let qm = make_manager(
+            Arc::clone(&repo),
+            Arc::clone(&engine),
+            Arc::clone(&bus),
+            3,
+            1,
+        );
+
+        qm.handle_download_failed(DownloadId(1), "connection refused".to_string())
+            .await
+            .unwrap();
+
+        let saved = repo.find_by_id(DownloadId(1)).unwrap().unwrap();
+        assert_eq!(
+            saved.state(),
+            DownloadState::Error,
+            "max retries exceeded: download must be Error"
+        );
+        assert_ne!(saved.state(), DownloadState::Downloading);
+        assert_eq!(qm.active_count(), 0, "active slot must be freed");
     }
 }
