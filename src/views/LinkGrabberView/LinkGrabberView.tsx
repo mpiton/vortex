@@ -14,6 +14,7 @@ import type { MediaGrabberOptions } from "@/types/media";
 
 export function LinkGrabberView() {
   const [resolvedLinks, setResolvedLinks] = useState<ResolvedLink[]>([]);
+  const [resolveError, setResolveError] = useState<string | null>(null);
   const [filter, setFilter] = useState<FilterType>("all");
   const [selectedLinkIds, setSelectedLinkIds] = useState<string[]>([]);
   const [groupingMode, setGroupingMode] = useState<GroupingMode>("hostname");
@@ -30,8 +31,12 @@ export function LinkGrabberView() {
     { urls: string[] }
   >("link_resolve", {
     onSuccess: (resolved) => {
+      setResolveError(null);
       setResolvedLinks(resolved);
       setSelectedLinkIds([]);
+    },
+    onError: (error) => {
+      setResolveError(error.message);
     },
   });
 
@@ -46,6 +51,7 @@ export function LinkGrabberView() {
 
   const handlePasteUrls = (urls: string[]) => {
     // TODO: container: entries need a dedicated backend command for decryption
+    setResolveError(null);
     const validUrls = urls.filter(
       (u) =>
         u.startsWith("http://") ||
@@ -110,7 +116,11 @@ export function LinkGrabberView() {
         </div>
       </div>
 
-      <PasteZone onPasteUrls={handlePasteUrls} isLoading={isResolving} />
+      <PasteZone
+        onPasteUrls={handlePasteUrls}
+        isLoading={isResolving}
+        errorMessage={resolveError}
+      />
 
       {resolvedLinks.length > 0 && (
         <>

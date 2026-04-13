@@ -224,6 +224,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `NoopCredentialStore` remains available for tests
 
 ### Fixed
+- Link Grabber now shows an inline error message when `link_resolve` fails, instead of silently resetting after "Analyze Links" (#29)
 - Settings view now displays the actual backend error message when `settings_get` fails, instead of only a generic "Failed to load settings" (#28)
 - **CRITICAL**: All 22 IPC commands now work — `AppState` is constructed and registered via `.manage()` in the Tauri setup closure (#27)
   - Database connection (SQLite WAL mode) with migrations run at startup

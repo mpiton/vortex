@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 interface PasteZoneProps {
   onPasteUrls: (urls: string[]) => void;
   isLoading?: boolean;
+  errorMessage?: string | null;
 }
 
 export function extractUrls(text: string): string[] {
@@ -13,7 +14,11 @@ export function extractUrls(text: string): string[] {
   return (matches ?? []).map((url) => url.replace(/[),.;:>}"'!?]+$/, ""));
 }
 
-export function PasteZone({ onPasteUrls, isLoading }: PasteZoneProps) {
+export function PasteZone({
+  onPasteUrls,
+  isLoading,
+  errorMessage,
+}: PasteZoneProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [isDragging, setIsDragging] = useState(false);
 
@@ -89,6 +94,14 @@ export function PasteZone({ onPasteUrls, isLoading }: PasteZoneProps) {
           {isLoading ? "Resolving…" : "Analyze Links"}
         </Button>
       </div>
+      {errorMessage && (
+        <div className="mt-3 space-y-1" role="alert">
+          <p className="text-sm text-destructive">
+            Failed to analyze links. Please try again.
+          </p>
+          <p className="text-xs text-muted-foreground">{errorMessage}</p>
+        </div>
+      )}
     </div>
   );
 }

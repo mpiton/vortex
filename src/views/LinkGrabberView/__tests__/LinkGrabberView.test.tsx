@@ -88,6 +88,22 @@ describe("LinkGrabberView", () => {
     });
   });
 
+  it("should show inline error when link resolution fails", async () => {
+    mockInvoke.mockRejectedValueOnce(new Error("AppState not registered"));
+
+    const user = userEvent.setup();
+    renderWithProviders();
+
+    const textarea = screen.getByRole("textbox");
+    await user.type(textarea, "https://example.com/file.zip");
+    await user.click(screen.getByRole("button", { name: "Analyze Links" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Failed to analyze links. Please try again.",
+    );
+    expect(screen.getByText("AppState not registered")).toBeInTheDocument();
+  });
+
   it("should show filter/grouping/actions sections after links are resolved", async () => {
     mockInvoke.mockResolvedValue([
       {
