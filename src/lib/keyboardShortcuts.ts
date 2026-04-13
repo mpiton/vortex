@@ -10,6 +10,13 @@ export const SHORTCUT_ACTIONS = {
 export type ShortcutAction =
   (typeof SHORTCUT_ACTIONS)[keyof typeof SHORTCUT_ACTIONS];
 
+function isShortcutAction(value: unknown): value is ShortcutAction {
+  return (
+    typeof value === 'string' &&
+    Object.values(SHORTCUT_ACTIONS).includes(value as ShortcutAction)
+  );
+}
+
 export function dispatchShortcutAction(action: ShortcutAction) {
   window.dispatchEvent(
     new CustomEvent<ShortcutAction>(SHORTCUT_ACTION_EVENT, {
@@ -22,7 +29,12 @@ export function subscribeShortcutAction(
   handler: (action: ShortcutAction) => void,
 ) {
   const listener = (event: Event) => {
-    handler((event as CustomEvent<ShortcutAction>).detail);
+    if (!(event instanceof CustomEvent)) return;
+
+    const detail = (event as CustomEvent<unknown>).detail;
+    if (isShortcutAction(detail)) {
+      handler(detail);
+    }
   };
 
   window.addEventListener(SHORTCUT_ACTION_EVENT, listener as EventListener);

@@ -49,9 +49,10 @@ type Translate = (key: string, options?: Record<string, unknown>) => string;
 
 interface DownloadsTableProps {
   downloads: DownloadView[];
+  downloadsAreFiltered?: boolean;
   isLoading: boolean;
-  filter: FilterType;
-  searchQuery: string;
+  filter?: FilterType;
+  searchQuery?: string;
 }
 
 const STATE_FILTER_MAP: Record<FilterType, DownloadState[] | null> = {
@@ -278,9 +279,10 @@ function getColumns(t: Translate): ColumnDef<DownloadView>[] {
 
 export function DownloadsTable({
   downloads,
+  downloadsAreFiltered = false,
   isLoading,
-  filter,
-  searchQuery,
+  filter = 'all',
+  searchQuery = '',
 }: DownloadsTableProps) {
   const { t } = useTranslation();
   const [sorting, setSorting] = useState<SortingState>([]);
@@ -311,6 +313,10 @@ export function DownloadsTable({
   const clearSelection = useUiStore((s) => s.clearSelection);
 
   const filteredDownloads = useMemo(() => {
+    if (downloadsAreFiltered) {
+      return downloads;
+    }
+
     let result = downloads;
 
     const allowedStates = STATE_FILTER_MAP[filter];
@@ -331,7 +337,7 @@ export function DownloadsTable({
     }
 
     return result;
-  }, [downloads, filter, searchQuery]);
+  }, [downloads, downloadsAreFiltered, filter, searchQuery]);
 
   const rowSelection = useMemo(() => {
     const selectedSet = new Set(selectedDownloadIds);

@@ -1,6 +1,5 @@
-import { useCallback, useEffect, useState } from 'react';
-import { useTauriQuery } from '@/api/hooks';
-import { useTauriMutation } from '@/api/hooks';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useTauriMutation, useTauriQuery } from '@/api/hooks';
 import { downloadQueries } from '@/api/queries';
 import { useDownloadProgress } from '@/hooks/useDownloadProgress';
 import { subscribeShortcutAction, SHORTCUT_ACTIONS } from '@/lib/keyboardShortcuts';
@@ -50,42 +49,49 @@ export function DownloadsView() {
     { queryKey: downloadQueries.countByState(), staleTime: 2000 },
   );
 
-  const filteredDownloads = (downloads ?? []).filter((download) => {
-    if (
-      filter === 'active' &&
-      !['Downloading', 'Queued'].includes(download.state)
-    ) {
-      return false;
-    }
+  const filteredDownloads = useMemo(
+    () =>
+      (downloads ?? []).filter((download) => {
+        if (
+          filter === 'active' &&
+          !['Downloading', 'Queued'].includes(download.state)
+        ) {
+          return false;
+        }
 
-    if (filter === 'queued' && download.state !== 'Queued') {
-      return false;
-    }
+        if (filter === 'queued' && download.state !== 'Queued') {
+          return false;
+        }
 
-    if (filter === 'done' && download.state !== 'Completed') {
-      return false;
-    }
+        if (filter === 'done' && download.state !== 'Completed') {
+          return false;
+        }
 
-    if (filter === 'failed' && !['Error', 'Retry'].includes(download.state)) {
-      return false;
-    }
+        if (
+          filter === 'failed' &&
+          !['Error', 'Retry'].includes(download.state)
+        ) {
+          return false;
+        }
 
-    if (!searchQuery) return true;
+        if (!searchQuery) return true;
 
-    const query = searchQuery.toLowerCase();
-    let hostname = '';
-    try {
-      hostname = new URL(download.url).hostname.toLowerCase();
-    } catch {
-      hostname = '';
-    }
+        const query = searchQuery.toLowerCase();
+        let hostname = '';
+        try {
+          hostname = new URL(download.url).hostname.toLowerCase();
+        } catch {
+          hostname = '';
+        }
 
-    return (
-      download.fileName.toLowerCase().includes(query) ||
-      download.url.toLowerCase().includes(query) ||
-      hostname.includes(query)
-    );
-  });
+        return (
+          download.fileName.toLowerCase().includes(query) ||
+          download.url.toLowerCase().includes(query) ||
+          hostname.includes(query)
+        );
+      }),
+    [downloads, filter, searchQuery],
+  );
 
   const handleToggleSelected = useCallback(async () => {
     if (selectedDownloadIds.length === 0) return;
@@ -158,7 +164,6 @@ export function DownloadsView() {
       }
     });
   }, [
-    clearSelection,
     filteredDownloads,
     handleRemoveSelected,
     handleToggleSelected,
@@ -176,7 +181,8 @@ export function DownloadsView() {
         />
         <ActionsBar />
         <DownloadsTable
-          downloads={downloads ?? []}
+          downloads={filteredDownloads}
+          downloadsAreFiltered
           isLoading={isLoading}
           filter={filter}
           searchQuery={searchQuery}

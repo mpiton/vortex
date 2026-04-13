@@ -4,6 +4,10 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { invoke } from '@tauri-apps/api/core';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { downloadQueries } from '@/api/queries';
+import {
+  SHORTCUT_ACTION_EVENT,
+  SHORTCUT_ACTIONS,
+} from '@/lib/keyboardShortcuts';
 import { DownloadsView } from '../DownloadsView';
 import { useUiStore } from '@/stores/uiStore';
 import type { DownloadView } from '@/types/download';
@@ -143,8 +147,8 @@ describe('DownloadsView', () => {
 
     const input = await screen.findByPlaceholderText('Search downloads...');
     window.dispatchEvent(
-      new CustomEvent('vortex:shortcut-action', {
-        detail: 'downloads.focus-search',
+      new CustomEvent(SHORTCUT_ACTION_EVENT, {
+        detail: SHORTCUT_ACTIONS.downloadsFocusSearch,
       }),
     );
 
@@ -157,8 +161,8 @@ describe('DownloadsView', () => {
 
     await act(async () => {
       window.dispatchEvent(
-        new CustomEvent('vortex:shortcut-action', {
-          detail: 'downloads.select-all',
+        new CustomEvent(SHORTCUT_ACTION_EVENT, {
+          detail: SHORTCUT_ACTIONS.downloadsSelectAll,
         }),
       );
     });
@@ -181,8 +185,8 @@ describe('DownloadsView', () => {
 
     await act(async () => {
       window.dispatchEvent(
-        new CustomEvent('vortex:shortcut-action', {
-          detail: 'downloads.toggle-selected',
+        new CustomEvent(SHORTCUT_ACTION_EVENT, {
+          detail: SHORTCUT_ACTIONS.downloadsToggleSelected,
         }),
       );
     });
@@ -206,8 +210,8 @@ describe('DownloadsView', () => {
 
     await act(async () => {
       window.dispatchEvent(
-        new CustomEvent('vortex:shortcut-action', {
-          detail: 'downloads.remove-selected',
+        new CustomEvent(SHORTCUT_ACTION_EVENT, {
+          detail: SHORTCUT_ACTIONS.downloadsRemoveSelected,
         }),
       );
     });
