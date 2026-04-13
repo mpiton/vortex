@@ -84,6 +84,7 @@ export function PasteZone({
       onDrop={handleDrop}
     >
       <textarea
+        data-shortcut-target="link-grabber-paste"
         ref={textareaRef}
         className="h-32 w-full resize-none rounded border bg-background p-3 text-sm focus:outline-none focus:ring-2 focus:ring-accent"
         placeholder={t("linkGrabber.pastePlaceholder")}

@@ -1,17 +1,24 @@
 import { useEffect } from "react";
-import { Outlet, useNavigate } from "react-router";
+import { Outlet, useLocation, useNavigate } from "react-router";
 import { Sidebar } from "./Sidebar";
 import { StatusBar } from "./StatusBar";
 import { ROUTES } from "@/types/layout";
 import { useDownloadProgress } from "@/hooks/useDownloadProgress";
 import { useDownloadEvents } from "@/hooks/useDownloadEvents";
 import { useAppEffects } from "@/hooks/useAppEffects";
+import { tauriInvoke } from "@/api/client";
 import { useTauriQuery } from "@/api/hooks";
 import { useSettingsStore } from "@/stores/settingsStore";
+import { useUiStore } from "@/stores/uiStore";
+import {
+  SHORTCUT_ACTIONS,
+  dispatchShortcutAction,
+} from "@/lib/keyboardShortcuts";
 import type { AppConfig } from "@/types/settings";
 
 export function AppLayout() {
   const navigate = useNavigate();
+  const location = useLocation();
   const setConfig = useSettingsStore((s) => s.setConfig);
   useDownloadProgress();
   useDownloadEvents();
@@ -30,15 +37,85 @@ export function AppLayout() {
   }, [config, setConfig]);
 
   useEffect(() => {
-    function handleKeydown(event: KeyboardEvent) {
-      const modifier = navigator.platform.includes("Mac") ? event.metaKey : event.ctrlKey;
-      if (!modifier) return;
-
-      const target = event.target;
-      if (
+    function isEditableTarget(target: EventTarget | null) {
+      return (
         target instanceof HTMLElement &&
-        (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.isContentEditable)
+      );
+    }
+
+    function handleKeydown(event: KeyboardEvent) {
+      if (
+        event.key === "Escape" &&
+        useUiStore.getState().detailsPanelOpen
       ) {
+        event.preventDefault();
+        useUiStore.getState().setDetailsPanelOpen(false);
+        return;
+      }
+
+      const modifier = navigator.platform.includes("Mac") ? event.metaKey : event.ctrlKey;
+      if (!modifier) {
+        if (isEditableTarget(event.target)) return;
+
+        if (
+          location.pathname === "/downloads" &&
+          (event.key === " " || event.code === "Space")
+        ) {
+          event.preventDefault();
+          dispatchShortcutAction(SHORTCUT_ACTIONS.downloadsToggleSelected);
+          return;
+        }
+
+        if (
+          location.pathname === "/downloads" &&
+          (event.key === "Delete" || event.key === "Backspace")
+        ) {
+          event.preventDefault();
+          dispatchShortcutAction(SHORTCUT_ACTIONS.downloadsRemoveSelected);
+        }
+        return;
+      }
+
+      if (isEditableTarget(event.target)) return;
+
+      const lowerKey = event.key.toLowerCase();
+
+      if (event.shiftKey && lowerKey === "p") {
+        event.preventDefault();
+        const currentConfig = useSettingsStore.getState().config;
+        const nextEnabled = !(currentConfig?.clipboardMonitoring ?? false);
+        void tauriInvoke<boolean>("clipboard_toggle", { enabled: nextEnabled }).then(
+          (confirmed) => {
+            const latestConfig = useSettingsStore.getState().config;
+            if (latestConfig) {
+              setConfig({ ...latestConfig, clipboardMonitoring: confirmed });
+            }
+          },
+        );
+        return;
+      }
+
+      if (lowerKey === "f" && location.pathname === "/downloads") {
+        event.preventDefault();
+        dispatchShortcutAction(SHORTCUT_ACTIONS.downloadsFocusSearch);
+        return;
+      }
+
+      if (lowerKey === "n") {
+        event.preventDefault();
+        void navigate("/link-grabber", {
+          replace: location.pathname === "/link-grabber",
+          state: { focusPaste: true },
+        });
+        return;
+      }
+
+      if (lowerKey === "a" && location.pathname === "/downloads") {
+        event.preventDefault();
+        dispatchShortcutAction(SHORTCUT_ACTIONS.downloadsSelectAll);
         return;
       }
 
@@ -57,7 +134,7 @@ export function AppLayout() {
 
     window.addEventListener("keydown", handleKeydown);
     return () => window.removeEventListener("keydown", handleKeydown);
-  }, [navigate]);
+  }, [location.pathname, navigate, setConfig]);
 
   return (
     <div className="flex h-screen w-screen overflow-hidden font-mono text-[13px] leading-normal text-text">
