@@ -224,6 +224,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `NoopCredentialStore` remains available for tests
 
 ### Fixed
+- Settings view now displays the actual backend error message when `settings_get` fails, instead of only a generic "Failed to load settings" (#28)
 - **CRITICAL**: All 22 IPC commands now work — `AppState` is constructed and registered via `.manage()` in the Tauri setup closure (#27)
   - Database connection (SQLite WAL mode) with migrations run at startup
   - All driven adapters wired: event bus, file storage, HTTP client, config store, clipboard observer, plugin loader, download engine, archive extractor
