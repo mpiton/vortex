@@ -7,6 +7,10 @@ import fr from './locales/fr.json';
 
 const i18n = createInstance();
 
+i18n.on('languageChanged', (lng: string) => {
+  document.documentElement.lang = lng;
+});
+
 i18n
   .use(LanguageDetector)
   .use(initReactI18next)
