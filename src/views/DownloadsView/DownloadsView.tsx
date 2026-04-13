@@ -85,11 +85,12 @@ export function DownloadsView() {
 
     if (
       selectedDownloadId &&
-      !visibleSelectedDownloadIds.includes(selectedDownloadId)
+      !filteredDownloads.some((download) => download.id === selectedDownloadId)
     ) {
       selectDownload(null);
     }
   }, [
+    filteredDownloads,
     selectedDownloadId,
     selectedDownloadIds,
     selectDownload,
@@ -118,21 +119,25 @@ export function DownloadsView() {
   const handleRemoveSelected = useCallback(async () => {
     if (visibleSelectedDownloadIds.length === 0) return;
 
-    const snapshot = [...visibleSelectedDownloadIds];
+    const selectionSnapshot = {
+      ids: [...visibleSelectedDownloadIds],
+      activeId: useUiStore.getState().selectedDownloadId,
+    };
     const results = await Promise.allSettled(
-      snapshot.map((id) => removeMut.mutateAsync({ id, deleteFiles: false })),
+      selectionSnapshot.ids.map((id) =>
+        removeMut.mutateAsync({ id, deleteFiles: false }),
+      ),
     );
-    const failedIds = snapshot.filter(
+    const failedIds = selectionSnapshot.ids.filter(
       (_, index) => results[index].status === 'rejected',
     );
     const currentState = useUiStore.getState();
-    const snapshotSet = new Set(snapshot);
-    const currentIds = currentState.selectedDownloadIds.filter((id) =>
-      snapshotSet.has(id),
-    );
     const unchanged =
-      currentIds.length === snapshot.length &&
-      currentIds.every((id, index) => id === snapshot[index]);
+      currentState.selectedDownloadId === selectionSnapshot.activeId &&
+      currentState.selectedDownloadIds.length === selectionSnapshot.ids.length &&
+      currentState.selectedDownloadIds.every(
+        (id, index) => id === selectionSnapshot.ids[index],
+      );
 
     if (!unchanged) return;
 

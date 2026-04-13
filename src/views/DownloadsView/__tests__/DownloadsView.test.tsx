@@ -262,6 +262,26 @@ describe('DownloadsView', () => {
     expect(mockInvoke).not.toHaveBeenCalledWith('download_resume', { id: '2' });
   });
 
+  it('should keep the active details selection when it remains visible after filtering', async () => {
+    const user = userEvent.setup();
+    useUiStore.setState({
+      selectedDownloadId: '1',
+      selectedDownloadIds: ['2'],
+      detailsPanelOpen: true,
+      filterBarExpanded: false,
+    });
+
+    renderWithProviders();
+    await screen.findByPlaceholderText('Search downloads...');
+
+    await user.click(screen.getByRole('button', { name: /Active/i }));
+
+    await waitFor(() => {
+      expect(useUiStore.getState().selectedDownloadIds).toEqual([]);
+      expect(useUiStore.getState().selectedDownloadId).toBe('1');
+    });
+  });
+
   it('should clear the active details selection when partial removals succeed', async () => {
     useUiStore.setState({
       selectedDownloadId: '1',
@@ -325,6 +345,100 @@ describe('DownloadsView', () => {
     await waitFor(() => {
       expect(useUiStore.getState().selectedDownloadIds).toEqual(['2']);
       expect(useUiStore.getState().selectedDownloadId).toBeNull();
+    });
+  });
+
+  it('should ignore stale remove results when only the active details selection changes', async () => {
+    let resolveFirstRemoval: (() => void) | undefined;
+    let resolveSecondRemoval: (() => void) | undefined;
+
+    useUiStore.setState({
+      selectedDownloadId: '1',
+      selectedDownloadIds: ['1', '2'],
+      detailsPanelOpen: true,
+      filterBarExpanded: false,
+    });
+    mockInvoke.mockImplementation(
+      async (command: string, args?: unknown) => {
+        const payload =
+          args && typeof args === 'object' ? (args as { id?: string }) : {};
+        switch (command) {
+          case 'query_download_detail':
+            return {
+              id: '1',
+              fileName: 'file1.zip',
+              url: 'https://example.com/file1.zip',
+              downloadPath: '/tmp/file1.zip',
+              tempPath: '/tmp/file1.zip.part',
+              state: 'Downloading',
+              totalBytes: 10000,
+              downloadedBytes: 4200,
+              progressPercent: 42,
+              speedBytesPerSec: 1024,
+              etaSeconds: 10,
+              segmentsActive: 2,
+              segmentsTotal: 4,
+              createdAt: Date.now(),
+              updatedAt: Date.now(),
+              moduleName: null,
+              accountName: null,
+              checksum: null,
+              mimeType: null,
+              referrer: null,
+              userAgent: null,
+              logs: [],
+              segments: [],
+            };
+          case 'download_remove':
+            if (payload.id === '1') {
+              await new Promise<void>((resolve) => {
+                resolveFirstRemoval = resolve;
+              });
+              return undefined;
+            }
+            if (payload.id === '2') {
+              await new Promise<void>((resolve) => {
+                resolveSecondRemoval = resolve;
+              });
+              throw new Error('remove failed');
+            }
+            return undefined;
+          default:
+            return undefined;
+        }
+      },
+    );
+
+    renderWithProviders();
+    await screen.findByPlaceholderText('Search downloads...');
+
+    const removal = act(async () => {
+      window.dispatchEvent(
+        new CustomEvent(SHORTCUT_ACTION_EVENT, {
+          detail: SHORTCUT_ACTIONS.downloadsRemoveSelected,
+        }),
+      );
+    });
+
+    await waitFor(() => {
+      expect(resolveFirstRemoval).toBeTypeOf('function');
+      expect(resolveSecondRemoval).toBeTypeOf('function');
+    });
+
+    useUiStore.setState({
+      selectedDownloadId: '2',
+      selectedDownloadIds: ['1', '2'],
+      detailsPanelOpen: true,
+      filterBarExpanded: false,
+    });
+
+    resolveFirstRemoval?.();
+    resolveSecondRemoval?.();
+    await removal;
+
+    await waitFor(() => {
+      expect(useUiStore.getState().selectedDownloadIds).toEqual(['1', '2']);
+      expect(useUiStore.getState().selectedDownloadId).toBe('2');
     });
   });
 });
