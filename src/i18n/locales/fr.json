@@ -122,7 +122,81 @@
     "fileSize": "Taille",
     "mimeType": "Type MIME",
     "added": "Ajouté",
-    "destination": "Destination"
+    "destination": "Destination",
+    "filters": {
+      "all": "Tous",
+      "active": "Actifs",
+      "queued": "En attente",
+      "done": "Terminés",
+      "failed": "Échoués"
+    },
+    "actions": {
+      "pauseAll": "Tout suspendre",
+      "resumeAll": "Tout reprendre",
+      "cancelSelected": "Annuler la sélection"
+    },
+    "selectedCount_one": "{{count}} sélectionné",
+    "selectedCount_other": "{{count}} sélectionnés",
+    "empty": "Aucun téléchargement",
+    "loading": "Chargement...",
+    "table": {
+      "selectAll": "Tout sélectionner",
+      "selectRow": "Sélectionner la ligne",
+      "moreActions": "Plus d’actions",
+      "columns": {
+        "state": "État",
+        "fileName": "Nom du fichier",
+        "type": "Type",
+        "host": "Hôte",
+        "progress": "Progression",
+        "speed": "Vitesse",
+        "eta": "Temps restant"
+      },
+      "actions": {
+        "setPriority": "Définir la priorité",
+        "remove": "Supprimer"
+      },
+      "priority": {
+        "high": "Haute",
+        "normal": "Normale",
+        "low": "Basse"
+      }
+    }
+  },
+  "linkGrabber": {
+    "clipboardMonitoringLabel": "Surveillance du presse-papiers",
+    "pastePlaceholder": "Collez des URL ici (une par ligne)…",
+    "analyze": "Analyser les liens",
+    "resolving": "Résolution…",
+    "analyzeFailed": "Échec de l'analyse des liens. Veuillez réessayer.",
+    "clipboardComingSoon": "Disponible dans une prochaine mise à jour",
+    "filters": {
+      "all": "Tous",
+      "online": "En ligne",
+      "offline": "Hors ligne",
+      "media": "Média"
+    },
+    "actions": {
+      "selectAll": "Tout sélectionner ({{count}})",
+      "startSelected": "Démarrer la sélection ({{count}})",
+      "startAllOnline": "Tout démarrer en ligne"
+    },
+    "grouping": {
+      "label": "Regrouper en paquets :",
+      "none": "Aucun regroupement",
+      "hostname": "Par hôte",
+      "extension": "Par extension",
+      "type": "Par type"
+    }
+  },
+  "statusBar": {
+    "limit": "Limite : {{value}}",
+    "freeSpace": "{{value}} libres",
+    "activeCount_one": "{{count}} actif",
+    "activeCount_other": "{{count}} actifs",
+    "clipboard": "Presse-papiers",
+    "clipboardActive": "Surveillance du presse-papiers active",
+    "clipboardPaused": "Surveillance du presse-papiers en pause"
   },
   "mediaGrabber": {
     "title": "Options du capteur multimédia",
@@ -134,6 +208,9 @@
   },
   "common": {
     "retry": "Réessayer",
-    "failedToLoadSettings": "Échec du chargement des paramètres"
+    "failedToLoadSettings": "Échec du chargement des paramètres",
+    "comingSoon": "Bientôt disponible",
+    "clear": "Effacer",
+    "unlimited": "illimitée"
   }
 }

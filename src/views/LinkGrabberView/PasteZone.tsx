@@ -1,4 +1,5 @@
 import { useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 
 interface PasteZoneProps {
@@ -19,6 +20,7 @@ export function PasteZone({
   isLoading,
   errorMessage,
 }: PasteZoneProps) {
+  const { t } = useTranslation();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [isDragging, setIsDragging] = useState(false);
 
@@ -84,20 +86,20 @@ export function PasteZone({
       <textarea
         ref={textareaRef}
         className="h-32 w-full resize-none rounded border bg-background p-3 text-sm focus:outline-none focus:ring-2 focus:ring-accent"
-        placeholder="Paste URLs here (one per line)…"
+        placeholder={t("linkGrabber.pastePlaceholder")}
       />
       <div className="mt-3 flex gap-2">
         <Button variant="outline" onClick={handleClear}>
-          Clear
+          {t("common.clear")}
         </Button>
         <Button onClick={handleAnalyze} disabled={isLoading}>
-          {isLoading ? "Resolving…" : "Analyze Links"}
+          {isLoading ? t("linkGrabber.resolving") : t("linkGrabber.analyze")}
         </Button>
       </div>
       {errorMessage && (
         <div className="mt-3 space-y-1" role="alert">
           <p className="text-sm text-destructive">
-            Failed to analyze links. Please try again.
+            {t("linkGrabber.analyzeFailed")}
           </p>
           <p className="text-xs text-muted-foreground">{errorMessage}</p>
         </div>

@@ -1,13 +1,14 @@
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { useTranslation } from 'react-i18next';
 import type { FilterType, FilterConfig } from './types';
 
 const FILTERS: FilterConfig[] = [
-  { type: 'all', label: 'All' },
-  { type: 'active', label: 'Active', states: ['Downloading', 'Queued'] },
-  { type: 'queued', label: 'Queued', states: ['Queued'] },
-  { type: 'done', label: 'Done', states: ['Completed'] },
-  { type: 'failed', label: 'Failed', states: ['Error', 'Retry'] },
+  { type: 'all', labelKey: 'downloads.filters.all' },
+  { type: 'active', labelKey: 'downloads.filters.active', states: ['Downloading', 'Queued'] },
+  { type: 'queued', labelKey: 'downloads.filters.queued', states: ['Queued'] },
+  { type: 'done', labelKey: 'downloads.filters.done', states: ['Completed'] },
+  { type: 'failed', labelKey: 'downloads.filters.failed', states: ['Error', 'Retry'] },
 ];
 
 interface FilterBarProps {
@@ -26,6 +27,8 @@ function getFilterCount(filter: FilterConfig, counts: Record<string, number> | u
 }
 
 export function FilterBar({ activeFilter, onFilterChange, counts }: FilterBarProps) {
+  const { t } = useTranslation();
+
   return (
     <div className="flex gap-1.5 border-b pb-2">
       {FILTERS.map((filter) => (
@@ -35,7 +38,7 @@ export function FilterBar({ activeFilter, onFilterChange, counts }: FilterBarPro
           size="sm"
           onClick={() => onFilterChange(filter.type)}
         >
-          {filter.label}
+          {t(filter.labelKey)}
           <Badge variant="secondary" className="ml-1.5">
             {getFilterCount(filter, counts)}
           </Badge>
