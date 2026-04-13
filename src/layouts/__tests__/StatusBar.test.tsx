@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { invoke } from "@tauri-apps/api/core";
 import { StatusBar } from "../StatusBar";
 import { useDownloadStore } from "@/stores/downloadStore";
 
@@ -23,6 +24,7 @@ function renderWithProviders(ui: React.ReactElement) {
 
 describe("StatusBar", () => {
   beforeEach(() => {
+    vi.mocked(invoke).mockReset();
     useDownloadStore.setState({ countByState: {}, progressMap: {} });
   });
 
@@ -48,6 +50,21 @@ describe("StatusBar", () => {
   it("should render free space", () => {
     renderWithProviders(<StatusBar />);
     expect(screen.getByText(/-- GB/)).toBeInTheDocument();
+  });
+
+  it("should render free space from backend status data", async () => {
+    vi.mocked(invoke).mockImplementation(async (command: string) => {
+      if (command === "status_bar_get") {
+        return { freeSpaceBytes: 42_300_000_000 };
+      }
+      return undefined;
+    });
+
+    renderWithProviders(<StatusBar />);
+
+    await waitFor(() => {
+      expect(screen.getByText("42.3 GB free")).toBeInTheDocument();
+    });
   });
 
   it("should render active download count", () => {

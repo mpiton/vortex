@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { Outlet, useLocation, useNavigate } from "react-router";
+import { useTranslation } from "react-i18next";
 import { Sidebar } from "./Sidebar";
 import { StatusBar } from "./StatusBar";
 import { ROUTES } from "@/types/layout";
@@ -19,6 +20,7 @@ import type { AppConfig } from "@/types/settings";
 export function AppLayout() {
   const navigate = useNavigate();
   const location = useLocation();
+  const { i18n } = useTranslation();
   const setConfig = useSettingsStore((s) => s.setConfig);
   useDownloadProgress();
   useDownloadEvents();
@@ -35,6 +37,24 @@ export function AppLayout() {
       setConfig(config);
     }
   }, [config, setConfig]);
+
+  useEffect(() => {
+    if (!config?.locale) return;
+
+    const baseLocale = config.locale.split("-")[0];
+    const supportedLocales = Object.keys(
+      i18n.store?.data ?? i18n.options?.resources ?? {},
+    );
+    const nextLocale = supportedLocales.length > 0
+      ? (supportedLocales.includes(baseLocale) ? baseLocale : "en")
+      : baseLocale;
+
+    if (i18n.resolvedLanguage === nextLocale || i18n.language === nextLocale) {
+      return;
+    }
+
+    void i18n.changeLanguage(nextLocale);
+  }, [config?.locale, i18n]);
 
   useEffect(() => {
     function isEditableTarget(target: EventTarget | null) {

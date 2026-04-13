@@ -3,7 +3,7 @@
 //! Each function converts IPC parameters into a domain command/query,
 //! delegates to CommandBus/QueryBus, and serialises the result for the frontend.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use tauri::State;
@@ -393,6 +393,12 @@ pub struct SettingsDto {
     pub locale: String,
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StatusBarDto {
+    pub free_space_bytes: Option<u64>,
+}
+
 impl From<AppConfig> for SettingsDto {
     fn from(c: AppConfig) -> Self {
         Self {
@@ -532,6 +538,25 @@ pub async fn settings_get(state: State<'_, AppState>) -> Result<SettingsDto, Str
 }
 
 #[tauri::command]
+pub async fn status_bar_get(state: State<'_, AppState>) -> Result<StatusBarDto, String> {
+    let config = state
+        .command_bus
+        .config_store()
+        .get_config()
+        .map_err(|e| e.to_string())?;
+
+    let free_space_bytes = match status_bar_path(config.download_dir.as_deref()) {
+        Some(path) => tokio::task::spawn_blocking(move || read_available_space(&path))
+            .await
+            .ok()
+            .flatten(),
+        None => None,
+    };
+
+    Ok(StatusBarDto { free_space_bytes })
+}
+
+#[tauri::command]
 pub async fn settings_update(
     state: State<'_, AppState>,
     patch: ConfigPatchDto,
@@ -578,5 +603,165 @@ fn parse_sort_direction(s: &str) -> SortDirection {
     match s.to_lowercase().as_str() {
         "desc" | "descending" => SortDirection::Descending,
         _ => SortDirection::Ascending,
+    }
+}
+
+fn status_bar_path(download_dir: Option<&str>) -> Option<PathBuf> {
+    configured_status_bar_path(download_dir)
+        .or_else(dirs::download_dir)
+        .or_else(|| std::env::current_dir().ok())
+        .and_then(resolve_existing_disk_path)
+}
+
+fn configured_status_bar_path(download_dir: Option<&str>) -> Option<PathBuf> {
+    download_dir
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .and_then(|value| {
+            let path = PathBuf::from(value);
+            if path.is_absolute() {
+                Some(path)
+            } else if path.exists() {
+                std::env::current_dir().ok().map(|cwd| cwd.join(path))
+            } else {
+                None
+            }
+        })
+}
+
+fn resolve_existing_disk_path(path: PathBuf) -> Option<PathBuf> {
+    let mut current = Some(path.as_path());
+    while let Some(candidate) = current {
+        if candidate.exists() {
+            if candidate.is_dir() {
+                return Some(candidate.to_path_buf());
+            }
+            return candidate.parent().map(|p| p.to_path_buf());
+        }
+        current = candidate.parent();
+    }
+    None
+}
+
+#[cfg(unix)]
+fn read_available_space(path: &Path) -> Option<u64> {
+    use std::ffi::CString;
+    use std::mem::MaybeUninit;
+    use std::os::unix::ffi::OsStrExt;
+
+    let c_path = CString::new(path.as_os_str().as_bytes()).ok()?;
+    let mut stat = MaybeUninit::<libc::statvfs>::uninit();
+
+    // SAFETY: `c_path` is a valid NUL-terminated C string and `stat` points to
+    // writable memory for the kernel to fill.
+    let rc = unsafe { libc::statvfs(c_path.as_ptr(), stat.as_mut_ptr()) };
+    if rc != 0 {
+        return None;
+    }
+
+    // SAFETY: `statvfs` returned success, so the kernel initialized `stat`.
+    let stat = unsafe { stat.assume_init() };
+    let available = (stat.f_bavail as u128).saturating_mul(stat.f_frsize as u128);
+    Some(available.min(u64::MAX as u128) as u64)
+}
+
+#[cfg(windows)]
+fn read_available_space(path: &Path) -> Option<u64> {
+    use std::iter::once;
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+
+    let wide_path = path
+        .as_os_str()
+        .encode_wide()
+        .chain(once(0))
+        .collect::<Vec<_>>();
+    let mut available = 0u64;
+
+    // SAFETY: `wide_path` is NUL-terminated and the output pointer is valid for writes.
+    let rc = unsafe {
+        GetDiskFreeSpaceExW(
+            wide_path.as_ptr(),
+            &mut available,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+
+    if rc == 0 {
+        return None;
+    }
+
+    Some(available)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn read_available_space(_: &Path) -> Option<u64> {
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{configured_status_bar_path, read_available_space, resolve_existing_disk_path};
+    use std::path::PathBuf;
+
+    #[test]
+    fn configured_status_bar_path_rejects_empty_values() {
+        assert!(configured_status_bar_path(Some("   ")).is_none());
+    }
+
+    #[test]
+    fn configured_status_bar_path_rejects_missing_relative_paths() {
+        assert!(configured_status_bar_path(Some("missing-relative-download-dir")).is_none());
+    }
+
+    #[test]
+    fn configured_status_bar_path_keeps_absolute_values() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let absolute_path = temp_dir.path().join("downloads");
+
+        let configured =
+            configured_status_bar_path(Some(absolute_path.to_str().expect("utf-8 path")));
+
+        assert_eq!(configured, Some(PathBuf::from(&absolute_path)));
+    }
+
+    #[test]
+    fn resolve_existing_disk_path_returns_existing_path_unchanged() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+
+        let resolved =
+            resolve_existing_disk_path(temp_dir.path().to_path_buf()).expect("resolved path");
+
+        assert_eq!(resolved, temp_dir.path());
+    }
+
+    #[test]
+    fn resolve_existing_disk_path_uses_existing_parent() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let nested_missing = temp_dir.path().join("missing").join("nested");
+
+        let resolved = resolve_existing_disk_path(nested_missing).expect("resolved path");
+
+        assert_eq!(resolved, temp_dir.path());
+    }
+
+    #[test]
+    fn resolve_existing_disk_path_returns_parent_dir_for_file_path() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let file_path = temp_dir.path().join("test_file.txt");
+        std::fs::write(&file_path, b"").expect("create temp file");
+
+        let resolved = resolve_existing_disk_path(file_path).expect("resolved path");
+
+        assert_eq!(resolved, temp_dir.path());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_available_space_returns_a_value_for_existing_directories() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+
+        assert!(read_available_space(temp_dir.path()).is_some());
     }
 }
