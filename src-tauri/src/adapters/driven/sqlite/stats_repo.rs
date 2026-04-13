@@ -19,9 +19,11 @@ impl SqliteStatsRepo {
 impl StatsRepository for SqliteStatsRepo {
     fn record_completed(&self, bytes: u64, avg_speed: u64) -> Result<(), DomainError> {
         block_on(async {
+            // peak_speed stores the highest per-download avg_speed seen that day
+            // (the trait only exposes avg_speed, not instantaneous peak).
             let sql = "\
                 INSERT INTO statistics (id, date, bytes_downloaded, files_completed, avg_speed, peak_speed) \
-                VALUES (CAST(strftime('%Y%m%d', 'now') AS INTEGER), date('now'), ?1, 1, ?2, ?2) \
+                VALUES (CAST(strftime('%Y%m%d', 'now', 'localtime') AS INTEGER), date('now', 'localtime'), ?1, 1, ?2, ?2) \
                 ON CONFLICT(date) DO UPDATE SET \
                   bytes_downloaded = bytes_downloaded + excluded.bytes_downloaded, \
                   files_completed = files_completed + 1, \
@@ -119,7 +121,7 @@ impl StatsRepository for SqliteStatsRepo {
                 .query_one(Statement::from_string(
                     DatabaseBackend::Sqlite,
                     "SELECT COUNT(*), COALESCE(SUM(CASE WHEN state='Completed' THEN 1 ELSE 0 END),0) \
-                     FROM downloads WHERE state IN ('Completed','Failed','Cancelled')"
+                     FROM downloads WHERE state IN ('Completed','Error')"
                         .to_string(),
                 ))
                 .await
@@ -149,7 +151,8 @@ impl StatsRepository for SqliteStatsRepo {
                     DatabaseBackend::Sqlite,
                     "SELECT source_hostname, SUM(downloaded_bytes), COUNT(*) \
                      FROM downloads \
-                     WHERE source_hostname IS NOT NULL AND source_hostname != '' \
+                     WHERE state = 'Completed' \
+                       AND source_hostname IS NOT NULL AND source_hostname != '' \
                      GROUP BY source_hostname \
                      ORDER BY 2 DESC LIMIT 10"
                         .to_string(),
@@ -296,8 +299,8 @@ mod tests {
     async fn test_get_stats_success_rate() {
         let db = setup_test_db().await.expect("failed to setup test db");
 
-        // Insert 3 terminal downloads: 2 Completed, 1 Failed — all count for success rate
-        for (id, state) in [(1i64, "Completed"), (2, "Completed"), (3, "Failed")] {
+        // Insert 3 terminal downloads: 2 Completed, 1 Error — all count for success rate
+        for (id, state) in [(1i64, "Completed"), (2, "Completed"), (3, "Error")] {
             db.execute(Statement::from_string(
                 DatabaseBackend::Sqlite,
                 format!(
