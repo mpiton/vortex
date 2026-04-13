@@ -4,14 +4,14 @@ import i18n from "./i18n";
 function waitForInit(): Promise<void> {
   if (i18n.isInitialized) return Promise.resolve();
   return new Promise((resolve) => {
-    i18n.on("initialized", () => resolve());
+    i18n.once("initialized", () => resolve());
   });
 }
 
 describe("i18n html lang attribute", () => {
   it("should set document lang to the resolved language after init", async () => {
     await waitForInit();
-    expect(document.documentElement.lang).toBe(i18n.language);
+    expect(document.documentElement.lang).toBe("en");
   });
 
   it("should update document lang when language changes to fr", async () => {
