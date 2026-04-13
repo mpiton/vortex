@@ -154,4 +154,35 @@ describe('SettingsView', () => {
 
     expect(container.querySelectorAll('[data-slot="skeleton"]').length).toBeGreaterThan(0);
   });
+
+  it('should show error state with message when settings_get fails', async () => {
+    mockInvoke.mockRejectedValue(new Error('config store unavailable'));
+
+    renderWithProviders();
+
+    await waitFor(() => {
+      expect(screen.getByText('Failed to load settings')).toBeInTheDocument();
+    });
+
+    expect(screen.getByText('config store unavailable')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Retry/ })).toBeInTheDocument();
+  });
+
+  it('should recover when retry button is clicked after transient error', async () => {
+    const user = userEvent.setup();
+    mockInvoke.mockRejectedValueOnce(new Error('transient error'));
+
+    renderWithProviders();
+
+    await waitFor(() => {
+      expect(screen.getByText('Failed to load settings')).toBeInTheDocument();
+    });
+
+    mockInvoke.mockResolvedValue(mockConfig);
+    await user.click(screen.getByRole('button', { name: /Retry/ }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /General/ })).toBeInTheDocument();
+    });
+  });
 });

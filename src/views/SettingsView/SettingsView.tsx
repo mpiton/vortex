@@ -46,7 +46,7 @@ export function SettingsView() {
   const queryClient = useQueryClient();
   const { t } = useTranslation();
 
-  const { data: config, isLoading } = useTauriQuery<AppConfig>(
+  const { data: config, isLoading, error } = useTauriQuery<AppConfig>(
     'settings_get',
     undefined,
     { queryKey: ['settings_get'], staleTime: 30_000 },
@@ -82,6 +82,9 @@ export function SettingsView() {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-4 p-4">
         <p className="text-sm text-destructive">{t('common.failedToLoadSettings')}</p>
+        {error && (
+          <p className="max-w-md text-center text-xs text-muted-foreground">{error.message}</p>
+        )}
         <Button variant="outline" onClick={() => queryClient.invalidateQueries({ queryKey: ['settings_get'] })}>
           {t('common.retry')}
         </Button>
