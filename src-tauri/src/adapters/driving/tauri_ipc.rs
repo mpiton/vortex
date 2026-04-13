@@ -633,7 +633,10 @@ fn resolve_existing_disk_path(path: PathBuf) -> Option<PathBuf> {
     let mut current = Some(path.as_path());
     while let Some(candidate) = current {
         if candidate.exists() {
-            return Some(candidate.to_path_buf());
+            if candidate.is_dir() {
+                return Some(candidate.to_path_buf());
+            }
+            return candidate.parent().map(|p| p.to_path_buf());
         }
         current = candidate.parent();
     }
@@ -739,6 +742,17 @@ mod tests {
         let nested_missing = temp_dir.path().join("missing").join("nested");
 
         let resolved = resolve_existing_disk_path(nested_missing).expect("resolved path");
+
+        assert_eq!(resolved, temp_dir.path());
+    }
+
+    #[test]
+    fn resolve_existing_disk_path_returns_parent_dir_for_file_path() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let file_path = temp_dir.path().join("test_file.txt");
+        std::fs::write(&file_path, b"").expect("create temp file");
+
+        let resolved = resolve_existing_disk_path(file_path).expect("resolved path");
 
         assert_eq!(resolved, temp_dir.path());
     }
