@@ -545,9 +545,13 @@ pub async fn status_bar_get(state: State<'_, AppState>) -> Result<StatusBarDto, 
         .get_config()
         .map_err(|e| e.to_string())?;
 
-    let free_space_bytes = status_bar_path(config.download_dir.as_deref())
-        .as_deref()
-        .and_then(read_available_space);
+    let free_space_bytes = match status_bar_path(config.download_dir.as_deref()) {
+        Some(path) => tokio::task::spawn_blocking(move || read_available_space(&path))
+            .await
+            .ok()
+            .flatten(),
+        None => None,
+    };
 
     Ok(StatusBarDto { free_space_bytes })
 }
@@ -681,6 +685,16 @@ fn read_available_space(_: &Path) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::{read_available_space, resolve_existing_disk_path};
+
+    #[test]
+    fn resolve_existing_disk_path_returns_existing_path_unchanged() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+
+        let resolved =
+            resolve_existing_disk_path(temp_dir.path().to_path_buf()).expect("resolved path");
+
+        assert_eq!(resolved, temp_dir.path());
+    }
 
     #[test]
     fn resolve_existing_disk_path_uses_existing_parent() {

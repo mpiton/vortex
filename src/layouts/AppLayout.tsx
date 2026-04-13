@@ -42,7 +42,12 @@ export function AppLayout() {
     if (!config?.locale) return;
 
     const baseLocale = config.locale.split("-")[0];
-    const nextLocale = baseLocale === "fr" ? "fr" : "en";
+    const supportedLocales = Object.keys(
+      i18n.store?.data ?? i18n.options?.resources ?? {},
+    );
+    const nextLocale = supportedLocales.length > 0
+      ? (supportedLocales.includes(baseLocale) ? baseLocale : "en")
+      : baseLocale;
 
     if (i18n.resolvedLanguage === nextLocale || i18n.language === nextLocale) {
       return;
