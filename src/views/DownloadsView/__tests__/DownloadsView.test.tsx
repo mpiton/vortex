@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { act, render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { invoke } from '@tauri-apps/api/core';
 import { TooltipProvider } from '@/components/ui/tooltip';
@@ -225,6 +226,105 @@ describe('DownloadsView', () => {
         id: '2',
         deleteFiles: false,
       });
+    });
+  });
+
+  it('should limit shortcut actions to the visible selection after filtering', async () => {
+    const user = userEvent.setup();
+    useUiStore.setState({
+      selectedDownloadId: '2',
+      selectedDownloadIds: ['1', '2'],
+      detailsPanelOpen: true,
+      filterBarExpanded: false,
+    });
+
+    renderWithProviders();
+    await screen.findByPlaceholderText('Search downloads...');
+
+    await user.click(screen.getByRole('button', { name: /Active/i }));
+
+    await waitFor(() => {
+      expect(useUiStore.getState().selectedDownloadIds).toEqual(['1']);
+      expect(useUiStore.getState().selectedDownloadId).toBeNull();
+    });
+
+    await act(async () => {
+      window.dispatchEvent(
+        new CustomEvent(SHORTCUT_ACTION_EVENT, {
+          detail: SHORTCUT_ACTIONS.downloadsToggleSelected,
+        }),
+      );
+    });
+
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith('download_pause', { id: '1' });
+    });
+    expect(mockInvoke).not.toHaveBeenCalledWith('download_resume', { id: '2' });
+  });
+
+  it('should clear the active details selection when partial removals succeed', async () => {
+    useUiStore.setState({
+      selectedDownloadId: '1',
+      selectedDownloadIds: ['1', '2'],
+      detailsPanelOpen: true,
+      filterBarExpanded: false,
+    });
+    mockInvoke.mockImplementation(
+      async (command: string, args?: unknown) => {
+        const payload =
+          args && typeof args === 'object' ? (args as { id?: string }) : {};
+        switch (command) {
+          case 'query_download_detail':
+            return {
+              id: '1',
+              fileName: 'file1.zip',
+              url: 'https://example.com/file1.zip',
+              downloadPath: '/tmp/file1.zip',
+              tempPath: '/tmp/file1.zip.part',
+              state: 'Downloading',
+              totalBytes: 10000,
+              downloadedBytes: 4200,
+              progressPercent: 42,
+              speedBytesPerSec: 1024,
+              etaSeconds: 10,
+              segmentsActive: 2,
+              segmentsTotal: 4,
+              createdAt: Date.now(),
+              updatedAt: Date.now(),
+              moduleName: null,
+              accountName: null,
+              checksum: null,
+              mimeType: null,
+              referrer: null,
+              userAgent: null,
+              logs: [],
+              segments: [],
+            };
+          case 'download_remove':
+            if (payload.id === '2') {
+              throw new Error('remove failed');
+            }
+            return undefined;
+          default:
+            return undefined;
+        }
+      },
+    );
+
+    renderWithProviders();
+    await screen.findByPlaceholderText('Search downloads...');
+
+    await act(async () => {
+      window.dispatchEvent(
+        new CustomEvent(SHORTCUT_ACTION_EVENT, {
+          detail: SHORTCUT_ACTIONS.downloadsRemoveSelected,
+        }),
+      );
+    });
+
+    await waitFor(() => {
+      expect(useUiStore.getState().selectedDownloadIds).toEqual(['2']);
+      expect(useUiStore.getState().selectedDownloadId).toBeNull();
     });
   });
 });

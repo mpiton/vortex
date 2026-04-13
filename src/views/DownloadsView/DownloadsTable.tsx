@@ -55,6 +55,12 @@ interface DownloadsTableProps {
   searchQuery?: string;
 }
 
+interface FilterDownloadsOptions {
+  downloadsAreFiltered?: boolean;
+  filter?: FilterType;
+  searchQuery?: string;
+}
+
 const STATE_FILTER_MAP: Record<FilterType, DownloadState[] | null> = {
   all: null,
   active: ['Downloading', 'Queued'],
@@ -75,6 +81,38 @@ function extractHostname(url: string): string {
   } catch {
     return '\u2014';
   }
+}
+
+export function filterDownloads(
+  downloads: DownloadView[],
+  {
+    downloadsAreFiltered = false,
+    filter = 'all',
+    searchQuery = '',
+  }: FilterDownloadsOptions = {},
+) {
+  if (downloadsAreFiltered) {
+    return downloads;
+  }
+
+  let result = downloads;
+
+  const allowedStates = STATE_FILTER_MAP[filter];
+  if (allowedStates) {
+    result = result.filter((download) => allowedStates.includes(download.state));
+  }
+
+  if (!searchQuery) {
+    return result;
+  }
+
+  const query = searchQuery.toLowerCase();
+  return result.filter(
+    (download) =>
+      download.fileName.toLowerCase().includes(query) ||
+      download.url.toLowerCase().includes(query) ||
+      extractHostname(download.url).toLowerCase().includes(query),
+  );
 }
 
 interface RowActions {
@@ -312,32 +350,15 @@ export function DownloadsTable({
   );
   const clearSelection = useUiStore((s) => s.clearSelection);
 
-  const filteredDownloads = useMemo(() => {
-    if (downloadsAreFiltered) {
-      return downloads;
-    }
-
-    let result = downloads;
-
-    const allowedStates = STATE_FILTER_MAP[filter];
-    if (allowedStates) {
-      result = result.filter((d) =>
-        allowedStates.includes(d.state),
-      );
-    }
-
-    if (searchQuery) {
-      const query = searchQuery.toLowerCase();
-      result = result.filter(
-        (d) =>
-          d.fileName.toLowerCase().includes(query) ||
-          d.url.toLowerCase().includes(query) ||
-          extractHostname(d.url).toLowerCase().includes(query),
-      );
-    }
-
-    return result;
-  }, [downloads, downloadsAreFiltered, filter, searchQuery]);
+  const filteredDownloads = useMemo(
+    () =>
+      filterDownloads(downloads, {
+        downloadsAreFiltered,
+        filter,
+        searchQuery,
+      }),
+    [downloads, downloadsAreFiltered, filter, searchQuery],
+  );
 
   const rowSelection = useMemo(() => {
     const selectedSet = new Set(selectedDownloadIds);

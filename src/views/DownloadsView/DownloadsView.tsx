@@ -9,7 +9,7 @@ import type { FilterType } from './types';
 import { SearchBar } from './SearchBar';
 import { FilterBar } from './FilterBar';
 import { ActionsBar } from './ActionsBar';
-import { DownloadsTable } from './DownloadsTable';
+import { DownloadsTable, filterDownloads } from './DownloadsTable';
 import { DownloadDetailsPanel } from '../DownloadDetailsPanel';
 
 const INVALIDATE_KEYS = [
@@ -20,7 +20,9 @@ const INVALIDATE_KEYS = [
 export function DownloadsView() {
   const [filter, setFilter] = useState<FilterType>('all');
   const [searchQuery, setSearchQuery] = useState('');
+  const selectedDownloadId = useUiStore((s) => s.selectedDownloadId);
   const selectedDownloadIds = useUiStore((s) => s.selectedDownloadIds);
+  const selectDownload = useUiStore((s) => s.selectDownload);
   const setSelectedDownloadIds = useUiStore((s) => s.setSelectedDownloadIds);
   const clearSelection = useUiStore((s) => s.clearSelection);
 
@@ -51,80 +53,83 @@ export function DownloadsView() {
 
   const filteredDownloads = useMemo(
     () =>
-      (downloads ?? []).filter((download) => {
-        if (
-          filter === 'active' &&
-          !['Downloading', 'Queued'].includes(download.state)
-        ) {
-          return false;
-        }
-
-        if (filter === 'queued' && download.state !== 'Queued') {
-          return false;
-        }
-
-        if (filter === 'done' && download.state !== 'Completed') {
-          return false;
-        }
-
-        if (
-          filter === 'failed' &&
-          !['Error', 'Retry'].includes(download.state)
-        ) {
-          return false;
-        }
-
-        if (!searchQuery) return true;
-
-        const query = searchQuery.toLowerCase();
-        let hostname = '';
-        try {
-          hostname = new URL(download.url).hostname.toLowerCase();
-        } catch {
-          hostname = '';
-        }
-
-        return (
-          download.fileName.toLowerCase().includes(query) ||
-          download.url.toLowerCase().includes(query) ||
-          hostname.includes(query)
-        );
+      filterDownloads(downloads ?? [], {
+        filter,
+        searchQuery,
       }),
     [downloads, filter, searchQuery],
   );
 
-  const handleToggleSelected = useCallback(async () => {
-    if (selectedDownloadIds.length === 0) return;
+  const visibleSelectedDownloadIds = useMemo(() => {
+    const visibleIds = new Set(filteredDownloads.map((download) => download.id));
+    return selectedDownloadIds.filter((id) => visibleIds.has(id));
+  }, [filteredDownloads, selectedDownloadIds]);
 
-    const selectedSet = new Set(selectedDownloadIds);
-    const selectedDownloads = (downloads ?? []).filter((download) =>
-      selectedSet.has(download.id),
+  const visibleSelectedDownloads = useMemo(() => {
+    const visibleSelectedSet = new Set(visibleSelectedDownloadIds);
+    return filteredDownloads.filter((download) =>
+      visibleSelectedSet.has(download.id),
     );
+  }, [filteredDownloads, visibleSelectedDownloadIds]);
+
+  useEffect(() => {
+    const selectionChanged =
+      selectedDownloadIds.length !== visibleSelectedDownloadIds.length ||
+      selectedDownloadIds.some(
+        (id, index) => id !== visibleSelectedDownloadIds[index],
+      );
+
+    if (selectionChanged) {
+      setSelectedDownloadIds(visibleSelectedDownloadIds);
+    }
+
+    if (
+      selectedDownloadId &&
+      !visibleSelectedDownloadIds.includes(selectedDownloadId)
+    ) {
+      selectDownload(null);
+    }
+  }, [
+    selectedDownloadId,
+    selectedDownloadIds,
+    selectDownload,
+    setSelectedDownloadIds,
+    visibleSelectedDownloadIds,
+  ]);
+
+  const handleToggleSelected = useCallback(async () => {
+    if (visibleSelectedDownloads.length === 0) return;
 
     const tasks = [
-      ...selectedDownloads
+      ...visibleSelectedDownloads
         .filter((download) =>
           download.state === 'Downloading' || download.state === 'Queued',
         )
         .map((download) => pauseMut.mutateAsync({ id: download.id })),
-      ...selectedDownloads
+      ...visibleSelectedDownloads
         .filter((download) => download.state === 'Paused')
         .map((download) => resumeMut.mutateAsync({ id: download.id })),
     ];
 
     if (tasks.length === 0) return;
     await Promise.allSettled(tasks);
-  }, [downloads, pauseMut, resumeMut, selectedDownloadIds]);
+  }, [pauseMut, resumeMut, visibleSelectedDownloads]);
 
   const handleRemoveSelected = useCallback(async () => {
-    if (selectedDownloadIds.length === 0) return;
+    if (visibleSelectedDownloadIds.length === 0) return;
 
-    const snapshot = [...selectedDownloadIds];
+    const snapshot = [...visibleSelectedDownloadIds];
     const results = await Promise.allSettled(
       snapshot.map((id) => removeMut.mutateAsync({ id, deleteFiles: false })),
     );
-    const failedIds = snapshot.filter((_, index) => results[index].status === 'rejected');
-    const currentIds = useUiStore.getState().selectedDownloadIds;
+    const failedIds = snapshot.filter(
+      (_, index) => results[index].status === 'rejected',
+    );
+    const currentState = useUiStore.getState();
+    const snapshotSet = new Set(snapshot);
+    const currentIds = currentState.selectedDownloadIds.filter((id) =>
+      snapshotSet.has(id),
+    );
     const unchanged =
       currentIds.length === snapshot.length &&
       currentIds.every((id, index) => id === snapshot[index]);
@@ -137,7 +142,19 @@ export function DownloadsView() {
     }
 
     setSelectedDownloadIds(failedIds);
-  }, [clearSelection, removeMut, selectedDownloadIds, setSelectedDownloadIds]);
+    if (
+      currentState.selectedDownloadId &&
+      !failedIds.includes(currentState.selectedDownloadId)
+    ) {
+      selectDownload(null);
+    }
+  }, [
+    clearSelection,
+    removeMut,
+    selectDownload,
+    setSelectedDownloadIds,
+    visibleSelectedDownloadIds,
+  ]);
 
   useEffect(() => {
     return subscribeShortcutAction((action) => {
