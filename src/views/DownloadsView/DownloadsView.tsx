@@ -28,13 +28,13 @@ export function DownloadsView() {
 
   useDownloadProgress();
 
-  const pauseMut = useTauriMutation<void, { id: string }>('download_pause', {
+  const pauseMut = useTauriMutation<void, { id: number }>('download_pause', {
     invalidateKeys: INVALIDATE_KEYS,
   });
-  const resumeMut = useTauriMutation<void, { id: string }>('download_resume', {
+  const resumeMut = useTauriMutation<void, { id: number }>('download_resume', {
     invalidateKeys: INVALIDATE_KEYS,
   });
-  const removeMut = useTauriMutation<void, { id: string; deleteFiles: boolean }>(
+  const removeMut = useTauriMutation<void, { id: number; deleteFiles: boolean }>(
     'download_remove',
     { invalidateKeys: INVALIDATE_KEYS },
   );
@@ -106,10 +106,10 @@ export function DownloadsView() {
         .filter((download) =>
           download.state === 'Downloading' || download.state === 'Queued',
         )
-        .map((download) => pauseMut.mutateAsync({ id: download.id })),
+        .map((download) => pauseMut.mutateAsync({ id: Number(download.id) })),
       ...visibleSelectedDownloads
         .filter((download) => download.state === 'Paused')
-        .map((download) => resumeMut.mutateAsync({ id: download.id })),
+        .map((download) => resumeMut.mutateAsync({ id: Number(download.id) })),
     ];
 
     if (tasks.length === 0) return;
@@ -125,7 +125,7 @@ export function DownloadsView() {
     };
     const results = await Promise.allSettled(
       selectionSnapshot.ids.map((id) =>
-        removeMut.mutateAsync({ id, deleteFiles: false }),
+        removeMut.mutateAsync({ id: Number(id), deleteFiles: false }),
       ),
     );
     const failedIds = selectionSnapshot.ids.filter(

@@ -87,7 +87,7 @@ describe('DownloadsView', () => {
     mockInvoke.mockReset();
     mockInvoke.mockImplementation(async (command: string) => {
       switch (command) {
-        case 'query_download_detail':
+        case 'download_detail':
           return {
             id: '1',
             fileName: 'file1.zip',
@@ -193,8 +193,8 @@ describe('DownloadsView', () => {
     });
 
     await waitFor(() => {
-      expect(mockInvoke).toHaveBeenCalledWith('download_pause', { id: '1' });
-      expect(mockInvoke).toHaveBeenCalledWith('download_resume', { id: '2' });
+      expect(mockInvoke).toHaveBeenCalledWith('download_pause', { id: 1 });
+      expect(mockInvoke).toHaveBeenCalledWith('download_resume', { id: 2 });
     });
   });
 
@@ -219,11 +219,11 @@ describe('DownloadsView', () => {
 
     await waitFor(() => {
       expect(mockInvoke).toHaveBeenCalledWith('download_remove', {
-        id: '1',
+        id: 1,
         deleteFiles: false,
       });
       expect(mockInvoke).toHaveBeenCalledWith('download_remove', {
-        id: '2',
+        id: 2,
         deleteFiles: false,
       });
     });
@@ -257,9 +257,9 @@ describe('DownloadsView', () => {
     });
 
     await waitFor(() => {
-      expect(mockInvoke).toHaveBeenCalledWith('download_pause', { id: '1' });
+      expect(mockInvoke).toHaveBeenCalledWith('download_pause', { id: 1 });
     });
-    expect(mockInvoke).not.toHaveBeenCalledWith('download_resume', { id: '2' });
+    expect(mockInvoke).not.toHaveBeenCalledWith('download_resume', { id: 2 });
   });
 
   it('should keep the active details selection when it remains visible after filtering', async () => {
@@ -292,9 +292,9 @@ describe('DownloadsView', () => {
     mockInvoke.mockImplementation(
       async (command: string, args?: unknown) => {
         const payload =
-          args && typeof args === 'object' ? (args as { id?: string }) : {};
+          args && typeof args === 'object' ? (args as { id?: number }) : {};
         switch (command) {
-          case 'query_download_detail':
+          case 'download_detail':
             return {
               id: '1',
               fileName: 'file1.zip',
@@ -321,7 +321,7 @@ describe('DownloadsView', () => {
               segments: [],
             };
           case 'download_remove':
-            if (payload.id === '2') {
+            if (payload.id === 2) {
               throw new Error('remove failed');
             }
             return undefined;
@@ -361,9 +361,9 @@ describe('DownloadsView', () => {
     mockInvoke.mockImplementation(
       async (command: string, args?: unknown) => {
         const payload =
-          args && typeof args === 'object' ? (args as { id?: string }) : {};
+          args && typeof args === 'object' ? (args as { id?: number }) : {};
         switch (command) {
-          case 'query_download_detail':
+          case 'download_detail':
             return {
               id: '1',
               fileName: 'file1.zip',
@@ -390,13 +390,13 @@ describe('DownloadsView', () => {
               segments: [],
             };
           case 'download_remove':
-            if (payload.id === '1') {
+            if (payload.id === 1) {
               await new Promise<void>((resolve) => {
                 resolveFirstRemoval = resolve;
               });
               return undefined;
             }
-            if (payload.id === '2') {
+            if (payload.id === 2) {
               await new Promise<void>((resolve) => {
                 resolveSecondRemoval = resolve;
               });

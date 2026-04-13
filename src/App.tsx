@@ -1,6 +1,7 @@
 import './i18n/i18n';
 import { BrowserRouter, Routes, Route, Navigate } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { AppLayout } from "@/layouts/AppLayout";
 import {
   DownloadsView,
@@ -19,6 +20,7 @@ import { queryClient } from "@/api/client";
 export function App() {
   return (
     <QueryClientProvider client={queryClient}>
+      <TooltipProvider>
       <BrowserRouter>
         <Routes>
           <Route element={<AppLayout />}>
@@ -37,6 +39,7 @@ export function App() {
           </Route>
         </Routes>
       </BrowserRouter>
+      </TooltipProvider>
     </QueryClientProvider>
   );
 }

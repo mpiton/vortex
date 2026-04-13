@@ -25,7 +25,7 @@ export function ActionsBar() {
     invalidateKeys: INVALIDATE_KEYS,
   });
 
-  const cancelDownload = useTauriMutation<void, { id: string }>('download_cancel', {
+  const cancelDownload = useTauriMutation<void, { id: number }>('download_cancel', {
     invalidateKeys: INVALIDATE_KEYS,
   });
 
@@ -37,7 +37,7 @@ export function ActionsBar() {
     const snapshot = [...selectedDownloadIds];
     try {
       const results = await Promise.allSettled(
-        snapshot.map((id) => cancelDownload.mutateAsync({ id })),
+        snapshot.map((id) => cancelDownload.mutateAsync({ id: Number(id) })),
       );
       const failedIds = snapshot.filter((_, i) => results[i].status === 'rejected');
       const currentIds = useUiStore.getState().selectedDownloadIds;
