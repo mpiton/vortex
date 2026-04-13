@@ -51,7 +51,7 @@ pub use adapters::driving::tauri_ipc::{
     download_detail, download_list, download_pause, download_pause_all, download_remove,
     download_resume, download_resume_all, download_retry, download_set_priority, download_start,
     link_resolve, plugin_disable, plugin_enable, plugin_install, plugin_list, plugin_uninstall,
-    settings_get, settings_update,
+    settings_get, settings_update, status_bar_get,
 };
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -223,6 +223,7 @@ pub fn run() {
             clipboard_state,
             settings_get,
             settings_update,
+            status_bar_get,
         ])
         .run(tauri::generate_context!())
         // Tauri's run() has no meaningful recovery path — panic is intentional here

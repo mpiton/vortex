@@ -127,6 +127,21 @@ describe("AppLayout", () => {
     expect(screen.getByText(/vortex v0\.1\.0/)).toBeInTheDocument();
   });
 
+  it("should apply the backend locale on startup", async () => {
+    mockInvoke.mockImplementation(async (command: string) => {
+      if (command === "settings_get") {
+        return { ...baseConfig, locale: "fr" };
+      }
+      return undefined;
+    });
+
+    renderAppLayout();
+
+    await waitFor(() => {
+      expect(screen.getByText("Limite : illimitée")).toBeInTheDocument();
+    });
+  });
+
   it.each([
     { platform: "Linux x86_64", modifier: "ctrlKey" as const },
     { platform: "MacIntel", modifier: "metaKey" as const },
