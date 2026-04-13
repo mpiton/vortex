@@ -49,9 +49,16 @@ type Translate = (key: string, options?: Record<string, unknown>) => string;
 
 interface DownloadsTableProps {
   downloads: DownloadView[];
+  downloadsAreFiltered?: boolean;
   isLoading: boolean;
-  filter: FilterType;
-  searchQuery: string;
+  filter?: FilterType;
+  searchQuery?: string;
+}
+
+interface FilterDownloadsOptions {
+  downloadsAreFiltered?: boolean;
+  filter?: FilterType;
+  searchQuery?: string;
 }
 
 const STATE_FILTER_MAP: Record<FilterType, DownloadState[] | null> = {
@@ -74,6 +81,38 @@ function extractHostname(url: string): string {
   } catch {
     return '\u2014';
   }
+}
+
+export function filterDownloads(
+  downloads: DownloadView[],
+  {
+    downloadsAreFiltered = false,
+    filter = 'all',
+    searchQuery = '',
+  }: FilterDownloadsOptions = {},
+) {
+  if (downloadsAreFiltered) {
+    return downloads;
+  }
+
+  let result = downloads;
+
+  const allowedStates = STATE_FILTER_MAP[filter];
+  if (allowedStates) {
+    result = result.filter((download) => allowedStates.includes(download.state));
+  }
+
+  if (!searchQuery) {
+    return result;
+  }
+
+  const query = searchQuery.toLowerCase();
+  return result.filter(
+    (download) =>
+      download.fileName.toLowerCase().includes(query) ||
+      download.url.toLowerCase().includes(query) ||
+      extractHostname(download.url).toLowerCase().includes(query),
+  );
 }
 
 interface RowActions {
@@ -278,9 +317,10 @@ function getColumns(t: Translate): ColumnDef<DownloadView>[] {
 
 export function DownloadsTable({
   downloads,
+  downloadsAreFiltered = false,
   isLoading,
-  filter,
-  searchQuery,
+  filter = 'all',
+  searchQuery = '',
 }: DownloadsTableProps) {
   const { t } = useTranslation();
   const [sorting, setSorting] = useState<SortingState>([]);
@@ -310,28 +350,15 @@ export function DownloadsTable({
   );
   const clearSelection = useUiStore((s) => s.clearSelection);
 
-  const filteredDownloads = useMemo(() => {
-    let result = downloads;
-
-    const allowedStates = STATE_FILTER_MAP[filter];
-    if (allowedStates) {
-      result = result.filter((d) =>
-        allowedStates.includes(d.state),
-      );
-    }
-
-    if (searchQuery) {
-      const query = searchQuery.toLowerCase();
-      result = result.filter(
-        (d) =>
-          d.fileName.toLowerCase().includes(query) ||
-          d.url.toLowerCase().includes(query) ||
-          extractHostname(d.url).toLowerCase().includes(query),
-      );
-    }
-
-    return result;
-  }, [downloads, filter, searchQuery]);
+  const filteredDownloads = useMemo(
+    () =>
+      filterDownloads(downloads, {
+        downloadsAreFiltered,
+        filter,
+        searchQuery,
+      }),
+    [downloads, downloadsAreFiltered, filter, searchQuery],
+  );
 
   const rowSelection = useMemo(() => {
     const selectedSet = new Set(selectedDownloadIds);

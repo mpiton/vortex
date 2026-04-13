@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, cleanup } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { MemoryRouter } from "react-router";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { useDownloadStore } from "@/stores/downloadStore";
 import { useLayoutStore } from "@/stores/layout-store";
@@ -45,7 +46,9 @@ function renderWithProviders(
   const content = options.tooltip ? <TooltipProvider>{ui}</TooltipProvider> : ui;
 
   return render(
-    <QueryClientProvider client={createQueryClient()}>{content}</QueryClientProvider>,
+    <QueryClientProvider client={createQueryClient()}>
+      <MemoryRouter>{content}</MemoryRouter>
+    </QueryClientProvider>,
   );
 }
 

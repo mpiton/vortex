@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { useLocation, useNavigate } from "react-router";
 import { Switch } from "@/components/ui/switch";
 import { useTauriMutation } from "@/api/hooks";
 import { tauriInvoke } from "@/api/client";
@@ -15,6 +16,8 @@ import type { MediaGrabberOptions } from "@/types/media";
 
 export function LinkGrabberView() {
   const { t } = useTranslation();
+  const location = useLocation();
+  const navigate = useNavigate();
   const [resolvedLinks, setResolvedLinks] = useState<ResolvedLink[]>([]);
   const [resolveError, setResolveError] = useState<string | null>(null);
   const [filter, setFilter] = useState<FilterType>("all");
@@ -96,6 +99,22 @@ export function LinkGrabberView() {
       });
     }
   };
+
+  useEffect(() => {
+    const shouldFocusPaste =
+      !!location.state &&
+      typeof location.state === "object" &&
+      "focusPaste" in location.state &&
+      location.state.focusPaste === true;
+
+    if (!shouldFocusPaste) return;
+
+    const textarea = document.querySelector<HTMLTextAreaElement>(
+      '[data-shortcut-target="link-grabber-paste"]',
+    );
+    textarea?.focus();
+    void navigate(location.pathname, { replace: true, state: null });
+  }, [location.pathname, location.state, navigate]);
 
   return (
     <div className="flex h-full flex-col gap-4 p-4">

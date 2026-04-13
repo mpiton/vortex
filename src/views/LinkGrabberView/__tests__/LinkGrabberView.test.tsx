@@ -2,6 +2,7 @@ import { beforeEach, describe, it, expect, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { MemoryRouter } from "react-router";
 import { invoke } from "@tauri-apps/api/core";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { LinkGrabberView } from "../LinkGrabberView";
@@ -16,7 +17,7 @@ vi.mock("@tauri-apps/api/event", () => ({
 
 const mockInvoke = vi.mocked(invoke);
 
-function renderWithProviders() {
+function renderWithProviders(initialEntry: string | { pathname: string; state?: unknown } = "/link-grabber") {
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false },
@@ -25,9 +26,11 @@ function renderWithProviders() {
   });
   return render(
     <QueryClientProvider client={queryClient}>
-      <TooltipProvider>
-        <LinkGrabberView />
-      </TooltipProvider>
+      <MemoryRouter initialEntries={[initialEntry]}>
+        <TooltipProvider>
+          <LinkGrabberView />
+        </TooltipProvider>
+      </MemoryRouter>
     </QueryClientProvider>,
   );
 }
@@ -190,6 +193,17 @@ describe("LinkGrabberView", () => {
       expect(
         screen.queryByRole("button", { name: "All" }),
       ).not.toBeInTheDocument();
+    });
+  });
+
+  it("should focus the paste textarea when opened from the global add-urls shortcut", async () => {
+    renderWithProviders({
+      pathname: "/link-grabber",
+      state: { focusPaste: true },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByRole("textbox")).toHaveFocus();
     });
   });
 });
