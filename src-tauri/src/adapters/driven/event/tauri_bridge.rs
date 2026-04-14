@@ -174,15 +174,32 @@ mod tests {
 
     #[test]
     fn test_event_name_segment_variants() {
-        assert_eq!(
-            event_name(&DomainEvent::SegmentStarted {
-                download_id: DownloadId(1),
-                segment_id: 0,
-                start_byte: 0,
-                end_byte: 1024,
-            }),
-            "segment-started"
-        );
+        let started = DomainEvent::SegmentStarted {
+            download_id: DownloadId(1),
+            segment_id: 0,
+            start_byte: 0,
+            end_byte: 1024,
+        };
+        assert_eq!(event_name(&started), "segment-started");
+        let (event, payload) = to_tauri_event(&started);
+        assert_eq!(event, "segment-started");
+        assert_eq!(payload["downloadId"].as_u64(), Some(1));
+        assert_eq!(payload["segmentId"].as_u64(), Some(0));
+        assert_eq!(payload["startByte"].as_u64(), Some(0));
+        assert_eq!(payload["endByte"].as_u64(), Some(1024));
+
+        let sentinel = DomainEvent::SegmentStarted {
+            download_id: DownloadId(2),
+            segment_id: 3,
+            start_byte: 99,
+            end_byte: u64::MAX,
+        };
+        let (_, sentinel_payload) = to_tauri_event(&sentinel);
+        assert_eq!(sentinel_payload["downloadId"].as_u64(), Some(2));
+        assert_eq!(sentinel_payload["segmentId"].as_u64(), Some(3));
+        assert_eq!(sentinel_payload["startByte"].as_u64(), Some(99));
+        assert_eq!(sentinel_payload["endByte"].as_u64(), Some(u64::MAX));
+
         assert_eq!(
             event_name(&DomainEvent::SegmentCompleted {
                 download_id: DownloadId(1),

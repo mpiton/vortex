@@ -215,19 +215,30 @@ async fn insert_segment(
 
 /// Mark a segment Completed and set its downloaded_bytes.
 ///
-/// When `end_byte` is the sentinel `-1` (no-Range download), the byte
-/// calculation is skipped so we never write a negative value.
+/// `end_byte` is exclusive for ranged segments, so the completed byte count is
+/// `end_byte - start_byte`. When `end_byte` is the sentinel `-1` (no-Range
+/// download), fall back to the parent download's known total bytes, or its
+/// aggregate downloaded bytes if the total is still unknown.
 async fn complete_segment(db: &DatabaseConnection, download_id: i64, segment_index: i32) {
     let sql = "UPDATE download_segments \
                SET state = 'Completed', \
                    downloaded_bytes = CASE WHEN end_byte >= 0 \
                                           THEN end_byte - start_byte \
-                                          ELSE downloaded_bytes END \
+                                          ELSE COALESCE( \
+                                              (SELECT total_bytes FROM downloads WHERE id = ?), \
+                                              (SELECT downloaded_bytes FROM downloads WHERE id = ?), \
+                                              downloaded_bytes \
+                                          ) END \
                WHERE download_id = ? AND segment_index = ?";
     let stmt = Statement::from_sql_and_values(
         DatabaseBackend::Sqlite,
         sql,
-        [download_id.into(), (segment_index as i64).into()],
+        [
+            download_id.into(),
+            download_id.into(),
+            download_id.into(),
+            (segment_index as i64).into(),
+        ],
     );
     if let Err(e) = db.execute(stmt).await {
         tracing::warn!(
@@ -261,6 +272,10 @@ async fn fail_segment(db: &DatabaseConnection, download_id: i64, segment_index: 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sea_orm::{ActiveModelTrait, EntityTrait, Set};
+
+    use crate::adapters::driven::sqlite::connection::setup_test_db;
+    use crate::adapters::driven::sqlite::entities::{download, download_segment};
 
     #[test]
     fn test_segment_row_id_is_deterministic() {
@@ -316,5 +331,101 @@ mod tests {
             }
             _ => panic!("expected SegmentStarted message"),
         }
+    }
+
+    async fn insert_download_row(
+        db: &DatabaseConnection,
+        id: i64,
+        total_bytes: Option<i64>,
+        downloaded_bytes: i64,
+    ) {
+        download::ActiveModel {
+            id: Set(id),
+            url: Set("https://example.test/file.bin".to_string()),
+            file_name: Set("file.bin".to_string()),
+            state: Set("Downloading".to_string()),
+            priority: Set(5),
+            total_bytes: Set(total_bytes),
+            downloaded_bytes: Set(downloaded_bytes),
+            speed_bytes_per_sec: Set(0),
+            retry_count: Set(0),
+            max_retries: Set(5),
+            segments_count: Set(1),
+            checksum_expected: Set(None),
+            source_hostname: Set("example.test".to_string()),
+            protocol: Set("https".to_string()),
+            resume_supported: Set(1),
+            module_name: Set(None),
+            account_id: Set(None),
+            destination_path: Set("/tmp/file.bin".to_string()),
+            created_at: Set(1),
+            updated_at: Set(1),
+        }
+        .insert(db)
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_complete_segment_sets_ranged_segment_bytes() {
+        let db = setup_test_db().await.unwrap();
+        insert_download_row(&db, 7, Some(4096), 0).await;
+
+        let row_id = segment_row_id(7, 2);
+        insert_segment(&db, row_id, 7, 2, 128, 640).await;
+        complete_segment(&db, 7, 2).await;
+
+        let model = download_segment::Entity::find_by_id(row_id)
+            .one(&db)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(model.state, "Completed");
+        assert_eq!(
+            model.downloaded_bytes, 512,
+            "exclusive end-byte ranges should complete to end - start"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_complete_segment_sets_no_range_bytes_from_download_total() {
+        let db = setup_test_db().await.unwrap();
+        insert_download_row(&db, 9, Some(2048), 1536).await;
+
+        let row_id = segment_row_id(9, 0);
+        insert_segment(&db, row_id, 9, 0, 0, -1).await;
+        complete_segment(&db, 9, 0).await;
+
+        let model = download_segment::Entity::find_by_id(row_id)
+            .one(&db)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(model.state, "Completed");
+        assert_eq!(
+            model.downloaded_bytes, 2048,
+            "no-range segments should complete to the download's total size when known"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_complete_segment_falls_back_to_downloaded_bytes_when_total_unknown() {
+        let db = setup_test_db().await.unwrap();
+        insert_download_row(&db, 11, None, 777).await;
+
+        let row_id = segment_row_id(11, 0);
+        insert_segment(&db, row_id, 11, 0, 0, -1).await;
+        complete_segment(&db, 11, 0).await;
+
+        let model = download_segment::Entity::find_by_id(row_id)
+            .one(&db)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(model.state, "Completed");
+        assert_eq!(
+            model.downloaded_bytes, 777,
+            "no-range segments should fall back to aggregate download progress when total size is unknown"
+        );
     }
 }

@@ -523,7 +523,8 @@ mod tests {
                 DomainEvent::SegmentStarted {
                     download_id: DownloadId(4),
                     segment_id: 0,
-                    ..
+                    start_byte: 0,
+                    end_byte: 10_000,
                 }
             )
         });
@@ -583,7 +584,8 @@ mod tests {
                 DomainEvent::SegmentStarted {
                     download_id: DownloadId(5),
                     segment_id: 1,
-                    ..
+                    start_byte: 0,
+                    end_byte: 512,
                 }
             )),
             "SegmentStarted missing"
@@ -639,7 +641,8 @@ mod tests {
                 DomainEvent::SegmentStarted {
                     download_id: DownloadId(6),
                     segment_id: 0,
-                    ..
+                    start_byte: 0,
+                    end_byte: 1000,
                 }
             )),
             "SegmentStarted missing"
