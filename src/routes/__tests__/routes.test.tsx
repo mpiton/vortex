@@ -3,23 +3,22 @@ import { render, screen } from "@testing-library/react";
 import { MemoryRouter, Routes, Route, Navigate } from "react-router";
 import { ROUTES } from "@/types/layout";
 
-// Minimal routing setup mirroring App.tsx — no layout wrapper needed here
+// Test helper: drives each route element with a data-testid matching the path.
+// Routes are derived from the ROUTES config so any additions or removals are
+// automatically covered without updating this test file.
 function AppRoutes({ initialPath }: { initialPath: string }) {
   return (
     <MemoryRouter initialEntries={[initialPath]}>
       <Routes>
-        <Route index element={<Navigate to="/downloads" replace />} />
-        <Route path="downloads" element={<div>Downloads</div>} />
-        <Route path="link-grabber" element={<div>Link Grabber</div>} />
-        <Route path="packages" element={<div>Packages</div>} />
-        <Route path="accounts" element={<div>Accounts</div>} />
-        <Route path="captcha" element={<div>Captcha</div>} />
-        <Route path="plugins" element={<div>Plugins</div>} />
-        <Route path="scheduler" element={<div>Scheduler</div>} />
-        <Route path="history" element={<div>History</div>} />
-        <Route path="statistics" element={<div>Statistics</div>} />
-        <Route path="settings" element={<div>Settings</div>} />
-        <Route path="*" element={<Navigate to="/downloads" replace />} />
+        <Route index element={<Navigate to={ROUTES[0].path} replace />} />
+        {ROUTES.map((r) => (
+          <Route
+            key={r.path}
+            path={r.path.replace(/^\//, "")}
+            element={<div data-testid={r.path} />}
+          />
+        ))}
+        <Route path="*" element={<Navigate to={ROUTES[0].path} replace />} />
       </Routes>
     </MemoryRouter>
   );
@@ -32,8 +31,7 @@ describe("ROUTES config", () => {
 
   it("should have unique paths", () => {
     const paths = ROUTES.map((r) => r.path);
-    const unique = new Set(paths);
-    expect(unique.size).toBe(paths.length);
+    expect(new Set(paths).size).toBe(paths.length);
   });
 
   it("should have all required fields on each route", () => {
@@ -47,44 +45,21 @@ describe("ROUTES config", () => {
 });
 
 describe("App routing", () => {
-  it("should render downloads at /downloads", () => {
-    render(<AppRoutes initialPath="/downloads" />);
-    expect(screen.getByText("Downloads")).toBeInTheDocument();
-  });
-
-  it("should render link-grabber at /link-grabber", () => {
-    render(<AppRoutes initialPath="/link-grabber" />);
-    expect(screen.getByText("Link Grabber")).toBeInTheDocument();
-  });
-
-  it("should render all 10 routes", () => {
-    const routePaths = [
-      { path: "/downloads", label: "Downloads" },
-      { path: "/link-grabber", label: "Link Grabber" },
-      { path: "/packages", label: "Packages" },
-      { path: "/accounts", label: "Accounts" },
-      { path: "/captcha", label: "Captcha" },
-      { path: "/plugins", label: "Plugins" },
-      { path: "/scheduler", label: "Scheduler" },
-      { path: "/history", label: "History" },
-      { path: "/statistics", label: "Statistics" },
-      { path: "/settings", label: "Settings" },
-    ];
-
-    for (const { path, label } of routePaths) {
-      const { unmount } = render(<AppRoutes initialPath={path} />);
-      expect(screen.getByText(label)).toBeInTheDocument();
+  it("should render each route at its configured path", () => {
+    for (const route of ROUTES) {
+      const { unmount } = render(<AppRoutes initialPath={route.path} />);
+      expect(screen.getByTestId(route.path)).toBeInTheDocument();
       unmount();
     }
   });
 
-  it("should redirect / to /downloads", () => {
+  it("should redirect / to the first route", () => {
     render(<AppRoutes initialPath="/" />);
-    expect(screen.getByText("Downloads")).toBeInTheDocument();
+    expect(screen.getByTestId(ROUTES[0].path)).toBeInTheDocument();
   });
 
-  it("should redirect unknown paths to /downloads", () => {
+  it("should redirect unknown paths to the first route", () => {
     render(<AppRoutes initialPath="/unknown-route" />);
-    expect(screen.getByText("Downloads")).toBeInTheDocument();
+    expect(screen.getByTestId(ROUTES[0].path)).toBeInTheDocument();
   });
 });

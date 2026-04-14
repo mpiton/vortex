@@ -112,7 +112,7 @@ describe('DownloadsSection', () => {
     renderWithQuery(<DownloadsSection config={mockConfig} />);
     const label = screen.getByText('Max concurrent downloads');
     const input = label.closest('div')?.parentElement?.querySelector('input');
-    expect(input).toBeDefined();
+    expect(input).not.toBeNull();
     expect(input?.max).toBe('20');
   });
 });
