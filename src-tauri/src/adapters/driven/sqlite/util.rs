@@ -1,4 +1,8 @@
+use sea_orm::sea_query::{Expr, SimpleExpr};
+
 use crate::domain::error::DomainError;
+
+pub const MIN_PLAUSIBLE_UNIX_MS: u64 = 946_684_800_000;
 
 /// Bridge a sync trait method to async sea-orm by running on a dedicated thread.
 /// Uses `std::thread::scope` + `Handle::block_on` to work with both
@@ -27,4 +31,27 @@ pub fn safe_u64(val: i64) -> u64 {
 /// Safely convert an i64 from SQLite to u32, defaulting to 0 for out-of-range values.
 pub fn safe_u32(val: i64) -> u32 {
     u32::try_from(val).unwrap_or(0)
+}
+
+pub fn infer_timestamp_ms_from_download_id(raw_id: i64) -> Option<u64> {
+    let ts = safe_u64(raw_id) >> 12;
+    (ts >= MIN_PLAUSIBLE_UNIX_MS).then_some(ts)
+}
+
+pub fn current_timestamp_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis().min(u64::MAX as u128) as u64)
+        .unwrap_or(MIN_PLAUSIBLE_UNIX_MS)
+}
+
+pub fn inferred_download_created_at_order_expr() -> SimpleExpr {
+    Expr::cust(format!(
+        "CASE \
+            WHEN created_at > 0 THEN created_at \
+            WHEN ((id >> 12) >= {MIN_PLAUSIBLE_UNIX_MS}) THEN (id >> 12) \
+            WHEN updated_at > 0 THEN updated_at \
+            ELSE {MIN_PLAUSIBLE_UNIX_MS} \
+        END"
+    ))
 }

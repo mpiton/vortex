@@ -11,7 +11,10 @@ use crate::domain::model::views::{
 use crate::domain::ports::driven::download_read_repository::DownloadReadRepository;
 
 use super::entities::{download, download_segment};
-use super::util::{block_on, map_db_err, safe_u32, safe_u64};
+use super::util::{
+    MIN_PLAUSIBLE_UNIX_MS, block_on, infer_timestamp_ms_from_download_id,
+    inferred_download_created_at_order_expr, map_db_err, safe_u32, safe_u64,
+};
 
 pub struct SqliteDownloadReadRepo {
     db: DatabaseConnection,
@@ -20,6 +23,22 @@ pub struct SqliteDownloadReadRepo {
 impl SqliteDownloadReadRepo {
     pub fn new(db: DatabaseConnection) -> Self {
         Self { db }
+    }
+}
+
+fn read_created_at(model: &download::Model) -> u64 {
+    let created_at = safe_u64(model.created_at);
+    if created_at > 0 {
+        created_at
+    } else if let Some(inferred) = infer_timestamp_ms_from_download_id(model.id) {
+        inferred
+    } else {
+        let updated_at = safe_u64(model.updated_at);
+        if updated_at > 0 {
+            updated_at
+        } else {
+            MIN_PLAUSIBLE_UNIX_MS
+        }
     }
 }
 
@@ -60,7 +79,7 @@ fn model_to_view(
         segments_total,
         module_name: model.module_name.clone(),
         account_name: None, // Resolved when accounts table is implemented
-        created_at: safe_u64(model.created_at),
+        created_at: read_created_at(model),
     })
 }
 
@@ -105,20 +124,46 @@ impl DownloadReadRepository for SqliteDownloadReadRepo {
                 // Progress is a derived value (downloaded/total ratio), not a stored column.
                 // We approximate by sorting on downloaded_bytes — a true ratio sort would
                 // need a computed SQL expression, deferred to the UI layer for now.
-                let col = match s.field {
-                    SortField::CreatedAt => download::Column::CreatedAt,
-                    SortField::FileName => download::Column::FileName,
-                    SortField::FileSize => download::Column::TotalBytes,
-                    SortField::Progress => download::Column::DownloadedBytes,
-                    SortField::Speed => download::Column::SpeedBytesPerSec,
-                    SortField::State => download::Column::State,
-                };
-                query = match s.direction {
-                    SortDirection::Ascending => query.order_by_asc(col),
-                    SortDirection::Descending => query.order_by_desc(col),
+                query = match (s.field, s.direction) {
+                    (SortField::CreatedAt, SortDirection::Ascending) => {
+                        query.order_by_asc(inferred_download_created_at_order_expr())
+                    }
+                    (SortField::CreatedAt, SortDirection::Descending) => {
+                        query.order_by_desc(inferred_download_created_at_order_expr())
+                    }
+                    (SortField::FileName, SortDirection::Ascending) => {
+                        query.order_by_asc(download::Column::FileName)
+                    }
+                    (SortField::FileName, SortDirection::Descending) => {
+                        query.order_by_desc(download::Column::FileName)
+                    }
+                    (SortField::FileSize, SortDirection::Ascending) => {
+                        query.order_by_asc(download::Column::TotalBytes)
+                    }
+                    (SortField::FileSize, SortDirection::Descending) => {
+                        query.order_by_desc(download::Column::TotalBytes)
+                    }
+                    (SortField::Progress, SortDirection::Ascending) => {
+                        query.order_by_asc(download::Column::DownloadedBytes)
+                    }
+                    (SortField::Progress, SortDirection::Descending) => {
+                        query.order_by_desc(download::Column::DownloadedBytes)
+                    }
+                    (SortField::Speed, SortDirection::Ascending) => {
+                        query.order_by_asc(download::Column::SpeedBytesPerSec)
+                    }
+                    (SortField::Speed, SortDirection::Descending) => {
+                        query.order_by_desc(download::Column::SpeedBytesPerSec)
+                    }
+                    (SortField::State, SortDirection::Ascending) => {
+                        query.order_by_asc(download::Column::State)
+                    }
+                    (SortField::State, SortDirection::Descending) => {
+                        query.order_by_desc(download::Column::State)
+                    }
                 };
             } else {
-                query = query.order_by_desc(download::Column::CreatedAt);
+                query = query.order_by_desc(inferred_download_created_at_order_expr());
             }
 
             if let Some(o) = offset {
@@ -207,6 +252,11 @@ impl DownloadReadRepository for SqliteDownloadReadRepo {
             let state = model.state.parse().map_err(|_| {
                 DomainError::StorageError(format!("invalid download state in DB: {}", model.state))
             })?;
+            let created_at = read_created_at(&model);
+            let updated_at = {
+                let stored = safe_u64(model.updated_at);
+                if stored > 0 { stored } else { created_at }
+            };
 
             let detail = DownloadDetailView {
                 id: DownloadId(safe_u64(model.id)),
@@ -226,8 +276,8 @@ impl DownloadReadRepository for SqliteDownloadReadRepo {
                 resume_supported: model.resume_supported != 0,
                 retry_count: safe_u32(model.retry_count as i64),
                 max_retries: safe_u32(model.max_retries as i64),
-                created_at: safe_u64(model.created_at),
-                updated_at: safe_u64(model.updated_at),
+                created_at,
+                updated_at,
             };
 
             Ok(Some(detail))
@@ -271,7 +321,10 @@ impl DownloadReadRepository for SqliteDownloadReadRepo {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::adapters::driven::sqlite::download_repo::SqliteDownloadRepo;
+    use crate::domain::model::download::{Download, Url};
     use crate::domain::model::segment::SegmentState;
+    use crate::domain::ports::driven::download_repository::DownloadRepository;
     use sea_orm::ActiveValue::Set;
     use sea_orm::{ActiveModelTrait, DatabaseConnection};
 
@@ -365,6 +418,189 @@ mod tests {
         assert!(detail.resume_supported);
         assert_eq!(detail.retry_count, 0);
         assert_eq!(detail.max_retries, 5);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_find_download_detail_populates_timestamps_for_saved_downloads() {
+        let db = setup().await;
+        let write_repo = SqliteDownloadRepo::new(db.clone());
+        let read_repo = SqliteDownloadReadRepo::new(db);
+        let created_at = 1_700_000_000_000_u64;
+        let id = (created_at << 12) | 1;
+
+        let download = Download::new(
+            DownloadId(id),
+            Url::new("https://example.com/file1.zip").unwrap(),
+            "file1.zip".to_string(),
+            "/tmp/downloads/file1.zip".to_string(),
+        );
+
+        write_repo.save(&download).unwrap();
+
+        let detail = read_repo
+            .find_download_detail(DownloadId(id))
+            .unwrap()
+            .expect("Should find download");
+
+        assert_eq!(detail.created_at, created_at);
+        assert_eq!(detail.updated_at, created_at);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_find_download_detail_infers_timestamps_for_legacy_zero_rows() {
+        let db = setup().await;
+        let created_at = 1_700_000_000_000_u64;
+        let id = ((created_at << 12) | 7) as i64;
+
+        let model = download::ActiveModel {
+            id: Set(id),
+            url: Set("https://example.com/file1.zip".to_string()),
+            file_name: Set("file1.zip".to_string()),
+            state: Set("Downloading".to_string()),
+            priority: Set(5),
+            total_bytes: Set(Some(1000)),
+            downloaded_bytes: Set(500),
+            speed_bytes_per_sec: Set(100),
+            retry_count: Set(0),
+            max_retries: Set(5),
+            segments_count: Set(1),
+            checksum_expected: Set(None),
+            source_hostname: Set("example.com".to_string()),
+            protocol: Set("https".to_string()),
+            resume_supported: Set(1),
+            module_name: Set(None),
+            account_id: Set(None),
+            destination_path: Set("/tmp/downloads/file1.zip".to_string()),
+            created_at: Set(0),
+            updated_at: Set(0),
+        };
+        model.insert(&db).await.expect("Failed to insert download");
+
+        let repo = SqliteDownloadReadRepo::new(db);
+        let detail = repo
+            .find_download_detail(DownloadId(id as u64))
+            .unwrap()
+            .expect("Should find download");
+
+        assert_eq!(detail.created_at, created_at);
+        assert_eq!(detail.updated_at, created_at);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_find_download_detail_uses_updated_at_for_undecodable_legacy_rows() {
+        let db = setup().await;
+        let model = download::ActiveModel {
+            id: Set(1),
+            url: Set("https://example.com/file1.zip".to_string()),
+            file_name: Set("file1.zip".to_string()),
+            state: Set("Downloading".to_string()),
+            priority: Set(5),
+            total_bytes: Set(Some(1000)),
+            downloaded_bytes: Set(500),
+            speed_bytes_per_sec: Set(100),
+            retry_count: Set(0),
+            max_retries: Set(5),
+            segments_count: Set(1),
+            checksum_expected: Set(None),
+            source_hostname: Set("example.com".to_string()),
+            protocol: Set("https".to_string()),
+            resume_supported: Set(1),
+            module_name: Set(None),
+            account_id: Set(None),
+            destination_path: Set("/tmp/downloads/file1.zip".to_string()),
+            created_at: Set(0),
+            updated_at: Set(1_700_000_000_123_i64),
+        };
+        model.insert(&db).await.expect("Failed to insert download");
+
+        let repo = SqliteDownloadReadRepo::new(db);
+        let detail = repo
+            .find_download_detail(DownloadId(1))
+            .unwrap()
+            .expect("Should find download");
+
+        assert_eq!(detail.created_at, 1_700_000_000_123_u64);
+        assert_eq!(detail.updated_at, 1_700_000_000_123_u64);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_find_download_detail_falls_back_to_min_plausible_time_for_undecodable_zero_rows()
+    {
+        let db = setup().await;
+        let model = download::ActiveModel {
+            id: Set(1),
+            url: Set("https://example.com/file1.zip".to_string()),
+            file_name: Set("file1.zip".to_string()),
+            state: Set("Downloading".to_string()),
+            priority: Set(5),
+            total_bytes: Set(Some(1000)),
+            downloaded_bytes: Set(500),
+            speed_bytes_per_sec: Set(100),
+            retry_count: Set(0),
+            max_retries: Set(5),
+            segments_count: Set(1),
+            checksum_expected: Set(None),
+            source_hostname: Set("example.com".to_string()),
+            protocol: Set("https".to_string()),
+            resume_supported: Set(1),
+            module_name: Set(None),
+            account_id: Set(None),
+            destination_path: Set("/tmp/downloads/file1.zip".to_string()),
+            created_at: Set(0),
+            updated_at: Set(0),
+        };
+        model.insert(&db).await.expect("Failed to insert download");
+
+        let repo = SqliteDownloadReadRepo::new(db);
+        let detail = repo
+            .find_download_detail(DownloadId(1))
+            .unwrap()
+            .expect("Should find download");
+
+        assert_eq!(detail.created_at, MIN_PLAUSIBLE_UNIX_MS);
+        assert_eq!(detail.updated_at, MIN_PLAUSIBLE_UNIX_MS);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_find_downloads_sorts_by_inferred_created_at_for_legacy_rows() {
+        let db = setup().await;
+        let legacy_created_at = 1_700_000_000_000_u64;
+        let legacy_id = ((legacy_created_at << 12) | 7) as i64;
+
+        let legacy = download::ActiveModel {
+            id: Set(legacy_id),
+            url: Set("https://example.com/legacy.zip".to_string()),
+            file_name: Set("legacy.zip".to_string()),
+            state: Set("Queued".to_string()),
+            priority: Set(5),
+            total_bytes: Set(Some(1000)),
+            downloaded_bytes: Set(0),
+            speed_bytes_per_sec: Set(0),
+            retry_count: Set(0),
+            max_retries: Set(5),
+            segments_count: Set(1),
+            checksum_expected: Set(None),
+            source_hostname: Set("example.com".to_string()),
+            protocol: Set("https".to_string()),
+            resume_supported: Set(1),
+            module_name: Set(None),
+            account_id: Set(None),
+            destination_path: Set("/tmp/downloads/legacy.zip".to_string()),
+            created_at: Set(0),
+            updated_at: Set(0),
+        };
+        legacy
+            .insert(&db)
+            .await
+            .expect("Failed to insert legacy download");
+
+        insert_download(&db, 1, "Queued", "recent.zip").await;
+
+        let repo = SqliteDownloadReadRepo::new(db);
+        let views = repo.find_downloads(None, None, None, None).unwrap();
+
+        assert_eq!(views[0].file_name, "legacy.zip");
+        assert_eq!(views[0].created_at, legacy_created_at);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -1,5 +1,7 @@
 //! SQLite implementation of the `DownloadRepository` (CQRS write side).
 
+use sea_orm::ActiveValue::Set;
+use sea_orm::sea_query::Expr;
 use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter};
 
 use crate::domain::error::DomainError;
@@ -7,7 +9,9 @@ use crate::domain::model::download::{Download, DownloadId, DownloadState};
 use crate::domain::ports::driven::download_repository::DownloadRepository;
 
 use super::entities::download;
-use super::util::{block_on, map_db_err};
+use super::util::{
+    block_on, current_timestamp_ms, infer_timestamp_ms_from_download_id, map_db_err,
+};
 
 pub struct SqliteDownloadRepo {
     db: DatabaseConnection,
@@ -36,7 +40,21 @@ impl DownloadRepository for SqliteDownloadRepo {
 
     fn save(&self, download: &Download) -> Result<(), DomainError> {
         block_on(async {
-            let active_model = download::ActiveModel::from_domain(download);
+            let mut active_model = download::ActiveModel::from_domain(download);
+            let now = current_timestamp_ms();
+            let created_at = if download.created_at() == 0 {
+                infer_timestamp_ms_from_download_id(download.id().0 as i64).unwrap_or(now)
+            } else {
+                download.created_at()
+            };
+            let updated_at = if download.updated_at() == 0 {
+                created_at
+            } else {
+                now.max(download.updated_at())
+            };
+
+            active_model.created_at = Set(created_at as i64);
+            active_model.updated_at = Set(updated_at as i64);
 
             download::Entity::insert(active_model)
                 .on_conflict(
@@ -60,9 +78,14 @@ impl DownloadRepository for SqliteDownloadRepo {
                             download::Column::ModuleName,
                             download::Column::AccountId,
                             download::Column::DestinationPath,
-                            download::Column::CreatedAt,
-                            download::Column::UpdatedAt,
                         ])
+                        .value(
+                            download::Column::CreatedAt,
+                            Expr::cust(
+                                "CASE WHEN created_at > 0 THEN created_at ELSE excluded.created_at END",
+                            ),
+                        )
+                        .value(download::Column::UpdatedAt, now as i64)
                         .to_owned(),
                 )
                 .exec(&self.db)
@@ -101,8 +124,11 @@ impl DownloadRepository for SqliteDownloadRepo {
 mod tests {
     use super::*;
     use crate::adapters::driven::sqlite::connection::setup_test_db;
+    use crate::adapters::driven::sqlite::entities::download;
     use crate::domain::model::download::Url;
     use crate::domain::model::queue::Priority;
+    use sea_orm::ActiveModelTrait;
+    use std::time::Duration;
 
     fn make_download(id: u64) -> Download {
         let url = Url::new("https://example.com/file.zip").expect("valid url");
@@ -141,13 +167,20 @@ mod tests {
     async fn test_save_upsert_updates_existing() {
         let db = setup_test_db().await.expect("test db");
         let repo = SqliteDownloadRepo::new(db);
+        let created_at = 1_700_000_000_000_u64;
+        let id = (created_at << 12) | 1;
 
-        let download = make_download(1);
+        let download = make_download(id);
         repo.save(&download).expect("first save");
+        let first = repo
+            .find_by_id(DownloadId(id))
+            .expect("find_by_id")
+            .expect("should exist");
 
         // Modify and save again (upsert)
+        std::thread::sleep(Duration::from_millis(2));
         let updated = Download::new(
-            DownloadId(1),
+            DownloadId(id),
             Url::new("https://example.com/updated.zip").expect("valid url"),
             "updated.zip".to_string(),
             "/downloads".to_string(),
@@ -155,11 +188,87 @@ mod tests {
         repo.save(&updated).expect("upsert save");
 
         let found = repo
-            .find_by_id(DownloadId(1))
+            .find_by_id(DownloadId(id))
             .expect("find_by_id")
             .expect("should exist");
         assert_eq!(found.file_name(), "updated.zip");
         assert_eq!(found.destination_path(), "/downloads");
+        assert_eq!(found.created_at(), first.created_at());
+        assert!(found.updated_at() > first.updated_at());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_save_refreshes_updated_at_for_existing_download() {
+        let db = setup_test_db().await.expect("test db");
+        let repo = SqliteDownloadRepo::new(db);
+
+        let download = make_download(1);
+        repo.save(&download).expect("first save");
+
+        let found = repo
+            .find_by_id(DownloadId(1))
+            .expect("find_by_id")
+            .expect("should exist");
+        let previous_updated_at = found.updated_at();
+
+        std::thread::sleep(Duration::from_millis(2));
+        repo.save(&found).expect("second save");
+
+        let reloaded = repo
+            .find_by_id(DownloadId(1))
+            .expect("find_by_id")
+            .expect("should exist");
+
+        assert!(reloaded.updated_at() > previous_updated_at);
+        assert_eq!(reloaded.created_at(), found.created_at());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_save_heals_legacy_zero_created_at_on_upsert() {
+        let db = setup_test_db().await.expect("test db");
+        let repo = SqliteDownloadRepo::new(db.clone());
+        let created_at = 1_700_000_000_000_u64;
+        let id = ((created_at << 12) | 7) as i64;
+
+        let legacy = download::ActiveModel {
+            id: Set(id),
+            url: Set("https://example.com/file.zip".to_string()),
+            file_name: Set("file.zip".to_string()),
+            state: Set("Queued".to_string()),
+            priority: Set(5),
+            total_bytes: Set(None),
+            downloaded_bytes: Set(0),
+            speed_bytes_per_sec: Set(0),
+            retry_count: Set(0),
+            max_retries: Set(5),
+            segments_count: Set(1),
+            checksum_expected: Set(None),
+            source_hostname: Set("example.com".to_string()),
+            protocol: Set("https".to_string()),
+            resume_supported: Set(0),
+            module_name: Set(None),
+            account_id: Set(None),
+            destination_path: Set("/tmp".to_string()),
+            created_at: Set(0),
+            updated_at: Set(0),
+        };
+        legacy.insert(&db).await.expect("insert legacy row");
+
+        std::thread::sleep(Duration::from_millis(2));
+        let updated = Download::new(
+            DownloadId(id as u64),
+            Url::new("https://example.com/updated.zip").expect("valid url"),
+            "updated.zip".to_string(),
+            "/downloads".to_string(),
+        );
+        repo.save(&updated).expect("upsert save");
+
+        let found = repo
+            .find_by_id(DownloadId(id as u64))
+            .expect("find_by_id")
+            .expect("should exist");
+        assert_eq!(found.created_at(), created_at);
+        assert!(found.updated_at() > created_at);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
