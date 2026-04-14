@@ -24,6 +24,10 @@ impl DownloadLogStore {
         }
     }
 
+    pub fn remove(&self, download_id: u64) {
+        self.lines_by_download.remove(&download_id);
+    }
+
     pub fn recent(&self, download_id: u64, limit: usize) -> Vec<String> {
         if limit == 0 {
             return Vec::new();
@@ -71,5 +75,15 @@ mod tests {
 
         assert_eq!(store.recent(1, 10), vec!["[INFO] first".to_string()]);
         assert_eq!(store.recent(2, 10), vec!["[INFO] second".to_string()]);
+    }
+
+    #[test]
+    fn removes_all_lines_for_a_download() {
+        let store = DownloadLogStore::new(4);
+
+        store.push(1, "[INFO] first".to_string());
+        store.remove(1);
+
+        assert!(store.recent(1, 10).is_empty());
     }
 }

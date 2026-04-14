@@ -52,6 +52,9 @@ fn record_download_event(store: &DownloadLogStore, event: &DomainEvent) {
         DomainEvent::DownloadExtracting { id } => {
             store.push(id.0, "[INFO] Extracting archive".to_string());
         }
+        DomainEvent::DownloadRemoved { id } => {
+            store.remove(id.0);
+        }
         DomainEvent::SegmentStarted {
             download_id,
             segment_id,
@@ -126,6 +129,16 @@ mod tests {
                 version: "1.0.0".to_string(),
             },
         );
+
+        assert!(store.recent(42, 10).is_empty());
+    }
+
+    #[test]
+    fn clears_logs_when_download_is_removed() {
+        let store = DownloadLogStore::new(8);
+
+        record_download_event(&store, &DomainEvent::DownloadStarted { id: DownloadId(42) });
+        record_download_event(&store, &DomainEvent::DownloadRemoved { id: DownloadId(42) });
 
         assert!(store.recent(42, 10).is_empty());
     }

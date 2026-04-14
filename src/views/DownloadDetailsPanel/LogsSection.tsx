@@ -9,9 +9,12 @@ export function LogsSection({ downloadId }: LogsSectionProps) {
   const { data: logs, isLoading } = useTauriQuery<string[]>(
     'download_logs',
     { id: Number(downloadId), limit: 20 },
-    { queryKey: ['download_logs', downloadId], staleTime: 2000 },
+    {
+      queryKey: ['download_logs', downloadId],
+      staleTime: 2000,
+      refetchInterval: 2000,
+    },
   );
-  const lineOccurrences = new Map<string, number>();
 
   return (
     <section className="space-y-3">
@@ -22,19 +25,23 @@ export function LogsSection({ downloadId }: LogsSectionProps) {
       ) : !logs || logs.length === 0 ? (
         <div className="text-muted-foreground text-xs">No logs</div>
       ) : (
-        logs.map((line) => {
-          const occurrence = lineOccurrences.get(line) ?? 0;
-          lineOccurrences.set(line, occurrence + 1);
+        (() => {
+          const lineOccurrences = new Map<string, number>();
 
-          return (
-            <div
-              key={`${downloadId}:${line}:${occurrence}`}
-              className="font-mono text-xs text-muted-foreground whitespace-pre-wrap break-words"
-            >
-              {line}
-            </div>
-          );
-        })
+          return logs.map((line) => {
+            const occurrence = lineOccurrences.get(line) ?? 0;
+            lineOccurrences.set(line, occurrence + 1);
+
+            return (
+              <div
+                key={`${downloadId}:${line}:${occurrence}`}
+                className="font-mono text-xs text-muted-foreground whitespace-pre-wrap break-words"
+              >
+                {line}
+              </div>
+            );
+          });
+        })()
       )}
       </ScrollArea>
     </section>

@@ -25,6 +25,7 @@ fn event_name(event: &DomainEvent) -> &'static str {
         DomainEvent::DownloadWaiting { .. } => "download-waiting",
         DomainEvent::DownloadChecking { .. } => "download-checking",
         DomainEvent::DownloadCancelled { .. } => "download-cancelled",
+        DomainEvent::DownloadRemoved { .. } => "download-removed",
         DomainEvent::DownloadExtracting { .. } => "download-extracting",
         DomainEvent::DownloadProgress { .. } => "download-progress",
         DomainEvent::SegmentStarted { .. } => "segment-started",
@@ -47,6 +48,7 @@ fn event_payload(event: &DomainEvent) -> serde_json::Value {
         | DomainEvent::DownloadResumedFromWait { id }
         | DomainEvent::DownloadCompleted { id }
         | DomainEvent::DownloadCancelled { id }
+        | DomainEvent::DownloadRemoved { id }
         | DomainEvent::DownloadWaiting { id }
         | DomainEvent::DownloadChecking { id }
         | DomainEvent::DownloadExtracting { id } => json!({ "id": id.0 }),
@@ -147,6 +149,10 @@ mod tests {
         assert_eq!(
             event_name(&DomainEvent::DownloadChecking { id: DownloadId(1) }),
             "download-checking"
+        );
+        assert_eq!(
+            event_name(&DomainEvent::DownloadRemoved { id: DownloadId(1) }),
+            "download-removed"
         );
         assert_eq!(
             event_name(&DomainEvent::DownloadExtracting { id: DownloadId(1) }),

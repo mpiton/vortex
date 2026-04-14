@@ -50,4 +50,23 @@ describe('LogsSection', () => {
 
     expect(await screen.findByText('No logs')).toBeInTheDocument();
   });
+
+  it('should refetch logs while the panel stays open', async () => {
+    const { invoke } = await import('@tauri-apps/api/core');
+    vi.mocked(invoke)
+      .mockResolvedValueOnce(['[INFO] Download started'])
+      .mockResolvedValueOnce(['[INFO] Download started', '[INFO] Segment 1 completed']);
+
+    renderWithProviders(<LogsSection downloadId="1" />);
+
+    expect(await screen.findByText('[INFO] Download started')).toBeInTheDocument();
+
+    await waitFor(() => {
+      expect(invoke).toHaveBeenCalledTimes(2);
+    }, { timeout: 3000 });
+
+    expect(
+      await screen.findByText('[INFO] Segment 1 completed'),
+    ).toBeInTheDocument();
+  }, 7000);
 });
