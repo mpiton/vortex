@@ -8,7 +8,9 @@ use crate::domain::model::download::{Download, DownloadId, DownloadState};
 use crate::domain::ports::driven::download_repository::DownloadRepository;
 
 use super::entities::download;
-use super::util::{block_on, infer_timestamp_ms_from_download_id, map_db_err};
+use super::util::{
+    block_on, current_timestamp_ms, infer_timestamp_ms_from_download_id, map_db_err,
+};
 
 pub struct SqliteDownloadRepo {
     db: DatabaseConnection,
@@ -18,13 +20,6 @@ impl SqliteDownloadRepo {
     pub fn new(db: DatabaseConnection) -> Self {
         Self { db }
     }
-}
-
-fn current_timestamp_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
 }
 
 impl DownloadRepository for SqliteDownloadRepo {
