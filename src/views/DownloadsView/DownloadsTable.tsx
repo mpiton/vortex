@@ -146,6 +146,7 @@ function ActionCell({ download, t }: ActionCellProps) {
           variant="ghost"
           size="icon"
           className="h-7 w-7"
+          aria-label={t('downloads.table.actions.pause')}
           onClick={(e) => {
             e.stopPropagation();
             actions.pause(download.id);
@@ -159,6 +160,7 @@ function ActionCell({ download, t }: ActionCellProps) {
           variant="ghost"
           size="icon"
           className="h-7 w-7"
+          aria-label={t('downloads.table.actions.resume')}
           onClick={(e) => {
             e.stopPropagation();
             actions.resume(download.id);
@@ -172,6 +174,7 @@ function ActionCell({ download, t }: ActionCellProps) {
           variant="ghost"
           size="icon"
           className="h-7 w-7"
+          aria-label={t('downloads.table.actions.retry')}
           onClick={(e) => {
             e.stopPropagation();
             actions.start(download.id);

@@ -153,6 +153,9 @@
         "eta": "ETA"
       },
       "actions": {
+        "pause": "Pause",
+        "resume": "Resume",
+        "retry": "Retry",
         "setPriority": "Set Priority",
         "remove": "Remove"
       },

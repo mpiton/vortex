@@ -481,7 +481,7 @@ describe('DownloadsView', () => {
     await waitFor(() => {
       expect(mockInvoke).toHaveBeenCalledWith('download_pause', { id: 1 });
       expect(mockInvoke).toHaveBeenCalledWith('download_resume', { id: 2 });
+      expect(mockInvoke).not.toHaveBeenCalledWith('download_pause', { id: 3 });
     });
-    expect(mockInvoke).not.toHaveBeenCalledWith('download_pause', { id: 3 });
   });
 });
