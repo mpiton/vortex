@@ -1,5 +1,6 @@
 //! SQLite implementation of the `DownloadRepository` (CQRS write side).
 
+use sea_orm::ActiveValue::Set;
 use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter};
 
 use crate::domain::error::DomainError;
@@ -19,6 +20,20 @@ impl SqliteDownloadRepo {
     }
 }
 
+fn current_timestamp_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+fn infer_timestamp_ms_from_download_id(id: DownloadId) -> Option<u64> {
+    const MIN_PLAUSIBLE_UNIX_MS: u64 = 946_684_800_000;
+
+    let ts = id.0 >> 12;
+    (ts >= MIN_PLAUSIBLE_UNIX_MS).then_some(ts)
+}
+
 impl DownloadRepository for SqliteDownloadRepo {
     fn find_by_id(&self, id: DownloadId) -> Result<Option<Download>, DomainError> {
         block_on(async {
@@ -36,7 +51,21 @@ impl DownloadRepository for SqliteDownloadRepo {
 
     fn save(&self, download: &Download) -> Result<(), DomainError> {
         block_on(async {
-            let active_model = download::ActiveModel::from_domain(download);
+            let mut active_model = download::ActiveModel::from_domain(download);
+            let created_at = if download.created_at() == 0 {
+                infer_timestamp_ms_from_download_id(download.id())
+                    .unwrap_or_else(current_timestamp_ms)
+            } else {
+                download.created_at()
+            };
+            let updated_at = if download.updated_at() == 0 {
+                created_at
+            } else {
+                download.updated_at()
+            };
+
+            active_model.created_at = Set(created_at as i64);
+            active_model.updated_at = Set(updated_at as i64);
 
             download::Entity::insert(active_model)
                 .on_conflict(
