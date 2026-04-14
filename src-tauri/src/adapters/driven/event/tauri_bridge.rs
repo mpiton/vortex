@@ -68,8 +68,12 @@ fn event_payload(event: &DomainEvent) -> serde_json::Value {
         DomainEvent::SegmentStarted {
             download_id,
             segment_id,
+            start_byte,
+            end_byte,
+        } => {
+            json!({ "downloadId": download_id.0, "segmentId": segment_id, "startByte": start_byte, "endByte": end_byte })
         }
-        | DomainEvent::SegmentCompleted {
+        DomainEvent::SegmentCompleted {
             download_id,
             segment_id,
         } => {
@@ -173,7 +177,9 @@ mod tests {
         assert_eq!(
             event_name(&DomainEvent::SegmentStarted {
                 download_id: DownloadId(1),
-                segment_id: 0
+                segment_id: 0,
+                start_byte: 0,
+                end_byte: 1024,
             }),
             "segment-started"
         );

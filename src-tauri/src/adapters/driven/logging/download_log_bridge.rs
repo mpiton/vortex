@@ -58,6 +58,7 @@ fn record_download_event(store: &DownloadLogStore, event: &DomainEvent) {
         DomainEvent::SegmentStarted {
             download_id,
             segment_id,
+            ..
         } => {
             store.push(
                 download_id.0,

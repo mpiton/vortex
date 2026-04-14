@@ -55,7 +55,9 @@ impl DownloadEngine for SegmentedDownloadEngine {
     fn start(&self, download: &Download) -> Result<(), DomainError> {
         let download_id = download.id();
         let url = download.url().as_str().to_string();
-        let dest_path = PathBuf::from(download.destination_path()).join(download.file_name());
+        // destination_path already contains the complete file path (dir + filename).
+        // Do NOT join file_name again — that would produce "dir/file.bin/file.bin".
+        let dest_path = PathBuf::from(download.destination_path());
         let segments_count = if download.segments_count() == 0 {
             self.default_segments
         } else {
@@ -442,11 +444,13 @@ mod tests {
     fn make_download(id: u64, url: &str) -> Download {
         let download_id = DownloadId(id);
         let parsed_url = Url::new(url).unwrap();
+        // destination_path must be the full file path (dir + filename),
+        // matching how StartDownloadCommand builds it in production.
         Download::new(
             download_id,
             parsed_url,
             "test_file.bin".to_string(),
-            "/tmp".to_string(),
+            "/tmp/test_file.bin".to_string(),
         )
     }
 

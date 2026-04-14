@@ -64,6 +64,8 @@ pub(crate) async fn download_segment(params: SegmentParams) -> Result<u64, Segme
     event_bus.publish(DomainEvent::SegmentStarted {
         download_id,
         segment_id: segment_index,
+        start_byte,
+        end_byte,
     });
 
     let effective_start = start_byte + already_downloaded;
@@ -520,7 +522,8 @@ mod tests {
                 e,
                 DomainEvent::SegmentStarted {
                     download_id: DownloadId(4),
-                    segment_id: 0
+                    segment_id: 0,
+                    ..
                 }
             )
         });
@@ -579,7 +582,8 @@ mod tests {
                 e,
                 DomainEvent::SegmentStarted {
                     download_id: DownloadId(5),
-                    segment_id: 1
+                    segment_id: 1,
+                    ..
                 }
             )),
             "SegmentStarted missing"
@@ -634,7 +638,8 @@ mod tests {
                 e,
                 DomainEvent::SegmentStarted {
                     download_id: DownloadId(6),
-                    segment_id: 0
+                    segment_id: 0,
+                    ..
                 }
             )),
             "SegmentStarted missing"

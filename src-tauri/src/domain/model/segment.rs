@@ -77,6 +77,8 @@ impl Segment {
         Ok(DomainEvent::SegmentStarted {
             download_id: self.download_id,
             segment_id: self.id,
+            start_byte: self.start_byte,
+            end_byte: self.end_byte,
         })
     }
 
@@ -192,7 +194,9 @@ mod tests {
             result.unwrap(),
             DomainEvent::SegmentStarted {
                 download_id: DownloadId(10),
-                segment_id: 1
+                segment_id: 1,
+                start_byte: 0,
+                end_byte: 1024,
             }
         );
     }
@@ -290,7 +294,9 @@ mod tests {
             event,
             DomainEvent::SegmentStarted {
                 download_id: DownloadId(10),
-                segment_id: 1
+                segment_id: 1,
+                start_byte: 0,
+                end_byte: 1024,
             }
         );
     }

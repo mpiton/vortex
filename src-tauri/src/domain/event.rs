@@ -54,6 +54,10 @@ pub enum DomainEvent {
     SegmentStarted {
         download_id: DownloadId,
         segment_id: u32,
+        /// Inclusive start byte of this segment's range.
+        start_byte: u64,
+        /// Exclusive end byte (or u64::MAX when no Range header is used).
+        end_byte: u64,
     },
     SegmentCompleted {
         download_id: DownloadId,
