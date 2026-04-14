@@ -21,6 +21,8 @@ pub use adapters::driven::event::TokioEventBus;
 pub use adapters::driven::event::spawn_tauri_event_bridge;
 pub use adapters::driven::extractor::VortexArchiveExtractor;
 pub use adapters::driven::filesystem::FsFileStorage;
+pub use adapters::driven::logging::download_log_bridge::spawn_download_log_bridge;
+pub use adapters::driven::logging::download_log_store::DownloadLogStore;
 pub use adapters::driven::network::ReqwestHttpClient;
 pub use adapters::driven::network::SegmentedDownloadEngine;
 pub use adapters::driven::notification::spawn_notification_bridge;
@@ -48,10 +50,10 @@ pub use domain::model::ExtractionConfig;
 
 pub use adapters::driving::tauri_ipc::{
     self, AppState, clipboard_state, clipboard_toggle, download_cancel, download_count_by_state,
-    download_detail, download_list, download_pause, download_pause_all, download_remove,
-    download_resume, download_resume_all, download_retry, download_set_priority, download_start,
-    link_resolve, plugin_disable, plugin_enable, plugin_install, plugin_list, plugin_uninstall,
-    settings_get, settings_update, status_bar_get,
+    download_detail, download_list, download_logs, download_pause, download_pause_all,
+    download_remove, download_resume, download_resume_all, download_retry, download_set_priority,
+    download_start, link_resolve, plugin_disable, plugin_enable, plugin_install, plugin_list,
+    plugin_uninstall, settings_get, settings_update, status_bar_get,
 };
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -109,6 +111,7 @@ pub fn run() {
                 Arc::new(TauriClipboardObserver::new(app_handle.clone()));
             let archive_extractor: Arc<dyn ArchiveExtractor> =
                 Arc::new(VortexArchiveExtractor::new(ExtractionConfig::default()));
+            let download_log_store = Arc::new(DownloadLogStore::new(256));
 
             // ── SQLite repositories ─────────────────────────────────
             let download_repo: Arc<dyn DownloadRepository> =
@@ -172,6 +175,7 @@ pub fn run() {
             app.manage(AppState {
                 command_bus,
                 query_bus,
+                download_log_store: download_log_store.clone(),
             });
 
             // ── System tray ─────────────────────────────────────────
@@ -182,6 +186,7 @@ pub fn run() {
             // ── Event bridges (domain events → frontend + desktop) ──
             spawn_tauri_event_bridge(app_handle.clone(), event_bus.as_ref());
             spawn_notification_bridge(app_handle, event_bus.as_ref());
+            spawn_download_log_bridge(event_bus.as_ref(), download_log_store);
 
             // ── Queue manager event listener ────────────────────────
             queue_manager.clone().start_listening();
@@ -212,6 +217,7 @@ pub fn run() {
             download_remove,
             download_list,
             download_detail,
+            download_logs,
             download_count_by_state,
             plugin_install,
             plugin_uninstall,

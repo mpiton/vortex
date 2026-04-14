@@ -25,6 +25,7 @@ fn event_name(event: &DomainEvent) -> &'static str {
         DomainEvent::DownloadWaiting { .. } => "download-waiting",
         DomainEvent::DownloadChecking { .. } => "download-checking",
         DomainEvent::DownloadCancelled { .. } => "download-cancelled",
+        DomainEvent::DownloadRemoved { .. } => "download-removed",
         DomainEvent::DownloadExtracting { .. } => "download-extracting",
         DomainEvent::DownloadProgress { .. } => "download-progress",
         DomainEvent::SegmentStarted { .. } => "segment-started",
@@ -47,6 +48,7 @@ fn event_payload(event: &DomainEvent) -> serde_json::Value {
         | DomainEvent::DownloadResumedFromWait { id }
         | DomainEvent::DownloadCompleted { id }
         | DomainEvent::DownloadCancelled { id }
+        | DomainEvent::DownloadRemoved { id }
         | DomainEvent::DownloadWaiting { id }
         | DomainEvent::DownloadChecking { id }
         | DomainEvent::DownloadExtracting { id } => json!({ "id": id.0 }),
@@ -149,6 +151,10 @@ mod tests {
             "download-checking"
         );
         assert_eq!(
+            event_name(&DomainEvent::DownloadRemoved { id: DownloadId(1) }),
+            "download-removed"
+        );
+        assert_eq!(
             event_name(&DomainEvent::DownloadExtracting { id: DownloadId(1) }),
             "download-extracting"
         );
@@ -238,6 +244,15 @@ mod tests {
         // Verify snake_case keys are not present
         assert!(payload.get("download_id").is_none());
         assert!(payload.get("segment_id").is_none());
+    }
+
+    #[test]
+    fn test_event_payload_download_removed() {
+        let event = DomainEvent::DownloadRemoved { id: DownloadId(9) };
+        let (name, payload) = to_tauri_event(&event);
+
+        assert_eq!(name, "download-removed");
+        assert_eq!(payload["id"], 9);
     }
 
     #[test]

@@ -45,6 +45,9 @@ impl CommandBus {
                 .publish(DomainEvent::DownloadCancelled { id: cmd.id });
         }
 
+        self.event_bus()
+            .publish(DomainEvent::DownloadRemoved { id: cmd.id });
+
         Ok(())
     }
 }
@@ -434,5 +437,21 @@ mod tests {
         let deleted = harness.file_storage.deleted_metas.lock().unwrap();
         assert_eq!(deleted.len(), 1);
         assert_eq!(deleted[0], "/tmp/f.zip.vortex-meta");
+    }
+
+    #[tokio::test]
+    async fn test_remove_emits_download_removed_event() {
+        let dl = make_download();
+        let repo = MockDownloadRepo::new().with_download(dl);
+        let harness = make_harness(repo);
+
+        let cmd = RemoveDownloadCommand {
+            id: DownloadId(1),
+            delete_files: false,
+        };
+        harness.bus.handle_remove_download(cmd).await.unwrap();
+
+        let events = harness.event_bus.events.lock().unwrap();
+        assert!(events.contains(&DomainEvent::DownloadRemoved { id: DownloadId(1) }));
     }
 }

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { LogsSection } from '../LogsSection';
 
@@ -32,7 +32,11 @@ describe('LogsSection', () => {
       '[INFO] Connected to server',
     ]);
 
-    renderWithProviders(<LogsSection downloadId="dl-1" />);
+    renderWithProviders(<LogsSection downloadId="1" />);
+
+    await waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith('download_logs', { id: 1, limit: 20 });
+    });
 
     expect(await screen.findByText('[INFO] Download started')).toBeInTheDocument();
     expect(screen.getByText('[INFO] Connected to server')).toBeInTheDocument();
@@ -42,8 +46,27 @@ describe('LogsSection', () => {
     const { invoke } = await import('@tauri-apps/api/core');
     vi.mocked(invoke).mockResolvedValue([]);
 
-    renderWithProviders(<LogsSection downloadId="dl-1" />);
+    renderWithProviders(<LogsSection downloadId="1" />);
 
     expect(await screen.findByText('No logs')).toBeInTheDocument();
   });
+
+  it('should refetch logs while the panel stays open', async () => {
+    const { invoke } = await import('@tauri-apps/api/core');
+    vi.mocked(invoke)
+      .mockResolvedValueOnce(['[INFO] Download started'])
+      .mockResolvedValueOnce(['[INFO] Download started', '[INFO] Segment 1 completed']);
+
+    renderWithProviders(<LogsSection downloadId="1" />);
+
+    expect(await screen.findByText('[INFO] Download started')).toBeInTheDocument();
+
+    await waitFor(() => {
+      expect(invoke).toHaveBeenCalledTimes(2);
+    }, { timeout: 3000 });
+
+    expect(
+      await screen.findByText('[INFO] Segment 1 completed'),
+    ).toBeInTheDocument();
+  }, 7000);
 });

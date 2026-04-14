@@ -38,6 +38,9 @@ pub enum DomainEvent {
     DownloadCancelled {
         id: DownloadId,
     },
+    DownloadRemoved {
+        id: DownloadId,
+    },
     DownloadExtracting {
         id: DownloadId,
     },
