@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { GeneralSection } from '../GeneralSection';
@@ -11,8 +11,10 @@ import { AppearanceSection } from '../AppearanceSection';
 import type { AppConfig } from '@/types/settings';
 import { ThemeProvider } from '@/theme/theme-provider';
 
+const mockInvoke = vi.hoisted(() => vi.fn());
+
 vi.mock('@tauri-apps/api/core', () => ({
-  invoke: vi.fn().mockResolvedValue(null),
+  invoke: mockInvoke,
 }));
 
 vi.mock('@tauri-apps/api/event', () => ({
@@ -81,6 +83,7 @@ function renderWithTheme(children: React.ReactNode) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockInvoke.mockResolvedValue(null);
   localStorage.clear();
   document.documentElement.classList.remove('dark');
 });
@@ -226,8 +229,27 @@ describe('AppearanceSection', () => {
     await user.click(screen.getByRole('combobox', { name: 'Theme' }));
     await user.click(await screen.findByRole('option', { name: 'Dark' }));
 
-    expect(localStorage.getItem('vortex-theme')).toBe('dark');
-    expect(document.documentElement).toHaveClass('dark');
+    await waitFor(() => {
+      expect(localStorage.getItem('vortex-theme')).toBe('dark');
+      expect(document.documentElement).toHaveClass('dark');
+    });
+  });
+
+  it('should keep the current theme when the theme mutation fails', async () => {
+    const user = userEvent.setup();
+    mockInvoke.mockRejectedValueOnce(new Error('config store unavailable'));
+
+    renderWithTheme(<AppearanceSection config={mockConfig} />);
+
+    await user.click(screen.getByRole('combobox', { name: 'Theme' }));
+    await user.click(await screen.findByRole('option', { name: 'Dark' }));
+
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith('settings_update', { patch: { theme: 'dark' } });
+    });
+
+    expect(localStorage.getItem('vortex-theme')).toBe('auto');
+    expect(document.documentElement).not.toHaveClass('dark');
   });
 
   it('should render 6 accent color buttons', () => {

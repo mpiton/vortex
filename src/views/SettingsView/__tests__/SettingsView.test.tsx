@@ -72,6 +72,8 @@ describe('SettingsView', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockInvoke.mockResolvedValue(mockConfig);
+    localStorage.clear();
+    document.documentElement.classList.remove('dark');
   });
 
   it('should render all 6 tab buttons', async () => {

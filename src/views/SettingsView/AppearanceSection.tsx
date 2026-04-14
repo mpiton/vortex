@@ -41,6 +41,12 @@ export function AppearanceSection({ config }: AppearanceSectionProps) {
   const { setTheme } = useTheme();
   const { mutate } = useTauriMutation<AppConfig, { patch: AppConfigPatch }>('settings_update', {
     invalidateKeys: [['settings_get']],
+    onSuccess: (_data, variables) => {
+      const nextTheme = variables.patch.theme;
+      if (nextTheme === 'light' || nextTheme === 'dark' || nextTheme === 'auto') {
+        setTheme(nextTheme);
+      }
+    },
   });
 
   const [hexDraft, setHexDraft] = useState('');
@@ -48,9 +54,6 @@ export function AppearanceSection({ config }: AppearanceSectionProps) {
 
   const handleChange = <K extends keyof AppConfig>(key: K, value: AppConfig[K]) => {
     mutate({ patch: { [key]: value } as AppConfigPatch });
-    if (key === 'theme') {
-      setTheme(value as AppConfig['theme']);
-    }
   };
 
   const handleHexChange = (value: string) => {
