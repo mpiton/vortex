@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `maxConcurrentDownloads` validation now enforces the PRD §6.10 limit of 1–20 (was incorrectly accepting up to 100) in both backend validation and the settings UI input
+
 ### Added
 - `SqliteStatsRepo` — persistent download statistics backed by SQLite (replaces in-memory stub)
 - Project scaffolding: Tauri 2 + React 19 + TypeScript + Tailwind CSS 4 + shadcn/ui

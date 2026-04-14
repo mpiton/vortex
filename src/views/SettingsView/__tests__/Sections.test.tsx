@@ -107,6 +107,14 @@ describe('DownloadsSection', () => {
     expect(screen.getByText('Verify checksums')).toBeInTheDocument();
     expect(screen.getByText('Pre-allocate space')).toBeInTheDocument();
   });
+
+  it('should cap maxConcurrentDownloads input at 20 per PRD §6.10', () => {
+    renderWithQuery(<DownloadsSection config={mockConfig} />);
+    const label = screen.getByText('Max concurrent downloads');
+    const input = label.closest('div')?.parentElement?.querySelector('input');
+    expect(input).toBeDefined();
+    expect(input?.max).toBe('20');
+  });
 });
 
 describe('NetworkSection', () => {
