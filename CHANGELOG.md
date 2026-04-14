@@ -9,8 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - `maxConcurrentDownloads` validation now enforces the PRD §6.10 limit of 1–20 (was incorrectly accepting up to 100) in both backend validation and the settings UI input
+- Download engine was double-joining `file_name` onto `destination_path`, producing a path like `/Downloads/file.bin/file.bin` and causing all downloads to fail silently with a "Not a directory" I/O error before any bytes were fetched (fixes #54)
+- `SegmentStarted` event now carries `start_byte` and `end_byte` so downstream consumers can identify which byte range a segment covers
 
 ### Added
+- `spawn_sqlite_progress_bridge` — new event bridge that persists live download state to SQLite (`downloads.downloaded_bytes`, `download_segments` rows) so the read model reflects real progress instead of always showing 0%
 - `SqliteStatsRepo` — persistent download statistics backed by SQLite (replaces in-memory stub)
 - Project scaffolding: Tauri 2 + React 19 + TypeScript + Tailwind CSS 4 + shadcn/ui
 - Nix flake for reproducible development environment
