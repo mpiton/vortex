@@ -5,6 +5,8 @@ import { useSettingsStore } from '@/stores/settingsStore';
  * Applies global DOM effects based on app config:
  * - compact-mode class on body
  * - --color-accent CSS variable on :root
+ *
+ * Note: theme (dark class + localStorage) is owned exclusively by ThemeProvider.
  */
 export function useAppEffects() {
   const config = useSettingsStore((s) => s.config);

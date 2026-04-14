@@ -42,17 +42,17 @@ function createWrapper() {
 }
 
 describe('useDownloadDetail', () => {
-  it('should call query_download_detail with correct args', async () => {
+  it('should call download_detail with numeric id', async () => {
     const { invoke } = await import('@tauri-apps/api/core');
     vi.mocked(invoke).mockResolvedValue(mockDownloadDetail());
 
-    const { result } = renderHook(() => useDownloadDetail('dl-1'), {
+    const { result } = renderHook(() => useDownloadDetail('7274895108243456'), {
       wrapper: createWrapper(),
     });
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
 
-    expect(invoke).toHaveBeenCalledWith('query_download_detail', { id: 'dl-1' });
+    expect(invoke).toHaveBeenCalledWith('download_detail', { id: 7274895108243456 });
     expect(result.current.data?.id).toBe('dl-1');
   });
 });

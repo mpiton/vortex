@@ -9,6 +9,8 @@ import { useDownloadEvents } from "@/hooks/useDownloadEvents";
 import { useAppEffects } from "@/hooks/useAppEffects";
 import { tauriInvoke } from "@/api/client";
 import { useTauriQuery } from "@/api/hooks";
+import { downloadQueries } from "@/api/queries";
+import { useDownloadStore } from "@/stores/downloadStore";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useUiStore } from "@/stores/uiStore";
 import {
@@ -22,6 +24,7 @@ export function AppLayout() {
   const location = useLocation();
   const { i18n } = useTranslation();
   const setConfig = useSettingsStore((s) => s.setConfig);
+  const updateCountByState = useDownloadStore((s) => s.updateCountByState);
   useDownloadProgress();
   useDownloadEvents();
   useAppEffects();
@@ -32,11 +35,23 @@ export function AppLayout() {
     { queryKey: ['settings_get'], staleTime: 30_000 },
   );
 
+  const { data: countByState } = useTauriQuery<Record<string, number>>(
+    'download_count_by_state',
+    undefined,
+    { queryKey: downloadQueries.countByState(), staleTime: 5_000 },
+  );
+
   useEffect(() => {
     if (config) {
       setConfig(config);
     }
   }, [config, setConfig]);
+
+  useEffect(() => {
+    if (countByState) {
+      updateCountByState(countByState);
+    }
+  }, [countByState, updateCountByState]);
 
   useEffect(() => {
     if (!config?.locale) return;

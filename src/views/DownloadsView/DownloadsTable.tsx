@@ -328,19 +328,19 @@ export function DownloadsTable({
   const columns = useMemo(() => getColumns(t), [t]);
 
   const invalidateKeys = useMemo(() => [downloadQueries.lists(), downloadQueries.countByState()] as const, []);
-  const pauseMut = useTauriMutation<unknown, { id: string }>('download_pause', { invalidateKeys });
-  const resumeMut = useTauriMutation<unknown, { id: string }>('download_resume', { invalidateKeys });
-  const startMut = useTauriMutation<unknown, { id: string }>('download_start', { invalidateKeys });
-  const removeMut = useTauriMutation<unknown, { id: string; deleteFiles: boolean }>('download_remove', { invalidateKeys });
-  const priorityMut = useTauriMutation<unknown, { id: string; priority: number }>('download_set_priority', { invalidateKeys });
+  const pauseMut = useTauriMutation<unknown, { id: number }>('download_pause', { invalidateKeys });
+  const resumeMut = useTauriMutation<unknown, { id: number }>('download_resume', { invalidateKeys });
+  const retryMut = useTauriMutation<unknown, { id: number }>('download_retry', { invalidateKeys });
+  const removeMut = useTauriMutation<unknown, { id: number; deleteFiles: boolean }>('download_remove', { invalidateKeys });
+  const priorityMut = useTauriMutation<unknown, { id: number; priority: number }>('download_set_priority', { invalidateKeys });
 
   const rowActions = useMemo<RowActions>(() => ({
-    pause: (id) => pauseMut.mutate({ id }),
-    resume: (id) => resumeMut.mutate({ id }),
-    start: (id) => startMut.mutate({ id }),
-    remove: (id) => removeMut.mutate({ id, deleteFiles: false }),
-    setPriority: (id, priority) => priorityMut.mutate({ id, priority }),
-  }), [pauseMut, resumeMut, startMut, removeMut, priorityMut]);
+    pause: (id) => pauseMut.mutate({ id: Number(id) }),
+    resume: (id) => resumeMut.mutate({ id: Number(id) }),
+    start: (id) => retryMut.mutate({ id: Number(id) }),
+    remove: (id) => removeMut.mutate({ id: Number(id), deleteFiles: false }),
+    setPriority: (id, priority) => priorityMut.mutate({ id: Number(id), priority }),
+  }), [pauseMut, resumeMut, retryMut, removeMut, priorityMut]);
 
   const selectedDownloadIds = useUiStore((s) => s.selectedDownloadIds);
   const selectDownload = useUiStore((s) => s.selectDownload);
