@@ -9,6 +9,7 @@ use std::sync::Arc;
 use tauri::State;
 use tracing;
 
+use crate::adapters::driven::logging::download_log_store::DownloadLogStore;
 use crate::application::command_bus::CommandBus;
 use crate::application::commands::{
     CancelDownloadCommand, DisablePluginCommand, EnablePluginCommand, InstallPluginCommand,
@@ -32,6 +33,7 @@ use crate::domain::model::views::{DownloadFilter, SortDirection, SortField, Sort
 pub struct AppState {
     pub command_bus: Arc<CommandBus>,
     pub query_bus: Arc<QueryBus>,
+    pub download_log_store: Arc<DownloadLogStore>,
 }
 
 #[tauri::command]
@@ -261,6 +263,15 @@ pub async fn download_detail(
         .await
         .map(DownloadDetailViewDto::from)
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn download_logs(
+    state: State<'_, AppState>,
+    id: u64,
+    limit: usize,
+) -> Result<Vec<String>, String> {
+    Ok(state.download_log_store.recent(id, limit))
 }
 
 #[tauri::command]

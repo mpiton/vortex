@@ -6,6 +6,7 @@ pub mod credential;
 pub mod event;
 pub mod extractor;
 pub mod filesystem;
+pub mod logging;
 pub mod network;
 pub mod notification;
 pub mod plugin;
