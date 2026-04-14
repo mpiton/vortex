@@ -3,6 +3,10 @@ import { render, screen } from "@testing-library/react";
 import { MemoryRouter, Routes, Route, Navigate } from "react-router";
 import { ROUTES } from "@/types/layout";
 
+// Canonical default route as defined in App.tsx — hardcoded to catch regressions
+// if the redirect target drifts away from /downloads.
+const DEFAULT_ROUTE = "/downloads";
+
 // Test helper: drives each route element with a data-testid matching the path.
 // Routes are derived from the ROUTES config so any additions or removals are
 // automatically covered without updating this test file.
@@ -10,7 +14,7 @@ function AppRoutes({ initialPath }: { initialPath: string }) {
   return (
     <MemoryRouter initialEntries={[initialPath]}>
       <Routes>
-        <Route index element={<Navigate to={ROUTES[0].path} replace />} />
+        <Route index element={<Navigate to={DEFAULT_ROUTE} replace />} />
         {ROUTES.map((r) => (
           <Route
             key={r.path}
@@ -18,7 +22,7 @@ function AppRoutes({ initialPath }: { initialPath: string }) {
             element={<div data-testid={r.path} />}
           />
         ))}
-        <Route path="*" element={<Navigate to={ROUTES[0].path} replace />} />
+        <Route path="*" element={<Navigate to={DEFAULT_ROUTE} replace />} />
       </Routes>
     </MemoryRouter>
   );
@@ -53,13 +57,13 @@ describe("App routing", () => {
     }
   });
 
-  it("should redirect / to the first route", () => {
+  it("should redirect / to /downloads", () => {
     render(<AppRoutes initialPath="/" />);
-    expect(screen.getByTestId(ROUTES[0].path)).toBeInTheDocument();
+    expect(screen.getByTestId(DEFAULT_ROUTE)).toBeInTheDocument();
   });
 
-  it("should redirect unknown paths to the first route", () => {
+  it("should redirect unknown paths to /downloads", () => {
     render(<AppRoutes initialPath="/unknown-route" />);
-    expect(screen.getByTestId(ROUTES[0].path)).toBeInTheDocument();
+    expect(screen.getByTestId(DEFAULT_ROUTE)).toBeInTheDocument();
   });
 });
