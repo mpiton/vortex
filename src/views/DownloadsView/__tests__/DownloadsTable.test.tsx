@@ -218,4 +218,58 @@ describe('DownloadsTable', () => {
     expect(useUiStore.getState().selectedDownloadId).toBe('1');
     expect(useUiStore.getState().selectedDownloadIds).toEqual(['1']);
   });
+
+  describe('action button visibility per download state', () => {
+    function makeDownload(overrides: Partial<DownloadView>): DownloadView {
+      return {
+        id: '99',
+        fileName: 'test-file.zip',
+        url: 'https://example.com/test-file.zip',
+        state: 'Downloading',
+        progressPercent: 50,
+        speedBytesPerSec: 1024,
+        downloadedBytes: 5000,
+        totalBytes: 10000,
+        etaSeconds: 5,
+        segmentsActive: 1,
+        segmentsTotal: 2,
+        moduleName: null,
+        accountName: null,
+        createdAt: Date.now(),
+        ...overrides,
+      };
+    }
+
+    it('should show pause button for Downloading state', () => {
+      const { container } = renderTable({ downloads: [makeDownload({ state: 'Downloading' })] });
+      expect(container.querySelector('.lucide-pause')).toBeTruthy();
+    });
+
+    it('should not show pause button for Queued state', () => {
+      const { container } = renderTable({ downloads: [makeDownload({ state: 'Queued' })] });
+      expect(container.querySelector('.lucide-pause')).toBeNull();
+    });
+
+    it('should not show pause button for Retry state', () => {
+      const { container } = renderTable({ downloads: [makeDownload({ state: 'Retry' })] });
+      expect(container.querySelector('.lucide-pause')).toBeNull();
+    });
+
+    it('should show retry button for Retry state', () => {
+      const { container } = renderTable({ downloads: [makeDownload({ state: 'Retry' })] });
+      expect(container.querySelector('.lucide-rotate-ccw')).toBeTruthy();
+    });
+
+    it('should show resume button for Paused state', () => {
+      const { container } = renderTable({ downloads: [makeDownload({ state: 'Paused' })] });
+      expect(container.querySelector('.lucide-play')).toBeTruthy();
+    });
+
+    it('should not show any action button for Completed state', () => {
+      const { container } = renderTable({ downloads: [makeDownload({ state: 'Completed' })] });
+      expect(container.querySelector('.lucide-pause')).toBeNull();
+      expect(container.querySelector('.lucide-play')).toBeNull();
+      expect(container.querySelector('.lucide-rotate-ccw')).toBeNull();
+    });
+  });
 });

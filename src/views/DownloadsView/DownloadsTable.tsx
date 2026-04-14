@@ -141,7 +141,7 @@ function ActionCell({ download, t }: ActionCellProps) {
 
   return (
     <div className="flex items-center gap-1">
-      {(download.state === 'Downloading' || download.state === 'Queued') && (
+      {download.state === 'Downloading' && (
         <Button
           variant="ghost"
           size="icon"
