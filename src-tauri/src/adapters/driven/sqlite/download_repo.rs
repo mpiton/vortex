@@ -8,7 +8,7 @@ use crate::domain::model::download::{Download, DownloadId, DownloadState};
 use crate::domain::ports::driven::download_repository::DownloadRepository;
 
 use super::entities::download;
-use super::util::{block_on, map_db_err};
+use super::util::{block_on, infer_timestamp_ms_from_download_id, map_db_err};
 
 pub struct SqliteDownloadRepo {
     db: DatabaseConnection,
@@ -25,13 +25,6 @@ fn current_timestamp_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
-}
-
-fn infer_timestamp_ms_from_download_id(id: DownloadId) -> Option<u64> {
-    const MIN_PLAUSIBLE_UNIX_MS: u64 = 946_684_800_000;
-
-    let ts = id.0 >> 12;
-    (ts >= MIN_PLAUSIBLE_UNIX_MS).then_some(ts)
 }
 
 impl DownloadRepository for SqliteDownloadRepo {
@@ -52,16 +45,16 @@ impl DownloadRepository for SqliteDownloadRepo {
     fn save(&self, download: &Download) -> Result<(), DomainError> {
         block_on(async {
             let mut active_model = download::ActiveModel::from_domain(download);
+            let now = current_timestamp_ms();
             let created_at = if download.created_at() == 0 {
-                infer_timestamp_ms_from_download_id(download.id())
-                    .unwrap_or_else(current_timestamp_ms)
+                infer_timestamp_ms_from_download_id(download.id().0 as i64).unwrap_or(now)
             } else {
                 download.created_at()
             };
             let updated_at = if download.updated_at() == 0 {
                 created_at
             } else {
-                download.updated_at()
+                now.max(download.updated_at())
             };
 
             active_model.created_at = Set(created_at as i64);
@@ -89,7 +82,6 @@ impl DownloadRepository for SqliteDownloadRepo {
                             download::Column::ModuleName,
                             download::Column::AccountId,
                             download::Column::DestinationPath,
-                            download::Column::CreatedAt,
                             download::Column::UpdatedAt,
                         ])
                         .to_owned(),
@@ -132,6 +124,7 @@ mod tests {
     use crate::adapters::driven::sqlite::connection::setup_test_db;
     use crate::domain::model::download::Url;
     use crate::domain::model::queue::Priority;
+    use std::time::Duration;
 
     fn make_download(id: u64) -> Download {
         let url = Url::new("https://example.com/file.zip").expect("valid url");
@@ -173,6 +166,10 @@ mod tests {
 
         let download = make_download(1);
         repo.save(&download).expect("first save");
+        let first = repo
+            .find_by_id(DownloadId(1))
+            .expect("find_by_id")
+            .expect("should exist");
 
         // Modify and save again (upsert)
         let updated = Download::new(
@@ -189,6 +186,33 @@ mod tests {
             .expect("should exist");
         assert_eq!(found.file_name(), "updated.zip");
         assert_eq!(found.destination_path(), "/downloads");
+        assert_eq!(found.created_at(), first.created_at());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_save_refreshes_updated_at_for_existing_download() {
+        let db = setup_test_db().await.expect("test db");
+        let repo = SqliteDownloadRepo::new(db);
+
+        let download = make_download(1);
+        repo.save(&download).expect("first save");
+
+        let found = repo
+            .find_by_id(DownloadId(1))
+            .expect("find_by_id")
+            .expect("should exist");
+        let previous_updated_at = found.updated_at();
+
+        std::thread::sleep(Duration::from_millis(2));
+        repo.save(&found).expect("second save");
+
+        let reloaded = repo
+            .find_by_id(DownloadId(1))
+            .expect("find_by_id")
+            .expect("should exist");
+
+        assert!(reloaded.updated_at() > previous_updated_at);
+        assert_eq!(reloaded.created_at(), found.created_at());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
