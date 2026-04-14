@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { SettingsView } from '../SettingsView';
 import type { AppConfig } from '@/types/settings';
+import { ThemeProvider } from '@/theme/theme-provider';
 
 const mockInvoke = vi.hoisted(() => vi.fn());
 const mockListen = vi.hoisted(() => vi.fn().mockResolvedValue(vi.fn()));
@@ -60,7 +61,9 @@ function renderWithProviders() {
   });
   return render(
     <QueryClientProvider client={queryClient}>
-      <SettingsView />
+      <ThemeProvider>
+        <SettingsView />
+      </ThemeProvider>
     </QueryClientProvider>,
   );
 }
@@ -148,7 +151,9 @@ describe('SettingsView', () => {
 
     const { container } = render(
       <QueryClientProvider client={queryClient}>
-        <SettingsView />
+        <ThemeProvider>
+          <SettingsView />
+        </ThemeProvider>
       </QueryClientProvider>,
     );
 
