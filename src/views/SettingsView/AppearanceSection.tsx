@@ -11,6 +11,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Input } from '@/components/ui/input';
+import { useTheme } from '@/theme/useTheme';
 import { SettingToggle } from './SettingField';
 import { useLanguage, type Language } from '@/hooks/useLanguage';
 
@@ -37,6 +38,7 @@ function normalizeHex(value: string): string {
 export function AppearanceSection({ config }: AppearanceSectionProps) {
   const { t } = useTranslation();
   const { setLanguage, availableLanguages } = useLanguage();
+  const { setTheme } = useTheme();
   const { mutate } = useTauriMutation<AppConfig, { patch: AppConfigPatch }>('settings_update', {
     invalidateKeys: [['settings_get']],
   });
@@ -46,6 +48,9 @@ export function AppearanceSection({ config }: AppearanceSectionProps) {
 
   const handleChange = <K extends keyof AppConfig>(key: K, value: AppConfig[K]) => {
     mutate({ patch: { [key]: value } as AppConfigPatch });
+    if (key === 'theme') {
+      setTheme(value as AppConfig['theme']);
+    }
   };
 
   const handleHexChange = (value: string) => {

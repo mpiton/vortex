@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -9,6 +9,7 @@ import { RemoteAccessSection } from '../RemoteAccessSection';
 import { BrowserSection } from '../BrowserSection';
 import { AppearanceSection } from '../AppearanceSection';
 import type { AppConfig } from '@/types/settings';
+import { ThemeProvider } from '@/theme/theme-provider';
 
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: vi.fn().mockResolvedValue(null),
@@ -17,6 +18,13 @@ vi.mock('@tauri-apps/api/core', () => ({
 vi.mock('@tauri-apps/api/event', () => ({
   listen: vi.fn().mockResolvedValue(vi.fn()),
 }));
+
+beforeAll(() => {
+  Element.prototype.hasPointerCapture = vi.fn().mockReturnValue(false);
+  Element.prototype.setPointerCapture = vi.fn();
+  Element.prototype.releasePointerCapture = vi.fn();
+  Element.prototype.scrollIntoView = vi.fn();
+});
 
 const mockConfig: AppConfig = {
   downloadDir: '/tmp/downloads',
@@ -67,8 +75,14 @@ function renderWithQuery(children: React.ReactNode) {
   );
 }
 
+function renderWithTheme(children: React.ReactNode) {
+  return renderWithQuery(<ThemeProvider>{children}</ThemeProvider>);
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
+  localStorage.clear();
+  document.documentElement.classList.remove('dark');
 });
 
 describe('GeneralSection', () => {
@@ -200,12 +214,24 @@ describe('BrowserSection', () => {
 
 describe('AppearanceSection', () => {
   it('should render theme selector', () => {
-    renderWithQuery(<AppearanceSection config={mockConfig} />);
+    renderWithTheme(<AppearanceSection config={mockConfig} />);
     expect(screen.getByText('Theme')).toBeInTheDocument();
   });
 
+  it('should apply dark theme immediately when dark is selected', async () => {
+    const user = userEvent.setup();
+
+    renderWithTheme(<AppearanceSection config={mockConfig} />);
+
+    await user.click(screen.getByRole('combobox', { name: 'Theme' }));
+    await user.click(await screen.findByRole('option', { name: 'Dark' }));
+
+    expect(localStorage.getItem('vortex-theme')).toBe('dark');
+    expect(document.documentElement).toHaveClass('dark');
+  });
+
   it('should render 6 accent color buttons', () => {
-    renderWithQuery(<AppearanceSection config={mockConfig} />);
+    renderWithTheme(<AppearanceSection config={mockConfig} />);
     expect(screen.getByLabelText('Indigo')).toBeInTheDocument();
     expect(screen.getByLabelText('Blue')).toBeInTheDocument();
     expect(screen.getByLabelText('Purple')).toBeInTheDocument();
@@ -215,12 +241,12 @@ describe('AppearanceSection', () => {
   });
 
   it('should render compact mode toggle', () => {
-    renderWithQuery(<AppearanceSection config={mockConfig} />);
+    renderWithTheme(<AppearanceSection config={mockConfig} />);
     expect(screen.getByText('Compact mode')).toBeInTheDocument();
   });
 
   it('should render language selector', () => {
-    renderWithQuery(<AppearanceSection config={mockConfig} />);
+    renderWithTheme(<AppearanceSection config={mockConfig} />);
     expect(screen.getByText('Language')).toBeInTheDocument();
   });
 });
