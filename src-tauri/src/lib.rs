@@ -141,6 +141,18 @@ pub fn run() {
                 4,
             ));
 
+            // ── Startup recovery ────────────────────────────────────
+            // Orphaned downloads (Downloading/Waiting/Checking/Extracting
+            // in SQLite but no engine task) are marked Error so the user
+            // can retry.  Runs early, before anything subscribes to events.
+            match application::services::startup_recovery::recover_orphaned_downloads(
+                download_repo.as_ref(),
+            ) {
+                Ok(0) => {}
+                Ok(n) => tracing::info!("Recovered {n} orphaned download(s) from previous session"),
+                Err(e) => tracing::error!("Startup recovery failed: {e}"),
+            }
+
             // ── Queue manager ──────────────────────────────────────
             // Listens to domain events and auto-schedules queued downloads.
             let queue_manager = Arc::new(QueueManager::new(
@@ -192,6 +204,16 @@ pub fn run() {
 
             // ── Queue manager event listener ────────────────────────
             queue_manager.clone().start_listening();
+
+            // Re-schedule any Queued/Retry downloads that survived the
+            // previous session (their engine tasks are gone).
+            let qm_startup = queue_manager.clone();
+            tokio::spawn(async move {
+                if let Err(e) = qm_startup.on_slot_freed().await {
+                    tracing::warn!("Startup scheduling failed: {e}");
+                }
+            });
+
             app.manage(queue_manager);
 
             // ── Plugin hot-reload watcher ────────────────────────────
