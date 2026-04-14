@@ -21,6 +21,7 @@ use crate::domain::event::DomainEvent;
 use crate::domain::ports::driven::EventBus;
 
 /// Messages sent from the event-bus subscriber to the DB worker.
+#[derive(Debug)]
 enum BridgeMessage {
     Progress {
         download_id: i64,
@@ -96,8 +97,10 @@ pub fn spawn_sqlite_progress_bridge(event_bus: &dyn EventBus, db: DatabaseConnec
 
     event_bus.subscribe(Box::new(move |event: &DomainEvent| {
         let msg = event_to_message(event);
-        if let Some(m) = msg {
-            tx.send(m).ok();
+        if let Some(m) = msg
+            && let Err(error) = tx.send(m)
+        {
+            tracing::warn!(event = ?event, ?error, "progress_bridge: worker channel closed");
         }
     }));
 }
