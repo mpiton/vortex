@@ -7,7 +7,7 @@
 //! Segment row IDs are computed deterministically as
 //! `download_id * 100 + segment_index`, which is safe for the current
 //! snowflake-based download IDs (~7 × 10¹⁵) and the bounded segment count
-//! (≤ 16 per download by default).
+//! (`segment_index < 100`; config validation currently caps segments at 32).
 //!
 //! All DB mutations are serialised through a single background worker task,
 //! so that `SegmentCompleted` can never execute before its preceding
@@ -105,10 +105,16 @@ pub fn spawn_sqlite_progress_bridge(event_bus: &dyn EventBus, db: DatabaseConnec
     }));
 }
 
-fn segment_row_id(download_id: u64, segment_index: u32) -> i64 {
-    (download_id as i64)
-        .saturating_mul(100)
-        .saturating_add(segment_index as i64)
+fn segment_row_id(download_id: u64, segment_index: u32) -> Option<i64> {
+    if segment_index >= 100 {
+        return None;
+    }
+
+    Some(
+        (download_id as i64)
+            .saturating_mul(100)
+            .saturating_add(segment_index as i64),
+    )
 }
 
 fn event_to_message(event: &DomainEvent) -> Option<BridgeMessage> {
@@ -136,8 +142,16 @@ fn event_to_message(event: &DomainEvent) -> Option<BridgeMessage> {
             } else {
                 *end_byte as i64
             };
+            let Some(row_id) = segment_row_id(download_id.0, *segment_index) else {
+                tracing::warn!(
+                    download_id = download_id.0,
+                    segment_index = *segment_index,
+                    "progress_bridge: refusing segment index >= 100 to avoid row-id collisions"
+                );
+                return None;
+            };
             Some(BridgeMessage::SegmentStarted {
-                row_id: segment_row_id(download_id.0, *segment_index),
+                row_id,
                 download_id: download_id.0 as i64,
                 segment_index: *segment_index as i32,
                 start_byte: *start_byte as i64,
@@ -282,8 +296,8 @@ mod tests {
 
     #[test]
     fn test_segment_row_id_is_deterministic() {
-        assert_eq!(segment_row_id(42, 0), 4200);
-        assert_eq!(segment_row_id(42, 3), 4203);
+        assert_eq!(segment_row_id(42, 0), Some(4200));
+        assert_eq!(segment_row_id(42, 3), Some(4203));
     }
 
     #[test]
@@ -291,13 +305,18 @@ mod tests {
         // Snowflake IDs are ~(ts_ms << 12) ≈ 6.97 × 10^15 at current time.
         // typical_id = 1_744_000_000_000 * 4_096 = 7_143_424_000_000_000
         let typical_id: u64 = 1_744_000_000_000 << 12;
-        let row_id = segment_row_id(typical_id, 15);
+        let row_id = segment_row_id(typical_id, 15).expect("segment_index < 100");
         // 7_143_424_000_000_000 * 100 + 15 = 714_342_400_000_000_015
         // i64::MAX = 9_223_372_036_854_775_807  →  well within range
         assert_eq!(
             row_id, 714_342_400_000_000_015_i64,
             "row_id must be deterministic and not overflow"
         );
+    }
+
+    #[test]
+    fn test_segment_row_id_rejects_large_segment_index() {
+        assert_eq!(segment_row_id(42, 100), None);
     }
 
     #[test]
@@ -374,7 +393,7 @@ mod tests {
         let db = setup_test_db().await.unwrap();
         insert_download_row(&db, 7, Some(4096), 0).await;
 
-        let row_id = segment_row_id(7, 2);
+        let row_id = segment_row_id(7, 2).expect("segment_index < 100");
         insert_segment(&db, row_id, 7, 2, 128, 640).await;
         complete_segment(&db, 7, 2).await;
 
@@ -395,7 +414,7 @@ mod tests {
         let db = setup_test_db().await.unwrap();
         insert_download_row(&db, 9, Some(2048), 1536).await;
 
-        let row_id = segment_row_id(9, 0);
+        let row_id = segment_row_id(9, 0).expect("segment_index < 100");
         insert_segment(&db, row_id, 9, 0, 0, -1).await;
         complete_segment(&db, 9, 0).await;
 
@@ -416,7 +435,7 @@ mod tests {
         let db = setup_test_db().await.unwrap();
         insert_download_row(&db, 11, None, 777).await;
 
-        let row_id = segment_row_id(11, 0);
+        let row_id = segment_row_id(11, 0).expect("segment_index < 100");
         insert_segment(&db, row_id, 11, 0, 0, -1).await;
         complete_segment(&db, 11, 0).await;
 
