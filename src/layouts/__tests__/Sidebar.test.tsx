@@ -31,9 +31,9 @@ describe("Sidebar", () => {
     }
   });
 
-  it("should render the Vx logo", () => {
+  it("should render the Vortex logo image", () => {
     renderSidebar();
-    expect(screen.getByText("Vx")).toBeInTheDocument();
+    expect(screen.getByAltText("Vortex")).toBeInTheDocument();
   });
 
   it("should highlight active route with correct classes", () => {

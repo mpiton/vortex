@@ -36,10 +36,15 @@ describe('useDownloadEvents', () => {
     expect(subscribedEvents).toContain('download-started');
     expect(subscribedEvents).toContain('download-paused');
     expect(subscribedEvents).toContain('download-resumed');
+    expect(subscribedEvents).toContain('download-resumed-from-wait');
     expect(subscribedEvents).toContain('download-completed');
     expect(subscribedEvents).toContain('download-failed');
+    expect(subscribedEvents).toContain('download-retrying');
     expect(subscribedEvents).toContain('download-cancelled');
     expect(subscribedEvents).toContain('download-waiting');
+    expect(subscribedEvents).toContain('download-checking');
+    expect(subscribedEvents).toContain('download-removed');
+    expect(subscribedEvents).toContain('download-extracting');
   });
 
   it('should invalidate download list queries on download-created', () => {
@@ -82,8 +87,18 @@ describe('useDownloadEvents', () => {
     });
   });
 
-  it('should subscribe to exactly 8 lifecycle events', () => {
+  it('should invalidate download list queries on download-retrying', () => {
+    vi.mocked(useTauriEvent).mockImplementation((event, callback) => {
+      if (event === 'download-retrying') callback({ id: 5, attempt: 1 });
+    });
     renderHook(() => useDownloadEvents());
-    expect(useTauriEvent).toHaveBeenCalledTimes(8);
+    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({
+      queryKey: ['downloads'],
+    });
+  });
+
+  it('should subscribe to exactly 13 lifecycle events', () => {
+    renderHook(() => useDownloadEvents());
+    expect(useTauriEvent).toHaveBeenCalledTimes(13);
   });
 });
