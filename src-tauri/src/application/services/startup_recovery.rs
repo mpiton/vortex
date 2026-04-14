@@ -216,18 +216,27 @@ mod tests {
             make_waiting(3),
             make_paused(4),
             make_checking(5),
-            make_download(6), // Queued
+            make_download(6),   // Queued
+            make_extracting(7), // Extracting — 4th orphan state
+            {
+                let mut d = make_downloading(8);
+                d.fail("err".into()).expect("Downloading → Error");
+                d.retry().expect("Error → Retry"); // Retry — must be preserved
+                d
+            },
         ]);
 
         let count = recover_orphaned_downloads(&repo).expect("recovery");
 
-        assert_eq!(count, 3); // 1 (Downloading), 3 (Waiting), 5 (Checking)
+        assert_eq!(count, 4); // 1 (Downloading), 3 (Waiting), 5 (Checking), 7 (Extracting)
         assert_eq!(repo.get(1).unwrap().state(), DownloadState::Error);
         assert_eq!(repo.get(2).unwrap().state(), DownloadState::Completed);
         assert_eq!(repo.get(3).unwrap().state(), DownloadState::Error);
         assert_eq!(repo.get(4).unwrap().state(), DownloadState::Paused);
         assert_eq!(repo.get(5).unwrap().state(), DownloadState::Error);
         assert_eq!(repo.get(6).unwrap().state(), DownloadState::Queued);
+        assert_eq!(repo.get(7).unwrap().state(), DownloadState::Error);
+        assert_eq!(repo.get(8).unwrap().state(), DownloadState::Retry); // must NOT be orphaned
     }
 
     #[test]
