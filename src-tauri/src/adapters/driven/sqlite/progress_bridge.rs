@@ -293,7 +293,7 @@ mod tests {
         // i64::MAX = 9_223_372_036_854_775_807  →  well within range
         assert_eq!(
             row_id, 714_342_400_000_000_015_i64,
-            "row_id must be deterministic and fit in i64"
+            "row_id must be deterministic and not overflow"
         );
     }
 

@@ -71,7 +71,12 @@ fn event_payload(event: &DomainEvent) -> serde_json::Value {
             start_byte,
             end_byte,
         } => {
-            json!({ "downloadId": download_id.0, "segmentId": segment_id, "startByte": start_byte, "endByte": end_byte })
+            let end_byte_payload = if *end_byte == u64::MAX {
+                json!(-1_i64)
+            } else {
+                json!(*end_byte)
+            };
+            json!({ "downloadId": download_id.0, "segmentId": segment_id, "startByte": start_byte, "endByte": end_byte_payload })
         }
         DomainEvent::SegmentCompleted {
             download_id,
@@ -198,7 +203,7 @@ mod tests {
         assert_eq!(sentinel_payload["downloadId"].as_u64(), Some(2));
         assert_eq!(sentinel_payload["segmentId"].as_u64(), Some(3));
         assert_eq!(sentinel_payload["startByte"].as_u64(), Some(99));
-        assert_eq!(sentinel_payload["endByte"].as_u64(), Some(u64::MAX));
+        assert_eq!(sentinel_payload["endByte"].as_i64(), Some(-1));
 
         assert_eq!(
             event_name(&DomainEvent::SegmentCompleted {
