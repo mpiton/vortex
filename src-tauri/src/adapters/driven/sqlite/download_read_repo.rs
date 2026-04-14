@@ -12,7 +12,7 @@ use crate::domain::ports::driven::download_read_repository::DownloadReadReposito
 
 use super::entities::{download, download_segment};
 use super::util::{
-    block_on, current_timestamp_ms, infer_timestamp_ms_from_download_id,
+    MIN_PLAUSIBLE_UNIX_MS, block_on, infer_timestamp_ms_from_download_id,
     inferred_download_created_at_order_expr, map_db_err, safe_u32, safe_u64,
 };
 
@@ -30,8 +30,15 @@ fn read_created_at(model: &download::Model) -> u64 {
     let created_at = safe_u64(model.created_at);
     if created_at > 0 {
         created_at
+    } else if let Some(inferred) = infer_timestamp_ms_from_download_id(model.id) {
+        inferred
     } else {
-        infer_timestamp_ms_from_download_id(model.id).unwrap_or_else(current_timestamp_ms)
+        let updated_at = safe_u64(model.updated_at);
+        if updated_at > 0 {
+            updated_at
+        } else {
+            MIN_PLAUSIBLE_UNIX_MS
+        }
     }
 }
 
@@ -480,7 +487,45 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn test_find_download_detail_falls_back_to_current_time_for_undecodable_legacy_rows() {
+    async fn test_find_download_detail_uses_updated_at_for_undecodable_legacy_rows() {
+        let db = setup().await;
+        let model = download::ActiveModel {
+            id: Set(1),
+            url: Set("https://example.com/file1.zip".to_string()),
+            file_name: Set("file1.zip".to_string()),
+            state: Set("Downloading".to_string()),
+            priority: Set(5),
+            total_bytes: Set(Some(1000)),
+            downloaded_bytes: Set(500),
+            speed_bytes_per_sec: Set(100),
+            retry_count: Set(0),
+            max_retries: Set(5),
+            segments_count: Set(1),
+            checksum_expected: Set(None),
+            source_hostname: Set("example.com".to_string()),
+            protocol: Set("https".to_string()),
+            resume_supported: Set(1),
+            module_name: Set(None),
+            account_id: Set(None),
+            destination_path: Set("/tmp/downloads/file1.zip".to_string()),
+            created_at: Set(0),
+            updated_at: Set(1_700_000_000_123_i64),
+        };
+        model.insert(&db).await.expect("Failed to insert download");
+
+        let repo = SqliteDownloadReadRepo::new(db);
+        let detail = repo
+            .find_download_detail(DownloadId(1))
+            .unwrap()
+            .expect("Should find download");
+
+        assert_eq!(detail.created_at, 1_700_000_000_123_u64);
+        assert_eq!(detail.updated_at, 1_700_000_000_123_u64);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_find_download_detail_falls_back_to_min_plausible_time_for_undecodable_zero_rows()
+    {
         let db = setup().await;
         let model = download::ActiveModel {
             id: Set(1),
@@ -506,17 +551,14 @@ mod tests {
         };
         model.insert(&db).await.expect("Failed to insert download");
 
-        let before = current_timestamp_ms();
         let repo = SqliteDownloadReadRepo::new(db);
         let detail = repo
             .find_download_detail(DownloadId(1))
             .unwrap()
             .expect("Should find download");
-        let after = current_timestamp_ms();
 
-        assert!(detail.created_at >= before);
-        assert!(detail.created_at <= after);
-        assert_eq!(detail.updated_at, detail.created_at);
+        assert_eq!(detail.created_at, MIN_PLAUSIBLE_UNIX_MS);
+        assert_eq!(detail.updated_at, MIN_PLAUSIBLE_UNIX_MS);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
