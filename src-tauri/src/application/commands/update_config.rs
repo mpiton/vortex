@@ -32,9 +32,9 @@ fn validate_config(config: &AppConfig) -> Result<(), AppError> {
             config.web_interface_port
         )));
     }
-    if !(1..=100).contains(&config.max_concurrent_downloads) {
+    if !(1..=20).contains(&config.max_concurrent_downloads) {
         return Err(AppError::Validation(format!(
-            "max_concurrent_downloads must be 1-100, got {}",
+            "max_concurrent_downloads must be 1-20, got {}",
             config.max_concurrent_downloads
         )));
     }
@@ -390,6 +390,41 @@ mod tests {
 
         let result = bus.handle_update_config(cmd);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_handle_update_config_rejects_concurrent_above_20() {
+        let bus = make_command_bus();
+        let cmd = UpdateConfigCommand {
+            patch: ConfigPatch {
+                max_concurrent_downloads: Some(21),
+                ..Default::default()
+            },
+        };
+
+        let result = bus.handle_update_config(cmd);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("max_concurrent_downloads")
+        );
+    }
+
+    #[test]
+    fn test_handle_update_config_accepts_max_concurrent_20() {
+        let bus = make_command_bus();
+        let cmd = UpdateConfigCommand {
+            patch: ConfigPatch {
+                max_concurrent_downloads: Some(20),
+                ..Default::default()
+            },
+        };
+
+        let result = bus.handle_update_config(cmd);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().max_concurrent_downloads, 20);
     }
 
     #[test]

@@ -34,7 +34,7 @@ export function DownloadsSection({ config }: DownloadsSectionProps) {
           value={config.maxConcurrentDownloads}
           onChange={(v) => handleChange('maxConcurrentDownloads', v)}
           min={1}
-          max={100}
+          max={20}
         />
         <SettingNumberInput
           label={t('settings.downloads.maxSegments')}
