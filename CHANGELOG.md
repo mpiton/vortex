@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- Orphaned downloads from previous session (stuck in Downloading/Waiting/Checking/Extracting state) are now recovered to Error on startup so the user can retry; Queued/Retry downloads are re-scheduled automatically (fixes #57)
 - `maxConcurrentDownloads` validation now enforces the PRD §6.10 limit of 1–20 (was incorrectly accepting up to 100) in both backend validation and the settings UI input
 - Download engine was double-joining `file_name` onto `destination_path`, producing a path like `/Downloads/file.bin/file.bin` and causing all downloads to fail silently with a "Not a directory" I/O error before any bytes were fetched (fixes #54)
 - `SegmentStarted` event now carries `start_byte` and `end_byte` so downstream consumers can identify which byte range a segment covers
