@@ -41,6 +41,9 @@ impl CommandBus {
                 .publish(DomainEvent::DownloadCancelled { id: cmd.id });
         }
 
+        self.event_bus()
+            .publish(DomainEvent::DownloadRemoved { id: cmd.id });
+
         Ok(())
     }
 }
@@ -372,7 +375,10 @@ mod tests {
         let emitted = events.events.lock().unwrap();
         assert_eq!(
             emitted.as_slice(),
-            &[DomainEvent::DownloadCancelled { id: DownloadId(1) }]
+            &[
+                DomainEvent::DownloadCancelled { id: DownloadId(1) },
+                DomainEvent::DownloadRemoved { id: DownloadId(1) },
+            ]
         );
     }
 
@@ -412,7 +418,11 @@ mod tests {
         assert!(engine.cancelled.lock().unwrap().is_empty());
         // Download still removed
         assert!(repo.find_by_id(DownloadId(2)).unwrap().is_none());
-        // No DownloadCancelled event for non-active downloads
-        assert!(events.events.lock().unwrap().is_empty());
+        // No DownloadCancelled event for non-active downloads, but removal is still emitted.
+        let emitted = events.events.lock().unwrap();
+        assert_eq!(
+            emitted.as_slice(),
+            &[DomainEvent::DownloadRemoved { id: DownloadId(2) }]
+        );
     }
 }

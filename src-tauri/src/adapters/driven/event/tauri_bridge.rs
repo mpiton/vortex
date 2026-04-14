@@ -247,6 +247,15 @@ mod tests {
     }
 
     #[test]
+    fn test_event_payload_download_removed() {
+        let event = DomainEvent::DownloadRemoved { id: DownloadId(9) };
+        let (name, payload) = to_tauri_event(&event);
+
+        assert_eq!(name, "download-removed");
+        assert_eq!(payload["id"], 9);
+    }
+
+    #[test]
     fn test_event_name_clipboard_url_detected() {
         assert_eq!(
             event_name(&DomainEvent::ClipboardUrlDetected {

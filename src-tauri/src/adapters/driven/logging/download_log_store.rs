@@ -17,9 +17,12 @@ impl DownloadLogStore {
     }
 
     pub fn push(&self, download_id: u64, line: String) {
-        let mut lines = self.lines_by_download.entry(download_id).or_default();
+        let mut lines = self
+            .lines_by_download
+            .entry(download_id)
+            .or_insert_with(|| VecDeque::with_capacity(self.max_entries_per_download));
         lines.push_back(line);
-        if lines.len() > self.max_entries_per_download {
+        while lines.len() > self.max_entries_per_download {
             lines.pop_front();
         }
     }
@@ -85,5 +88,14 @@ mod tests {
         store.remove(1);
 
         assert!(store.recent(1, 10).is_empty());
+    }
+
+    #[test]
+    fn returns_empty_when_limit_is_zero() {
+        let store = DownloadLogStore::new(4);
+
+        store.push(1, "[INFO] first".to_string());
+
+        assert!(store.recent(1, 0).is_empty());
     }
 }
