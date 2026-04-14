@@ -103,9 +103,7 @@ export function DownloadsView() {
 
     const tasks = [
       ...visibleSelectedDownloads
-        .filter((download) =>
-          download.state === 'Downloading' || download.state === 'Queued',
-        )
+        .filter((download) => download.state === 'Downloading')
         .map((download) => pauseMut.mutateAsync({ id: Number(download.id) })),
       ...visibleSelectedDownloads
         .filter((download) => download.state === 'Paused')

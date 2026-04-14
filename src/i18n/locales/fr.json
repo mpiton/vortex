@@ -153,6 +153,9 @@
         "eta": "Temps restant"
       },
       "actions": {
+        "pause": "Pause",
+        "resume": "Reprendre",
+        "retry": "Réessayer",
         "setPriority": "Définir la priorité",
         "remove": "Supprimer"
       },

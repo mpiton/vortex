@@ -56,6 +56,22 @@ const mockDownloads: DownloadView[] = [
     accountName: null,
     createdAt: Date.now(),
   },
+  {
+    id: '3',
+    fileName: 'file3.zip',
+    url: 'https://example.com/file3.zip',
+    state: 'Queued',
+    progressPercent: 0,
+    speedBytesPerSec: 0,
+    downloadedBytes: 0,
+    totalBytes: 10000,
+    etaSeconds: null,
+    segmentsActive: 0,
+    segmentsTotal: 2,
+    moduleName: null,
+    accountName: null,
+    createdAt: Date.now(),
+  },
 ];
 
 function renderWithProviders() {
@@ -70,6 +86,7 @@ function renderWithProviders() {
     total: mockDownloads.length,
     Downloading: 1,
     Paused: 1,
+    Queued: 1,
   });
   return render(
     <QueryClientProvider client={queryClient}>
@@ -169,7 +186,7 @@ describe('DownloadsView', () => {
     });
 
     await waitFor(() => {
-      expect(useUiStore.getState().selectedDownloadIds).toEqual(['1', '2']);
+      expect(useUiStore.getState().selectedDownloadIds).toEqual(['1', '2', '3']);
     });
   });
 
@@ -439,6 +456,32 @@ describe('DownloadsView', () => {
     await waitFor(() => {
       expect(useUiStore.getState().selectedDownloadIds).toEqual(['1', '2']);
       expect(useUiStore.getState().selectedDownloadId).toBe('2');
+    });
+  });
+
+  it('should not invoke download_pause for Queued state downloads when toggling selected', async () => {
+    useUiStore.setState({
+      selectedDownloadId: null,
+      selectedDownloadIds: ['1', '2', '3'],
+      detailsPanelOpen: false,
+      filterBarExpanded: false,
+    });
+
+    renderWithProviders();
+    await screen.findByPlaceholderText('Search downloads...');
+
+    await act(async () => {
+      window.dispatchEvent(
+        new CustomEvent(SHORTCUT_ACTION_EVENT, {
+          detail: SHORTCUT_ACTIONS.downloadsToggleSelected,
+        }),
+      );
+    });
+
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith('download_pause', { id: 1 });
+      expect(mockInvoke).toHaveBeenCalledWith('download_resume', { id: 2 });
+      expect(mockInvoke).not.toHaveBeenCalledWith('download_pause', { id: 3 });
     });
   });
 });
