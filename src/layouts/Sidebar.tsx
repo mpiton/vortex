@@ -2,6 +2,7 @@ import { NavLink } from "react-router";
 import { useTranslation } from 'react-i18next';
 import { ROUTES } from "@/types/layout";
 import { cn } from "@/lib/utils";
+import vortexLogo from "@/assets/vortex-logo.png";
 
 /** Route indices for visual grouping with dividers */
 const GROUP_BREAKS = new Set([3, 6]);
@@ -12,8 +13,8 @@ export function Sidebar() {
   return (
     <aside className="flex h-full w-[58px] flex-col items-center bg-sidebar-bg py-3.5 select-none shrink-0">
       {/* Logo */}
-      <div className="mb-5 flex h-9 w-9 items-center justify-center rounded-lg bg-accent text-base font-semibold text-white tracking-tighter">
-        Vx
+      <div className="mb-5 flex h-9 w-9 items-center justify-center">
+        <img src={vortexLogo} alt="Vortex" className="h-9 w-9 rounded-lg" />
       </div>
 
       {/* Navigation */}

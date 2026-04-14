@@ -66,6 +66,7 @@ export type TauriEventMap = {
   'download-waiting': DownloadIdPayload;
   'download-checking': DownloadIdPayload;
   'download-cancelled': DownloadIdPayload;
+  'download-removed': DownloadIdPayload;
   'download-extracting': DownloadIdPayload;
   'download-progress': DownloadProgressPayload;
   'segment-started': SegmentPayload;

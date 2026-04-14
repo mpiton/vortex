@@ -122,7 +122,7 @@ describe("AppLayout", () => {
 
   it("should render Sidebar, main content, and StatusBar", () => {
     renderAppLayout();
-    expect(screen.getByText("Vx")).toBeInTheDocument();
+    expect(screen.getByAltText("Vortex")).toBeInTheDocument();
     expect(screen.getByText("Downloads Page")).toBeInTheDocument();
     expect(screen.getByText(/vortex v0\.1\.0/)).toBeInTheDocument();
   });
