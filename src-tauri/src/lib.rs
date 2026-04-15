@@ -37,6 +37,7 @@ pub use adapters::driven::sqlite::progress_bridge::spawn_sqlite_progress_bridge;
 pub use adapters::driven::sqlite::stats_repo::SqliteStatsRepo;
 pub use adapters::driven::tray::setup_system_tray;
 pub use application::command_bus::CommandBus;
+pub use application::commands::store_refresh::{read_cache, write_cache};
 pub use application::error::AppError;
 pub use application::query_bus::QueryBus;
 pub use application::read_models::{
