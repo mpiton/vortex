@@ -32,10 +32,17 @@ impl CommandBus {
             Err(_) => filename_from_url(&url),
         };
 
-        let dest = cmd
-            .destination
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(&file_name);
+        let dest_dir = cmd.destination.unwrap_or_else(|| {
+            // Prefer user-configured download dir; fall back to ~/Downloads/
+            self.config_store()
+                .get_config()
+                .ok()
+                .and_then(|c| c.download_dir)
+                .map(PathBuf::from)
+                .or_else(dirs::download_dir)
+                .unwrap_or_else(|| PathBuf::from("."))
+        });
+        let dest = dest_dir.join(&file_name);
 
         let id = next_download_id();
 
@@ -367,7 +374,6 @@ mod tests {
             Arc::new(MockCredentialStore),
             Arc::new(MockClipboardObserver),
             Arc::new(FakeArchiveExtractor),
-        
             None,
         );
         (bus, repo, event_bus)

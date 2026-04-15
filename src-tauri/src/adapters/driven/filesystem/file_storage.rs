@@ -49,6 +49,14 @@ impl FileStorage for FsFileStorage {
     /// exists, preventing silent truncation of a partially downloaded file.
     /// Callers should check for `.vortex-meta` and resume instead.
     fn create_file(&self, path: &Path, size: u64) -> Result<(), DomainError> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                DomainError::StorageError(format!(
+                    "failed to create directory {}: {e}",
+                    parent.display()
+                ))
+            })?;
+        }
         let file = OpenOptions::new()
             .write(true)
             .create_new(true)
