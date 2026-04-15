@@ -28,7 +28,9 @@ pub use adapters::driven::network::SegmentedDownloadEngine;
 pub use adapters::driven::notification::spawn_notification_bridge;
 pub use adapters::driven::plugin::builtin::HttpModule;
 pub use adapters::driven::plugin::capabilities::SharedHostResources;
-pub use adapters::driven::plugin::{ExtismPluginLoader, PluginRegistry, PluginWatcher};
+pub use adapters::driven::plugin::{
+    ExtismPluginLoader, GithubStoreClient, PluginRegistry, PluginWatcher,
+};
 pub use adapters::driven::sqlite::connection;
 pub use adapters::driven::sqlite::download_read_repo::SqliteDownloadReadRepo;
 pub use adapters::driven::sqlite::download_repo::SqliteDownloadRepo;
