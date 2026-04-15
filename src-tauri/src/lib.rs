@@ -57,6 +57,7 @@ pub use adapters::driving::tauri_ipc::{
     download_detail, download_list, download_logs, download_pause, download_pause_all,
     download_remove, download_resume, download_resume_all, download_retry, download_set_priority,
     download_start, link_resolve, plugin_disable, plugin_enable, plugin_install, plugin_list,
+    plugin_store_install, plugin_store_list, plugin_store_refresh, plugin_store_update,
     plugin_uninstall, settings_get, settings_update, status_bar_get,
 };
 
@@ -165,6 +166,13 @@ pub fn run() {
                 4, // TODO: read max_concurrent from config
             ));
 
+            // ── Plugin store client ─────────────────────────────────
+            let registry_url =
+                "https://raw.githubusercontent.com/mpiton/vortex/main/registry/registry.toml";
+            let store_staging_dir = plugins_dir.join(".staging");
+            let store_client: Arc<dyn crate::domain::ports::driven::PluginStoreClient> =
+                Arc::new(GithubStoreClient::new(registry_url, store_staging_dir));
+
             // ── CQRS buses ──────────────────────────────────────────
             let command_bus = Arc::new(CommandBus::new(
                 download_repo,
@@ -177,7 +185,7 @@ pub fn run() {
                 credential_store,
                 clipboard_observer,
                 archive_extractor.clone(),
-                None,
+                Some(store_client),
             ));
 
             let query_bus = Arc::new(QueryBus::new(
@@ -252,6 +260,10 @@ pub fn run() {
             plugin_enable,
             plugin_disable,
             plugin_list,
+            plugin_store_list,
+            plugin_store_refresh,
+            plugin_store_install,
+            plugin_store_update,
             link_resolve,
             clipboard_toggle,
             clipboard_state,

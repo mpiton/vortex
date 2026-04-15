@@ -11,6 +11,7 @@ use tracing;
 
 use crate::adapters::driven::logging::download_log_store::DownloadLogStore;
 use crate::application::command_bus::CommandBus;
+use crate::application::commands::store_install::{StoreInstallCommand, StoreUpdateCommand};
 use crate::application::commands::{
     CancelDownloadCommand, DisablePluginCommand, EnablePluginCommand, InstallPluginCommand,
     PauseAllDownloadsCommand, PauseDownloadCommand, RemoveDownloadCommand, ResolveLinksCommand,
@@ -24,6 +25,7 @@ use crate::application::queries::{
 use crate::application::query_bus::QueryBus;
 use crate::application::read_models::download_detail_view::DownloadDetailViewDto;
 use crate::application::read_models::download_view::DownloadViewDto;
+use crate::application::read_models::plugin_store_view::PluginStoreEntryDto;
 use crate::application::read_models::plugin_view::PluginViewDto;
 use crate::domain::model::config::{AppConfig, ConfigPatch};
 use crate::domain::model::download::{DownloadId, DownloadState};
@@ -207,6 +209,61 @@ pub async fn plugin_disable(state: State<'_, AppState>, name: String) -> Result<
         .handle_disable_plugin(cmd)
         .await
         .map_err(|e| e.to_string())
+}
+
+// --- Plugin Store Commands ---
+
+/// Returns the plugin store catalogue from the local cache.
+#[tauri::command]
+pub async fn plugin_store_list(
+    state: State<'_, AppState>,
+) -> Result<Vec<PluginStoreEntryDto>, String> {
+    let cache = store_cache_path();
+    state
+        .command_bus
+        .handle_store_list(&cache)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Re-fetch the remote registry.toml and update the local cache.
+#[tauri::command]
+pub async fn plugin_store_refresh(state: State<'_, AppState>) -> Result<(), String> {
+    let cache = store_cache_path();
+    state
+        .command_bus
+        .handle_store_refresh(&cache)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Download and install a plugin from the registry by name.
+#[tauri::command]
+pub async fn plugin_store_install(state: State<'_, AppState>, name: String) -> Result<(), String> {
+    let cache = store_cache_path();
+    state
+        .command_bus
+        .handle_store_install(StoreInstallCommand { name }, &cache)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Unload the current version and install the latest from the registry.
+#[tauri::command]
+pub async fn plugin_store_update(state: State<'_, AppState>, name: String) -> Result<(), String> {
+    let cache = store_cache_path();
+    state
+        .command_bus
+        .handle_store_update(StoreUpdateCommand { name }, &cache)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+fn store_cache_path() -> std::path::PathBuf {
+    dirs::config_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("vortex")
+        .join("plugin-registry-cache.json")
 }
 
 // --- Queries ---
