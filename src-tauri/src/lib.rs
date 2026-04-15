@@ -43,6 +43,7 @@ pub use application::read_models::{
     download_detail_view::{DownloadDetailViewDto, SegmentViewDto},
     download_view::DownloadViewDto,
     history_view::HistoryViewDto,
+    plugin_store_view::PluginStoreEntryDto,
     plugin_view::PluginViewDto,
     stats_view::{DailyVolumeDto, HostStatsDto, StatsViewDto},
 };
