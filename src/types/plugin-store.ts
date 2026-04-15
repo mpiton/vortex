@@ -8,6 +8,6 @@ export interface PluginStoreEntry {
   installedVersion: string | null;
   category: string;
   official: boolean;
-  /** "not_installed" | "installed" | "update_available" */
-  status: "not_installed" | "installed" | "update_available";
+  /** "not_installed" | "installed" | "update_available" | "downgrade" */
+  status: "not_installed" | "installed" | "update_available" | "downgrade";
 }

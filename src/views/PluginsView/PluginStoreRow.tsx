@@ -65,7 +65,7 @@ export function PluginStoreRow({
             Mettre à jour
           </Button>
         )}
-        {(entry.status === "installed" || entry.status === "update_available") && (
+        {(entry.status === "installed" || entry.status === "update_available" || entry.status === "downgrade") && (
           <>
             {onDisable && (
               <Button
@@ -97,14 +97,21 @@ function StatusBadge({ entry }: { entry: PluginStoreEntry }) {
   if (entry.status === "installed") {
     return (
       <Badge variant="outline" className="text-xs border-green-500 text-green-500 shrink-0">
-        ✓ installé
+        installe
       </Badge>
     );
   }
   if (entry.status === "update_available") {
     return (
       <Badge variant="outline" className="text-xs border-amber-500 text-amber-500 shrink-0">
-        ↑ {entry.version} dispo
+        {entry.version} disponible
+      </Badge>
+    );
+  }
+  if (entry.status === "downgrade") {
+    return (
+      <Badge variant="outline" className="text-xs border-blue-500 text-blue-500 shrink-0">
+        version locale plus recente
       </Badge>
     );
   }

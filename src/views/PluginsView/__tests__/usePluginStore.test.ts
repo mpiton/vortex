@@ -68,4 +68,16 @@ describe("usePluginStore", () => {
     const { result } = renderHook(() => usePluginStore(), { wrapper });
     expect(typeof result.current.refreshStore).toBe("function");
   });
+
+  it("should expose isInstalling as a function", () => {
+    const { result } = renderHook(() => usePluginStore(), { wrapper });
+    expect(typeof result.current.isInstalling).toBe("function");
+    expect(result.current.isInstalling("some-plugin")).toBe(false);
+  });
+
+  it("should expose isUpdating as a function", () => {
+    const { result } = renderHook(() => usePluginStore(), { wrapper });
+    expect(typeof result.current.isUpdating).toBe("function");
+    expect(result.current.isUpdating("some-plugin")).toBe(false);
+  });
 });

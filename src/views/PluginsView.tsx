@@ -39,8 +39,6 @@ export function PluginsView() {
     updatePlugin,
     isInstalling,
     isUpdating,
-    installingName,
-    updatingName,
     isRefreshing,
   } = usePluginStore();
 
@@ -126,8 +124,8 @@ export function PluginsView() {
               onUpdate={updatePlugin}
               onDisable={(name) => disableMutation.mutate({ name })}
               onUninstall={(name) => uninstallMutation.mutate({ name })}
-              isInstalling={isInstalling && installingName === entry.name}
-              isUpdating={isUpdating && updatingName === entry.name}
+              isInstalling={isInstalling(entry.name)}
+              isUpdating={isUpdating(entry.name)}
             />
           ))}
       </div>
