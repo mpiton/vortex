@@ -8,11 +8,12 @@ impl CommandBus {
     /// Fetch the remote registry, enrich statuses, write to disk cache.
     pub async fn handle_store_refresh(&self, cache_path: &std::path::Path) -> Result<(), AppError> {
         let client = self
-            .plugin_store_client()
+            .plugin_store_client_arc()
             .ok_or_else(|| AppError::Plugin("store client not configured".into()))?;
 
-        let mut entries = client
-            .fetch_registry()
+        let mut entries = tokio::task::spawn_blocking(move || client.fetch_registry())
+            .await
+            .map_err(|e| AppError::Plugin(format!("registry fetch task failed: {e}")))?
             .map_err(|e| AppError::Plugin(e.to_string()))?;
 
         // Enrich statuses with installed versions
@@ -81,6 +82,7 @@ mod tests {
             category: PluginCategory::Utility,
             repository: "https://github.com/a/b".into(),
             checksum_sha256: "abc".into(),
+            checksum_sha256_toml: None,
             official: false,
             min_vortex_version: None,
             status: PluginStoreStatus::NotInstalled,

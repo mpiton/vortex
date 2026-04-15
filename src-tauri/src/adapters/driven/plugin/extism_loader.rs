@@ -136,6 +136,39 @@ impl PluginLoader for ExtismPluginLoader {
 
     fn load_from_dir(&self, dir: &std::path::Path) -> Result<(), DomainError> {
         let (manifest, _wasm_path) = parse_manifest(dir)?;
+        let name = manifest.info().name();
+
+        // Copy staged files to the permanent plugins directory
+        let dest_dir = self.plugins_dir.join(name);
+        if dest_dir.exists() {
+            std::fs::remove_dir_all(&dest_dir).map_err(|e| {
+                DomainError::PluginError(format!(
+                    "failed to remove existing plugin dir '{}': {e}",
+                    dest_dir.display()
+                ))
+            })?;
+        }
+        std::fs::create_dir_all(&dest_dir)
+            .map_err(|e| DomainError::PluginError(format!("failed to create plugin dir: {e}")))?;
+
+        for entry in std::fs::read_dir(dir)
+            .map_err(|e| DomainError::PluginError(format!("failed to read staging dir: {e}")))?
+        {
+            let entry = entry
+                .map_err(|e| DomainError::PluginError(format!("staging dir entry error: {e}")))?;
+            let src = entry.path();
+            if src.is_file() {
+                let dest = dest_dir.join(entry.file_name());
+                std::fs::copy(&src, &dest).map_err(|e| {
+                    DomainError::PluginError(format!(
+                        "failed to copy {} → {}: {e}",
+                        src.display(),
+                        dest.display()
+                    ))
+                })?;
+            }
+        }
+
         self.load(&manifest)
     }
 }
@@ -301,5 +334,34 @@ description = "Test plugin"
 
         loader.unload("removable-plugin").unwrap();
         assert_eq!(loader.list_loaded().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn test_load_from_dir_copies_staging_files() {
+        let tmp = TempDir::new().unwrap();
+        let plugins_dir = tmp.path().join("plugins");
+        let staging_dir = tmp.path().join("staging");
+        std::fs::create_dir_all(&staging_dir).unwrap();
+
+        let loader =
+            ExtismPluginLoader::new(plugins_dir.clone(), Arc::new(SharedHostResources::new()))
+                .unwrap();
+
+        // Set up the staged plugin directory
+        setup_plugin_dir(&staging_dir, "test-plugin");
+        let staged = staging_dir.join("test-plugin");
+
+        // load_from_dir should copy to plugins_dir/test-plugin/ and then load
+        // (Loading will fail due to minimal WASM — but the copy should succeed)
+        let _ = loader.load_from_dir(&staged);
+
+        // Verify files were copied to the permanent plugins directory
+        assert!(plugins_dir.join("test-plugin").join("plugin.toml").exists());
+        assert!(
+            plugins_dir
+                .join("test-plugin")
+                .join("test-plugin.wasm")
+                .exists()
+        );
     }
 }

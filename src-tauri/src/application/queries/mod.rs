@@ -6,6 +6,7 @@
 mod count_by_state;
 mod get_download_detail;
 mod get_downloads;
+mod get_plugin_store;
 mod list_archive_contents;
 mod list_plugins;
 

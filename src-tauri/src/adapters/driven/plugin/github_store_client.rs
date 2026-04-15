@@ -10,6 +10,9 @@ use crate::domain::model::plugin::PluginCategory;
 use crate::domain::model::plugin_store::{PluginStoreEntry, PluginStoreStatus};
 use crate::domain::ports::driven::PluginStoreClient;
 
+const MAX_REGISTRY_BYTES: usize = 512 * 1024; // 512 KB
+const MAX_WASM_BYTES: usize = 100 * 1024 * 1024; // 100 MB
+
 /// Raw TOML shape for a `[[plugin]]` entry in the registry.
 #[derive(Debug, serde::Deserialize)]
 struct RawPluginEntry {
@@ -20,6 +23,8 @@ struct RawPluginEntry {
     category: String,
     repository: String,
     checksum_sha256: String,
+    #[serde(default)]
+    checksum_sha256_toml: Option<String>,
     #[serde(default)]
     official: bool,
     min_vortex_version: Option<String>,
@@ -36,13 +41,21 @@ pub struct GithubStoreClient {
     registry_url: String,
     /// Directory where downloaded plugins are staged before installation.
     staging_dir: PathBuf,
+    /// Reusable HTTP client with timeouts configured.
+    http_client: reqwest::blocking::Client,
 }
 
 impl GithubStoreClient {
     pub fn new(registry_url: impl Into<String>, staging_dir: PathBuf) -> Self {
+        let http_client = reqwest::blocking::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .timeout(std::time::Duration::from_secs(60))
+            .build()
+            .unwrap_or_default();
         Self {
             registry_url: registry_url.into(),
             staging_dir,
+            http_client,
         }
     }
 
@@ -57,8 +70,12 @@ impl GithubStoreClient {
         format!("{}/releases/download/v{}/plugin.toml", repository, version)
     }
 
-    fn download_bytes(url: &str) -> Result<Vec<u8>, DomainError> {
-        let response = reqwest::blocking::get(url)
+    /// Download bytes from `url`, capping at `max_bytes`.
+    fn download_bytes(&self, url: &str, max_bytes: usize) -> Result<Vec<u8>, DomainError> {
+        let response = self
+            .http_client
+            .get(url)
+            .send()
             .map_err(|e| DomainError::PluginError(format!("download failed: {e}")))?;
         if !response.status().is_success() {
             return Err(DomainError::PluginError(format!(
@@ -66,16 +83,42 @@ impl GithubStoreClient {
                 response.status()
             )));
         }
-        response
+        let bytes = response
             .bytes()
-            .map(|b| b.to_vec())
-            .map_err(|e| DomainError::PluginError(format!("failed to read response: {e}")))
+            .map_err(|e| DomainError::PluginError(format!("failed to read response: {e}")))?;
+        if bytes.len() > max_bytes {
+            return Err(DomainError::PluginError(format!(
+                "response from {url} exceeds size limit ({} > {max_bytes} bytes)",
+                bytes.len()
+            )));
+        }
+        Ok(bytes.to_vec())
     }
+}
+
+/// Validate that a plugin name is safe and well-formed.
+fn validate_plugin_name(name: &str) -> Result<(), DomainError> {
+    if name.is_empty() || name.len() > 64 {
+        return Err(DomainError::ValidationError(format!(
+            "plugin name '{name}' is invalid (must be 1–64 characters)"
+        )));
+    }
+    if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+        return Err(DomainError::ValidationError(format!(
+            "plugin name '{name}' contains invalid characters (only a-z, 0-9, '-' allowed)"
+        )));
+    }
+    if name.starts_with('-') || name.ends_with('-') {
+        return Err(DomainError::ValidationError(format!(
+            "plugin name '{name}' must not start or end with '-'"
+        )));
+    }
+    Ok(())
 }
 
 impl PluginStoreClient for GithubStoreClient {
     fn fetch_registry(&self) -> Result<Vec<PluginStoreEntry>, DomainError> {
-        let body = Self::download_bytes(&self.registry_url)?;
+        let body = self.download_bytes(&self.registry_url, MAX_REGISTRY_BYTES)?;
         let text = String::from_utf8(body)
             .map_err(|e| DomainError::PluginError(format!("registry is not valid UTF-8: {e}")))?;
 
@@ -85,67 +128,85 @@ impl PluginStoreClient for GithubStoreClient {
         Ok(raw
             .plugins
             .into_iter()
-            .map(|p| PluginStoreEntry {
-                name: p.name,
-                description: p.description,
-                author: p.author,
-                version: p.version,
-                category: p
-                    .category
-                    .parse::<PluginCategory>()
-                    .unwrap_or(PluginCategory::Utility),
-                repository: p.repository,
-                checksum_sha256: p.checksum_sha256,
-                official: p.official,
-                min_vortex_version: p.min_vortex_version,
-                status: PluginStoreStatus::NotInstalled,
-                installed_version: None,
+            .filter_map(|p| {
+                if let Err(e) = validate_plugin_name(&p.name) {
+                    tracing::warn!(error = %e, "skipping registry entry with invalid plugin name");
+                    return None;
+                }
+                Some(PluginStoreEntry {
+                    name: p.name,
+                    description: p.description,
+                    author: p.author,
+                    version: p.version,
+                    category: p
+                        .category
+                        .parse::<PluginCategory>()
+                        .unwrap_or(PluginCategory::Utility),
+                    repository: p.repository,
+                    checksum_sha256: p.checksum_sha256,
+                    checksum_sha256_toml: p.checksum_sha256_toml,
+                    official: p.official,
+                    min_vortex_version: p.min_vortex_version,
+                    status: PluginStoreStatus::NotInstalled,
+                    installed_version: None,
+                })
             })
             .collect())
     }
 
     fn download_plugin(&self, entry: &PluginStoreEntry) -> Result<PathBuf, DomainError> {
-        // Re-fetch registry to get real repository URL and checksum
-        let all = self.fetch_registry()?;
-        let full_entry = all
-            .into_iter()
-            .find(|e| e.name == entry.name)
-            .ok_or_else(|| DomainError::NotFound(entry.name.clone()))?;
+        // Validate name to prevent path traversal
+        validate_plugin_name(&entry.name)?;
 
-        let wasm_url = Self::build_wasm_url(
-            &full_entry.repository,
-            &full_entry.version,
-            &full_entry.name,
-        );
-        let toml_url = Self::build_toml_url(&full_entry.repository, &full_entry.version);
+        // Guard against placeholder (all-zero) checksums
+        const ZERO_CHECKSUM: &str =
+            "0000000000000000000000000000000000000000000000000000000000000000";
+        if entry.checksum_sha256 == ZERO_CHECKSUM {
+            return Err(DomainError::PluginError(format!(
+                "plugin '{}': checksum is a placeholder — registry must be updated before installation",
+                entry.name
+            )));
+        }
 
-        // Download wasm
-        let wasm_bytes = Self::download_bytes(&wasm_url)?;
+        let wasm_url = Self::build_wasm_url(&entry.repository, &entry.version, &entry.name);
+        let toml_url = Self::build_toml_url(&entry.repository, &entry.version);
 
-        // Verify checksum
+        // Download + verify WASM
+        let wasm_bytes = self.download_bytes(&wasm_url, MAX_WASM_BYTES)?;
+
         let mut hasher = Sha256::new();
         hasher.update(&wasm_bytes);
         let digest = hex::encode(hasher.finalize());
-        if digest != full_entry.checksum_sha256 {
+        if digest != entry.checksum_sha256 {
             return Err(DomainError::PluginError(format!(
                 "checksum mismatch for '{}': expected {}, got {digest}",
-                full_entry.name, full_entry.checksum_sha256
+                entry.name, entry.checksum_sha256
             )));
         }
 
         // Download plugin.toml
-        let toml_bytes = Self::download_bytes(&toml_url)?;
+        let toml_bytes = self.download_bytes(&toml_url, MAX_REGISTRY_BYTES)?;
 
-        // Write to staging dir
-        let plugin_dir = self.staging_dir.join(&full_entry.name);
+        // Verify plugin.toml checksum if provided
+        if let Some(ref expected_toml_checksum) = entry.checksum_sha256_toml {
+            let mut hasher = Sha256::new();
+            hasher.update(&toml_bytes);
+            let toml_digest = hex::encode(hasher.finalize());
+            if toml_digest != *expected_toml_checksum {
+                return Err(DomainError::PluginError(format!(
+                    "plugin.toml checksum mismatch for '{}': expected {expected_toml_checksum}, got {toml_digest}",
+                    entry.name
+                )));
+            }
+        }
+
+        // Path-safe staging directory (name already validated above)
+        let plugin_dir = self.staging_dir.join(&entry.name);
         std::fs::create_dir_all(&plugin_dir)
             .map_err(|e| DomainError::PluginError(format!("failed to create staging dir: {e}")))?;
 
-        std::fs::write(
-            plugin_dir.join(format!("{}.wasm", full_entry.name)),
-            &wasm_bytes,
-        )
-        .map_err(|e| DomainError::PluginError(format!("failed to write wasm: {e}")))?;
+        std::fs::write(plugin_dir.join(format!("{}.wasm", entry.name)), &wasm_bytes)
+            .map_err(|e| DomainError::PluginError(format!("failed to write wasm: {e}")))?;
 
         std::fs::write(plugin_dir.join("plugin.toml"), &toml_bytes)
             .map_err(|e| DomainError::PluginError(format!("failed to write plugin.toml: {e}")))?;
@@ -219,5 +280,58 @@ official = false
         hasher2.update(wasm);
         let digest2 = hex::encode(hasher2.finalize());
         assert_eq!(real_digest, digest2);
+    }
+
+    #[test]
+    fn test_validate_plugin_name_rejects_traversal() {
+        assert!(validate_plugin_name("../evil").is_err());
+        assert!(validate_plugin_name("../../etc/passwd").is_err());
+        assert!(validate_plugin_name("").is_err());
+        assert!(validate_plugin_name("valid-plugin-name").is_ok());
+        assert!(validate_plugin_name("vortex-mod-test").is_ok());
+    }
+
+    #[test]
+    fn test_validate_plugin_name_rejects_leading_trailing_dash() {
+        assert!(validate_plugin_name("-bad").is_err());
+        assert!(validate_plugin_name("bad-").is_err());
+        assert!(validate_plugin_name("good-plugin").is_ok());
+    }
+
+    #[test]
+    fn test_validate_plugin_name_rejects_too_long() {
+        let long = "a".repeat(65);
+        assert!(validate_plugin_name(&long).is_err());
+        let ok = "a".repeat(64);
+        assert!(validate_plugin_name(&ok).is_ok());
+    }
+
+    #[test]
+    fn test_download_plugin_rejects_zero_checksum() {
+        use tempfile::TempDir;
+        let tmp = TempDir::new().unwrap();
+        let client = GithubStoreClient::new("http://localhost/registry.toml", tmp.path().into());
+        let entry = PluginStoreEntry {
+            name: "my-plugin".into(),
+            description: "test".into(),
+            author: "author".into(),
+            version: "1.0.0".into(),
+            category: PluginCategory::Utility,
+            repository: "https://github.com/author/my-plugin".into(),
+            checksum_sha256: "0000000000000000000000000000000000000000000000000000000000000000"
+                .into(),
+            checksum_sha256_toml: None,
+            official: false,
+            min_vortex_version: None,
+            status: PluginStoreStatus::NotInstalled,
+            installed_version: None,
+        };
+        let result = client.download_plugin(&entry);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("placeholder"),
+            "expected 'placeholder' in: {msg}"
+        );
     }
 }

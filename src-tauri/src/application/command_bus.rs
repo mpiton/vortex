@@ -109,6 +109,10 @@ impl CommandBus {
     pub fn plugin_store_client(&self) -> Option<&dyn PluginStoreClient> {
         self.plugin_store_client.as_deref()
     }
+
+    pub(crate) fn plugin_store_client_arc(&self) -> Option<Arc<dyn PluginStoreClient>> {
+        self.plugin_store_client.clone()
+    }
 }
 
 #[cfg(test)]

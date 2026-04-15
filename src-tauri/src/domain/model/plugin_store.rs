@@ -12,6 +12,7 @@ pub struct PluginStoreEntry {
     pub category: PluginCategory,
     pub repository: String,
     pub checksum_sha256: String,
+    pub checksum_sha256_toml: Option<String>,
     pub official: bool,
     pub min_vortex_version: Option<String>,
     pub status: PluginStoreStatus,
@@ -26,19 +27,33 @@ pub enum PluginStoreStatus {
     Installed,
     /// Registry has a newer version than what's installed.
     UpdateAvailable,
+    /// Installed version is ahead of the registry version (e.g. local dev build).
+    Downgrade,
+}
+
+/// Parse a `major.minor.patch` version string into a comparable tuple.
+fn parse_semver(s: &str) -> Option<(u64, u64, u64)> {
+    let mut parts = s.splitn(3, '.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    let patch = parts.next().unwrap_or("0").parse().ok()?;
+    Some((major, minor, patch))
 }
 
 impl PluginStoreEntry {
     /// Derive status by comparing installed version against registry version.
     ///
-    /// Uses simple string equality — both must be valid semver but we do not
-    /// parse them (avoid pulling a semver crate into domain).
+    /// Parses both versions as `major.minor.patch` tuples using pure std — no
+    /// external semver crate is needed in the domain layer.
     pub fn with_status(mut self, installed_version: Option<&str>) -> Self {
         self.installed_version = installed_version.map(str::to_string);
         self.status = match installed_version {
             None => PluginStoreStatus::NotInstalled,
             Some(v) if v == self.version => PluginStoreStatus::Installed,
-            Some(_) => PluginStoreStatus::UpdateAvailable,
+            Some(v) => match (parse_semver(v), parse_semver(&self.version)) {
+                (Some(inst), Some(reg)) if inst > reg => PluginStoreStatus::Downgrade,
+                _ => PluginStoreStatus::UpdateAvailable,
+            },
         };
         self
     }
@@ -58,6 +73,7 @@ mod tests {
             category: PluginCategory::Utility,
             repository: "https://github.com/author/test-plugin".into(),
             checksum_sha256: "abc123".into(),
+            checksum_sha256_toml: None,
             official: false,
             min_vortex_version: None,
             status: PluginStoreStatus::NotInstalled,
@@ -84,5 +100,13 @@ mod tests {
         let e = entry("1.1.0").with_status(Some("1.0.0"));
         assert_eq!(e.status, PluginStoreStatus::UpdateAvailable);
         assert_eq!(e.installed_version, Some("1.0.0".into()));
+    }
+
+    #[test]
+    fn test_with_status_downgrade_when_installed_ahead_of_registry() {
+        // installed=2.0.0, registry=1.0.0 → Downgrade
+        let e = entry("1.0.0").with_status(Some("2.0.0"));
+        assert_eq!(e.status, PluginStoreStatus::Downgrade);
+        assert_eq!(e.installed_version, Some("2.0.0".into()));
     }
 }

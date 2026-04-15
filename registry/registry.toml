@@ -2,6 +2,11 @@
 # Format: [[plugin]] entries — see TEMPLATE.toml for all fields
 # To add your plugin: copy TEMPLATE.toml, fill it in, add a [[plugin]] entry here, open a PR.
 
+# NOTE: The checksum_sha256 below is a placeholder (all zeros).
+# Before releasing vortex-mod-youtube, compute the real checksum:
+#   sha256sum vortex-mod-youtube.wasm
+# and replace the placeholder value. Installation is blocked while the checksum is all zeros.
+# checksum_sha256_toml = "..."  # Optional: SHA-256 of plugin.toml for manifest integrity
 [[plugin]]
 name            = "vortex-mod-youtube"
 description     = "YouTube & playlists downloader via yt-dlp"

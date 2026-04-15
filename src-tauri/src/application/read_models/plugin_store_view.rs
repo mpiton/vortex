@@ -17,8 +17,12 @@ pub struct PluginStoreEntryDto {
     pub installed_version: Option<String>,
     pub category: String,
     pub official: bool,
-    /// "not_installed" | "installed" | "update_available"
+    /// "not_installed" | "installed" | "update_available" | "downgrade"
     pub status: String,
+    pub repository: String,
+    pub checksum_sha256: String,
+    pub checksum_sha256_toml: Option<String>,
+    pub min_vortex_version: Option<String>,
 }
 
 impl From<PluginStoreEntry> for PluginStoreEntryDto {
@@ -27,6 +31,7 @@ impl From<PluginStoreEntry> for PluginStoreEntryDto {
             PluginStoreStatus::NotInstalled => "not_installed",
             PluginStoreStatus::Installed => "installed",
             PluginStoreStatus::UpdateAvailable => "update_available",
+            PluginStoreStatus::Downgrade => "downgrade",
         };
         Self {
             name: e.name,
@@ -34,9 +39,13 @@ impl From<PluginStoreEntry> for PluginStoreEntryDto {
             author: e.author,
             version: e.version,
             installed_version: e.installed_version,
-            category: e.category.to_string(),
+            category: e.category.to_string().to_lowercase(),
             official: e.official,
             status: status.to_string(),
+            repository: e.repository,
+            checksum_sha256: e.checksum_sha256,
+            checksum_sha256_toml: e.checksum_sha256_toml,
+            min_vortex_version: e.min_vortex_version,
         }
     }
 }
@@ -56,6 +65,7 @@ mod tests {
             category: PluginCategory::Hoster,
             repository: "https://github.com/johndoe/vortex-mod-gallery".into(),
             checksum_sha256: "abc".into(),
+            checksum_sha256_toml: None,
             official: false,
             min_vortex_version: None,
             status,
@@ -68,7 +78,7 @@ mod tests {
         let dto = PluginStoreEntryDto::from(make_entry(PluginStoreStatus::NotInstalled, None));
         assert_eq!(dto.status, "not_installed");
         assert_eq!(dto.installed_version, None);
-        assert_eq!(dto.category, "Hoster");
+        assert_eq!(dto.category, "hoster");
     }
 
     #[test]
@@ -87,6 +97,14 @@ mod tests {
         ));
         assert_eq!(dto.status, "update_available");
         assert_eq!(dto.installed_version, Some("0.9.0".into()));
+    }
+
+    #[test]
+    fn test_dto_from_downgrade() {
+        let dto =
+            PluginStoreEntryDto::from(make_entry(PluginStoreStatus::Downgrade, Some("2.0.0")));
+        assert_eq!(dto.status, "downgrade");
+        assert_eq!(dto.installed_version, Some("2.0.0".into()));
     }
 
     #[test]

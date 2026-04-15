@@ -218,7 +218,7 @@ pub async fn plugin_disable(state: State<'_, AppState>, name: String) -> Result<
 pub async fn plugin_store_list(
     state: State<'_, AppState>,
 ) -> Result<Vec<PluginStoreEntryDto>, String> {
-    let cache = store_cache_path();
+    let cache = store_cache_path()?;
     state
         .command_bus
         .handle_store_list(&cache)
@@ -229,7 +229,7 @@ pub async fn plugin_store_list(
 /// Re-fetch the remote registry.toml and update the local cache.
 #[tauri::command]
 pub async fn plugin_store_refresh(state: State<'_, AppState>) -> Result<(), String> {
-    let cache = store_cache_path();
+    let cache = store_cache_path()?;
     state
         .command_bus
         .handle_store_refresh(&cache)
@@ -240,7 +240,7 @@ pub async fn plugin_store_refresh(state: State<'_, AppState>) -> Result<(), Stri
 /// Download and install a plugin from the registry by name.
 #[tauri::command]
 pub async fn plugin_store_install(state: State<'_, AppState>, name: String) -> Result<(), String> {
-    let cache = store_cache_path();
+    let cache = store_cache_path()?;
     state
         .command_bus
         .handle_store_install(StoreInstallCommand { name }, &cache)
@@ -251,7 +251,7 @@ pub async fn plugin_store_install(state: State<'_, AppState>, name: String) -> R
 /// Unload the current version and install the latest from the registry.
 #[tauri::command]
 pub async fn plugin_store_update(state: State<'_, AppState>, name: String) -> Result<(), String> {
-    let cache = store_cache_path();
+    let cache = store_cache_path()?;
     state
         .command_bus
         .handle_store_update(StoreUpdateCommand { name }, &cache)
@@ -259,11 +259,10 @@ pub async fn plugin_store_update(state: State<'_, AppState>, name: String) -> Re
         .map_err(|e| e.to_string())
 }
 
-fn store_cache_path() -> std::path::PathBuf {
+fn store_cache_path() -> Result<std::path::PathBuf, String> {
     dirs::config_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join("vortex")
-        .join("plugin-registry-cache.json")
+        .ok_or_else(|| "cannot determine config directory — store unavailable".to_string())
+        .map(|p| p.join("vortex").join("plugin-registry-cache.json"))
 }
 
 // --- Queries ---
