@@ -1,0 +1,14 @@
+# Vortex Plugin Registry
+# Format: [[plugin]] entries — see TEMPLATE.toml for all fields
+# To add your plugin: copy TEMPLATE.toml, fill it in, add a [[plugin]] entry here, open a PR.
+
+[[plugin]]
+name            = "vortex-mod-youtube"
+description     = "YouTube & playlists downloader via yt-dlp"
+author          = "vortex-team"
+version         = "1.0.0"
+category        = "crawler"
+repository      = "https://github.com/mpiton/vortex"
+checksum_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+official        = true
+min_vortex_version = "0.1.0"

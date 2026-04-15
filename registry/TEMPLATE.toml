@@ -1,0 +1,31 @@
+# Copy this file to add your plugin to the Vortex registry.
+# Fields marked (required) must be present. Others are optional.
+
+[[plugin]]
+# (required) Unique identifier — must match your GitHub repo name convention
+name            = "vortex-mod-example"
+
+# (required) Short description shown in the store
+description     = "What your plugin does"
+
+# (required) Your GitHub username or org
+author          = "your-github-username"
+
+# (required) Semver version matching your GitHub Release tag (without the 'v' prefix)
+version         = "1.0.0"
+
+# (required) One of: crawler | hoster | debrid | container | captcha | extractor | notifier | utility
+category        = "hoster"
+
+# (required) GitHub repository URL (no trailing slash)
+repository      = "https://github.com/your-github-username/vortex-mod-example"
+
+# (required) SHA-256 checksum of your .wasm binary
+# Compute with: sha256sum vortex-mod-example.wasm
+checksum_sha256 = "paste_sha256_here"
+
+# (optional) Set to true only for plugins maintained by the Vortex core team
+official        = false
+
+# (optional) Minimum Vortex version required to run this plugin
+# min_vortex_version = "0.2.0"
