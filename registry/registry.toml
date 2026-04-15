@@ -1,0 +1,55 @@
+# Vortex Plugin Registry
+# Format: [[plugin]] entries — see TEMPLATE.toml for all fields
+# To add your plugin: copy TEMPLATE.toml, fill it in, add a [[plugin]] entry here, open a PR.
+#
+# Checksums are computed from the release WASM binary:
+#   sha256sum <name>.wasm
+# checksum_sha256_toml is optional — SHA-256 of plugin.toml for manifest integrity.
+
+[[plugin]]
+name                 = "vortex-mod-youtube"
+description          = "YouTube video/playlist/shorts/channel downloader via yt-dlp"
+author               = "vortex-community"
+version              = "1.0.0"
+category             = "crawler"
+repository           = "https://github.com/mpiton/vortex-mod-youtube"
+checksum_sha256      = "f036e363e2e5d14b370db46e8dac8690db0f75d1d16098c3ee1273e53e4f1812"
+checksum_sha256_toml = "badb262cd63dfecada0da61885c7e2b7eb0ecb111cb4ec0e0216634f9003620f"
+official             = true
+min_vortex_version   = "0.1.0"
+
+[[plugin]]
+name                 = "vortex-mod-gallery"
+description          = "Image galleries: Imgur, Reddit, Flickr, generic <img> scraping"
+author               = "vortex-community"
+version              = "1.0.0"
+category             = "crawler"
+repository           = "https://github.com/mpiton/vortex-mod-gallery"
+checksum_sha256      = "f90412006a92c7e13d286dd7358a61eaa3f845210809c1ec0fbeb6e95c9e3dc2"
+checksum_sha256_toml = "1d4ceb7b3033195987931afd8b7a264e9f84a9f14b38d02ae623fe450c622ae9"
+official             = true
+min_vortex_version   = "0.1.0"
+
+[[plugin]]
+name                 = "vortex-mod-vimeo"
+description          = "Vimeo public/private videos with quality selection"
+author               = "vortex-community"
+version              = "1.0.0"
+category             = "crawler"
+repository           = "https://github.com/mpiton/vortex-mod-vimeo"
+checksum_sha256      = "ab8de559c1ba8988ca66720583d993ebf16d477ceaf37dddbe3ce41cc59280ee"
+checksum_sha256_toml = "376296c4b23a939c1115aa14a5f9463c2b79c00e293bfadcc446defacef89683"
+official             = true
+min_vortex_version   = "0.1.0"
+
+[[plugin]]
+name                 = "vortex-mod-soundcloud"
+description          = "SoundCloud tracks, playlists, and artist profiles"
+author               = "vortex-community"
+version              = "1.0.0"
+category             = "crawler"
+repository           = "https://github.com/mpiton/vortex-mod-soundcloud"
+checksum_sha256      = "69f31278efe1488840150953a49348a6fb9ed7ee9979314ec5dd0fa81f1f45b1"
+checksum_sha256_toml = "5709f2ccc31f10393c1d53f310ba81eee14b5e349ecd66f9ce4882007c3c316f"
+official             = true
+min_vortex_version   = "0.1.0"
