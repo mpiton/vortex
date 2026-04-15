@@ -87,6 +87,8 @@ fn test_appstate_wiring_with_in_memory_db() {
         credential_store,
         clipboard_observer,
         archive_extractor.clone(),
+    
+        None,
     ));
 
     let query_bus = Arc::new(QueryBus::new(

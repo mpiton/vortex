@@ -11,7 +11,7 @@ impl CommandBus {
             .find_by_id(cmd.id)?
             .ok_or_else(|| AppError::NotFound(format!("Download {} not found", cmd.id.0)))?;
 
-        let event = download.retry()?;
+        let event = download.retry_manually()?;
         self.download_repo().save(&download)?;
         self.event_bus().publish(event);
 
@@ -291,6 +291,8 @@ mod tests {
             Arc::new(MockCredentialStore),
             Arc::new(MockClipboardObserver),
             Arc::new(FakeArchiveExtractor),
+        
+            None,
         )
     }
 
@@ -336,11 +338,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_retry_max_exceeded_returns_error() {
+    async fn test_manual_retry_ignores_max_retries_setting() {
         let repo = Arc::new(MockDownloadRepo::new());
         let events = Arc::new(MockEventBus::new());
 
-        // Create download that has exhausted retries
         let mut dl = Download::new(
             DownloadId(2),
             Url::new("http://example.com/file.zip").unwrap(),
@@ -352,15 +353,68 @@ mod tests {
         dl.fail("error".to_string()).unwrap();
         repo.save(&dl).unwrap();
 
-        let bus = make_command_bus(repo, events);
+        let bus = make_command_bus(repo.clone(), events.clone());
         let result = bus
             .handle_retry_download(RetryDownloadCommand { id: DownloadId(2) })
             .await;
 
-        assert!(matches!(
-            result,
-            Err(AppError::Domain(DomainError::MaxRetriesExceeded { .. }))
-        ));
+        assert!(result.is_ok());
+
+        let saved = repo.find_by_id(DownloadId(2)).unwrap().unwrap();
+        assert_eq!(saved.state(), DownloadState::Retry);
+        assert_eq!(saved.retry_count(), 1);
+
+        let emitted = events.events.lock().unwrap();
+        assert_eq!(
+            emitted.as_slice(),
+            &[DomainEvent::DownloadRetrying {
+                id: DownloadId(2),
+                attempt: 1
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_manual_retry_reopens_circuit_breaker_after_max_retries() {
+        let repo = Arc::new(MockDownloadRepo::new());
+        let events = Arc::new(MockEventBus::new());
+
+        let mut dl = Download::new(
+            DownloadId(4),
+            Url::new("http://example.com/file.zip").unwrap(),
+            "file.zip".to_string(),
+            "/tmp/file.zip".to_string(),
+        )
+        .with_max_retries(1);
+        dl.start().unwrap();
+        dl.fail("error".to_string()).unwrap();
+        dl.retry().unwrap();
+        dl.start().unwrap();
+        dl.fail("error".to_string()).unwrap();
+        repo.save(&dl).unwrap();
+
+        let bus = make_command_bus(repo.clone(), events.clone());
+        let result = bus
+            .handle_retry_download(RetryDownloadCommand { id: DownloadId(4) })
+            .await;
+
+        assert!(
+            result.is_ok(),
+            "manual retry should reopen the circuit breaker"
+        );
+
+        let saved = repo.find_by_id(DownloadId(4)).unwrap().unwrap();
+        assert_eq!(saved.state(), DownloadState::Retry);
+        assert_eq!(saved.retry_count(), 1);
+
+        let emitted = events.events.lock().unwrap();
+        assert_eq!(
+            emitted.as_slice(),
+            &[DomainEvent::DownloadRetrying {
+                id: DownloadId(4),
+                attempt: 1
+            }]
+        );
     }
 
     #[tokio::test]

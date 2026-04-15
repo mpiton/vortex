@@ -174,6 +174,7 @@ pub fn run() {
                 credential_store,
                 clipboard_observer,
                 archive_extractor.clone(),
+                None,
             ));
 
             let query_bus = Arc::new(QueryBus::new(

@@ -367,6 +367,8 @@ mod tests {
             Arc::new(MockCredentialStore),
             Arc::new(MockClipboardObserver),
             Arc::new(FakeArchiveExtractor),
+        
+            None,
         );
         (bus, repo, event_bus)
     }
