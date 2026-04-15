@@ -15,6 +15,16 @@ pub trait PluginLoader: Send + Sync {
     /// Load a plugin from its manifest.
     fn load(&self, manifest: &PluginManifest) -> Result<(), DomainError>;
 
+    /// Parse the manifest from a plugin directory and load the plugin.
+    ///
+    /// The default implementation returns an error; adapter implementations
+    /// that support directory-based loading should override this method.
+    fn load_from_dir(&self, _dir: &std::path::Path) -> Result<(), DomainError> {
+        Err(DomainError::PluginError(
+            "load_from_dir not supported by this loader".into(),
+        ))
+    }
+
     /// Unload a plugin by name.
     fn unload(&self, name: &str) -> Result<(), DomainError>;
 

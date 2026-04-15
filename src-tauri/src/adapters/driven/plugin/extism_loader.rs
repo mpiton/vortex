@@ -9,7 +9,7 @@ use crate::domain::ports::driven::PluginLoader;
 
 use super::builtin::HttpModule;
 use super::capabilities::{SharedHostResources, build_host_functions};
-use super::manifest::find_wasm_file;
+use super::manifest::{find_wasm_file, parse_manifest};
 use super::registry::{LoadedPlugin, PluginRegistry};
 
 pub struct ExtismPluginLoader {
@@ -132,6 +132,11 @@ impl PluginLoader for ExtismPluginLoader {
 
     fn set_enabled(&self, name: &str, enabled: bool) -> Result<(), DomainError> {
         self.registry.set_enabled(name, enabled)
+    }
+
+    fn load_from_dir(&self, dir: &std::path::Path) -> Result<(), DomainError> {
+        let (manifest, _wasm_path) = parse_manifest(dir)?;
+        self.load(&manifest)
     }
 }
 
