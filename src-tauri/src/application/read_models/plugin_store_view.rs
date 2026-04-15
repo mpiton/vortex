@@ -4,8 +4,9 @@ use serde::Serialize;
 
 use crate::domain::model::plugin_store::{PluginStoreEntry, PluginStoreStatus};
 
-// Task 8 (store_list handler) will use this DTO — remove once wired.
-#[expect(dead_code)]
+// Task 8 (store_list handler) will use this DTO. Temporary allow(dead_code) due to clippy -D warnings
+// in rust-clippy hook; will be removed once PluginStoreEntryDto is exported via IPC in store_list.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PluginStoreEntryDto {
