@@ -1,11 +1,11 @@
 //! Serializable plugin store entry DTO for the frontend.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::domain::model::plugin_store::{PluginStoreEntry, PluginStoreStatus};
 
 /// Task 8 (store_list handler) will use this DTO.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PluginStoreEntryDto {
     pub name: String,
