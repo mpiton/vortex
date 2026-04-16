@@ -22,6 +22,7 @@ pub enum DomainError {
     NetworkError(String),
     ValidationError(String),
     PluginError(String),
+    AdaptiveStreamOnly,
 }
 
 impl std::fmt::Display for DomainError {
@@ -60,6 +61,10 @@ impl std::fmt::Display for DomainError {
             DomainError::PluginError(msg) => {
                 write!(f, "Plugin error: {msg}")
             }
+            DomainError::AdaptiveStreamOnly => write!(
+                f,
+                "Video is only available as adaptive stream (DASH/HLS); use download_to_file"
+            ),
         }
     }
 }
@@ -143,5 +148,14 @@ mod tests {
     fn test_domain_error_implements_error_trait() {
         let err: Box<dyn std::error::Error> = Box::new(DomainError::NotFound("x".to_string()));
         assert!(err.to_string().contains("Not found"));
+    }
+
+    #[test]
+    fn test_display_adaptive_stream_only() {
+        let err = DomainError::AdaptiveStreamOnly;
+        assert_eq!(
+            err.to_string(),
+            "Video is only available as adaptive stream (DASH/HLS); use download_to_file"
+        );
     }
 }
