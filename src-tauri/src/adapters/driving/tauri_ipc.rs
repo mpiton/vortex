@@ -770,7 +770,11 @@ pub async fn download_media_start(
                          user-dirs download_dir nor home_dir are available"
                             .to_string()
                     })?;
-                let dest_path = dest_dir.join(&filename);
+                // If the destination already exists, suffix the filename (" (1)",
+                // " (2)", …) — preserves the previous download instead of silently
+                // overwriting it, matching the browser-download convention.
+                let (dest_path, dest_filename) =
+                    unique_destination(&dest_dir, &filename);
 
                 // Atomic move (same filesystem) → fallback copy+delete.
                 if std::fs::rename(&file_info.path, &dest_path).is_err() {
@@ -788,7 +792,7 @@ pub async fn download_media_start(
                 Ok(StreamResolution::LocalFile {
                     path: dest_path,
                     size: file_info.size,
-                    filename,
+                    filename: dest_filename,
                 })
             }
 
@@ -880,6 +884,48 @@ fn sanitize_filename(name: &str) -> String {
 /// Extract the hostname from a URL string (e.g. "www.youtube.com" from
 /// "https://www.youtube.com/watch?v=..."). Returns `None` when the URL
 /// cannot be parsed.
+/// If `dir/filename` already exists, probe `filename (1)`, `filename (2)`, …
+/// until a free slot is found. Preserves the extension.
+///
+/// Returns `(path, filename)` both reflecting the final (possibly suffixed) name,
+/// so callers that store the chosen filename in the download record stay in sync
+/// with what was actually written to disk.
+///
+/// Race condition note: TOCTOU-safe this is not — another process could create
+/// the same path between the `exists()` check and the subsequent
+/// `rename`/`copy`. That would result in an overwrite. For downloads, the
+/// window is small and the alternative (`O_EXCL`-style create + rename) is not
+/// available on `std::fs::rename`. Accepted as a practical compromise.
+fn unique_destination(dir: &std::path::Path, filename: &str) -> (std::path::PathBuf, String) {
+    let base = dir.join(filename);
+    if !base.exists() {
+        return (base, filename.to_string());
+    }
+
+    let path = std::path::Path::new(filename);
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(filename);
+    let ext = path.extension().and_then(|s| s.to_str());
+
+    for n in 1..=9999 {
+        let candidate_name = match ext {
+            Some(e) => format!("{stem} ({n}).{e}"),
+            None => format!("{stem} ({n})"),
+        };
+        let candidate = dir.join(&candidate_name);
+        if !candidate.exists() {
+            return (candidate, candidate_name);
+        }
+    }
+
+    // Pathological case: thousands of collisions. Fall back to the original
+    // name — the subsequent rename/copy will overwrite, but we've made a
+    // reasonable attempt.
+    (base, filename.to_string())
+}
+
 fn extract_hostname_from_url(url: &str) -> Option<String> {
     let after_scheme = url
         .strip_prefix("https://")
@@ -1236,7 +1282,7 @@ fn read_available_space(_: &Path) -> Option<u64> {
 mod tests {
     use super::{
         configured_status_bar_path, extract_hostname_from_url, read_available_space,
-        resolve_existing_disk_path, sanitize_filename,
+        resolve_existing_disk_path, sanitize_filename, unique_destination,
     };
     use std::path::PathBuf;
 
@@ -1314,6 +1360,43 @@ mod tests {
     #[test]
     fn extract_hostname_returns_none_for_non_url() {
         assert_eq!(extract_hostname_from_url("not-a-url"), None);
+    }
+
+    // ── unique_destination ────────────────────────────────────────────────────
+
+    #[test]
+    fn unique_destination_returns_original_when_free() {
+        let dir = tempfile::tempdir().unwrap();
+        let (path, name) = unique_destination(dir.path(), "video.mp4");
+        assert_eq!(name, "video.mp4");
+        assert_eq!(path, dir.path().join("video.mp4"));
+    }
+
+    #[test]
+    fn unique_destination_suffixes_when_colliding() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("video.mp4"), b"x").unwrap();
+        let (path, name) = unique_destination(dir.path(), "video.mp4");
+        assert_eq!(name, "video (1).mp4");
+        assert_eq!(path, dir.path().join("video (1).mp4"));
+    }
+
+    #[test]
+    fn unique_destination_increments_until_free() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("video.mp4"), b"x").unwrap();
+        std::fs::write(dir.path().join("video (1).mp4"), b"x").unwrap();
+        std::fs::write(dir.path().join("video (2).mp4"), b"x").unwrap();
+        let (_, name) = unique_destination(dir.path(), "video.mp4");
+        assert_eq!(name, "video (3).mp4");
+    }
+
+    #[test]
+    fn unique_destination_preserves_dotless_names() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("README"), b"x").unwrap();
+        let (_, name) = unique_destination(dir.path(), "README");
+        assert_eq!(name, "README (1)");
     }
 
     #[test]
