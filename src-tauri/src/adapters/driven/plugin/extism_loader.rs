@@ -9,7 +9,7 @@ use crate::domain::ports::driven::PluginLoader;
 
 use super::builtin::HttpModule;
 use super::capabilities::{SharedHostResources, build_host_functions};
-use super::manifest::find_wasm_file;
+use super::manifest::{find_wasm_file, parse_manifest};
 use super::registry::{LoadedPlugin, PluginRegistry};
 
 pub struct ExtismPluginLoader {
@@ -132,6 +132,79 @@ impl PluginLoader for ExtismPluginLoader {
 
     fn set_enabled(&self, name: &str, enabled: bool) -> Result<(), DomainError> {
         self.registry.set_enabled(name, enabled)
+    }
+
+    fn resolve_stream_url(
+        &self,
+        url: &str,
+        quality: &str,
+        format: &str,
+        audio_only: bool,
+    ) -> Result<String, DomainError> {
+        // Find the plugin that claims this URL.
+        let info = self
+            .resolve_url(url)?
+            .ok_or_else(|| DomainError::PluginError(format!("no plugin can handle URL: {url}")))?;
+
+        // The built-in HTTP module handles direct URLs — no resolution needed.
+        if info.name() == "builtin-http" {
+            return Err(DomainError::NotFound("builtin-http".into()));
+        }
+
+        let input = serde_json::json!({
+            "url": url,
+            "quality": quality,
+            "format": format,
+            "audio_only": audio_only,
+        })
+        .to_string();
+
+        self.registry
+            .call_plugin(info.name(), "resolve_stream_url", &input)
+            .map_err(|e| {
+                DomainError::PluginError(format!(
+                    "plugin '{}' resolve_stream_url failed: {e}",
+                    info.name()
+                ))
+            })
+    }
+
+    fn load_from_dir(&self, dir: &std::path::Path) -> Result<(), DomainError> {
+        let (manifest, _wasm_path) = parse_manifest(dir)?;
+        let name = manifest.info().name();
+
+        // Copy staged files to the permanent plugins directory
+        let dest_dir = self.plugins_dir.join(name);
+        if dest_dir.exists() {
+            std::fs::remove_dir_all(&dest_dir).map_err(|e| {
+                DomainError::PluginError(format!(
+                    "failed to remove existing plugin dir '{}': {e}",
+                    dest_dir.display()
+                ))
+            })?;
+        }
+        std::fs::create_dir_all(&dest_dir)
+            .map_err(|e| DomainError::PluginError(format!("failed to create plugin dir: {e}")))?;
+
+        for entry in std::fs::read_dir(dir)
+            .map_err(|e| DomainError::PluginError(format!("failed to read staging dir: {e}")))?
+        {
+            let entry = entry
+                .map_err(|e| DomainError::PluginError(format!("staging dir entry error: {e}")))?;
+            let src = entry.path();
+            if src.is_file() {
+                let dest = dest_dir.join(entry.file_name());
+                std::fs::copy(&src, &dest).map_err(|e| {
+                    DomainError::PluginError(format!(
+                        "failed to copy {} → {}: {e}",
+                        src.display(),
+                        dest.display()
+                    ))
+                })?;
+            }
+        }
+
+        self.load(&manifest)
     }
 }
 
@@ -296,5 +369,34 @@ description = "Test plugin"
 
         loader.unload("removable-plugin").unwrap();
         assert_eq!(loader.list_loaded().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn test_load_from_dir_copies_staging_files() {
+        let tmp = TempDir::new().unwrap();
+        let plugins_dir = tmp.path().join("plugins");
+        let staging_dir = tmp.path().join("staging");
+        std::fs::create_dir_all(&staging_dir).unwrap();
+
+        let loader =
+            ExtismPluginLoader::new(plugins_dir.clone(), Arc::new(SharedHostResources::new()))
+                .unwrap();
+
+        // Set up the staged plugin directory
+        setup_plugin_dir(&staging_dir, "test-plugin");
+        let staged = staging_dir.join("test-plugin");
+
+        // load_from_dir should copy to plugins_dir/test-plugin/ and then load
+        // (Loading will fail due to minimal WASM — but the copy should succeed)
+        let _ = loader.load_from_dir(&staged);
+
+        // Verify files were copied to the permanent plugins directory
+        assert!(plugins_dir.join("test-plugin").join("plugin.toml").exists());
+        assert!(
+            plugins_dir
+                .join("test-plugin")
+                .join("test-plugin.wasm")
+                .exists()
+        );
     }
 }

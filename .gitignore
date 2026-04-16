@@ -1,5 +1,6 @@
 # Local docs
 specs/
+.superpowers/
 ARCHI.md
 CLAUDE.md
 PRD.md

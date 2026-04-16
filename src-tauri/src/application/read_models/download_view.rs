@@ -20,6 +20,7 @@ pub struct DownloadViewDto {
     pub segments_total: u32,
     pub module_name: Option<String>,
     pub account_name: Option<String>,
+    pub error_message: Option<String>,
     pub created_at: u64,
 }
 
@@ -39,6 +40,7 @@ impl From<DownloadView> for DownloadViewDto {
             segments_total: v.segments_total,
             module_name: v.module_name,
             account_name: v.account_name,
+            error_message: v.error_message,
             created_at: v.created_at,
         }
     }
@@ -65,6 +67,7 @@ mod tests {
             segments_total: 4,
             module_name: None,
             account_name: None,
+            error_message: Some("network error".to_string()),
             created_at: 1700000000,
         }
     }
@@ -83,6 +86,7 @@ mod tests {
         assert!(value.get("segmentsTotal").is_some());
         assert!(value.get("moduleName").is_some());
         assert!(value.get("accountName").is_some());
+        assert!(value.get("errorMessage").is_some());
         assert!(value.get("createdAt").is_some());
     }
 
@@ -102,10 +106,12 @@ mod tests {
             segments_total: 4,
             module_name: None,
             account_name: None,
+            error_message: Some("network error".to_string()),
             created_at: 1700000000,
         };
         let dto = DownloadViewDto::from(view);
         assert_eq!(dto.id, "42");
         assert_eq!(dto.state, "Downloading");
+        assert_eq!(dto.error_message.as_deref(), Some("network error"));
     }
 }

@@ -65,7 +65,7 @@ impl CommandBus {
             Err(e) => {
                 let msg = format!("extraction task panicked: {}", e);
                 download.fail(msg.clone())?;
-                self.download_repo().save(&download)?;
+                self.download_repo().save_failed(&download, &msg)?;
                 self.event_bus().publish(DomainEvent::DownloadFailed {
                     id: cmd.download_id,
                     error: msg.clone(),
@@ -86,13 +86,14 @@ impl CommandBus {
             }
             Err(e) => {
                 // Restore download to Error state so user can retry
-                download.fail(e.to_string())?;
-                self.download_repo().save(&download)?;
+                let error = e.to_string();
+                download.fail(error.clone())?;
+                self.download_repo().save_failed(&download, &error)?;
                 self.event_bus().publish(DomainEvent::DownloadFailed {
                     id: cmd.download_id,
-                    error: e.to_string(),
+                    error: error.clone(),
                 });
-                Err(AppError::Storage(format!("extraction failed: {}", e)))
+                Err(AppError::Storage(format!("extraction failed: {}", error)))
             }
         }
     }

@@ -18,6 +18,11 @@ pub trait DownloadRepository: Send + Sync {
     /// Persist a download (insert or update).
     fn save(&self, download: &Download) -> Result<(), DomainError>;
 
+    /// Persist a failed download and store its raw backend error string.
+    fn save_failed(&self, download: &Download, _error_message: &str) -> Result<(), DomainError> {
+        self.save(download)
+    }
+
     /// Delete a download by its identifier.
     fn delete(&self, id: DownloadId) -> Result<(), DomainError>;
 

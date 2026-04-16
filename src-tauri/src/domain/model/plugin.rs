@@ -1,4 +1,5 @@
 use std::fmt;
+use std::str::FromStr;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PluginCategory {
@@ -25,6 +26,24 @@ impl fmt::Display for PluginCategory {
             PluginCategory::Utility => "Utility",
         };
         write!(f, "{name}")
+    }
+}
+
+impl FromStr for PluginCategory {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "crawler" => Ok(PluginCategory::Crawler),
+            "hoster" => Ok(PluginCategory::Hoster),
+            "debrid" => Ok(PluginCategory::Debrid),
+            "container" => Ok(PluginCategory::Container),
+            "captcha" => Ok(PluginCategory::Captcha),
+            "extractor" => Ok(PluginCategory::Extractor),
+            "notifier" => Ok(PluginCategory::Notifier),
+            "utility" => Ok(PluginCategory::Utility),
+            other => Err(format!("unknown plugin category: '{other}'")),
+        }
     }
 }
 

@@ -169,7 +169,7 @@ function ActionCell({ download, t }: ActionCellProps) {
           <Play className="size-3.5" />
         </Button>
       )}
-      {(download.state === 'Error' || download.state === 'Retry') && (
+      {download.state === 'Error' && (
         <Button
           variant="ghost"
           size="icon"
@@ -257,7 +257,12 @@ function getColumns(t: Translate): ColumnDef<DownloadView>[] {
     {
       accessorKey: 'state',
       header: t('downloads.table.columns.state'),
-      cell: ({ row }) => <StateIndicator state={row.original.state} />,
+      cell: ({ row }) => (
+        <StateIndicator
+          state={row.original.state}
+          errorMessage={row.original.errorMessage}
+        />
+      ),
     },
     {
       accessorKey: 'fileName',

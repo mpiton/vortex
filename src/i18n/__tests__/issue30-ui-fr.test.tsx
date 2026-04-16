@@ -139,7 +139,6 @@ describe("issue #30 — French UI translations", () => {
       { component: <PackagesView />, title: "Paquets" },
       { component: <AccountsView />, title: "Comptes" },
       { component: <CaptchaView />, title: "Captcha" },
-      { component: <PluginsView />, title: "Plugins" },
       { component: <SchedulerView />, title: "Planificateur" },
       { component: <HistoryView />, title: "Historique" },
       { component: <StatisticsView />, title: "Statistiques" },
@@ -151,5 +150,15 @@ describe("issue #30 — French UI translations", () => {
       expect(screen.getByText("Bientôt disponible")).toBeInTheDocument();
       result.unmount();
     }
+  });
+
+  it("renders plugin store catalogue shell in French", () => {
+    mockInvoke.mockResolvedValue([]);
+    renderWithProviders(<PluginsView />);
+
+    expect(
+      screen.getByPlaceholderText("Rechercher un plugin..."),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Toutes catégories")).toBeInTheDocument();
   });
 });

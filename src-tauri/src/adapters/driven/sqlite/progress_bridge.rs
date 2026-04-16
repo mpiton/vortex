@@ -26,6 +26,8 @@ enum BridgeMessage {
     Progress {
         download_id: i64,
         downloaded_bytes: i64,
+        /// `0` when total size is unknown.
+        total_bytes: i64,
     },
     SegmentStarted {
         row_id: i64,
@@ -59,8 +61,9 @@ pub fn spawn_sqlite_progress_bridge(event_bus: &dyn EventBus, db: DatabaseConnec
                 BridgeMessage::Progress {
                     download_id,
                     downloaded_bytes,
+                    total_bytes,
                 } => {
-                    update_download_progress(&db, download_id, downloaded_bytes).await;
+                    update_download_progress(&db, download_id, downloaded_bytes, total_bytes).await;
                 }
                 BridgeMessage::SegmentStarted {
                     row_id,
@@ -122,10 +125,11 @@ fn event_to_message(event: &DomainEvent) -> Option<BridgeMessage> {
         DomainEvent::DownloadProgress {
             id,
             downloaded_bytes,
-            total_bytes: _,
+            total_bytes,
         } => Some(BridgeMessage::Progress {
             download_id: id.0 as i64,
             downloaded_bytes: *downloaded_bytes as i64,
+            total_bytes: *total_bytes as i64,
         }),
 
         DomainEvent::SegmentStarted {
@@ -180,21 +184,45 @@ fn event_to_message(event: &DomainEvent) -> Option<BridgeMessage> {
     }
 }
 
-/// Update `downloads.downloaded_bytes`, never allowing a stale write to
-/// decrease the stored value (monotonic via SQL `MAX`).
+/// Update `downloads.downloaded_bytes` and, when `total_bytes > 0`, also set
+/// `total_bytes` (monotonic). The `MAX` guard prevents stale writes from
+/// regressing the value.
 async fn update_download_progress(
     db: &DatabaseConnection,
     download_id: i64,
     downloaded_bytes: i64,
+    total_bytes: i64,
 ) {
-    let sql = "UPDATE downloads SET downloaded_bytes = MAX(downloaded_bytes, ?) WHERE id = ?";
-    let stmt = Statement::from_sql_and_values(
-        DatabaseBackend::Sqlite,
-        sql,
-        [downloaded_bytes.into(), download_id.into()],
-    );
+    let sql = if total_bytes > 0 {
+        "UPDATE downloads \
+         SET downloaded_bytes = MAX(downloaded_bytes, ?), \
+             total_bytes = COALESCE(NULLIF(total_bytes, 0), ?) \
+         WHERE id = ?"
+    } else {
+        // total_bytes unknown — only update progress, keep existing total_bytes
+        "UPDATE downloads SET downloaded_bytes = MAX(downloaded_bytes, ?) WHERE id = ?"
+    };
+
+    let stmt = if total_bytes > 0 {
+        Statement::from_sql_and_values(
+            DatabaseBackend::Sqlite,
+            sql,
+            [
+                downloaded_bytes.into(),
+                total_bytes.into(),
+                download_id.into(),
+            ],
+        )
+    } else {
+        Statement::from_sql_and_values(
+            DatabaseBackend::Sqlite,
+            sql,
+            [downloaded_bytes.into(), download_id.into()],
+        )
+    };
+
     if let Err(e) = db.execute(stmt).await {
-        tracing::warn!(download_id, error = %e, "progress_bridge: failed to update downloaded_bytes");
+        tracing::warn!(download_id, error = %e, "progress_bridge: failed to update progress");
     }
 }
 
@@ -380,6 +408,7 @@ mod tests {
             module_name: Set(None),
             account_id: Set(None),
             destination_path: Set("/tmp/file.bin".to_string()),
+            error_message: Set(None),
             created_at: Set(1),
             updated_at: Set(1),
         }
@@ -448,6 +477,47 @@ mod tests {
         assert_eq!(
             model.downloaded_bytes, 777,
             "no-range segments should fall back to aggregate download progress when total size is unknown"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_update_progress_also_sets_total_bytes_when_known() {
+        let db = setup_test_db().await.unwrap();
+        // Start with total_bytes = None (unknown)
+        insert_download_row(&db, 42, None, 0).await;
+
+        update_download_progress(&db, 42, 5_000_000, 10_000_000).await;
+
+        let row = download::Entity::find_by_id(42)
+            .one(&db)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.downloaded_bytes, 5_000_000);
+        assert_eq!(
+            row.total_bytes,
+            Some(10_000_000),
+            "total_bytes must be set from the first DownloadProgress event that carries it"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_update_progress_does_not_overwrite_existing_total_bytes() {
+        let db = setup_test_db().await.unwrap();
+        insert_download_row(&db, 43, Some(10_000_000), 0).await;
+
+        // Later progress event with a slightly different total — the original value wins
+        update_download_progress(&db, 43, 5_000_000, 9_999_999).await;
+
+        let row = download::Entity::find_by_id(43)
+            .one(&db)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            row.total_bytes,
+            Some(10_000_000),
+            "existing non-zero total_bytes must not be overwritten"
         );
     }
 }

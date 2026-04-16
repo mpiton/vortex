@@ -9,6 +9,7 @@ pub mod link;
 pub mod meta;
 pub mod package;
 pub mod plugin;
+pub mod plugin_store;
 pub mod queue;
 pub mod segment;
 pub mod views;

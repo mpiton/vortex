@@ -42,6 +42,22 @@ fn read_created_at(model: &download::Model) -> u64 {
     }
 }
 
+/// Compute progress percent rounded to one decimal place.
+///
+/// - `Completed` always returns 100.0 regardless of `downloaded_bytes` (the
+///   last `DownloadProgress` event may lag behind the final chunk by up to 500ms).
+/// - Unknown total returns 0.0.
+/// - All other states: `downloaded / total * 100`, rounded to 1 dp.
+fn compute_progress_percent(state: &str, downloaded: u64, total: Option<u64>) -> f64 {
+    if state == "Completed" {
+        return 100.0;
+    }
+    match total {
+        Some(t) if t > 0 => ((downloaded as f64 / t as f64 * 1000.0).round()) / 10.0,
+        _ => 0.0,
+    }
+}
+
 fn model_to_view(
     model: &download::Model,
     segments_active: u32,
@@ -51,10 +67,7 @@ fn model_to_view(
     let downloaded = safe_u64(model.downloaded_bytes);
     let speed = safe_u64(model.speed_bytes_per_sec);
 
-    let progress_percent = match total {
-        Some(t) if t > 0 => downloaded as f64 / t as f64 * 100.0,
-        _ => 0.0,
-    };
+    let progress_percent = compute_progress_percent(&model.state, downloaded, total);
 
     let eta_seconds = match total {
         Some(t) if speed > 0 && t > downloaded => Some((t - downloaded) / speed),
@@ -79,6 +92,7 @@ fn model_to_view(
         segments_total,
         module_name: model.module_name.clone(),
         account_name: None, // Resolved when accounts table is implemented
+        error_message: model.error_message.clone(),
         created_at: read_created_at(model),
     })
 }
@@ -239,10 +253,7 @@ impl DownloadReadRepository for SqliteDownloadReadRepo {
             let downloaded = safe_u64(model.downloaded_bytes);
             let speed = safe_u64(model.speed_bytes_per_sec);
 
-            let progress_percent = match total {
-                Some(t) if t > 0 => downloaded as f64 / t as f64 * 100.0,
-                _ => 0.0,
-            };
+            let progress_percent = compute_progress_percent(&model.state, downloaded, total);
 
             let eta_seconds = match total {
                 Some(t) if speed > 0 && t > downloaded => Some((t - downloaded) / speed),
@@ -354,6 +365,7 @@ mod tests {
             module_name: Set(None),
             account_id: Set(None),
             destination_path: Set("/tmp/downloads".to_string()),
+            error_message: Set(None),
             created_at: Set(1000 + id),
             updated_at: Set(2000 + id),
         };
@@ -379,6 +391,38 @@ mod tests {
         model.insert(db).await.expect("Failed to insert segment");
     }
 
+    // --- Unit tests for compute_progress_percent ---
+
+    #[test]
+    fn test_progress_completed_always_100() {
+        // Even if downloaded_bytes < total_bytes (last progress event lagged),
+        // a Completed download must show 100%.
+        assert_eq!(
+            compute_progress_percent("Completed", 9_000_000, Some(10_000_000)),
+            100.0
+        );
+        assert_eq!(compute_progress_percent("Completed", 0, None), 100.0);
+    }
+
+    #[test]
+    fn test_progress_rounded_to_one_decimal() {
+        // 1/3 = 33.333... → rounds to 33.3
+        let p = compute_progress_percent("Downloading", 1, Some(3));
+        assert_eq!(p, 33.3);
+
+        // 2/3 = 66.666... → rounds to 66.7
+        let p = compute_progress_percent("Downloading", 2, Some(3));
+        assert_eq!(p, 66.7);
+    }
+
+    #[test]
+    fn test_progress_unknown_total_returns_zero() {
+        assert_eq!(compute_progress_percent("Downloading", 5000, None), 0.0);
+        assert_eq!(compute_progress_percent("Downloading", 5000, Some(0)), 0.0);
+    }
+
+    // --- Integration tests ---
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_find_downloads_returns_views() {
         let db = setup().await;
@@ -396,6 +440,48 @@ mod tests {
         assert_eq!(views[1].segments_active, 1);
         assert_eq!(views[1].segments_total, 2);
         assert!((views[1].progress_percent - 50.0).abs() < 0.01);
+        assert_eq!(views[1].error_message, None);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_find_downloads_includes_error_message() {
+        let db = setup().await;
+        let model = download::ActiveModel {
+            id: Set(3),
+            url: Set("https://example.com/video.mp4".to_string()),
+            file_name: Set("video.mp4".to_string()),
+            state: Set("Error".to_string()),
+            priority: Set(5),
+            total_bytes: Set(Some(1000)),
+            downloaded_bytes: Set(500),
+            speed_bytes_per_sec: Set(0),
+            retry_count: Set(0),
+            max_retries: Set(5),
+            segments_count: Set(1),
+            checksum_expected: Set(None),
+            source_hostname: Set("example.com".to_string()),
+            protocol: Set("https".to_string()),
+            resume_supported: Set(1),
+            module_name: Set(None),
+            account_id: Set(None),
+            destination_path: Set("/tmp/downloads/video.mp4".to_string()),
+            error_message: Set(Some("tls handshake failed".to_string())),
+            created_at: Set(1003),
+            updated_at: Set(2003),
+        };
+        model
+            .insert(&db)
+            .await
+            .expect("Failed to insert failed download");
+
+        let repo = SqliteDownloadReadRepo::new(db);
+        let views = repo.find_downloads(None, None, None, None).unwrap();
+
+        assert_eq!(views.len(), 1);
+        assert_eq!(
+            views[0].error_message.as_deref(),
+            Some("tls handshake failed")
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -471,6 +557,7 @@ mod tests {
             module_name: Set(None),
             account_id: Set(None),
             destination_path: Set("/tmp/downloads/file1.zip".to_string()),
+            error_message: Set(None),
             created_at: Set(0),
             updated_at: Set(0),
         };
@@ -508,6 +595,7 @@ mod tests {
             module_name: Set(None),
             account_id: Set(None),
             destination_path: Set("/tmp/downloads/file1.zip".to_string()),
+            error_message: Set(None),
             created_at: Set(0),
             updated_at: Set(1_700_000_000_123_i64),
         };
@@ -546,6 +634,7 @@ mod tests {
             module_name: Set(None),
             account_id: Set(None),
             destination_path: Set("/tmp/downloads/file1.zip".to_string()),
+            error_message: Set(None),
             created_at: Set(0),
             updated_at: Set(0),
         };
@@ -586,6 +675,7 @@ mod tests {
             module_name: Set(None),
             account_id: Set(None),
             destination_path: Set("/tmp/downloads/legacy.zip".to_string()),
+            error_message: Set(None),
             created_at: Set(0),
             updated_at: Set(0),
         };

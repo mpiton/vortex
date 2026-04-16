@@ -65,6 +65,7 @@ const MOCK_DOWNLOADS: DownloadView[] = [
     fileName: 'video.mp4',
     url: 'https://media.example.com/video.mp4',
     state: 'Error',
+    errorMessage: 'tls handshake failed',
     progressPercent: 30,
     speedBytesPerSec: 0,
     downloadedBytes: 3000,
@@ -219,6 +220,18 @@ describe('DownloadsTable', () => {
     expect(useUiStore.getState().selectedDownloadIds).toEqual(['1']);
   });
 
+  it('should show raw error details without selecting the row when the icon is clicked', async () => {
+    const user = userEvent.setup();
+
+    renderTable();
+
+    await user.click(screen.getByRole('button', { name: 'Show download error' }));
+
+    expect(screen.getByText('tls handshake failed')).toBeInTheDocument();
+    expect(useUiStore.getState().selectedDownloadId).toBeNull();
+    expect(useUiStore.getState().selectedDownloadIds).toEqual([]);
+  });
+
   describe('action button visibility per download state', () => {
     function makeDownload(overrides: Partial<DownloadView>): DownloadView {
       return {
@@ -255,9 +268,9 @@ describe('DownloadsTable', () => {
       expect(container.querySelector('.lucide-pause')).toBeNull();
     });
 
-    it('should show retry button for Retry state', () => {
+    it('should not show retry button for Retry state', () => {
       const { container } = renderTable({ downloads: [makeDownload({ state: 'Retry' })] });
-      expect(container.querySelector('.lucide-rotate-ccw')).toBeTruthy();
+      expect(container.querySelector('.lucide-rotate-ccw')).toBeNull();
     });
 
     it('should show resume button for Paused state', () => {

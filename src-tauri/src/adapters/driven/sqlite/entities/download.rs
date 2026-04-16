@@ -26,6 +26,7 @@ pub struct Model {
     pub module_name: Option<String>,
     pub account_id: Option<i64>,
     pub destination_path: String,
+    pub error_message: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -104,6 +105,7 @@ impl ActiveModel {
             module_name: Set(download.module_name().map(|s| s.to_string())),
             account_id: Set(download.account_id().map(|id| id as i64)),
             destination_path: Set(download.destination_path().to_string()),
+            error_message: Set(None),
             created_at: Set(download.created_at() as i64),
             updated_at: Set(download.updated_at() as i64),
         }

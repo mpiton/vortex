@@ -21,6 +21,76 @@ impl SqliteDownloadRepo {
     pub fn new(db: DatabaseConnection) -> Self {
         Self { db }
     }
+
+    fn save_internal(
+        &self,
+        download: &Download,
+        error_message: Option<&str>,
+        update_error_message: bool,
+    ) -> Result<(), DomainError> {
+        block_on(async {
+            let mut active_model = download::ActiveModel::from_domain(download);
+            let now = current_timestamp_ms();
+            let created_at = if download.created_at() == 0 {
+                infer_timestamp_ms_from_download_id(download.id().0 as i64).unwrap_or(now)
+            } else {
+                download.created_at()
+            };
+            let updated_at = if download.updated_at() == 0 {
+                created_at
+            } else {
+                now.max(download.updated_at())
+            };
+
+            active_model.created_at = Set(created_at as i64);
+            active_model.updated_at = Set(updated_at as i64);
+            active_model.error_message = Set(error_message.map(str::to_string));
+
+            let mut on_conflict = sea_orm::sea_query::OnConflict::column(download::Column::Id);
+            on_conflict
+                // SpeedBytesPerSec excluded: it's a runtime value
+                // written by the download engine, not the write repo.
+                .update_columns([
+                    download::Column::Url,
+                    download::Column::FileName,
+                    download::Column::State,
+                    download::Column::Priority,
+                    download::Column::TotalBytes,
+                    download::Column::DownloadedBytes,
+                    download::Column::RetryCount,
+                    download::Column::MaxRetries,
+                    download::Column::SegmentsCount,
+                    download::Column::ChecksumExpected,
+                    download::Column::SourceHostname,
+                    download::Column::Protocol,
+                    download::Column::ResumeSupported,
+                    download::Column::ModuleName,
+                    download::Column::AccountId,
+                    download::Column::DestinationPath,
+                ]);
+            if update_error_message {
+                on_conflict.update_column(download::Column::ErrorMessage);
+            }
+
+            download::Entity::insert(active_model)
+                .on_conflict(
+                    on_conflict
+                        .value(
+                            download::Column::CreatedAt,
+                            Expr::cust(
+                                "CASE WHEN created_at > 0 THEN created_at ELSE excluded.created_at END",
+                            ),
+                        )
+                        .value(download::Column::UpdatedAt, now as i64)
+                        .to_owned(),
+                )
+                .exec(&self.db)
+                .await
+                .map_err(map_db_err)?;
+
+            Ok(())
+        })
+    }
 }
 
 impl DownloadRepository for SqliteDownloadRepo {
@@ -39,61 +109,15 @@ impl DownloadRepository for SqliteDownloadRepo {
     }
 
     fn save(&self, download: &Download) -> Result<(), DomainError> {
-        block_on(async {
-            let mut active_model = download::ActiveModel::from_domain(download);
-            let now = current_timestamp_ms();
-            let created_at = if download.created_at() == 0 {
-                infer_timestamp_ms_from_download_id(download.id().0 as i64).unwrap_or(now)
-            } else {
-                download.created_at()
-            };
-            let updated_at = if download.updated_at() == 0 {
-                created_at
-            } else {
-                now.max(download.updated_at())
-            };
+        if download.state() == DownloadState::Error {
+            self.save_internal(download, None, false)
+        } else {
+            self.save_internal(download, None, true)
+        }
+    }
 
-            active_model.created_at = Set(created_at as i64);
-            active_model.updated_at = Set(updated_at as i64);
-
-            download::Entity::insert(active_model)
-                .on_conflict(
-                    sea_orm::sea_query::OnConflict::column(download::Column::Id)
-                        // SpeedBytesPerSec excluded: it's a runtime value
-                        // written by the download engine, not the write repo.
-                        .update_columns([
-                            download::Column::Url,
-                            download::Column::FileName,
-                            download::Column::State,
-                            download::Column::Priority,
-                            download::Column::TotalBytes,
-                            download::Column::DownloadedBytes,
-                            download::Column::RetryCount,
-                            download::Column::MaxRetries,
-                            download::Column::SegmentsCount,
-                            download::Column::ChecksumExpected,
-                            download::Column::SourceHostname,
-                            download::Column::Protocol,
-                            download::Column::ResumeSupported,
-                            download::Column::ModuleName,
-                            download::Column::AccountId,
-                            download::Column::DestinationPath,
-                        ])
-                        .value(
-                            download::Column::CreatedAt,
-                            Expr::cust(
-                                "CASE WHEN created_at > 0 THEN created_at ELSE excluded.created_at END",
-                            ),
-                        )
-                        .value(download::Column::UpdatedAt, now as i64)
-                        .to_owned(),
-                )
-                .exec(&self.db)
-                .await
-                .map_err(map_db_err)?;
-
-            Ok(())
-        })
+    fn save_failed(&self, download: &Download, error_message: &str) -> Result<(), DomainError> {
+        self.save_internal(download, Some(error_message), true)
     }
 
     fn delete(&self, id: DownloadId) -> Result<(), DomainError> {
@@ -127,7 +151,7 @@ mod tests {
     use crate::adapters::driven::sqlite::entities::download;
     use crate::domain::model::download::Url;
     use crate::domain::model::queue::Priority;
-    use sea_orm::ActiveModelTrait;
+    use sea_orm::{ActiveModelTrait, EntityTrait};
     use std::time::Duration;
 
     fn make_download(id: u64) -> Download {
@@ -224,6 +248,59 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_save_failed_persists_error_message() {
+        let db = setup_test_db().await.expect("test db");
+        let repo = SqliteDownloadRepo::new(db.clone());
+        let mut download = make_download(1);
+
+        download.start().expect("Queued -> Downloading");
+        download
+            .fail("certificate has expired".to_string())
+            .expect("Downloading -> Error");
+
+        repo.save_failed(&download, "certificate has expired")
+            .expect("save failed state");
+
+        let row = download::Entity::find_by_id(1)
+            .one(&db)
+            .await
+            .expect("query row")
+            .expect("row should exist");
+
+        assert_eq!(row.state, "Error");
+        assert_eq!(
+            row.error_message.as_deref(),
+            Some("certificate has expired")
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_save_clears_error_message_when_leaving_error_state() {
+        let db = setup_test_db().await.expect("test db");
+        let repo = SqliteDownloadRepo::new(db.clone());
+        let mut download = make_download(2);
+
+        download.start().expect("Queued -> Downloading");
+        download
+            .fail("tls handshake failed".to_string())
+            .expect("Downloading -> Error");
+        repo.save_failed(&download, "tls handshake failed")
+            .expect("save failed state");
+
+        download.retry_manually().expect("Error -> Retry");
+        repo.save(&download).expect("save retry state");
+
+        let row = download::Entity::find_by_id(2)
+            .one(&db)
+            .await
+            .expect("query row")
+            .expect("row should exist");
+
+        assert_eq!(row.state, "Retry");
+        assert_eq!(row.error_message, None);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_save_heals_legacy_zero_created_at_on_upsert() {
         let db = setup_test_db().await.expect("test db");
         let repo = SqliteDownloadRepo::new(db.clone());
@@ -249,6 +326,7 @@ mod tests {
             module_name: Set(None),
             account_id: Set(None),
             destination_path: Set("/tmp".to_string()),
+            error_message: Set(None),
             created_at: Set(0),
             updated_at: Set(0),
         };

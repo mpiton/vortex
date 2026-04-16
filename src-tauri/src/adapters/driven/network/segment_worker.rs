@@ -10,6 +10,8 @@ use crate::domain::event::DomainEvent;
 use crate::domain::model::download::DownloadId;
 use crate::domain::ports::driven::{EventBus, FileStorage};
 
+use super::format_error_chain;
+
 /// Typed error for segment download failures.
 #[derive(Debug, PartialEq)]
 pub(crate) enum SegmentError {
@@ -98,7 +100,7 @@ pub(crate) async fn download_segment(params: SegmentParams) -> Result<u64, Segme
     }
 
     let response = req.send().await.map_err(|e| {
-        let msg = format!("HTTP request failed: {e}");
+        let msg = format!("HTTP request failed: {}", format_error_chain(&e));
         event_bus.publish(DomainEvent::SegmentFailed {
             download_id,
             segment_id: segment_index,
@@ -158,15 +160,26 @@ pub(crate) async fn download_segment(params: SegmentParams) -> Result<u64, Segme
             }
         }
 
-        let chunk = response.chunk().await.map_err(|e| {
-            let msg = format!("chunk read error: {e}");
-            event_bus.publish(DomainEvent::SegmentFailed {
-                download_id,
-                segment_id: segment_index,
-                error: msg.clone(),
-            });
-            SegmentError::Http(msg)
-        })?;
+        let chunk = tokio::time::timeout(Duration::from_secs(30), response.chunk())
+            .await
+            .map_err(|_| {
+                let msg = "chunk read timed out (30s idle)".to_string();
+                event_bus.publish(DomainEvent::SegmentFailed {
+                    download_id,
+                    segment_id: segment_index,
+                    error: msg.clone(),
+                });
+                SegmentError::Http(msg)
+            })?
+            .map_err(|e| {
+                let msg = format!("chunk read error: {}", format_error_chain(&e));
+                event_bus.publish(DomainEvent::SegmentFailed {
+                    download_id,
+                    segment_id: segment_index,
+                    error: msg.clone(),
+                });
+                SegmentError::Http(msg)
+            })?;
 
         let Some(chunk) = chunk else {
             // Stream ended

@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use crate::domain::ports::driven::{
     ArchiveExtractor, ClipboardObserver, ConfigStore, CredentialStore, DownloadEngine,
-    DownloadRepository, EventBus, FileStorage, HttpClient, PluginLoader,
+    DownloadRepository, EventBus, FileStorage, HttpClient, PluginLoader, PluginStoreClient,
 };
 
 /// Central dispatcher for CQRS commands.
@@ -25,6 +25,7 @@ pub struct CommandBus {
     credential_store: Arc<dyn CredentialStore>,
     clipboard_observer: Arc<dyn ClipboardObserver>,
     archive_extractor: Arc<dyn ArchiveExtractor>,
+    plugin_store_client: Option<Arc<dyn PluginStoreClient>>,
 }
 
 impl CommandBus {
@@ -40,6 +41,7 @@ impl CommandBus {
         credential_store: Arc<dyn CredentialStore>,
         clipboard_observer: Arc<dyn ClipboardObserver>,
         archive_extractor: Arc<dyn ArchiveExtractor>,
+        plugin_store_client: Option<Arc<dyn PluginStoreClient>>,
     ) -> Self {
         Self {
             download_repo,
@@ -52,6 +54,7 @@ impl CommandBus {
             credential_store,
             clipboard_observer,
             archive_extractor,
+            plugin_store_client,
         }
     }
 
@@ -101,6 +104,14 @@ impl CommandBus {
 
     pub(crate) fn archive_extractor_arc(&self) -> Arc<dyn ArchiveExtractor> {
         Arc::clone(&self.archive_extractor)
+    }
+
+    pub fn plugin_store_client(&self) -> Option<&dyn PluginStoreClient> {
+        self.plugin_store_client.as_deref()
+    }
+
+    pub(crate) fn plugin_store_client_arc(&self) -> Option<Arc<dyn PluginStoreClient>> {
+        self.plugin_store_client.clone()
     }
 }
 
@@ -473,6 +484,7 @@ mod tests {
             Arc::new(MockCredentialStore::new()),
             Arc::new(MockClipboardObserver::new()),
             Arc::new(FakeArchiveExtractor),
+            None,
         )
     }
 

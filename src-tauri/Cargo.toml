@@ -1,6 +1,6 @@
 [package]
 name = "vortex"
-version = "0.0.0"
+version = "0.1.0"
 description = "A desktop download manager"
 authors = ["mpiton"]
 edition = "2024"
@@ -48,6 +48,8 @@ sevenz-rust2 = "0.20.2"
 unrar = "0.5.8"
 tauri-plugin-updater = "2.10.1"
 keyring = "3.6.3"
+sha2 = "0.11.0"
+hex = "0.4.3"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

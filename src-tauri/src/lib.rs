@@ -28,7 +28,9 @@ pub use adapters::driven::network::SegmentedDownloadEngine;
 pub use adapters::driven::notification::spawn_notification_bridge;
 pub use adapters::driven::plugin::builtin::HttpModule;
 pub use adapters::driven::plugin::capabilities::SharedHostResources;
-pub use adapters::driven::plugin::{ExtismPluginLoader, PluginRegistry, PluginWatcher};
+pub use adapters::driven::plugin::{
+    ExtismPluginLoader, GithubStoreClient, PluginRegistry, PluginWatcher,
+};
 pub use adapters::driven::sqlite::connection;
 pub use adapters::driven::sqlite::download_read_repo::SqliteDownloadReadRepo;
 pub use adapters::driven::sqlite::download_repo::SqliteDownloadRepo;
@@ -37,6 +39,7 @@ pub use adapters::driven::sqlite::progress_bridge::spawn_sqlite_progress_bridge;
 pub use adapters::driven::sqlite::stats_repo::SqliteStatsRepo;
 pub use adapters::driven::tray::setup_system_tray;
 pub use application::command_bus::CommandBus;
+pub use application::commands::store_refresh::{read_cache, write_cache};
 pub use application::error::AppError;
 pub use application::query_bus::QueryBus;
 pub use application::read_models::{
@@ -50,11 +53,13 @@ pub use application::services::QueueManager;
 pub use domain::model::ExtractionConfig;
 
 pub use adapters::driving::tauri_ipc::{
-    self, AppState, clipboard_state, clipboard_toggle, download_cancel, download_count_by_state,
-    download_detail, download_list, download_logs, download_pause, download_pause_all,
-    download_remove, download_resume, download_resume_all, download_retry, download_set_priority,
-    download_start, link_resolve, plugin_disable, plugin_enable, plugin_install, plugin_list,
-    plugin_uninstall, settings_get, settings_update, status_bar_get,
+    self, AppState, clipboard_state, clipboard_toggle, command_get_media_metadata, download_cancel,
+    download_count_by_state, download_detail, download_list, download_logs, download_media_start,
+    download_pause, download_pause_all, download_remove, download_resume, download_resume_all,
+    download_retry, download_set_priority, download_start, link_resolve, plugin_disable,
+    plugin_enable, plugin_install, plugin_list, plugin_store_install, plugin_store_list,
+    plugin_store_refresh, plugin_store_update, plugin_uninstall, settings_get, settings_update,
+    status_bar_get,
 };
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -129,6 +134,31 @@ pub fn run() {
                 ExtismPluginLoader::new(plugins_dir.clone(), shared_resources)
                     .map_err(|e| e.to_string())?,
             );
+
+            // Scan existing plugin directories and load them at startup.
+            // The PluginWatcher reacts only to file-system events, so plugins
+            // already present on disk before the watcher starts would otherwise
+            // be silently skipped until a file-change event arrives.
+            if let Ok(entries) = std::fs::read_dir(&plugins_dir) {
+                for entry in entries.flatten() {
+                    let dir = entry.path();
+                    if dir.is_dir() {
+                        match adapters::driven::plugin::manifest::parse_manifest(&dir) {
+                            Ok((manifest, _)) => {
+                                let name = manifest.info().name();
+                                match plugin_loader_impl.load(&manifest) {
+                                    Ok(()) => tracing::info!("startup: loaded plugin '{name}'"),
+                                    Err(e) => tracing::warn!(
+                                        "startup: failed to load plugin '{name}': {e}"
+                                    ),
+                                }
+                            }
+                            Err(e) => tracing::debug!("startup: skipping {}: {e}", dir.display()),
+                        }
+                    }
+                }
+            }
+
             let plugin_read_repo: Arc<dyn PluginReadRepository> =
                 plugin_loader_impl.registry().clone();
             let plugin_loader: Arc<dyn PluginLoader> = plugin_loader_impl.clone();
@@ -162,6 +192,13 @@ pub fn run() {
                 4, // TODO: read max_concurrent from config
             ));
 
+            // ── Plugin store client ─────────────────────────────────
+            let registry_url =
+                "https://raw.githubusercontent.com/mpiton/vortex/main/registry/registry.toml";
+            let store_staging_dir = plugins_dir.join(".staging");
+            let store_client: Arc<dyn crate::domain::ports::driven::PluginStoreClient> =
+                Arc::new(GithubStoreClient::new(registry_url, store_staging_dir));
+
             // ── CQRS buses ──────────────────────────────────────────
             let command_bus = Arc::new(CommandBus::new(
                 download_repo,
@@ -174,6 +211,7 @@ pub fn run() {
                 credential_store,
                 clipboard_observer,
                 archive_extractor.clone(),
+                Some(store_client),
             ));
 
             let query_bus = Arc::new(QueryBus::new(
@@ -185,10 +223,12 @@ pub fn run() {
             ));
 
             // ── Register AppState ───────────────────────────────────
+            let app_plugin_loader: Arc<dyn PluginLoader> = plugin_loader_impl.clone();
             app.manage(AppState {
                 command_bus,
                 query_bus,
                 download_log_store: download_log_store.clone(),
+                plugin_loader: app_plugin_loader,
             });
 
             // ── System tray ─────────────────────────────────────────
@@ -248,12 +288,18 @@ pub fn run() {
             plugin_enable,
             plugin_disable,
             plugin_list,
+            plugin_store_list,
+            plugin_store_refresh,
+            plugin_store_install,
+            plugin_store_update,
             link_resolve,
             clipboard_toggle,
             clipboard_state,
             settings_get,
             settings_update,
             status_bar_get,
+            command_get_media_metadata,
+            download_media_start,
         ])
         .run(tauri::generate_context!())
         // Tauri's run() has no meaningful recovery path — panic is intentional here

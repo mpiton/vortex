@@ -43,6 +43,7 @@ export interface DownloadView {
   segmentsTotal: number;
   moduleName: string | null;
   accountName: string | null;
+  errorMessage?: string | null;
   createdAt: number;
 }
 
