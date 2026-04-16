@@ -12,6 +12,7 @@ use crate::domain::event::DomainEvent;
 use crate::domain::model::download::{Download, DownloadId};
 use crate::domain::ports::driven::{DownloadEngine, EventBus, FileStorage};
 
+use super::format_error_chain;
 use super::segment_worker::{SegmentError, SegmentParams, download_segment};
 
 struct ActiveDownload {
@@ -48,6 +49,46 @@ impl SegmentedDownloadEngine {
     pub fn with_min_segment_bytes(mut self, min_bytes: u64) -> Self {
         self.min_segment_bytes = min_bytes.max(1);
         self
+    }
+
+    async fn probe_remote_metadata(
+        client: &reqwest::Client,
+        url: &str,
+    ) -> Result<(u64, bool), reqwest::Error> {
+        let response = match client.head(url).send().await {
+            Ok(response) if response.status().is_success() => response,
+            Ok(response) => {
+                tracing::warn!(
+                    url,
+                    status = %response.status(),
+                    "HEAD probe returned non-success status, falling back to GET metadata probe"
+                );
+                client.get(url).send().await?
+            }
+            Err(err) => {
+                tracing::warn!(
+                    url,
+                    error = %format_error_chain(&err),
+                    "HEAD probe failed, falling back to GET metadata probe"
+                );
+                client.get(url).send().await?
+            }
+        };
+
+        let content_length = response
+            .headers()
+            .get("content-length")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(0);
+        let accepts_ranges = response
+            .headers()
+            .get("accept-ranges")
+            .and_then(|v| v.to_str().ok())
+            .map(|v| v.eq_ignore_ascii_case("bytes"))
+            .unwrap_or(false);
+
+        Ok((content_length, accepts_ranges))
     }
 }
 
@@ -94,42 +135,26 @@ impl DownloadEngine for SegmentedDownloadEngine {
         let min_segment_bytes = self.min_segment_bytes;
 
         tokio::spawn(async move {
-            // Perform HEAD request to determine size and range support
-            let head_result = client.head(&url).send().await;
-
-            let (total_size, supports_range) = match head_result {
-                Ok(resp) => {
-                    let content_length = resp
-                        .headers()
-                        .get("content-length")
-                        .and_then(|v| v.to_str().ok())
-                        .and_then(|s| s.parse::<u64>().ok())
-                        .unwrap_or(0);
-                    let accepts_ranges = resp
-                        .headers()
-                        .get("accept-ranges")
-                        .and_then(|v| v.to_str().ok())
-                        .map(|v| v.eq_ignore_ascii_case("bytes"))
-                        .unwrap_or(false);
-                    (content_length, accepts_ranges)
-                }
-                Err(e) => {
-                    tracing::error!(
-                        download_id = download_id.0,
-                        error = %e,
-                        "HEAD request failed"
-                    );
-                    event_bus.publish(DomainEvent::DownloadFailed {
-                        id: download_id,
-                        error: format!("HEAD request failed: {e}"),
-                    });
-                    active_downloads
-                        .lock()
-                        .expect("active_downloads lock poisoned")
-                        .remove(&download_id);
-                    return;
-                }
-            };
+            let (total_size, supports_range) =
+                match Self::probe_remote_metadata(&client, &url).await {
+                    Ok(metadata) => metadata,
+                    Err(e) => {
+                        tracing::error!(
+                            download_id = download_id.0,
+                            error = %format_error_chain(&e),
+                            "metadata probe failed"
+                        );
+                        event_bus.publish(DomainEvent::DownloadFailed {
+                            id: download_id,
+                            error: format!("metadata probe failed: {}", format_error_chain(&e)),
+                        });
+                        active_downloads
+                            .lock()
+                            .expect("active_downloads lock poisoned")
+                            .remove(&download_id);
+                        return;
+                    }
+                };
 
             // Check if cancelled during HEAD request
             if cancel_token.is_cancelled() {
@@ -141,12 +166,35 @@ impl DownloadEngine for SegmentedDownloadEngine {
                 return;
             }
 
-            // Pre-allocate file if size is known
+            // Pre-allocate file if size is known.
+            // If a stale file exists from a previous interrupted attempt with no
+            // resume state (no .vortex-meta sidecar), delete it first so
+            // create_new(true) in create_file can succeed.
             if total_size > 0 {
                 let storage = file_storage.clone();
                 let path = dest_path.clone();
-                match tokio::task::spawn_blocking(move || storage.create_file(&path, total_size))
-                    .await
+                match tokio::task::spawn_blocking(move || {
+                    if path.exists() {
+                        let has_meta = storage.read_meta(&path).ok().flatten().is_some();
+                        if !has_meta {
+                            // Orphaned file from a previous failed attempt — remove it.
+                            if let Err(e) = std::fs::remove_file(&path) {
+                                tracing::warn!(
+                                    path = %path.display(),
+                                    error = %e,
+                                    "failed to remove stale download file; create_file may fail"
+                                );
+                            } else {
+                                tracing::debug!(
+                                    path = %path.display(),
+                                    "removed orphaned download file before re-creating"
+                                );
+                            }
+                        }
+                    }
+                    storage.create_file(&path, total_size)
+                })
+                .await
                 {
                     Err(e) => {
                         tracing::error!(
@@ -562,6 +610,46 @@ mod tests {
                 .any(|e| matches!(e, DomainEvent::DownloadCompleted { id } if id.0 == 2)),
             "expected DownloadCompleted, events: {events:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn test_start_falls_back_to_get_when_head_returns_non_success() {
+        let server = MockServer::start().await;
+        let body = vec![b'g'; 256];
+
+        Mock::given(method("HEAD"))
+            .and(path("/head-blocked"))
+            .respond_with(ResponseTemplate::new(405))
+            .mount(&server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/head-blocked"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-length", "256")
+                    .set_body_bytes(body),
+            )
+            .mount(&server)
+            .await;
+
+        let storage = Arc::new(MockFileStorage::new());
+        let bus = Arc::new(CollectingEventBus::new());
+        let engine = make_engine(storage, bus.clone());
+
+        let url = format!("{}/head-blocked", server.uri());
+        let download = make_download(20, &url);
+
+        engine.start(&download).unwrap();
+
+        let found = bus
+            .wait_for_event_async(
+                |e| matches!(e, DomainEvent::DownloadCompleted { id } if id.0 == 20),
+                Duration::from_secs(5),
+            )
+            .await;
+
+        assert!(found, "download should complete via GET fallback");
     }
 
     #[tokio::test]

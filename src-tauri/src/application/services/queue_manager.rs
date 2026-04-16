@@ -37,6 +37,15 @@ fn lock_map(
     }
 }
 
+fn is_non_retryable_network_error(error: &str) -> bool {
+    let error = error.to_ascii_lowercase();
+    error.contains("certificate has expired")
+        || error.contains("invalid peer certificate")
+        || error.contains("certificate verify failed")
+        || error.contains("invalid certificate")
+        || error.contains("tls")
+}
+
 impl QueueManager {
     pub fn new(
         download_repo: Arc<dyn DownloadRepository>,
@@ -128,8 +137,9 @@ impl QueueManager {
                 // on the download's state: it will see Error (already saved
                 // here) and skip the decrement, preventing double-count.
                 self.safe_decrement();
-                if let Ok(fail_event) = download.fail(engine_err.to_string()) {
-                    let _ = self.download_repo.save(&download);
+                let error = engine_err.to_string();
+                if let Ok(fail_event) = download.fail(error.clone()) {
+                    let _ = self.download_repo.save_failed(&download, &error);
                     self.event_bus.publish(fail_event);
                 }
                 return Err(AppError::Domain(engine_err));
@@ -140,6 +150,41 @@ impl QueueManager {
     pub async fn decrement_and_schedule(&self) -> Result<(), AppError> {
         self.safe_decrement(); // F1
         self.on_slot_freed().await
+    }
+
+    /// Persist the `Completed` state when the engine finishes a download, then
+    /// free the concurrency slot and try to schedule the next queued item.
+    pub async fn handle_download_completed(&self, id: DownloadId) -> Result<(), AppError> {
+        match self.download_repo.find_by_id(id)? {
+            Some(mut download) => {
+                if matches!(
+                    download.state(),
+                    DownloadState::Downloading
+                        | DownloadState::Checking
+                        | DownloadState::Extracting
+                ) {
+                    match download.complete() {
+                        Ok(_) => {
+                            self.download_repo.save(&download)?;
+                        }
+                        Err(e) => {
+                            tracing::error!(
+                                download_id = id.0,
+                                error = %e,
+                                "handle_download_completed: complete() transition failed"
+                            );
+                        }
+                    }
+                }
+            }
+            None => {
+                tracing::warn!(
+                    download_id = id.0,
+                    "handle_download_completed: download not found in repo"
+                );
+            }
+        }
+        self.decrement_and_schedule().await
     }
 
     pub async fn handle_download_failed(
@@ -172,9 +217,9 @@ impl QueueManager {
             // already emitted DownloadFailed to the Tauri bridge (UI update),
             // but SQLite must be updated too to prevent the CQRS divergence
             // where the download stays stuck as Downloading indefinitely.
-            match download.fail(error) {
+            match download.fail(error.clone()) {
                 Ok(_) => {
-                    self.download_repo.save(&download)?;
+                    self.download_repo.save_failed(&download, &error)?;
                 }
                 Err(e) => {
                     // fail() accepts the same states as the if-matches guard above,
@@ -188,6 +233,11 @@ impl QueueManager {
                     return Err(AppError::Domain(e));
                 }
             }
+        }
+
+        if is_non_retryable_network_error(&error) {
+            self.on_slot_freed().await?;
+            return Ok(());
         }
 
         match download.retry() {
@@ -273,9 +323,12 @@ impl QueueManager {
         tokio::spawn(async move {
             while let Some(event) = rx.recv().await {
                 let result = match &event {
-                    DomainEvent::DownloadCompleted { .. }
-                    | DomainEvent::DownloadPaused { .. }
-                    | DomainEvent::DownloadCancelled { .. } => self.decrement_and_schedule().await,
+                    DomainEvent::DownloadCompleted { id } => {
+                        self.handle_download_completed(*id).await
+                    }
+                    DomainEvent::DownloadPaused { .. } | DomainEvent::DownloadCancelled { .. } => {
+                        self.decrement_and_schedule().await
+                    }
                     DomainEvent::DownloadFailed { id, error } => {
                         self.handle_download_failed(*id, error.clone()).await
                     }
@@ -754,5 +807,86 @@ mod tests {
         );
         assert_ne!(saved.state(), DownloadState::Downloading);
         assert_eq!(qm.active_count(), 0, "active slot must be freed");
+    }
+
+    #[tokio::test]
+    async fn test_handle_download_failed_does_not_retry_expired_certificate_errors() {
+        let mut d = make_download(1, 5, DownloadState::Queued);
+        d.start().unwrap();
+        assert_eq!(d.state(), DownloadState::Downloading);
+
+        let repo = Arc::new(MockDownloadRepo::new(vec![d]));
+        let engine = Arc::new(MockEngine::new());
+        let bus = Arc::new(MockEventBus::new());
+        let qm = make_manager(
+            Arc::clone(&repo),
+            Arc::clone(&engine),
+            Arc::clone(&bus),
+            3,
+            1,
+        );
+
+        qm.handle_download_failed(
+            DownloadId(1),
+            "metadata probe failed: error sending request for url (https://speed.hetzner.de/100MB.bin): invalid peer certificate: certificate has expired".to_string(),
+        )
+        .await
+        .unwrap();
+
+        let saved = repo.find_by_id(DownloadId(1)).unwrap().unwrap();
+        assert_eq!(saved.state(), DownloadState::Error);
+        assert_eq!(qm.active_count(), 0, "active slot must be freed");
+        assert!(
+            bus.events.lock().unwrap().is_empty(),
+            "non-retryable TLS failures must not publish DownloadRetrying"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_handle_download_completed_persists_completed_state() {
+        // Regression: engine publishes DownloadCompleted but no subscriber was
+        // persisting the Completed state — downloads stayed stuck as Downloading.
+        let mut d = make_download(1, 5, DownloadState::Queued);
+        d.start().unwrap(); // Simulate engine started → Downloading in DB
+        assert_eq!(d.state(), DownloadState::Downloading);
+
+        let repo = Arc::new(MockDownloadRepo::new(vec![d]));
+        let engine = Arc::new(MockEngine::new());
+        let bus = Arc::new(MockEventBus::new());
+        let qm = make_manager(
+            Arc::clone(&repo),
+            Arc::clone(&engine),
+            Arc::clone(&bus),
+            3,
+            1,
+        );
+
+        qm.handle_download_completed(DownloadId(1)).await.unwrap();
+
+        let saved = repo.find_by_id(DownloadId(1)).unwrap().unwrap();
+        assert_eq!(
+            saved.state(),
+            DownloadState::Completed,
+            "download must be Completed after engine finishes"
+        );
+        assert_eq!(qm.active_count(), 0, "active slot must be freed");
+    }
+
+    #[tokio::test]
+    async fn test_handle_download_completed_with_missing_download_does_not_panic() {
+        let repo = Arc::new(MockDownloadRepo::new(vec![]));
+        let engine = Arc::new(MockEngine::new());
+        let bus = Arc::new(MockEventBus::new());
+        let qm = make_manager(
+            Arc::clone(&repo),
+            Arc::clone(&engine),
+            Arc::clone(&bus),
+            3,
+            1,
+        );
+
+        // Should not error — unknown ID is logged and slot is freed gracefully
+        qm.handle_download_completed(DownloadId(999)).await.unwrap();
+        assert_eq!(qm.active_count(), 0);
     }
 }
