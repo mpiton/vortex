@@ -638,6 +638,210 @@ pub async fn settings_update(
         .map_err(|e| e.to_string())
 }
 
+// ── Media Metadata ───────────────────────────────────────────────────
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaMetadataDto {
+    pub title: String,
+    pub thumbnail_url: String,
+    pub duration_seconds: u64,
+    pub is_playlist: bool,
+    pub available_qualities: Vec<QualityOptionDto>,
+    pub available_formats: Vec<String>,
+    pub available_audio_formats: Vec<String>,
+    pub available_subtitles: Vec<SubtitleLanguageDto>,
+    pub playlist_items: Option<Vec<PlaylistItemDto>>,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QualityOptionDto {
+    pub quality: String,
+    pub height: u32,
+    pub width: u32,
+    pub fps: u32,
+    pub bitrate_kbps: u32,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubtitleLanguageDto {
+    pub code: String,
+    pub name: String,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaylistItemDto {
+    pub id: String,
+    pub title: String,
+    pub duration_seconds: u64,
+}
+
+#[tauri::command]
+pub async fn command_get_media_metadata(url: String) -> Result<MediaMetadataDto, String> {
+    let output = tokio::task::spawn_blocking(move || -> Result<std::process::Output, String> {
+        let binary = find_ytdlp()?;
+        std::process::Command::new(&binary)
+            .args([
+                "--dump-single-json",
+                "--flat-playlist",
+                "--no-warnings",
+                &url,
+            ])
+            .output()
+            .map_err(|e| format!("Failed to run yt-dlp: {e}"))
+    })
+    .await
+    .map_err(|e| format!("Task join error: {e}"))??;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("yt-dlp error: {stderr}"));
+    }
+
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .map_err(|e| format!("Failed to parse yt-dlp output: {e}"))?;
+
+    parse_ytdlp_json(&json)
+}
+
+fn find_ytdlp() -> Result<std::path::PathBuf, String> {
+    // Try PATH via `which` equivalent — just attempt running `yt-dlp --version`
+    if std::process::Command::new("yt-dlp")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+    {
+        return Ok(std::path::PathBuf::from("yt-dlp"));
+    }
+
+    // Known fallback locations
+    let mut candidates = vec![
+        std::path::PathBuf::from("/usr/local/bin/yt-dlp"),
+        std::path::PathBuf::from("/usr/bin/yt-dlp"),
+    ];
+    if let Some(home) = dirs::home_dir() {
+        candidates.insert(0, home.join(".local/bin/yt-dlp"));
+    }
+
+    for path in &candidates {
+        if path.exists() {
+            return Ok(path.clone());
+        }
+    }
+
+    Err("yt-dlp not found — install it with: pip install yt-dlp".to_string())
+}
+
+fn parse_ytdlp_json(json: &serde_json::Value) -> Result<MediaMetadataDto, String> {
+    let title = json["title"].as_str().unwrap_or("").to_string();
+    let thumbnail_url = json["thumbnail"].as_str().unwrap_or("").to_string();
+    let duration_seconds = json["duration"].as_f64().unwrap_or(0.0) as u64;
+    let is_playlist = json["_type"].as_str() == Some("playlist");
+
+    let mut available_qualities: Vec<QualityOptionDto> = Vec::new();
+    let mut seen_heights = std::collections::HashSet::<u32>::new();
+    let mut seen_video_exts = std::collections::HashSet::<String>::new();
+    let mut seen_audio_exts = std::collections::HashSet::<String>::new();
+    let mut available_formats: Vec<String> = Vec::new();
+    let mut available_audio_formats: Vec<String> = Vec::new();
+
+    if let Some(formats) = json["formats"].as_array() {
+        // Build quality list: deduplicated by height, sorted highest first
+        let mut video_formats: Vec<&serde_json::Value> = formats
+            .iter()
+            .filter(|f| f["vcodec"].as_str().unwrap_or("none") != "none")
+            .filter(|f| f["height"].as_u64().unwrap_or(0) > 0)
+            .collect();
+        video_formats.sort_by(|a, b| {
+            b["height"]
+                .as_u64()
+                .unwrap_or(0)
+                .cmp(&a["height"].as_u64().unwrap_or(0))
+        });
+        for f in video_formats {
+            let height = f["height"].as_u64().unwrap_or(0) as u32;
+            if seen_heights.insert(height) {
+                available_qualities.push(QualityOptionDto {
+                    quality: format!("{height}p"),
+                    height,
+                    width: f["width"].as_u64().unwrap_or(0) as u32,
+                    fps: f["fps"].as_f64().unwrap_or(0.0) as u32,
+                    bitrate_kbps: f["tbr"].as_f64().unwrap_or(0.0) as u32,
+                });
+            }
+        }
+
+        // Video container formats (extensions from video-bearing streams)
+        for f in formats.iter() {
+            if f["vcodec"].as_str().unwrap_or("none") != "none"
+                && let Some(ext) = f["ext"].as_str()
+                && seen_video_exts.insert(ext.to_string())
+            {
+                available_formats.push(ext.to_string());
+            }
+        }
+
+        // Audio-only formats
+        for f in formats.iter() {
+            let vcodec = f["vcodec"].as_str().unwrap_or("none");
+            let acodec = f["acodec"].as_str().unwrap_or("none");
+            if vcodec == "none"
+                && acodec != "none"
+                && let Some(ext) = f["ext"].as_str()
+                && seen_audio_exts.insert(ext.to_string())
+            {
+                available_audio_formats.push(ext.to_string());
+            }
+        }
+    }
+
+    // Subtitles — keys are BCP-47 language codes
+    let available_subtitles: Vec<SubtitleLanguageDto> = json["subtitles"]
+        .as_object()
+        .map(|subs| {
+            subs.keys()
+                .filter(|code| *code != "live_chat")
+                .map(|code| SubtitleLanguageDto {
+                    code: code.clone(),
+                    name: code.clone(),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // Playlist entries (only present when _type == "playlist")
+    let playlist_items: Option<Vec<PlaylistItemDto>> = if is_playlist {
+        json["entries"].as_array().map(|entries| {
+            entries
+                .iter()
+                .map(|e| PlaylistItemDto {
+                    id: e["id"].as_str().unwrap_or("").to_string(),
+                    title: e["title"].as_str().unwrap_or("").to_string(),
+                    duration_seconds: e["duration"].as_f64().unwrap_or(0.0) as u64,
+                })
+                .collect()
+        })
+    } else {
+        None
+    };
+
+    Ok(MediaMetadataDto {
+        title,
+        thumbnail_url,
+        duration_seconds,
+        is_playlist,
+        available_qualities,
+        available_formats,
+        available_audio_formats,
+        available_subtitles,
+        playlist_items,
+    })
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────
 
 fn parse_download_state(s: &str) -> Option<DownloadState> {
@@ -830,5 +1034,151 @@ mod tests {
         let temp_dir = tempfile::tempdir().expect("temp dir");
 
         assert!(read_available_space(temp_dir.path()).is_some());
+    }
+
+    // ── parse_ytdlp_json tests ────────────────────────────────────────
+
+    use super::parse_ytdlp_json;
+
+    fn make_format(
+        vcodec: &str,
+        acodec: &str,
+        ext: &str,
+        height: u64,
+        width: u64,
+        fps: f64,
+        tbr: f64,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "vcodec": vcodec,
+            "acodec": acodec,
+            "ext": ext,
+            "height": height,
+            "width": width,
+            "fps": fps,
+            "tbr": tbr
+        })
+    }
+
+    #[test]
+    fn test_parse_ytdlp_basic_video_metadata() {
+        let json = serde_json::json!({
+            "title": "Test Video",
+            "thumbnail": "https://example.com/thumb.jpg",
+            "duration": 120.0,
+            "_type": "video",
+            "formats": [
+                make_format("vp9", "opus", "webm", 720, 1280, 30.0, 1500.0),
+                make_format("avc1", "mp4a", "mp4", 1080, 1920, 30.0, 4000.0),
+            ],
+            "subtitles": {}
+        });
+
+        let result = parse_ytdlp_json(&json).expect("parse should succeed");
+
+        assert_eq!(result.title, "Test Video");
+        assert_eq!(result.thumbnail_url, "https://example.com/thumb.jpg");
+        assert_eq!(result.duration_seconds, 120);
+        assert!(!result.is_playlist);
+        assert!(result.playlist_items.is_none());
+    }
+
+    #[test]
+    fn test_parse_ytdlp_qualities_deduplicated_and_sorted_by_height_desc() {
+        let json = serde_json::json!({
+            "title": "Multi Quality",
+            "thumbnail": "",
+            "duration": 60.0,
+            "_type": "video",
+            "formats": [
+                make_format("avc1", "mp4a", "mp4", 360, 640, 30.0, 500.0),
+                make_format("avc1", "mp4a", "mp4", 720, 1280, 30.0, 1500.0),
+                make_format("vp9", "opus", "webm", 720, 1280, 30.0, 1200.0),
+                make_format("avc1", "mp4a", "mp4", 1080, 1920, 30.0, 4000.0),
+            ],
+            "subtitles": {}
+        });
+
+        let result = parse_ytdlp_json(&json).expect("parse should succeed");
+
+        // 1080p, 720p, 360p — deduplicated and sorted highest first
+        assert_eq!(result.available_qualities.len(), 3);
+        assert_eq!(result.available_qualities[0].quality, "1080p");
+        assert_eq!(result.available_qualities[1].quality, "720p");
+        assert_eq!(result.available_qualities[2].quality, "360p");
+    }
+
+    #[test]
+    fn test_parse_ytdlp_audio_only_formats_extracted_separately() {
+        let json = serde_json::json!({
+            "title": "Audio Test",
+            "thumbnail": "",
+            "duration": 60.0,
+            "_type": "video",
+            "formats": [
+                make_format("avc1", "mp4a", "mp4", 720, 1280, 30.0, 1500.0),
+                make_format("none", "opus", "webm", 0, 0, 0.0, 128.0),
+                make_format("none", "mp4a", "m4a", 0, 0, 0.0, 128.0),
+            ],
+            "subtitles": {}
+        });
+
+        let result = parse_ytdlp_json(&json).expect("parse should succeed");
+
+        assert!(result.available_formats.contains(&"mp4".to_string()));
+        assert!(result.available_audio_formats.contains(&"webm".to_string()));
+        assert!(result.available_audio_formats.contains(&"m4a".to_string()));
+        // Audio-only ext (webm) should NOT appear in video formats when it only appears in audio streams
+    }
+
+    #[test]
+    fn test_parse_ytdlp_playlist_extracts_entries() {
+        let json = serde_json::json!({
+            "title": "My Playlist",
+            "thumbnail": "",
+            "duration": 0.0,
+            "_type": "playlist",
+            "formats": [],
+            "subtitles": {},
+            "entries": [
+                { "id": "abc123", "title": "Video 1", "duration": 90.0 },
+                { "id": "def456", "title": "Video 2", "duration": 180.0 },
+            ]
+        });
+
+        let result = parse_ytdlp_json(&json).expect("parse should succeed");
+
+        assert!(result.is_playlist);
+        let items = result.playlist_items.expect("playlist items present");
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].id, "abc123");
+        assert_eq!(items[1].duration_seconds, 180);
+    }
+
+    #[test]
+    fn test_parse_ytdlp_subtitles_excludes_live_chat() {
+        let json = serde_json::json!({
+            "title": "Live Video",
+            "thumbnail": "",
+            "duration": 0.0,
+            "_type": "video",
+            "formats": [],
+            "subtitles": {
+                "en": [{"ext": "vtt"}],
+                "fr": [{"ext": "vtt"}],
+                "live_chat": [{"ext": "json"}]
+            }
+        });
+
+        let result = parse_ytdlp_json(&json).expect("parse should succeed");
+
+        let codes: Vec<&str> = result
+            .available_subtitles
+            .iter()
+            .map(|s| s.code.as_str())
+            .collect();
+        assert!(codes.contains(&"en"));
+        assert!(codes.contains(&"fr"));
+        assert!(!codes.contains(&"live_chat"));
     }
 }

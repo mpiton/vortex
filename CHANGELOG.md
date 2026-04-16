@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `SegmentStarted` event now carries `start_byte` and `end_byte` so downstream consumers can identify which byte range a segment covers
 
 ### Added
+- `command_get_media_metadata` IPC command: invokes `yt-dlp --dump-single-json --flat-playlist` and returns video title, thumbnail, duration, deduplicated quality options (sorted by height), video/audio container formats, subtitles (excluding live_chat), and playlist entries — fixes the "Failed to load media metadata" error in the Media Grabber Options dialog
 - Error message display: failed downloads now show the error reason in a popover tooltip on the Status column (Popover component from shadcn/ui)
 - `error_message` column added to `downloads` table (migration m20260415_000002); exposed in `DownloadView` read model and IPC response
 - `DownloadRepository::save_failed(download, error)` — persists Error state and error text atomically, replacing the previous pattern of calling `save()` then updating separately

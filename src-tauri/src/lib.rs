@@ -53,12 +53,12 @@ pub use application::services::QueueManager;
 pub use domain::model::ExtractionConfig;
 
 pub use adapters::driving::tauri_ipc::{
-    self, AppState, clipboard_state, clipboard_toggle, download_cancel, download_count_by_state,
-    download_detail, download_list, download_logs, download_pause, download_pause_all,
-    download_remove, download_resume, download_resume_all, download_retry, download_set_priority,
-    download_start, link_resolve, plugin_disable, plugin_enable, plugin_install, plugin_list,
-    plugin_store_install, plugin_store_list, plugin_store_refresh, plugin_store_update,
-    plugin_uninstall, settings_get, settings_update, status_bar_get,
+    self, AppState, clipboard_state, clipboard_toggle, command_get_media_metadata, download_cancel,
+    download_count_by_state, download_detail, download_list, download_logs, download_pause,
+    download_pause_all, download_remove, download_resume, download_resume_all, download_retry,
+    download_set_priority, download_start, link_resolve, plugin_disable, plugin_enable,
+    plugin_install, plugin_list, plugin_store_install, plugin_store_list, plugin_store_refresh,
+    plugin_store_update, plugin_uninstall, settings_get, settings_update, status_bar_get,
 };
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -270,6 +270,7 @@ pub fn run() {
             settings_get,
             settings_update,
             status_bar_get,
+            command_get_media_metadata,
         ])
         .run(tauri::generate_context!())
         // Tauri's run() has no meaningful recovery path — panic is intentional here
