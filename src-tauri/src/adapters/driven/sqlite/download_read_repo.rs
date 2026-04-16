@@ -42,6 +42,22 @@ fn read_created_at(model: &download::Model) -> u64 {
     }
 }
 
+/// Compute progress percent rounded to one decimal place.
+///
+/// - `Completed` always returns 100.0 regardless of `downloaded_bytes` (the
+///   last `DownloadProgress` event may lag behind the final chunk by up to 500ms).
+/// - Unknown total returns 0.0.
+/// - All other states: `downloaded / total * 100`, rounded to 1 dp.
+fn compute_progress_percent(state: &str, downloaded: u64, total: Option<u64>) -> f64 {
+    if state == "Completed" {
+        return 100.0;
+    }
+    match total {
+        Some(t) if t > 0 => ((downloaded as f64 / t as f64 * 1000.0).round()) / 10.0,
+        _ => 0.0,
+    }
+}
+
 fn model_to_view(
     model: &download::Model,
     segments_active: u32,
@@ -51,10 +67,7 @@ fn model_to_view(
     let downloaded = safe_u64(model.downloaded_bytes);
     let speed = safe_u64(model.speed_bytes_per_sec);
 
-    let progress_percent = match total {
-        Some(t) if t > 0 => downloaded as f64 / t as f64 * 100.0,
-        _ => 0.0,
-    };
+    let progress_percent = compute_progress_percent(&model.state, downloaded, total);
 
     let eta_seconds = match total {
         Some(t) if speed > 0 && t > downloaded => Some((t - downloaded) / speed),
@@ -240,10 +253,7 @@ impl DownloadReadRepository for SqliteDownloadReadRepo {
             let downloaded = safe_u64(model.downloaded_bytes);
             let speed = safe_u64(model.speed_bytes_per_sec);
 
-            let progress_percent = match total {
-                Some(t) if t > 0 => downloaded as f64 / t as f64 * 100.0,
-                _ => 0.0,
-            };
+            let progress_percent = compute_progress_percent(&model.state, downloaded, total);
 
             let eta_seconds = match total {
                 Some(t) if speed > 0 && t > downloaded => Some((t - downloaded) / speed),
@@ -380,6 +390,38 @@ mod tests {
         };
         model.insert(db).await.expect("Failed to insert segment");
     }
+
+    // --- Unit tests for compute_progress_percent ---
+
+    #[test]
+    fn test_progress_completed_always_100() {
+        // Even if downloaded_bytes < total_bytes (last progress event lagged),
+        // a Completed download must show 100%.
+        assert_eq!(
+            compute_progress_percent("Completed", 9_000_000, Some(10_000_000)),
+            100.0
+        );
+        assert_eq!(compute_progress_percent("Completed", 0, None), 100.0);
+    }
+
+    #[test]
+    fn test_progress_rounded_to_one_decimal() {
+        // 1/3 = 33.333... → rounds to 33.3
+        let p = compute_progress_percent("Downloading", 1, Some(3));
+        assert_eq!(p, 33.3);
+
+        // 2/3 = 66.666... → rounds to 66.7
+        let p = compute_progress_percent("Downloading", 2, Some(3));
+        assert_eq!(p, 66.7);
+    }
+
+    #[test]
+    fn test_progress_unknown_total_returns_zero() {
+        assert_eq!(compute_progress_percent("Downloading", 5000, None), 0.0);
+        assert_eq!(compute_progress_percent("Downloading", 5000, Some(0)), 0.0);
+    }
+
+    // --- Integration tests ---
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_find_downloads_returns_views() {
