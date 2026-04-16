@@ -15,16 +15,53 @@ impl CommandBus {
     ) -> Result<DownloadId, AppError> {
         let url = Url::new(&cmd.source_url)?;
         let id = super::start_download::next_download_id();
-        let dest = cmd.destination_path.to_string_lossy().to_string();
+
+        // Validate the destination exists and is a regular file before we
+        // persist a Completed download that points at it. The caller (yt-dlp
+        // download_to_file path) is trusted but not infallible — a missing or
+        // partially-moved file would otherwise leave us with a phantom entry.
+        let metadata = std::fs::metadata(&cmd.destination_path).map_err(|e| {
+            AppError::Domain(crate::domain::error::DomainError::NotFound(format!(
+                "local file not found: {} ({e})",
+                cmd.destination_path.display()
+            )))
+        })?;
+        if !metadata.is_file() {
+            return Err(AppError::Domain(
+                crate::domain::error::DomainError::ValidationError(format!(
+                    "destination_path is not a regular file: {}",
+                    cmd.destination_path.display()
+                )),
+            ));
+        }
+
+        // Non-UTF-8 paths would be silently corrupted by `to_string_lossy`
+        // (replacement chars → path no longer resolves to the actual file).
+        let dest = cmd
+            .destination_path
+            .to_str()
+            .ok_or_else(|| {
+                AppError::Domain(crate::domain::error::DomainError::ValidationError(format!(
+                    "destination_path is not valid UTF-8: {}",
+                    cmd.destination_path.display()
+                )))
+            })?
+            .to_string();
 
         let mut download = Download::new(id, url, cmd.filename, dest);
 
         if let Some(hostname) = cmd.source_hostname {
             download = download.with_source_hostname(hostname);
         }
-        if cmd.file_size > 0 {
-            download.set_file_size(cmd.file_size);
+
+        // Trust the on-disk size over the caller-reported one: the file may
+        // have been post-processed (e.g. ffmpeg re-mux) between the reported
+        // size and registration.
+        let actual_size = metadata.len();
+        if actual_size > 0 {
+            download.set_file_size(actual_size);
         }
+        let _ = cmd.file_size; // kept for API compatibility; source of truth is `actual_size`
 
         // Advance state machine: Queued → Downloading → Completed.
         // DownloadStarted event is intentionally dropped — the file was already
@@ -48,11 +85,12 @@ mod tests {
 
     use crate::application::command_bus::CommandBus;
     use crate::application::commands::RegisterLocalFileCommand;
+    use crate::application::error::AppError;
     use crate::domain::error::DomainError;
     use crate::domain::event::DomainEvent;
     use crate::domain::model::config::{AppConfig, ConfigPatch};
     use crate::domain::model::credential::Credential;
-    use crate::domain::model::download::{Download, DownloadId, DownloadState};
+    use crate::domain::model::download::{Download, DownloadId, DownloadState, FileSize};
     use crate::domain::model::http::HttpResponse;
     use crate::domain::model::meta::DownloadMeta;
     use crate::domain::model::plugin::{PluginInfo, PluginManifest};
@@ -153,12 +191,22 @@ mod tests {
         (bus, repo, events)
     }
 
+    /// Create a real on-disk file of a given size so the metadata stat in
+    /// `handle_register_local_file` succeeds. Returns (tempdir guard, path).
+    fn make_test_file(bytes: usize) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("video.mp4");
+        std::fs::write(&path, vec![0u8; bytes]).unwrap();
+        (dir, path)
+    }
+
     #[tokio::test]
     async fn test_register_local_file_creates_completed_download() {
         let (bus, repo, _) = make_bus();
+        let (_dir, path) = make_test_file(1024);
         let cmd = RegisterLocalFileCommand {
             source_url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ".to_string(),
-            destination_path: PathBuf::from("/tmp/downloads/video.mp4"),
+            destination_path: path,
             filename: "Rick Astley - Never Gonna Give You Up.mp4".to_string(),
             source_hostname: Some("www.youtube.com".to_string()),
             file_size: 52_428_800,
@@ -168,14 +216,20 @@ mod tests {
         assert_eq!(saved.state(), DownloadState::Completed);
         assert_eq!(saved.file_name(), "Rick Astley - Never Gonna Give You Up.mp4");
         assert_eq!(saved.source_hostname(), "www.youtube.com");
+        assert_eq!(
+            saved.file_size(),
+            Some(FileSize(1024)),
+            "size must reflect actual on-disk bytes, not the caller-supplied 52MB"
+        );
     }
 
     #[tokio::test]
     async fn test_register_local_file_emits_created_and_completed_events() {
         let (bus, _, events) = make_bus();
+        let (_dir, path) = make_test_file(0);
         let cmd = RegisterLocalFileCommand {
             source_url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ".to_string(),
-            destination_path: PathBuf::from("/tmp/downloads/video.mp4"),
+            destination_path: path,
             filename: "video.mp4".to_string(),
             source_hostname: None,
             file_size: 0,
@@ -184,5 +238,40 @@ mod tests {
         let evs = events.0.lock().unwrap();
         assert!(evs.iter().any(|e| *e == DomainEvent::DownloadCreated { id }), "must emit DownloadCreated");
         assert!(evs.iter().any(|e| *e == DomainEvent::DownloadCompleted { id }), "must emit DownloadCompleted");
+    }
+
+    #[tokio::test]
+    async fn test_register_local_file_rejects_missing_file() {
+        let (bus, _, _) = make_bus();
+        let cmd = RegisterLocalFileCommand {
+            source_url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ".to_string(),
+            destination_path: PathBuf::from("/tmp/definitely-does-not-exist-xyz123.mp4"),
+            filename: "video.mp4".to_string(),
+            source_hostname: None,
+            file_size: 0,
+        };
+        let err = bus.handle_register_local_file(cmd).await.unwrap_err();
+        assert!(
+            matches!(err, AppError::Domain(DomainError::NotFound(_))),
+            "expected NotFound when destination_path does not exist, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_register_local_file_rejects_directory() {
+        let (bus, _, _) = make_bus();
+        let dir = tempfile::tempdir().unwrap();
+        let cmd = RegisterLocalFileCommand {
+            source_url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ".to_string(),
+            destination_path: dir.path().to_path_buf(),
+            filename: "video.mp4".to_string(),
+            source_hostname: None,
+            file_size: 0,
+        };
+        let err = bus.handle_register_local_file(cmd).await.unwrap_err();
+        assert!(
+            matches!(err, AppError::Domain(DomainError::ValidationError(_))),
+            "expected ValidationError when destination_path is a directory, got {err:?}"
+        );
     }
 }

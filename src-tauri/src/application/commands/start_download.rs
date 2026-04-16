@@ -28,8 +28,20 @@ impl CommandBus {
         // Use the pre-computed filename when available (e.g. set by media plugins
         // that already know the video title). Otherwise probe via HEAD or fall back
         // to extracting the last URL path segment.
-        let file_name = if let Some(name) = cmd.filename.filter(|s| !s.is_empty()) {
-            name
+        //
+        // Reject path-bearing overrides: since `dest_dir.join(&file_name)` is
+        // used below, an absolute path or one containing `..` would escape the
+        // configured download directory.
+        let file_name = if let Some(name) = cmd.filename.as_deref().filter(|s| !s.is_empty()) {
+            let candidate = std::path::Path::new(name);
+            if candidate.is_absolute() || candidate.components().count() != 1 {
+                return Err(AppError::Domain(
+                    crate::domain::error::DomainError::ValidationError(format!(
+                        "invalid filename override (must be a single file component): {name}"
+                    )),
+                ));
+            }
+            name.to_string()
         } else {
             // file_size and resume_supported are discovered by the engine at download time.
             // The HEAD probe here is used only for filename resolution.

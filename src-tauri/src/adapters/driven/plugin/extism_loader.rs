@@ -273,11 +273,21 @@ impl PluginLoader for ExtismPluginLoader {
 
 /// Returns `true` if the plugin error message indicates an adaptive-only stream.
 ///
-/// Matches the error text emitted by `PluginError::AdaptiveStreamOnly` in
-/// vortex-mod-youtube. Kept as a named function so it can be unit-tested
-/// independently of the Extism runtime.
+/// ⚠ **Fragile coupling**: this is a human-readable-string contract with plugin
+/// authors. It matches the substring `"adaptive stream (HLS/DASH)"` emitted by
+/// `vortex-mod-youtube ≥ 1.2.0`'s `PluginError::AdaptiveStreamOnly`. If the
+/// plugin wording drifts or another plugin reuses `PluginError::AdaptiveStreamOnly`
+/// with different text, the 1080p DASH fallback silently breaks (error maps to
+/// `PluginError` instead of `DomainError::AdaptiveStreamOnly` and
+/// `download_media_start` never invokes `download_to_file`).
+///
+/// A structured sentinel (e.g. plugin returns `{"error_code":"adaptive_stream_only"}`)
+/// would be a more robust contract — tracked for a future plugin API iteration.
+/// For now, the parenthesised `(HLS/DASH)` qualifier is matched instead of the
+/// bare `"adaptive stream"` token to reduce the risk of false positives from
+/// unrelated error messages.
 fn is_adaptive_stream_error(msg: &str) -> bool {
-    msg.contains("adaptive stream")
+    msg.contains("adaptive stream (HLS/DASH)")
 }
 
 #[cfg(test)]

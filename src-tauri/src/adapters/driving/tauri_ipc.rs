@@ -759,9 +759,17 @@ pub async fn download_media_start(
                             .to_string()
                     });
 
-                // Determine final destination directory.
-                let dest_dir =
-                    dirs::download_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+                // Determine final destination directory. Prefer the platform
+                // download dir (XDG `user-dirs`, `~/Downloads`, …); fall back to
+                // the home dir rather than CWD — dropping a 1GB merged video
+                // into the Tauri binary's directory or / is a bad outcome.
+                let dest_dir = dirs::download_dir()
+                    .or_else(dirs::home_dir)
+                    .ok_or_else(|| {
+                        "cannot determine download destination: neither \
+                         user-dirs download_dir nor home_dir are available"
+                            .to_string()
+                    })?;
                 let dest_path = dest_dir.join(&filename);
 
                 // Atomic move (same filesystem) → fallback copy+delete.
@@ -877,7 +885,12 @@ fn extract_hostname_from_url(url: &str) -> Option<String> {
         .strip_prefix("https://")
         .or_else(|| url.strip_prefix("http://"))
         .or_else(|| url.strip_prefix("ftp://"))?;
-    let host_and_port = after_scheme.split('/').next()?;
+    let authority = after_scheme.split('/').next()?;
+    // Strip any `user:pass@` userinfo prefix — `rsplit('@').next()` returns
+    // the host portion when '@' is present, or the whole string otherwise.
+    // Using rsplit (not split) correctly handles passwords that themselves
+    // contain '@'.
+    let host_and_port = authority.rsplit('@').next().unwrap_or(authority);
     let host = host_and_port.split(':').next()?;
     if host.is_empty() {
         None
@@ -1301,6 +1314,25 @@ mod tests {
     #[test]
     fn extract_hostname_returns_none_for_non_url() {
         assert_eq!(extract_hostname_from_url("not-a-url"), None);
+    }
+
+    #[test]
+    fn extract_hostname_strips_userinfo() {
+        // RFC 3986 allows `user:pass@host` in authority; the original split-on-':'
+        // logic returned "user" here. rsplit('@') recovers the real host.
+        assert_eq!(
+            extract_hostname_from_url("https://user:pass@example.com/path"),
+            Some("example.com".to_string())
+        );
+        assert_eq!(
+            extract_hostname_from_url("https://user@example.com:8080/"),
+            Some("example.com".to_string())
+        );
+        // Password containing '@' must not split the host — rsplit handles this.
+        assert_eq!(
+            extract_hostname_from_url("https://user:p@ss@example.com/"),
+            Some("example.com".to_string())
+        );
     }
 
     #[test]

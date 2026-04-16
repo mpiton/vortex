@@ -16,7 +16,9 @@ repository           = "https://github.com/mpiton/vortex-mod-youtube"
 checksum_sha256      = "60a77e3f70e9d8ed114af204575cb80cc1c0127f36aca5ff4ce0e537b4fa1739"
 checksum_sha256_toml = "31341508a80f54dc42bc2387771a26feb7a6e90a9191e43f1e6bd5e8d37c98cb"
 official             = true
-min_vortex_version   = "0.1.0"
+# Requires Vortex ≥ 0.2.0 which introduces the `AdaptiveStreamOnly` domain error
+# and the `download_to_file` fallback path that this plugin depends on for 1080p+.
+min_vortex_version   = "0.2.0"
 
 [[plugin]]
 name                 = "vortex-mod-gallery"
