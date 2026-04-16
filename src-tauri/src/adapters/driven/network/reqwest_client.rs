@@ -19,6 +19,8 @@ use crate::domain::error::DomainError;
 use crate::domain::model::http::HttpResponse;
 use crate::domain::ports::driven::http_client::HttpClient;
 
+use super::format_error_chain;
+
 pub struct ReqwestHttpClient {
     client: reqwest::Client,
 }
@@ -37,6 +39,24 @@ impl ReqwestHttpClient {
     pub fn with_client(client: reqwest::Client) -> Self {
         Self { client }
     }
+
+    async fn probe_metadata(&self, url: &str) -> Result<reqwest::Response, reqwest::Error> {
+        match self.client.head(url).send().await {
+            Ok(response) if response.status().is_success() => Ok(response),
+            Ok(response) => {
+                debug!(
+                    url,
+                    status = %response.status(),
+                    "HEAD probe returned non-success status, falling back to GET"
+                );
+                self.client.get(url).send().await
+            }
+            Err(err) => {
+                debug!(url, error = %err, "HEAD probe failed, falling back to GET");
+                self.client.get(url).send().await
+            }
+        }
+    }
 }
 
 impl Default for ReqwestHttpClient {
@@ -46,7 +66,7 @@ impl Default for ReqwestHttpClient {
 }
 
 fn map_reqwest_error(err: reqwest::Error) -> DomainError {
-    DomainError::NetworkError(format!("HTTP request failed: {err}"))
+    DomainError::NetworkError(format!("HTTP request failed: {}", format_error_chain(&err)))
 }
 
 /// Run an async future on the current tokio runtime from a sync context.
@@ -81,13 +101,8 @@ fn parse_headers(headers: &reqwest::header::HeaderMap) -> HashMap<String, Vec<St
 impl HttpClient for ReqwestHttpClient {
     fn head(&self, url: &str) -> Result<HttpResponse, DomainError> {
         debug!(url, "HEAD request");
-        let response = block_on(async {
-            self.client
-                .head(url)
-                .send()
-                .await
-                .map_err(map_reqwest_error)
-        })??;
+        let response =
+            block_on(async { self.probe_metadata(url).await.map_err(map_reqwest_error) })??;
 
         let status_code = response.status().as_u16();
         let headers = parse_headers(response.headers());
@@ -246,6 +261,37 @@ mod tests {
         let result = client.supports_range(&url).expect("supports_range");
 
         assert!(!result);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_head_falls_back_to_get_when_head_returns_non_success() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("HEAD"))
+            .and(path("/file.zip"))
+            .respond_with(ResponseTemplate::new(405))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/file.zip"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .append_header("accept-ranges", "bytes")
+                    .set_body_bytes(vec![b'x'; 2048]),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let client = ReqwestHttpClient::new();
+        let url = format!("{}/file.zip", mock_server.uri());
+        let response = client
+            .head(&url)
+            .expect("metadata probe should succeed via GET fallback");
+
+        assert_eq!(response.status_code, 200);
+        assert_eq!(response.content_length(), Some(2048));
+        assert_eq!(response.header("accept-ranges"), Some("bytes"));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

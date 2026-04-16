@@ -313,7 +313,6 @@ mod tests {
             Arc::new(MockCredentialStore),
             Arc::new(MockClipboardObserver),
             Arc::new(FakeArchiveExtractor),
-        
             None,
         );
         (bus, engine, event_bus)
@@ -423,7 +422,6 @@ mod tests {
             Arc::new(MockCredentialStore),
             Arc::new(MockClipboardObserver),
             Arc::new(FakeArchiveExtractor),
-        
             None,
         );
 
@@ -457,7 +455,6 @@ mod tests {
             Arc::new(MockCredentialStore),
             Arc::new(MockClipboardObserver),
             Arc::new(FakeArchiveExtractor),
-        
             None,
         );
 

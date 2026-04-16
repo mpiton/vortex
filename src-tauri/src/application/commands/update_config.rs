@@ -296,7 +296,6 @@ mod tests {
             Arc::new(StubCredStore),
             Arc::new(StubClipboard),
             Arc::new(FakeArchiveExtractor),
-        
             None,
         )
     }

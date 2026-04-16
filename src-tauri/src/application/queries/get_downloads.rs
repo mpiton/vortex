@@ -189,6 +189,7 @@ mod tests {
             segments_total: 1,
             module_name: None,
             account_name: None,
+            error_message: None,
             created_at: 0,
         }
     }

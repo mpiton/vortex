@@ -258,7 +258,6 @@ mod tests {
             Arc::new(MockCredentialStore),
             Arc::new(MockClipboardObserver),
             Arc::new(FakeArchiveExtractor),
-        
             None,
         )
     }

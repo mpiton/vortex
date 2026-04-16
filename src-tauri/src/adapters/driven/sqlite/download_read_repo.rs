@@ -79,6 +79,7 @@ fn model_to_view(
         segments_total,
         module_name: model.module_name.clone(),
         account_name: None, // Resolved when accounts table is implemented
+        error_message: model.error_message.clone(),
         created_at: read_created_at(model),
     })
 }
@@ -354,6 +355,7 @@ mod tests {
             module_name: Set(None),
             account_id: Set(None),
             destination_path: Set("/tmp/downloads".to_string()),
+            error_message: Set(None),
             created_at: Set(1000 + id),
             updated_at: Set(2000 + id),
         };
@@ -396,6 +398,48 @@ mod tests {
         assert_eq!(views[1].segments_active, 1);
         assert_eq!(views[1].segments_total, 2);
         assert!((views[1].progress_percent - 50.0).abs() < 0.01);
+        assert_eq!(views[1].error_message, None);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_find_downloads_includes_error_message() {
+        let db = setup().await;
+        let model = download::ActiveModel {
+            id: Set(3),
+            url: Set("https://example.com/video.mp4".to_string()),
+            file_name: Set("video.mp4".to_string()),
+            state: Set("Error".to_string()),
+            priority: Set(5),
+            total_bytes: Set(Some(1000)),
+            downloaded_bytes: Set(500),
+            speed_bytes_per_sec: Set(0),
+            retry_count: Set(0),
+            max_retries: Set(5),
+            segments_count: Set(1),
+            checksum_expected: Set(None),
+            source_hostname: Set("example.com".to_string()),
+            protocol: Set("https".to_string()),
+            resume_supported: Set(1),
+            module_name: Set(None),
+            account_id: Set(None),
+            destination_path: Set("/tmp/downloads/video.mp4".to_string()),
+            error_message: Set(Some("tls handshake failed".to_string())),
+            created_at: Set(1003),
+            updated_at: Set(2003),
+        };
+        model
+            .insert(&db)
+            .await
+            .expect("Failed to insert failed download");
+
+        let repo = SqliteDownloadReadRepo::new(db);
+        let views = repo.find_downloads(None, None, None, None).unwrap();
+
+        assert_eq!(views.len(), 1);
+        assert_eq!(
+            views[0].error_message.as_deref(),
+            Some("tls handshake failed")
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -471,6 +515,7 @@ mod tests {
             module_name: Set(None),
             account_id: Set(None),
             destination_path: Set("/tmp/downloads/file1.zip".to_string()),
+            error_message: Set(None),
             created_at: Set(0),
             updated_at: Set(0),
         };
@@ -508,6 +553,7 @@ mod tests {
             module_name: Set(None),
             account_id: Set(None),
             destination_path: Set("/tmp/downloads/file1.zip".to_string()),
+            error_message: Set(None),
             created_at: Set(0),
             updated_at: Set(1_700_000_000_123_i64),
         };
@@ -546,6 +592,7 @@ mod tests {
             module_name: Set(None),
             account_id: Set(None),
             destination_path: Set("/tmp/downloads/file1.zip".to_string()),
+            error_message: Set(None),
             created_at: Set(0),
             updated_at: Set(0),
         };
@@ -586,6 +633,7 @@ mod tests {
             module_name: Set(None),
             account_id: Set(None),
             destination_path: Set("/tmp/downloads/legacy.zip".to_string()),
+            error_message: Set(None),
             created_at: Set(0),
             updated_at: Set(0),
         };

@@ -29,6 +29,7 @@ pub struct DownloadView {
     pub segments_total: u32,
     pub module_name: Option<String>,
     pub account_name: Option<String>,
+    pub error_message: Option<String>,
     pub created_at: u64,
 }
 

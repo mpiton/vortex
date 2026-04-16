@@ -432,6 +432,24 @@ impl Download {
         })
     }
 
+    pub fn retry_manually(&mut self) -> Result<DomainEvent, DomainError> {
+        if self.state != DownloadState::Error {
+            return Err(DomainError::InvalidTransition {
+                from: self.state,
+                to: DownloadState::Retry,
+            });
+        }
+
+        // A manual retry is an explicit user action, so it reopens the
+        // automatic retry circuit breaker and starts a fresh retry cycle.
+        self.retry_count = 1;
+        self.state = DownloadState::Retry;
+        Ok(DomainEvent::DownloadRetrying {
+            id: self.id,
+            attempt: self.retry_count,
+        })
+    }
+
     pub fn fail(&mut self, error: String) -> Result<DomainEvent, DomainError> {
         match self.state {
             DownloadState::Downloading
@@ -594,6 +612,28 @@ mod tests {
             DomainError::MaxRetriesExceeded { download_id: 1 }
         );
         assert_eq!(d.state(), DownloadState::Error);
+    }
+
+    #[test]
+    fn test_download_manual_retry_reopens_circuit_breaker() {
+        let mut d = make_download().with_max_retries(1);
+        d.start().unwrap();
+        d.fail("error".to_string()).unwrap();
+        d.retry().unwrap();
+        d.start().unwrap();
+        d.fail("error".to_string()).unwrap();
+
+        let event = d.retry_manually().unwrap();
+
+        assert_eq!(d.retry_count(), 1);
+        assert_eq!(d.state(), DownloadState::Retry);
+        assert_eq!(
+            event,
+            DomainEvent::DownloadRetrying {
+                id: DownloadId(1),
+                attempt: 1
+            }
+        );
     }
 
     #[test]

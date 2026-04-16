@@ -31,8 +31,9 @@ pub fn recover_orphaned_downloads(
         let downloads = download_repo.find_by_state(state)?;
         for mut download in downloads {
             // fail() is valid from all ORPHAN_STATES — see domain state machine.
-            let _event = download.fail("Interrupted: app restarted".to_string())?;
-            download_repo.save(&download)?;
+            let error = "Interrupted: app restarted".to_string();
+            let _event = download.fail(error.clone())?;
+            download_repo.save_failed(&download, &error)?;
             recovered += 1;
         }
     }
