@@ -3,8 +3,6 @@
 //! Registers an already-downloaded local file as a Completed download.
 //! Used after `download_to_file` produces a merged file via yt-dlp.
 
-use std::sync::atomic::{AtomicU64, Ordering};
-
 use crate::application::command_bus::CommandBus;
 use crate::application::error::AppError;
 use crate::domain::event::DomainEvent;
@@ -16,7 +14,7 @@ impl CommandBus {
         cmd: super::RegisterLocalFileCommand,
     ) -> Result<DownloadId, AppError> {
         let url = Url::new(&cmd.source_url)?;
-        let id = next_download_id();
+        let id = super::start_download::next_download_id();
         let dest = cmd.destination_path.to_string_lossy().to_string();
 
         let mut download = Download::new(id, url, cmd.filename, dest);
@@ -28,7 +26,9 @@ impl CommandBus {
             download.set_file_size(cmd.file_size);
         }
 
-        // Transition: Queued → Downloading → Completed
+        // Advance state machine: Queued → Downloading → Completed.
+        // DownloadStarted event is intentionally dropped — the file was already
+        // downloaded by yt-dlp, so emitting DownloadStarted would be misleading.
         download.start().map_err(AppError::Domain)?;
         let completed_event = download.complete().map_err(AppError::Domain)?;
 
@@ -38,17 +38,6 @@ impl CommandBus {
 
         Ok(id)
     }
-}
-
-static NEXT_LOCAL_SEQ: AtomicU64 = AtomicU64::new(0);
-
-fn next_download_id() -> DownloadId {
-    let seq = NEXT_LOCAL_SEQ.fetch_add(1, Ordering::Relaxed) & 0xFFF;
-    let ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64;
-    DownloadId((ts << 12) | seq)
 }
 
 #[cfg(test)]

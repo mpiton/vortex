@@ -275,6 +275,7 @@ impl Download {
 
     pub fn set_file_size(&mut self, bytes: u64) {
         self.file_size = Some(FileSize(bytes));
+        // Also marks download as 100% complete (file already exists locally).
         self.downloaded_bytes = bytes;
     }
 
