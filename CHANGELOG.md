@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- Completed downloads showed ~96% progress instead of 100%: the last `DownloadProgress` event (throttled to 500ms) could arrive before the final chunk was written; `compute_progress_percent()` now forces 100.0 when `state == "Completed"`
+- Progress values showed excessive decimal places (e.g. "96.247262...%"); rounded to one decimal place using `(v * 10.0).round() / 10.0`
 - Downloads never transitioned to Completed state: queue_manager received DownloadCompleted events but never persisted the state change; added `handle_download_completed()` analogous to `handle_download_failed()` to load the aggregate, call `.complete()`, and save it
 - `progressPercent` always showed 0: `DownloadProgress` events carry `total_bytes` but the progress_bridge was discarding it; now writes `total_bytes` to the downloads row on first progress event (COALESCE so existing values are never overwritten)
 - Downloads stalling indefinitely mid-transfer: `response.chunk().await` had no idle timeout, so a server stalling mid-stream would block the segment task forever; added a 30-second idle timeout that triggers `SegmentFailed` and allows the engine to fail-fast and retry
