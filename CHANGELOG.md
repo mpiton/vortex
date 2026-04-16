@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- Downloads never transitioned to Completed state: queue_manager received DownloadCompleted events but never persisted the state change; added `handle_download_completed()` analogous to `handle_download_failed()` to load the aggregate, call `.complete()`, and save it
+- `progressPercent` always showed 0: `DownloadProgress` events carry `total_bytes` but the progress_bridge was discarding it; now writes `total_bytes` to the downloads row on first progress event (COALESCE so existing values are never overwritten)
+- Downloads stalling indefinitely mid-transfer: `response.chunk().await` had no idle timeout, so a server stalling mid-stream would block the segment task forever; added a 30-second idle timeout that triggers `SegmentFailed` and allows the engine to fail-fast and retry
+- `create_file` failed with "file exists" after app restart: engine now checks for orphaned download files (no `.vortex-meta` sidecar) and removes them before calling `create_new(true)`
+- Default download destination was `./` (current working directory, usually the Tauri binary dir); now uses `config.download_dir` or `dirs::download_dir()` XDG fallback (fixes #59)
+- Download directory was not created automatically; `create_file` now calls `std::fs::create_dir_all(parent)` before opening the file
 - Pause button was shown for Queued state downloads, causing a silent IPC error since the backend only allows Downloading → Paused; button now correctly only shows for Downloading state (fixes #58)
 - Bulk toggle (Space shortcut) no longer attempts to pause Queued downloads, aligning with the domain state machine
 - Orphaned downloads from previous session (stuck in Downloading/Waiting/Checking/Extracting state) are now recovered to Error on startup so the user can retry; Queued/Retry downloads are re-scheduled automatically (fixes #57)
@@ -16,6 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `SegmentStarted` event now carries `start_byte` and `end_byte` so downstream consumers can identify which byte range a segment covers
 
 ### Added
+- Error message display: failed downloads now show the error reason in a popover tooltip on the Status column (Popover component from shadcn/ui)
+- `error_message` column added to `downloads` table (migration m20260415_000002); exposed in `DownloadView` read model and IPC response
+- `DownloadRepository::save_failed(download, error)` — persists Error state and error text atomically, replacing the previous pattern of calling `save()` then updating separately
+- Plugin store: browse, refresh, and install official plugins from the built-in registry; plugins verified by SHA-256 checksum and `min_vortex_version` constraint
 - `spawn_sqlite_progress_bridge` — new event bridge that persists live download state to SQLite (`downloads.downloaded_bytes`, `download_segments` rows) so the read model reflects real progress instead of always showing 0%
 - `SqliteStatsRepo` — persistent download statistics backed by SQLite (replaces in-memory stub)
 - Project scaffolding: Tauri 2 + React 19 + TypeScript + Tailwind CSS 4 + shadcn/ui
