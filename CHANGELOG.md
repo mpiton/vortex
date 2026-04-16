@@ -24,6 +24,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `SegmentStarted` event now carries `start_byte` and `end_byte` so downstream consumers can identify which byte range a segment covers
 
 ### Added
+- `download_media_start` IPC command: resolves the direct CDN stream URL via the WASM plugin that claims the URL (`resolve_stream_url` export), then starts the download — fixes the retry loop where the engine received a YouTube/Vimeo/SoundCloud page URL instead of a downloadable CDN URL
+- `resolve_stream_url` method on `PluginLoader` trait: delegates URL resolution to WASM plugins; implemented in `ExtismPluginLoader` via `registry.call_plugin`; default impl returns `NotFound` for loaders that don't support it
 - `command_get_media_metadata` IPC command: invokes `yt-dlp --dump-single-json --flat-playlist` and returns video title, thumbnail, duration, deduplicated quality options (sorted by height), video/audio container formats, subtitles (excluding live_chat), and playlist entries — fixes the "Failed to load media metadata" error in the Media Grabber Options dialog
 - Error message display: failed downloads now show the error reason in a popover tooltip on the Status column (Popover component from shadcn/ui)
 - `error_message` column added to `downloads` table (migration m20260415_000002); exposed in `DownloadView` read model and IPC response
