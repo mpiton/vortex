@@ -134,6 +134,31 @@ pub fn run() {
                 ExtismPluginLoader::new(plugins_dir.clone(), shared_resources)
                     .map_err(|e| e.to_string())?,
             );
+
+            // Scan existing plugin directories and load them at startup.
+            // The PluginWatcher reacts only to file-system events, so plugins
+            // already present on disk before the watcher starts would otherwise
+            // be silently skipped until a file-change event arrives.
+            if let Ok(entries) = std::fs::read_dir(&plugins_dir) {
+                for entry in entries.flatten() {
+                    let dir = entry.path();
+                    if dir.is_dir() {
+                        match adapters::driven::plugin::manifest::parse_manifest(&dir) {
+                            Ok((manifest, _)) => {
+                                let name = manifest.info().name();
+                                match plugin_loader_impl.load(&manifest) {
+                                    Ok(()) => tracing::info!("startup: loaded plugin '{name}'"),
+                                    Err(e) => tracing::warn!(
+                                        "startup: failed to load plugin '{name}': {e}"
+                                    ),
+                                }
+                            }
+                            Err(e) => tracing::debug!("startup: skipping {}: {e}", dir.display()),
+                        }
+                    }
+                }
+            }
+
             let plugin_read_repo: Arc<dyn PluginReadRepository> =
                 plugin_loader_impl.registry().clone();
             let plugin_loader: Arc<dyn PluginLoader> = plugin_loader_impl.clone();
