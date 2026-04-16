@@ -49,6 +49,8 @@ pub async fn download_start(
     let cmd = StartDownloadCommand {
         url,
         destination: destination.map(PathBuf::from),
+        filename: None,
+        source_hostname_override: None,
     };
     state
         .command_bus
@@ -681,6 +683,11 @@ fn is_known_media_platform(url: &str) -> bool {
 /// to the normal download engine. For generic HTTP URLs (claimed by the
 /// built-in HTTP module), the URL is used as-is — unless the URL belongs to a
 /// known media platform, in which case a "plugin required" error is returned.
+///
+/// `title` is the human-readable video title (e.g. "Rick Astley - Never Gonna
+/// Give You Up"). When provided it is sanitised and used as the filename
+/// (appended with `.{format}`), so the saved file has a meaningful name instead
+/// of the CDN path segment ("videoplayback").
 #[tauri::command]
 pub async fn download_media_start(
     state: State<'_, AppState>,
@@ -688,22 +695,88 @@ pub async fn download_media_start(
     quality: String,
     format: String,
     audio_only: bool,
+    title: Option<String>,
 ) -> Result<u64, String> {
+    // Extract the origin hostname (e.g. "www.youtube.com") from the original
+    // URL *before* resolving to a CDN URL, so we can store it as the
+    // source_hostname instead of "rr1---sn-n4g-cvq6.googlevideo.com".
+    let source_hostname_override = extract_hostname_from_url(&url);
+
     let plugin_loader = state.plugin_loader.clone();
     let url_clone = url.clone();
     let quality_clone = quality.clone();
     let format_clone = format.clone();
+    let title_clone = title.clone();
 
     // Plugin calls are synchronous (Extism runs inside a Mutex). Run on the
     // blocking thread pool so we don't starve the async executor.
-    let stream_url = tokio::task::spawn_blocking(move || {
+    enum StreamResolution {
+        CdnUrl(String),
+        LocalFile {
+            path: std::path::PathBuf,
+            size: u64,
+            filename: String,
+        },
+    }
+
+    let resolution = tokio::task::spawn_blocking(move || -> Result<StreamResolution, String> {
         match plugin_loader.resolve_stream_url(
             &url_clone,
             &quality_clone,
             &format_clone,
             audio_only,
         ) {
-            Ok(cdn_url) => Ok(cdn_url),
+            Ok(cdn_url) => Ok(StreamResolution::CdnUrl(cdn_url)),
+
+            Err(crate::domain::error::DomainError::AdaptiveStreamOnly) => {
+                // yt-dlp must handle the full download+merge.
+                let temp_dir = std::env::temp_dir().join("vortex-downloads");
+                std::fs::create_dir_all(&temp_dir)
+                    .map_err(|e| format!("failed to create temp dir: {e}"))?;
+
+                let file_info = plugin_loader
+                    .download_to_file(
+                        &url_clone,
+                        &quality_clone,
+                        &format_clone,
+                        temp_dir.to_str().unwrap_or("/tmp/vortex-downloads"),
+                        audio_only,
+                    )
+                    .map_err(|e| format!("download_to_file failed: {e}"))?;
+
+                // Determine final filename: prefer title override, else keep yt-dlp's name.
+                let filename = title_clone
+                    .as_deref()
+                    .filter(|t| !t.trim().is_empty())
+                    .map(|t| format!("{}.{}", sanitize_filename(t), format_clone))
+                    .unwrap_or_else(|| {
+                        file_info
+                            .path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("download")
+                            .to_string()
+                    });
+
+                // Determine final destination directory.
+                let dest_dir =
+                    dirs::download_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+                let dest_path = dest_dir.join(&filename);
+
+                // Atomic move (same filesystem) → fallback copy+delete.
+                if std::fs::rename(&file_info.path, &dest_path).is_err() {
+                    std::fs::copy(&file_info.path, &dest_path)
+                        .map_err(|e| format!("failed to copy merged file: {e}"))?;
+                    let _ = std::fs::remove_file(&file_info.path);
+                }
+
+                Ok(StreamResolution::LocalFile {
+                    path: dest_path,
+                    size: file_info.size,
+                    filename,
+                })
+            }
+
             // builtin-http: no WASM plugin claimed the URL.
             // For known media platforms this means the required plugin is not
             // installed — return a clear error rather than feeding the HTML
@@ -717,25 +790,93 @@ pub async fn download_media_start(
                     )
                 } else {
                     // Generic direct-download URL — pass through as-is.
-                    Ok(url_clone)
+                    Ok(StreamResolution::CdnUrl(url_clone))
                 }
             }
+
             Err(e) => Err(format!("Failed to resolve stream URL: {e}")),
         }
     })
     .await
     .map_err(|e| format!("Task join error: {e}"))??;
 
-    let cmd = crate::application::commands::StartDownloadCommand {
-        url: stream_url,
-        destination: None,
-    };
-    state
-        .command_bus
-        .handle_start_download(cmd)
-        .await
-        .map(|id| id.0)
-        .map_err(|e| e.to_string())
+    match resolution {
+        StreamResolution::CdnUrl(stream_url) => {
+            // Build a meaningful filename from the title and format when available.
+            // Falls back to the URL-based derivation in handle_start_download when None.
+            let filename = title
+                .as_deref()
+                .filter(|t| !t.trim().is_empty())
+                .map(|t| format!("{}.{}", sanitize_filename(t), format));
+
+            let cmd = crate::application::commands::StartDownloadCommand {
+                url: stream_url,
+                destination: None,
+                filename,
+                source_hostname_override,
+            };
+            state
+                .command_bus
+                .handle_start_download(cmd)
+                .await
+                .map(|id| id.0)
+                .map_err(|e| e.to_string())
+        }
+
+        StreamResolution::LocalFile { path, size, filename } => {
+            let cmd = crate::application::commands::RegisterLocalFileCommand {
+                source_url: url,
+                destination_path: path,
+                filename,
+                source_hostname: source_hostname_override,
+                file_size: size,
+            };
+            state
+                .command_bus
+                .handle_register_local_file(cmd)
+                .await
+                .map(|id| id.0)
+                .map_err(|e| e.to_string())
+        }
+    }
+}
+
+/// Remove characters that are invalid in filenames on Linux / macOS / Windows.
+/// Replaces `/`, `\`, `:`, `*`, `?`, `"`, `<`, `>`, `|` and null bytes with `_`.
+/// Truncates to 200 chars to stay well inside filesystem limits.
+fn sanitize_filename(name: &str) -> String {
+    let sanitized: String = name
+        .chars()
+        .map(|c| match c {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '\0' => '_',
+            c => c,
+        })
+        .collect();
+    // Trim leading/trailing dots and spaces (problematic on Windows and visually
+    // misleading on any platform), then truncate to a sane length.
+    let trimmed = sanitized.trim_matches(|c| c == '.' || c == ' ');
+    if trimmed.is_empty() {
+        "download".to_string()
+    } else {
+        trimmed.chars().take(200).collect()
+    }
+}
+
+/// Extract the hostname from a URL string (e.g. "www.youtube.com" from
+/// "https://www.youtube.com/watch?v=..."). Returns `None` when the URL
+/// cannot be parsed.
+fn extract_hostname_from_url(url: &str) -> Option<String> {
+    let after_scheme = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .or_else(|| url.strip_prefix("ftp://"))?;
+    let host_and_port = after_scheme.split('/').next()?;
+    let host = host_and_port.split(':').next()?;
+    if host.is_empty() {
+        None
+    } else {
+        Some(host.to_string())
+    }
 }
 
 // ── Media Metadata ───────────────────────────────────────────────────
@@ -1073,8 +1214,87 @@ fn read_available_space(_: &Path) -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
-    use super::{configured_status_bar_path, read_available_space, resolve_existing_disk_path};
+    use super::{
+        configured_status_bar_path, extract_hostname_from_url, read_available_space,
+        resolve_existing_disk_path, sanitize_filename,
+    };
     use std::path::PathBuf;
+
+    // ── sanitize_filename ─────────────────────────────────────────────────────
+
+    #[test]
+    fn sanitize_filename_replaces_path_separators() {
+        assert_eq!(sanitize_filename("AC/DC - Back in Black"), "AC_DC - Back in Black");
+    }
+
+    #[test]
+    fn sanitize_filename_replaces_colon() {
+        // ":" is common in video titles (e.g. "Part 1: Introduction")
+        assert_eq!(
+            sanitize_filename("Tutorial: Getting Started"),
+            "Tutorial_ Getting Started"
+        );
+    }
+
+    #[test]
+    fn sanitize_filename_replaces_all_invalid_chars() {
+        assert_eq!(sanitize_filename(r#"a/b\c:d*e?f"g<h>i|j"#), "a_b_c_d_e_f_g_h_i_j");
+    }
+
+    #[test]
+    fn sanitize_filename_trims_leading_trailing_dots() {
+        assert_eq!(sanitize_filename("..video.."), "video");
+    }
+
+    #[test]
+    fn sanitize_filename_trims_leading_trailing_spaces() {
+        assert_eq!(sanitize_filename("  video  "), "video");
+    }
+
+    #[test]
+    fn sanitize_filename_returns_download_for_empty_result() {
+        assert_eq!(sanitize_filename("..."), "download");
+        assert_eq!(sanitize_filename(""), "download");
+    }
+
+    #[test]
+    fn sanitize_filename_truncates_long_names() {
+        let long = "a".repeat(300);
+        assert_eq!(sanitize_filename(&long).len(), 200);
+    }
+
+    // ── extract_hostname_from_url ─────────────────────────────────────────────
+
+    #[test]
+    fn extract_hostname_from_youtube_url() {
+        assert_eq!(
+            extract_hostname_from_url("https://www.youtube.com/watch?v=dQw4w9WgXcQ"),
+            Some("www.youtube.com".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_hostname_from_cdn_url() {
+        assert_eq!(
+            extract_hostname_from_url(
+                "https://rr1---sn-n4g-cvq6.googlevideo.com/videoplayback?expire=123"
+            ),
+            Some("rr1---sn-n4g-cvq6.googlevideo.com".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_hostname_from_url_with_port() {
+        assert_eq!(
+            extract_hostname_from_url("https://example.com:8080/path"),
+            Some("example.com".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_hostname_returns_none_for_non_url() {
+        assert_eq!(extract_hostname_from_url("not-a-url"), None);
+    }
 
     #[test]
     fn configured_status_bar_path_rejects_empty_values() {
