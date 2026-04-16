@@ -39,4 +39,31 @@ pub trait PluginLoader: Send + Sync {
 
     /// Enable or disable a loaded plugin by name.
     fn set_enabled(&self, name: &str, enabled: bool) -> Result<(), DomainError>;
+
+    /// Resolve a media URL to a direct CDN stream URL via the plugin that
+    /// claims the URL.
+    ///
+    /// The plugin's `resolve_stream_url` export is called with a JSON payload
+    /// `{ "url", "quality", "format", "audio_only" }`. Returns the raw CDN URL
+    /// string that the download engine can fetch directly.
+    ///
+    /// Returns `Err(DomainError::PluginError)` if no plugin claims the URL or
+    /// if the plugin's `resolve_stream_url` fails. Returns
+    /// `Err(DomainError::NotFound)` when the URL is claimed by the built-in
+    /// HTTP module which does not need resolution (callers should treat the
+    /// original URL as already downloadable).
+    ///
+    /// The default implementation returns `NotFound` (treat URL as-is). Override
+    /// in adapter implementations that back WASM plugins.
+    fn resolve_stream_url(
+        &self,
+        _url: &str,
+        _quality: &str,
+        _format: &str,
+        _audio_only: bool,
+    ) -> Result<String, DomainError> {
+        Err(DomainError::NotFound(
+            "resolve_stream_url not supported by this loader".into(),
+        ))
+    }
 }

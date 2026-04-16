@@ -30,12 +30,14 @@ use crate::application::read_models::plugin_view::PluginViewDto;
 use crate::domain::model::config::{AppConfig, ConfigPatch};
 use crate::domain::model::download::{DownloadId, DownloadState};
 use crate::domain::model::views::{DownloadFilter, SortDirection, SortField, SortOrder};
+use crate::domain::ports::driven::PluginLoader;
 
 /// Shared application state managed by Tauri.
 pub struct AppState {
     pub command_bus: Arc<CommandBus>,
     pub query_bus: Arc<QueryBus>,
     pub download_log_store: Arc<DownloadLogStore>,
+    pub plugin_loader: Arc<dyn PluginLoader>,
 }
 
 #[tauri::command]
@@ -635,6 +637,58 @@ pub async fn settings_update(
         .command_bus
         .handle_update_config(cmd)
         .map(SettingsDto::from)
+        .map_err(|e| e.to_string())
+}
+
+// ── Media Download ───────────────────────────────────────────────────
+
+/// Start a download for a media URL (YouTube, Vimeo, SoundCloud, etc.) via
+/// the appropriate WASM plugin.
+///
+/// The plugin's `resolve_stream_url` export is called to obtain a direct CDN
+/// URL for the requested quality and format. The resulting URL is then handed
+/// to the normal download engine. For generic HTTP URLs (claimed by the
+/// built-in HTTP module), the URL is used as-is.
+#[tauri::command]
+pub async fn download_media_start(
+    state: State<'_, AppState>,
+    url: String,
+    quality: String,
+    format: String,
+    audio_only: bool,
+) -> Result<u64, String> {
+    let plugin_loader = state.plugin_loader.clone();
+    let url_clone = url.clone();
+    let quality_clone = quality.clone();
+    let format_clone = format.clone();
+
+    // Plugin calls are synchronous (Extism runs inside a Mutex). Run on the
+    // blocking thread pool so we don't starve the async executor.
+    let stream_url = tokio::task::spawn_blocking(move || {
+        match plugin_loader.resolve_stream_url(
+            &url_clone,
+            &quality_clone,
+            &format_clone,
+            audio_only,
+        ) {
+            Ok(cdn_url) => Ok(cdn_url),
+            // builtin-http: URL is already a direct download link.
+            Err(crate::domain::error::DomainError::NotFound(_)) => Ok(url_clone),
+            Err(e) => Err(format!("Failed to resolve stream URL: {e}")),
+        }
+    })
+    .await
+    .map_err(|e| format!("Task join error: {e}"))??;
+
+    let cmd = crate::application::commands::StartDownloadCommand {
+        url: stream_url,
+        destination: None,
+    };
+    state
+        .command_bus
+        .handle_start_download(cmd)
+        .await
+        .map(|id| id.0)
         .map_err(|e| e.to_string())
 }
 

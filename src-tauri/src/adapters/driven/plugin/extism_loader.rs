@@ -134,6 +134,41 @@ impl PluginLoader for ExtismPluginLoader {
         self.registry.set_enabled(name, enabled)
     }
 
+    fn resolve_stream_url(
+        &self,
+        url: &str,
+        quality: &str,
+        format: &str,
+        audio_only: bool,
+    ) -> Result<String, DomainError> {
+        // Find the plugin that claims this URL.
+        let info = self
+            .resolve_url(url)?
+            .ok_or_else(|| DomainError::PluginError(format!("no plugin can handle URL: {url}")))?;
+
+        // The built-in HTTP module handles direct URLs — no resolution needed.
+        if info.name() == "builtin-http" {
+            return Err(DomainError::NotFound("builtin-http".into()));
+        }
+
+        let input = serde_json::json!({
+            "url": url,
+            "quality": quality,
+            "format": format,
+            "audio_only": audio_only,
+        })
+        .to_string();
+
+        self.registry
+            .call_plugin(info.name(), "resolve_stream_url", &input)
+            .map_err(|e| {
+                DomainError::PluginError(format!(
+                    "plugin '{}' resolve_stream_url failed: {e}",
+                    info.name()
+                ))
+            })
+    }
+
     fn load_from_dir(&self, dir: &std::path::Path) -> Result<(), DomainError> {
         let (manifest, _wasm_path) = parse_manifest(dir)?;
         let name = manifest.info().name();
