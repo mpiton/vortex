@@ -6,6 +6,14 @@
 use crate::domain::error::DomainError;
 use crate::domain::model::plugin::{PluginInfo, PluginManifest};
 
+/// Result of a `download_to_file` plugin call.
+pub struct DownloadedFileInfo {
+    /// Absolute path to the merged output file on the host filesystem.
+    pub path: std::path::PathBuf,
+    /// File size in bytes (obtained from host `std::fs::metadata`).
+    pub size: u64,
+}
+
 /// Manages WASM plugin lifecycle and URL resolution.
 ///
 /// The adapter implementation uses Extism to load `.wasm` files,
@@ -65,5 +73,47 @@ pub trait PluginLoader: Send + Sync {
         Err(DomainError::NotFound(
             "resolve_stream_url not supported by this loader".into(),
         ))
+    }
+
+    /// Download a video/audio file using the plugin's native download+merge
+    /// pipeline (e.g. yt-dlp DASH). Used as fallback when `resolve_stream_url`
+    /// returns `AdaptiveStreamOnly`.
+    ///
+    /// Returns `Err(DomainError::NotFound)` by default (adapters that do not
+    /// support this operation rely on the default).
+    fn download_to_file(
+        &self,
+        _url: &str,
+        _quality: &str,
+        _format: &str,
+        _output_dir: &str,
+        _audio_only: bool,
+    ) -> Result<DownloadedFileInfo, DomainError> {
+        Err(DomainError::NotFound(
+            "download_to_file not supported by this loader".into(),
+        ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::error::DomainError;
+    use crate::domain::model::plugin::{PluginInfo, PluginManifest};
+
+    struct MinimalLoader;
+    impl PluginLoader for MinimalLoader {
+        fn load(&self, _: &PluginManifest) -> Result<(), DomainError> { Ok(()) }
+        fn unload(&self, _: &str) -> Result<(), DomainError> { Ok(()) }
+        fn resolve_url(&self, _: &str) -> Result<Option<PluginInfo>, DomainError> { Ok(None) }
+        fn list_loaded(&self) -> Result<Vec<PluginInfo>, DomainError> { Ok(vec![]) }
+        fn set_enabled(&self, _: &str, _: bool) -> Result<(), DomainError> { Ok(()) }
+    }
+
+    #[test]
+    fn test_download_to_file_default_returns_not_found() {
+        let loader = MinimalLoader;
+        let result = loader.download_to_file("https://youtu.be/x", "1080p", "mp4", "/tmp", false);
+        assert!(matches!(result, Err(DomainError::NotFound(_))));
     }
 }
