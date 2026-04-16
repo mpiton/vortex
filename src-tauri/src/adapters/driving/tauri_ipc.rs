@@ -739,7 +739,8 @@ pub async fn download_media_start(
                         &url_clone,
                         &quality_clone,
                         &format_clone,
-                        temp_dir.to_str().unwrap_or("/tmp/vortex-downloads"),
+                        temp_dir.to_str()
+                            .ok_or_else(|| "temp dir path is not valid UTF-8".to_string())?,
                         audio_only,
                     )
                     .map_err(|e| format!("download_to_file failed: {e}"))?;
@@ -767,7 +768,13 @@ pub async fn download_media_start(
                 if std::fs::rename(&file_info.path, &dest_path).is_err() {
                     std::fs::copy(&file_info.path, &dest_path)
                         .map_err(|e| format!("failed to copy merged file: {e}"))?;
-                    let _ = std::fs::remove_file(&file_info.path);
+                    if let Err(e) = std::fs::remove_file(&file_info.path) {
+                        tracing::warn!(
+                            path = %file_info.path.display(),
+                            error = %e,
+                            "failed to remove temp file after copy"
+                        );
+                    }
                 }
 
                 Ok(StreamResolution::LocalFile {
