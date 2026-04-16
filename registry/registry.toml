@@ -10,11 +10,11 @@
 name                 = "vortex-mod-youtube"
 description          = "YouTube video/playlist/shorts/channel downloader via yt-dlp"
 author               = "vortex-community"
-version              = "1.2.0"
+version              = "1.2.1"
 category             = "crawler"
 repository           = "https://github.com/mpiton/vortex-mod-youtube"
-checksum_sha256      = "b92f761557dad9a21562e7658451f992947d3c7039f49ede84b554ae21bcff82"
-checksum_sha256_toml = "8aae5a42bf8b426170bb338d346abf058b4660a13f1fcc83561e77fa079dad36"
+checksum_sha256      = "ed0d66b73f22cefabfec0845ecbcebc6990777a4ca6a29dcf9d6124123db334d"
+checksum_sha256_toml = "ac8407a9f3b7d68a706ecfa2da48a3593891317a0dbc86b5f0119c6b466cb6c4"
 official             = true
 min_vortex_version   = "0.1.0"
 
