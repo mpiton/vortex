@@ -6,7 +6,7 @@
 use crate::application::command_bus::CommandBus;
 use crate::application::error::AppError;
 use crate::domain::event::DomainEvent;
-use crate::domain::model::download::{Download, DownloadId, FileSize, Url};
+use crate::domain::model::download::{Download, DownloadId, Url};
 
 impl CommandBus {
     pub async fn handle_register_local_file(
