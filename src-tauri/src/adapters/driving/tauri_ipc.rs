@@ -642,13 +642,45 @@ pub async fn settings_update(
 
 // ── Media Download ───────────────────────────────────────────────────
 
+/// Returns `true` when the URL host belongs to a known media streaming
+/// platform that requires a WASM plugin to resolve the CDN stream URL.
+///
+/// Used to surface a clear "install the plugin" error instead of letting
+/// the download engine try — and retry — fetching an HTML page.
+fn is_known_media_platform(url: &str) -> bool {
+    // Extract the host portion of the URL (tolerant of malformed URLs).
+    let host = url
+        .split("://")
+        .nth(1)
+        .unwrap_or("")
+        .split('/')
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    // Strip "www." prefix for normalised comparison.
+    let host = host.strip_prefix("www.").unwrap_or(&host);
+
+    matches!(
+        host,
+        "youtube.com"
+            | "youtu.be"
+            | "m.youtube.com"
+            | "music.youtube.com"
+            | "vimeo.com"
+            | "player.vimeo.com"
+            | "soundcloud.com"
+            | "on.soundcloud.com"
+    )
+}
+
 /// Start a download for a media URL (YouTube, Vimeo, SoundCloud, etc.) via
 /// the appropriate WASM plugin.
 ///
 /// The plugin's `resolve_stream_url` export is called to obtain a direct CDN
 /// URL for the requested quality and format. The resulting URL is then handed
 /// to the normal download engine. For generic HTTP URLs (claimed by the
-/// built-in HTTP module), the URL is used as-is.
+/// built-in HTTP module), the URL is used as-is — unless the URL belongs to a
+/// known media platform, in which case a "plugin required" error is returned.
 #[tauri::command]
 pub async fn download_media_start(
     state: State<'_, AppState>,
@@ -672,8 +704,22 @@ pub async fn download_media_start(
             audio_only,
         ) {
             Ok(cdn_url) => Ok(cdn_url),
-            // builtin-http: URL is already a direct download link.
-            Err(crate::domain::error::DomainError::NotFound(_)) => Ok(url_clone),
+            // builtin-http: no WASM plugin claimed the URL.
+            // For known media platforms this means the required plugin is not
+            // installed — return a clear error rather than feeding the HTML
+            // page URL to the download engine and entering a retry loop.
+            Err(crate::domain::error::DomainError::NotFound(_)) => {
+                if is_known_media_platform(&url_clone) {
+                    Err(
+                        "No media plugin installed for this URL. \
+                         Open the Plugin Store and install the appropriate plugin (e.g. vortex-mod-youtube)."
+                            .to_string(),
+                    )
+                } else {
+                    // Generic direct-download URL — pass through as-is.
+                    Ok(url_clone)
+                }
+            }
             Err(e) => Err(format!("Failed to resolve stream URL: {e}")),
         }
     })
