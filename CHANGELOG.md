@@ -10,6 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - YouTube downloads silently downgrading to 360p when 1080p was requested but only
   DASH streams were available.
+- YouTube `download_to_file` returning `HTTP Error 403: Forbidden` on protected
+  videos (VEVO music, age-gated content). Bumped `vortex-mod-youtube` to 1.2.3
+  which passes `--extractor-args "youtube:player_client=default,web_safari,android_vr,tv"`,
+  `--retries 3`, `--fragment-retries 3`, and `--quiet` to yt-dlp.
 - Completed downloads showed ~96% progress instead of 100%: the last `DownloadProgress` event (throttled to 500ms) could arrive before the final chunk was written; `compute_progress_percent()` now forces 100.0 when `state == "Completed"`
 - Progress values showed excessive decimal places (e.g. "96.247262...%"); rounded to one decimal place using `(v * 10.0).round() / 10.0`
 - Downloads never transitioned to Completed state: queue_manager received DownloadCompleted events but never persisted the state change; added `handle_download_completed()` analogous to `handle_download_failed()` to load the aggregate, call `.complete()`, and save it
