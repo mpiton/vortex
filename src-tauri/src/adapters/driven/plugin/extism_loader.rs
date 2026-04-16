@@ -44,6 +44,16 @@ impl ExtismPluginLoader {
     pub fn builtin_http(&self) -> &HttpModule {
         &self.builtin_http
     }
+
+    fn resolve_wasm_plugin(&self, url: &str) -> Result<PluginInfo, DomainError> {
+        let info = self
+            .resolve_url(url)?
+            .ok_or_else(|| DomainError::PluginError(format!("no plugin can handle URL: {url}")))?;
+        if info.name() == "builtin-http" {
+            return Err(DomainError::NotFound("builtin-http".into()));
+        }
+        Ok(info)
+    }
 }
 
 impl PluginLoader for ExtismPluginLoader {
@@ -142,13 +152,7 @@ impl PluginLoader for ExtismPluginLoader {
         format: &str,
         audio_only: bool,
     ) -> Result<String, DomainError> {
-        let info = self
-            .resolve_url(url)?
-            .ok_or_else(|| DomainError::PluginError(format!("no plugin can handle URL: {url}")))?;
-
-        if info.name() == "builtin-http" {
-            return Err(DomainError::NotFound("builtin-http".into()));
-        }
+        let info = self.resolve_wasm_plugin(url)?;
 
         let input = serde_json::json!({
             "url": url,
@@ -181,13 +185,7 @@ impl PluginLoader for ExtismPluginLoader {
         output_dir: &str,
         audio_only: bool,
     ) -> Result<DownloadedFileInfo, DomainError> {
-        let info = self
-            .resolve_url(url)?
-            .ok_or_else(|| DomainError::PluginError(format!("no plugin can handle URL: {url}")))?;
-
-        if info.name() == "builtin-http" {
-            return Err(DomainError::NotFound("builtin-http".into()));
-        }
+        let info = self.resolve_wasm_plugin(url)?;
 
         let input = serde_json::json!({
             "url": url,
@@ -225,8 +223,8 @@ impl PluginLoader for ExtismPluginLoader {
         }
 
         let size = std::fs::metadata(&canon_path)
-            .map(|m| m.len())
-            .unwrap_or(0);
+            .map_err(|e| DomainError::StorageError(format!("failed to stat downloaded file: {e}")))?
+            .len();
 
         Ok(DownloadedFileInfo {
             path: canon_path,
