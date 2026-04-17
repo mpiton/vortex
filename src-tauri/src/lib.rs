@@ -20,7 +20,7 @@ pub use adapters::driven::credential::NoopCredentialStore;
 pub use adapters::driven::event::TokioEventBus;
 pub use adapters::driven::event::spawn_tauri_event_bridge;
 pub use adapters::driven::extractor::VortexArchiveExtractor;
-pub use adapters::driven::filesystem::FsFileStorage;
+pub use adapters::driven::filesystem::{FsFileStorage, resolve_system_download_dir};
 pub use adapters::driven::logging::download_log_bridge::spawn_download_log_bridge;
 pub use adapters::driven::logging::download_log_store::DownloadLogStore;
 pub use adapters::driven::network::ReqwestHttpClient;
@@ -111,7 +111,10 @@ pub fn run() {
                 .map_err(|e| e.to_string())?;
             let http_client: Arc<dyn HttpClient> =
                 Arc::new(ReqwestHttpClient::with_client(reqwest_client.clone()));
-            let config_store: Arc<dyn ConfigStore> = Arc::new(TomlConfigStore::new(config_path));
+            let config_store: Arc<dyn ConfigStore> = Arc::new(TomlConfigStore::new(
+                config_path,
+                resolve_system_download_dir(),
+            ));
             let credential_store: Arc<dyn CredentialStore> = Arc::new(KeyringCredentialStore);
             let clipboard_observer: Arc<dyn ClipboardObserver> =
                 Arc::new(TauriClipboardObserver::new(app_handle.clone()));

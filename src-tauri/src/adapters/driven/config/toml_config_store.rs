@@ -13,20 +13,27 @@ use crate::domain::ports::driven::ConfigStore;
 /// Persists application configuration as a TOML file.
 pub struct TomlConfigStore {
     path: PathBuf,
+    /// Injected at construction. Used to hydrate `AppConfig::download_dir`
+    /// when the TOML file does not yet exist on disk.
+    default_download_dir: Option<String>,
     lock: Mutex<()>,
 }
 
 impl TomlConfigStore {
-    pub fn new(path: PathBuf) -> Self {
+    pub fn new(path: PathBuf, default_download_dir: Option<String>) -> Self {
         Self {
             path,
+            default_download_dir,
             lock: Mutex::new(()),
         }
     }
 
     fn read_or_default(&self) -> Result<AppConfig, DomainError> {
         if !self.path.exists() {
-            return Ok(AppConfig::default());
+            return Ok(AppConfig {
+                download_dir: self.default_download_dir.clone(),
+                ..AppConfig::default()
+            });
         }
         let content = std::fs::read_to_string(&self.path)
             .map_err(|e| DomainError::StorageError(format!("failed to read config: {e}")))?;
@@ -245,7 +252,7 @@ mod tests {
     fn test_get_config_returns_defaults_when_file_missing() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
-        let store = TomlConfigStore::new(path.clone());
+        let store = TomlConfigStore::new(path.clone(), None);
 
         let config = store.get_config().unwrap();
         assert_eq!(config, AppConfig::default());
@@ -257,7 +264,7 @@ mod tests {
     fn test_save_load_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
-        let store = TomlConfigStore::new(path);
+        let store = TomlConfigStore::new(path, None);
 
         let patch = ConfigPatch {
             max_concurrent_downloads: Some(10),
@@ -280,7 +287,7 @@ mod tests {
     fn test_partial_patch_preserves_other_fields() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
-        let store = TomlConfigStore::new(path);
+        let store = TomlConfigStore::new(path, None);
 
         // Set some values
         store
@@ -307,7 +314,7 @@ mod tests {
     fn test_creates_parent_directories() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("nested").join("deep").join("config.toml");
-        let store = TomlConfigStore::new(path.clone());
+        let store = TomlConfigStore::new(path.clone(), None);
 
         let config = store.get_config().unwrap();
         assert_eq!(config, AppConfig::default());
@@ -321,7 +328,7 @@ mod tests {
         // Write a partial TOML file
         std::fs::write(&path, "theme = \"dark\"\n").unwrap();
 
-        let store = TomlConfigStore::new(path);
+        let store = TomlConfigStore::new(path, None);
         let config = store.get_config().unwrap();
 
         assert_eq!(config.theme, "dark");
@@ -334,7 +341,7 @@ mod tests {
     fn test_nullable_fields_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
-        let store = TomlConfigStore::new(path);
+        let store = TomlConfigStore::new(path, None);
 
         // Set a nullable field
         let updated = store
@@ -359,5 +366,45 @@ mod tests {
         assert_eq!(cleared.speed_limit_bytes_per_sec, None);
         // proxy_url should still be set
         assert_eq!(cleared.proxy_url, Some("http://proxy:8080".to_string()));
+    }
+
+    #[test]
+    fn test_first_load_hydrates_download_dir_from_system_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let system_dir = Some("/home/alice/Downloads".to_string());
+
+        let store = TomlConfigStore::new(path.clone(), system_dir.clone());
+        let config = store.get_config().unwrap();
+
+        assert_eq!(config.download_dir, system_dir);
+        assert!(path.exists(), "first load must write the file");
+    }
+
+    #[test]
+    fn test_first_load_without_system_default_leaves_download_dir_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+
+        let store = TomlConfigStore::new(path, None);
+        let config = store.get_config().unwrap();
+
+        assert_eq!(config.download_dir, None);
+    }
+
+    #[test]
+    fn test_existing_config_preserves_user_download_dir_even_if_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "theme = \"dark\"\n").unwrap();
+
+        let store = TomlConfigStore::new(path, Some("/should/not/be/used".to_string()));
+        let config = store.get_config().unwrap();
+
+        assert_eq!(
+            config.download_dir, None,
+            "existing config must not be overwritten by system default"
+        );
+        assert_eq!(config.theme, "dark");
     }
 }
