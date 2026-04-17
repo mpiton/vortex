@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Clear completed / Clear failed downloads**: two new toolbar buttons in the Downloads view, separated from the bulk actions by a vertical separator. Each opens a confirmation dialog with an optional "Also delete files from disk" checkbox gated behind a prominent red warning panel. Success and error outcomes are reported via toasts.
+- `sonner` toast notifications (new dependency) mounted globally in `App.tsx`, with a thin `src/lib/toast.ts` wrapper so components do not depend on the library directly.
+
 ### Fixed
 - Frontend briefly showing stale state after a download completed: `DownloadCompleted` fired before `QueueManager` persisted `state = Completed` to SQLite, so a re-fetch triggered by the event could read the previous state. New `DownloadCompletedPersisted` event emitted *after* the save; the Tauri bridge maps it to the same `download-completed` frontend event so existing invalidation logic is reused without changes.
 - `downloaded_bytes` stayed at 0 in SQLite for downloads that finished in under 500 ms (the `DownloadProgress` throttle window): `segment_worker` now emits one final `DownloadProgress` right before `SegmentCompleted` so `progress_bridge` always observes the real byte count.
