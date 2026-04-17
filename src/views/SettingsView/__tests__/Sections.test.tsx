@@ -51,7 +51,7 @@ const mockConfig: AppConfig = {
   connectionTimeoutSeconds: 30,
   webInterfaceEnabled: false,
   webInterfacePort: 9876,
-  restApiEnabled: false,
+  restApiEnabled: true,
   apiKey: 'test-api-key-abc-123',
   websocketEnabled: true,
   minFileSizeMb: 1,
@@ -177,7 +177,9 @@ describe('RemoteAccessSection', () => {
   });
 
   it('should not show API key when REST API is disabled', () => {
-    renderWithQuery(<RemoteAccessSection config={mockConfig} />);
+    renderWithQuery(
+      <RemoteAccessSection config={{ ...mockConfig, restApiEnabled: false }} />,
+    );
     expect(screen.queryByText('API Key')).not.toBeInTheDocument();
   });
 

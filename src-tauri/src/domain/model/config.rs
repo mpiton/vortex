@@ -40,10 +40,18 @@ pub struct AppConfig {
     pub connection_timeout_seconds: u32,
 
     // ── Remote Access ────────────────────────────────────────────────
+    /// Whether to spawn the embedded web/REST server on startup.
+    /// When `false` (default), no socket is bound regardless of the
+    /// `rest_api_enabled` / `websocket_enabled` preferences below.
     pub web_interface_enabled: bool,
     pub web_interface_port: u16,
+    /// User-facing preference: inert while `web_interface_enabled` is
+    /// `false`. Callers that spawn the server MUST also enforce
+    /// `api_key` validity before serving requests.
     pub rest_api_enabled: bool,
     pub api_key: String,
+    /// User-facing preference: inert while `web_interface_enabled` is
+    /// `false`. See `rest_api_enabled`.
     pub websocket_enabled: bool,
 
     // ── Browser Integration ──────────────────────────────────────────

@@ -17,7 +17,7 @@ const baseConfig: AppConfig = {
   maxConcurrentDownloads: 4,
   maxSegmentsPerDownload: 8,
   speedLimitBytesPerSec: null,
-  autoExtract: false,
+  autoExtract: true,
   theme: "dark",
   locale: "en",
   clipboardMonitoring: false,
