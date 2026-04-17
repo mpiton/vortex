@@ -178,7 +178,10 @@ mod tests {
         assert_eq!(config.download_dir, None);
 
         // General
-        assert!(config.auto_extract, "PRD §6.10: auto_extract defaults to ON");
+        assert!(
+            config.auto_extract,
+            "PRD §6.10: auto_extract defaults to ON"
+        );
 
         // Downloads
         assert_eq!(config.max_concurrent_downloads, 4);
