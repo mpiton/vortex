@@ -335,7 +335,7 @@ mod tests {
 
         assert_eq!(config.theme, "dark");
         // All other fields should be defaults
-        assert_eq!(config.max_concurrent_downloads, 3);
+        assert_eq!(config.max_concurrent_downloads, 4);
         assert!(config.notifications_enabled);
     }
 
