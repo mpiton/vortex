@@ -196,7 +196,6 @@
     "pastePlaceholder": "Paste URLs here (one per line)…",
     "analyze": "Analyze Links",
     "resolving": "Resolving…",
-    "analyzeFailed": "Failed to analyze links. Please try again.",
     "clipboardComingSoon": "Coming in a future update",
     "filters": {
       "all": "All",

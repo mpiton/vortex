@@ -77,14 +77,12 @@ vi.mock("react-i18next", async () => {
 });
 
 // Mock sonner globally so tests don't render actual toasts and can assert
-// toast.error / toast.success calls when needed.
+// toast.error / toast.success calls when needed. The surface mirrors
+// `src/lib/toast.ts` (the only public channel to sonner in production).
 vi.mock("sonner", () => ({
   toast: {
     success: vi.fn(),
     error: vi.fn(),
-    info: vi.fn(),
-    warning: vi.fn(),
-    promise: vi.fn(),
   },
   Toaster: () => null,
 }));

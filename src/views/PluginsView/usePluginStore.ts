@@ -27,8 +27,18 @@ export function usePluginStore() {
     "plugin_store_install",
     {
       invalidateKeys: [STORE_QUERY_KEY],
+      onMutate: (variables) => {
+        setInstallingNames((s) => new Set(s).add(variables.name));
+      },
       onSuccess: (_data, variables) => {
         toast.success(t("plugins.toast.installSuccess", { name: variables.name }));
+      },
+      onSettled: (_data, _error, variables) => {
+        setInstallingNames((s) => {
+          const next = new Set(s);
+          next.delete(variables.name);
+          return next;
+        });
       },
     },
   );
@@ -37,49 +47,29 @@ export function usePluginStore() {
     "plugin_store_update",
     {
       invalidateKeys: [STORE_QUERY_KEY],
+      onMutate: (variables) => {
+        setUpdatingNames((s) => new Set(s).add(variables.name));
+      },
       onSuccess: (_data, variables) => {
         toast.success(t("plugins.toast.updateSuccess", { name: variables.name }));
       },
+      onSettled: (_data, _error, variables) => {
+        setUpdatingNames((s) => {
+          const next = new Set(s);
+          next.delete(variables.name);
+          return next;
+        });
+      },
     },
   );
-
-  const trackInstall = (name: string) => {
-    setInstallingNames((s) => new Set(s).add(name));
-    installMutation.mutate(
-      { name },
-      {
-        onSettled: () =>
-          setInstallingNames((s) => {
-            const next = new Set(s);
-            next.delete(name);
-            return next;
-          }),
-      },
-    );
-  };
-
-  const trackUpdate = (name: string) => {
-    setUpdatingNames((s) => new Set(s).add(name));
-    updateMutation.mutate(
-      { name },
-      {
-        onSettled: () =>
-          setUpdatingNames((s) => {
-            const next = new Set(s);
-            next.delete(name);
-            return next;
-          }),
-      },
-    );
-  };
 
   return {
     entries,
     isLoading,
     isError,
     refreshStore: () => refreshMutation.mutate(),
-    installPlugin: trackInstall,
-    updatePlugin: trackUpdate,
+    installPlugin: (name: string) => installMutation.mutate({ name }),
+    updatePlugin: (name: string) => updateMutation.mutate({ name }),
     isInstalling: (name: string) => installingNames.has(name),
     isUpdating: (name: string) => updatingNames.has(name),
     isRefreshing: refreshMutation.isPending,

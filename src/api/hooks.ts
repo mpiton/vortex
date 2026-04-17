@@ -29,10 +29,31 @@ export function useTauriQuery<T>(
 // `toast.success(t('<ns>.toast.<action>'))` with a business-specific label.
 interface UseTauriMutationOptions<TData, TVariables> {
   invalidateKeys?: readonly (readonly unknown[])[];
+  onMutate?: (variables: TVariables) => unknown | Promise<unknown>;
   onSuccess?: (data: TData, variables: TVariables, context: unknown) => void;
   onError?: (error: Error, variables: TVariables, context: unknown) => void;
+  onSettled?: (
+    data: TData | undefined,
+    error: Error | null,
+    variables: TVariables,
+    context: unknown,
+  ) => void;
+  // onError has precedence over silentError. When onError is provided, the
+  // default toast is skipped regardless of silentError.
   silentError?: boolean;
   errorMessage?: (err: Error) => string;
+}
+
+function resolveErrorMessage(
+  error: Error,
+  mapper?: (err: Error) => string,
+): string {
+  if (!mapper) return error.message;
+  try {
+    return mapper(error);
+  } catch {
+    return error.message;
+  }
 }
 
 export function useTauriMutation<
@@ -44,6 +65,7 @@ export function useTauriMutation<
   return useMutation<TData, Error, TVariables>({
     mutationFn: (variables) =>
       tauriInvoke<TData>(command, variables as Record<string, unknown> | undefined),
+    onMutate: options?.onMutate,
     onSuccess: (data, variables, context) => {
       if (options?.invalidateKeys) {
         for (const key of options.invalidateKeys) {
@@ -58,7 +80,8 @@ export function useTauriMutation<
         return;
       }
       if (options?.silentError) return;
-      toast.error(options?.errorMessage?.(error) ?? error.message);
+      toast.error(resolveErrorMessage(error, options?.errorMessage));
     },
+    onSettled: options?.onSettled,
   });
 }

@@ -145,6 +145,44 @@ describe('useTauriMutation', () => {
     expect(toast.error).not.toHaveBeenCalled();
   });
 
+  it('should fall back to raw error message when errorMessage mapper throws', async () => {
+    vi.mocked(tauriInvoke).mockRejectedValueOnce(new Error('raw'));
+    const { result } = renderHook(
+      () =>
+        useTauriMutation('download_pause', {
+          errorMessage: () => {
+            throw new Error('mapper exploded');
+          },
+        }),
+      { wrapper: makeWrapper() }
+    );
+    await act(async () => {
+      result.current.mutate({ id: '1' } as Record<string, unknown>);
+    });
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect(toast.error).toHaveBeenCalledWith('raw');
+    expect(result.current.error?.message).toBe('raw');
+  });
+
+  it('should let onError take precedence over silentError', async () => {
+    vi.mocked(tauriInvoke).mockRejectedValueOnce(new Error('conflict'));
+    const customOnError = vi.fn();
+    const { result } = renderHook(
+      () =>
+        useTauriMutation('download_pause', {
+          onError: customOnError,
+          silentError: true,
+        }),
+      { wrapper: makeWrapper() }
+    );
+    await act(async () => {
+      result.current.mutate({ id: '1' } as Record<string, unknown>);
+    });
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect(customOnError).toHaveBeenCalled();
+    expect(toast.error).not.toHaveBeenCalled();
+  });
+
   it('should use errorMessage mapper when provided', async () => {
     vi.mocked(tauriInvoke).mockRejectedValueOnce(new Error('raw'));
     const { result } = renderHook(
