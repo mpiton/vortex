@@ -163,10 +163,15 @@ impl QueueManager {
     /// spuriously free a slot that was never occupied — letting
     /// `on_slot_freed` start one extra download above `max_concurrent`.
     pub async fn handle_download_completed(&self, id: DownloadId) -> Result<(), AppError> {
-        // `None`: race with a delete — assume the download was active and
-        // decrement to avoid leaking a slot. Only the Completed/Error branch
-        // (pre-marked registration via RegisterLocalFileCommand) skips the
-        // decrement, because there we know the download never occupied a slot.
+        // Only decrement when we can prove the download *was* active in the
+        // repo. Two cases skip the decrement:
+        //   - Some(state ∈ {Completed, Cancelled, Error, …}): registered
+        //     directly in a terminal state (e.g. RegisterLocalFileCommand)
+        //     — never occupied a slot.
+        //   - None: row was removed (cancel path publishes DownloadCancelled
+        //     which already decremented). Treating None as "was active" here
+        //     would double-decrement on a late DownloadCompleted racing a
+        //     cancel.
         let should_decrement = match self.download_repo.find_by_id(id)? {
             Some(mut download) => {
                 let was_active = matches!(
@@ -198,7 +203,7 @@ impl QueueManager {
                     download_id = id.0,
                     "handle_download_completed: download not found in repo"
                 );
-                true
+                false
             }
         };
 
@@ -741,7 +746,14 @@ mod tests {
         // NOT decrement active_count in that case — the slot was never occupied.
         // Without this gate, registering N local files would let the scheduler
         // start N extra downloads beyond max_concurrent.
-        let d = make_download(1, 5, DownloadState::Completed);
+        //
+        // NB: make_download only handles Queued/Error/Retry; for Completed we
+        // have to run the real state-machine transitions so the download
+        // actually ends in Completed when the handler looks it up.
+        let mut d = make_download(1, 5, DownloadState::Queued);
+        d.start().unwrap();
+        d.complete().unwrap();
+        assert_eq!(d.state(), DownloadState::Completed);
         let repo = Arc::new(MockDownloadRepo::new(vec![d]));
         let engine = Arc::new(MockEngine::new());
         let bus = Arc::new(MockEventBus::new());
@@ -966,8 +978,11 @@ mod tests {
             1,
         );
 
-        // Should not error — unknown ID is logged and slot is freed gracefully
+        // Should not error — unknown ID is logged and no slot is freed.
+        // (Previously this decremented; changed to skip the decrement so a late
+        // DownloadCompleted arriving after DownloadCancelled cannot double-free
+        // the same slot.)
         qm.handle_download_completed(DownloadId(999)).await.unwrap();
-        assert_eq!(qm.active_count(), 0);
+        assert_eq!(qm.active_count(), 1);
     }
 }
