@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- Frontend briefly showing stale state after a download completed: `DownloadCompleted` fired before `QueueManager` persisted `state = Completed` to SQLite, so a re-fetch triggered by the event could read the previous state. New `DownloadCompletedPersisted` event emitted *after* the save; the Tauri bridge maps it to the same `download-completed` frontend event so existing invalidation logic is reused without changes.
+- `downloaded_bytes` stayed at 0 in SQLite for downloads that finished in under 500 ms (the `DownloadProgress` throttle window): `segment_worker` now emits one final `DownloadProgress` right before `SegmentCompleted` so `progress_bridge` always observes the real byte count.
+- State-transition saves could regress `downloaded_bytes` back to a stale lower value when racing with `progress_bridge` writes. `SqliteDownloadRepo.save` now excludes `downloaded_bytes` from the UPSERT column list and uses `MAX(excluded.downloaded_bytes, COALESCE(downloads.downloaded_bytes, 0))` so only larger values win.
+- `DownloadView` / `DownloadDetailView` now expose `source_hostname` so the UI can show the origin host (e.g. `www.youtube.com`) rather than the CDN host (`rr1---sn-n4g-cvq6.googlevideo.com`) that the download URL resolves to.
 - YouTube downloads silently downgrading to 360p when 1080p was requested but only
   DASH streams were available.
 - YouTube `download_to_file` returning `HTTP Error 403: Forbidden` on protected

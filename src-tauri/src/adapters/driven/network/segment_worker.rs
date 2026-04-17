@@ -244,6 +244,16 @@ pub(crate) async fn download_segment(params: SegmentParams) -> Result<u64, Segme
         return Err(SegmentError::Http(msg));
     }
 
+    // Emit a final progress event so that progress_bridge always updates
+    // downloads.downloaded_bytes at least once — even for fast small files
+    // that complete before the 500ms periodic throttle fires.
+    let final_total = shared_downloaded.load(Ordering::Relaxed);
+    event_bus.publish(DomainEvent::DownloadProgress {
+        id: download_id,
+        downloaded_bytes: final_total,
+        total_bytes: total_file_size,
+    });
+
     event_bus.publish(DomainEvent::SegmentCompleted {
         download_id,
         segment_id: segment_index,
@@ -672,5 +682,83 @@ mod tests {
         );
         // No writes to storage
         assert!(storage.writes.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_segment_emits_final_progress_before_segment_completed() {
+        // Regression for YouTube CDN / fast downloads: when the file downloads in
+        // < 500ms the 500ms throttle fires zero DownloadProgress events. The engine
+        // must still emit one final DownloadProgress just before SegmentCompleted so
+        // that progress_bridge can write the correct downloaded_bytes to SQLite.
+        let server = MockServer::start().await;
+        let body = vec![b'x'; 256];
+
+        Mock::given(method("GET"))
+            .and(path("/fast"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(body))
+            .mount(&server)
+            .await;
+
+        let storage = Arc::new(MockFileStorage::new());
+        let bus = Arc::new(CollectingEventBus::new());
+        let (_, pause_rx) = watch::channel(false);
+        let cancel = CancellationToken::new();
+        let shared_downloaded = Arc::new(AtomicU64::new(0));
+
+        let result = download_segment(SegmentParams {
+            client: make_client(),
+            file_storage: storage.clone(),
+            event_bus: bus.clone(),
+            download_id: DownloadId(99),
+            segment_index: 0,
+            url: format!("{}/fast", server.uri()),
+            start_byte: 0,
+            end_byte: u64::MAX, // no Content-Length sentinel
+            already_downloaded: 0,
+            total_file_size: 0,
+            dest_path: PathBuf::from("/tmp/final_progress_test.bin"),
+            pause_rx,
+            cancel_token: cancel,
+            shared_downloaded: shared_downloaded.clone(),
+        })
+        .await;
+
+        assert!(result.is_ok());
+
+        let events = bus.collected();
+
+        // There MUST be at least one DownloadProgress event
+        let progress_events: Vec<_> = events
+            .iter()
+            .filter(|e| matches!(e, DomainEvent::DownloadProgress { .. }))
+            .collect();
+        assert!(
+            !progress_events.is_empty(),
+            "expected at least one DownloadProgress event for a fast download"
+        );
+
+        // The final DownloadProgress must come BEFORE SegmentCompleted
+        let last_progress_pos = events
+            .iter()
+            .rposition(|e| matches!(e, DomainEvent::DownloadProgress { .. }))
+            .expect("progress event must exist");
+        let completed_pos = events
+            .iter()
+            .position(|e| {
+                matches!(
+                    e,
+                    DomainEvent::SegmentCompleted {
+                        download_id: DownloadId(99),
+                        segment_id: 0
+                    }
+                )
+            })
+            .expect("SegmentCompleted must exist");
+
+        assert!(
+            last_progress_pos < completed_pos,
+            "DownloadProgress (pos {last_progress_pos}) must come before \
+             SegmentCompleted (pos {completed_pos})"
+        );
     }
 }

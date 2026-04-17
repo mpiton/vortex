@@ -21,6 +21,13 @@ pub enum DomainEvent {
     DownloadCompleted {
         id: DownloadId,
     },
+    /// Emitted by QueueManager *after* persisting `state = Completed` to
+    /// SQLite.  The Tauri bridge forwards this to the frontend so that the
+    /// UI re-fetch that follows is guaranteed to read the correct state,
+    /// regardless of how fast the download finished.
+    DownloadCompletedPersisted {
+        id: DownloadId,
+    },
     DownloadFailed {
         id: DownloadId,
         error: String,

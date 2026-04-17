@@ -33,6 +33,7 @@ export interface DownloadView {
   id: string;
   fileName: string;
   url: string;
+  sourceHostname: string;
   state: DownloadState;
   progressPercent: number;
   speedBytesPerSec: number;
@@ -51,6 +52,7 @@ export interface DownloadDetailView {
   id: string;
   fileName: string;
   url: string;
+  sourceHostname: string;
   state: DownloadState;
   progressPercent: number;
   speedBytesPerSec: number;

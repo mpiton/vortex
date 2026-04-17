@@ -87,9 +87,13 @@ impl PluginRegistry {
         let mut plugin = plugin_handle
             .lock()
             .map_err(|_| DomainError::PluginError(format!("plugin '{name}' mutex poisoned")))?;
-        let result = plugin
-            .call::<&str, &str>(func, input)
-            .map_err(|e| DomainError::PluginError(format!("plugin call failed: {e}")))?;
+        let fn_exists = plugin.function_exists(func);
+        tracing::info!(plugin = name, func, fn_exists, "call_plugin pre-call");
+        let result = plugin.call::<&str, &str>(func, input).map_err(|e| {
+            DomainError::PluginError(format!(
+                "plugin call failed (function_exists={fn_exists}): {e}"
+            ))
+        })?;
         Ok(result.to_string())
     }
 }

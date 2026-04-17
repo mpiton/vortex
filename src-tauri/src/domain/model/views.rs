@@ -19,6 +19,9 @@ pub struct DownloadView {
     pub id: DownloadId,
     pub file_name: String,
     pub url: String,
+    /// The origin hostname (e.g. "www.youtube.com") — distinct from the
+    /// effective download URL which may point to a CDN (e.g. googlevideo.com).
+    pub source_hostname: String,
     pub state: DownloadState,
     pub progress_percent: f64,
     pub speed_bytes_per_sec: u64,
@@ -42,6 +45,7 @@ pub struct DownloadDetailView {
     pub id: DownloadId,
     pub file_name: String,
     pub url: String,
+    pub source_hostname: String,
     pub state: DownloadState,
     pub progress_percent: f64,
     pub speed_bytes_per_sec: u64,

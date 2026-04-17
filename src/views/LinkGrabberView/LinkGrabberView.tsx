@@ -51,8 +51,15 @@ export function LinkGrabberView() {
 
   const { mutate: startMediaDownload } = useTauriMutation<
     unknown,
-    { url: string; quality: string; format: string; audio_only: boolean }
-  >("download_media_start");
+    { url: string; quality: string; format: string; audioOnly: boolean; title?: string }
+  >("download_media_start", {
+    onSuccess: () => {
+      void navigate("/");
+    },
+    onError: (error) => {
+      setResolveError(error.message);
+    },
+  });
 
   const handlePasteUrls = (urls: string[]) => {
     // TODO: container: entries need a dedicated backend command for decryption
@@ -97,7 +104,8 @@ export function LinkGrabberView() {
         url: selectedMediaLink.originalUrl,
         quality: options.quality,
         format: options.format,
-        audio_only: options.audioOnly,
+        audioOnly: options.audioOnly,
+        title: options.title,
       });
     }
   };

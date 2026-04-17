@@ -85,6 +85,7 @@ fn record_download_event(store: &DownloadLogStore, event: &DomainEvent) {
             );
         }
         DomainEvent::DownloadProgress { .. }
+        | DomainEvent::DownloadCompletedPersisted { .. }
         | DomainEvent::PluginLoaded { .. }
         | DomainEvent::PluginUnloaded { .. }
         | DomainEvent::PackageCreated { .. }

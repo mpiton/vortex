@@ -73,6 +73,7 @@ export function MediaGrabberDialog({
       subtitles: selectedSubtitles,
       audioOnly,
       playlistItems: selectedPlaylistItems,
+      title: metadata?.title,
     });
     onOpenChange(false);
   };

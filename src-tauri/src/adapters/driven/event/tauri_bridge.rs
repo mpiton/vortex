@@ -20,6 +20,9 @@ fn event_name(event: &DomainEvent) -> &'static str {
         DomainEvent::DownloadResumed { .. } => "download-resumed",
         DomainEvent::DownloadResumedFromWait { .. } => "download-resumed-from-wait",
         DomainEvent::DownloadCompleted { .. } => "download-completed",
+        // Post-persist notification: same frontend event, guaranteed to
+        // fire after QueueManager has written state = Completed to SQLite.
+        DomainEvent::DownloadCompletedPersisted { .. } => "download-completed",
         DomainEvent::DownloadFailed { .. } => "download-failed",
         DomainEvent::DownloadRetrying { .. } => "download-retrying",
         DomainEvent::DownloadWaiting { .. } => "download-waiting",
@@ -47,6 +50,7 @@ fn event_payload(event: &DomainEvent) -> serde_json::Value {
         | DomainEvent::DownloadResumed { id }
         | DomainEvent::DownloadResumedFromWait { id }
         | DomainEvent::DownloadCompleted { id }
+        | DomainEvent::DownloadCompletedPersisted { id }
         | DomainEvent::DownloadCancelled { id }
         | DomainEvent::DownloadRemoved { id }
         | DomainEvent::DownloadWaiting { id }
@@ -110,6 +114,21 @@ fn to_tauri_event(event: &DomainEvent) -> (&'static str, serde_json::Value) {
 mod tests {
     use super::*;
     use crate::domain::model::download::DownloadId;
+
+    #[test]
+    fn test_download_completed_persisted_maps_to_same_event_as_completed() {
+        // DownloadCompletedPersisted must fire after the DB write; the frontend
+        // receives the same "download-completed" event name so its invalidation
+        // logic is reused without changes.
+        assert_eq!(
+            event_name(&DomainEvent::DownloadCompletedPersisted { id: DownloadId(5) }),
+            "download-completed"
+        );
+        let (name, payload) =
+            to_tauri_event(&DomainEvent::DownloadCompletedPersisted { id: DownloadId(42) });
+        assert_eq!(name, "download-completed");
+        assert_eq!(payload["id"], 42);
+    }
 
     #[test]
     fn test_event_name_download_variants() {

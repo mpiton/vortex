@@ -253,6 +253,7 @@ describe("MediaGrabberDialog", () => {
       subtitles: [],
       audioOnly: false,
       playlistItems: [],
+      title: "Test Video Title",
     });
     expect(onOpenChange).toHaveBeenCalledWith(false);
   });
