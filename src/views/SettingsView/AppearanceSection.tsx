@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useTauriMutation } from '@/api/hooks';
+import { toast } from '@/lib/toast';
 import type { AppConfig, AppConfigPatch, ThemeMode } from '@/types/settings';
 import { ACCENT_PRESETS } from '@/types/settings';
 import {
@@ -46,6 +47,7 @@ export function AppearanceSection({ config }: AppearanceSectionProps) {
       if (nextTheme === 'light' || nextTheme === 'dark' || nextTheme === 'auto') {
         setTheme(nextTheme);
       }
+      toast.success(t('settings.toast.updateSuccess'));
     },
   });
 
