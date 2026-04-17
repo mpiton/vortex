@@ -8,10 +8,40 @@ import type { PluginStoreEntry } from "@/types/plugin-store";
 
 const STORE_QUERY_KEY = ["plugin_store_list"] as const;
 
+// Tracks the count of concurrent operations per plugin name. A Set would lose
+// multiplicity when the same plugin is acted on twice: the first onSettled
+// would clear the flag while a second request is still in-flight.
+function incrementCounter(
+  prev: ReadonlyMap<string, number>,
+  name: string,
+): Map<string, number> {
+  const next = new Map(prev);
+  next.set(name, (next.get(name) ?? 0) + 1);
+  return next;
+}
+
+function decrementCounter(
+  prev: ReadonlyMap<string, number>,
+  name: string,
+): Map<string, number> {
+  const next = new Map(prev);
+  const current = next.get(name) ?? 0;
+  if (current <= 1) {
+    next.delete(name);
+  } else {
+    next.set(name, current - 1);
+  }
+  return next;
+}
+
 export function usePluginStore() {
   const { t } = useTranslation();
-  const [installingNames, setInstallingNames] = useState<Set<string>>(new Set());
-  const [updatingNames, setUpdatingNames] = useState<Set<string>>(new Set());
+  const [installingCounts, setInstallingCounts] = useState<ReadonlyMap<string, number>>(
+    new Map(),
+  );
+  const [updatingCounts, setUpdatingCounts] = useState<ReadonlyMap<string, number>>(
+    new Map(),
+  );
 
   const { data: entries = [], isLoading, isError } = useQuery({
     queryKey: STORE_QUERY_KEY,
@@ -28,17 +58,13 @@ export function usePluginStore() {
     {
       invalidateKeys: [STORE_QUERY_KEY],
       onMutate: (variables) => {
-        setInstallingNames((s) => new Set(s).add(variables.name));
+        setInstallingCounts((prev) => incrementCounter(prev, variables.name));
       },
       onSuccess: (_data, variables) => {
         toast.success(t("plugins.toast.installSuccess", { name: variables.name }));
       },
       onSettled: (_data, _error, variables) => {
-        setInstallingNames((s) => {
-          const next = new Set(s);
-          next.delete(variables.name);
-          return next;
-        });
+        setInstallingCounts((prev) => decrementCounter(prev, variables.name));
       },
     },
   );
@@ -48,17 +74,13 @@ export function usePluginStore() {
     {
       invalidateKeys: [STORE_QUERY_KEY],
       onMutate: (variables) => {
-        setUpdatingNames((s) => new Set(s).add(variables.name));
+        setUpdatingCounts((prev) => incrementCounter(prev, variables.name));
       },
       onSuccess: (_data, variables) => {
         toast.success(t("plugins.toast.updateSuccess", { name: variables.name }));
       },
       onSettled: (_data, _error, variables) => {
-        setUpdatingNames((s) => {
-          const next = new Set(s);
-          next.delete(variables.name);
-          return next;
-        });
+        setUpdatingCounts((prev) => decrementCounter(prev, variables.name));
       },
     },
   );
@@ -70,8 +92,8 @@ export function usePluginStore() {
     refreshStore: () => refreshMutation.mutate(),
     installPlugin: (name: string) => installMutation.mutate({ name }),
     updatePlugin: (name: string) => updateMutation.mutate({ name }),
-    isInstalling: (name: string) => installingNames.has(name),
-    isUpdating: (name: string) => updatingNames.has(name),
+    isInstalling: (name: string) => (installingCounts.get(name) ?? 0) > 0,
+    isUpdating: (name: string) => (updatingCounts.get(name) ?? 0) > 0,
     isRefreshing: refreshMutation.isPending,
   };
 }

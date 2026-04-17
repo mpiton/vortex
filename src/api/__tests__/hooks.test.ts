@@ -145,6 +145,22 @@ describe('useTauriMutation', () => {
     expect(toast.error).not.toHaveBeenCalled();
   });
 
+  it('should fall back to raw error message when errorMessage mapper returns a blank string', async () => {
+    vi.mocked(tauriInvoke).mockRejectedValueOnce(new Error('raw'));
+    const { result } = renderHook(
+      () =>
+        useTauriMutation('download_pause', {
+          errorMessage: () => '   ',
+        }),
+      { wrapper: makeWrapper() }
+    );
+    await act(async () => {
+      result.current.mutate({ id: '1' } as Record<string, unknown>);
+    });
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect(toast.error).toHaveBeenCalledWith('raw');
+  });
+
   it('should fall back to raw error message when errorMessage mapper throws', async () => {
     vi.mocked(tauriInvoke).mockRejectedValueOnce(new Error('raw'));
     const { result } = renderHook(
