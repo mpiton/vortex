@@ -1,10 +1,9 @@
 import { useRef, useState } from 'react';
 import { CheckCheck, Pause, Play, X, XCircle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
-import { useTauriMutation } from '@/api/hooks';
+import { useTauriMutation, useTauriQuery } from '@/api/hooks';
 import { downloadQueries } from '@/api/queries';
 import { useUiStore } from '@/stores/uiStore';
 import { toast } from '@/lib/toast';
@@ -20,7 +19,6 @@ const INVALIDATE_KEYS = [
 
 export function ActionsBar() {
   const { t } = useTranslation();
-  const queryClient = useQueryClient();
   const selectedDownloadIds = useUiStore((s) => s.selectedDownloadIds);
   const setSelectedDownloadIds = useUiStore((s) => s.setSelectedDownloadIds);
   const clearSelection = useUiStore((s) => s.clearSelection);
@@ -88,12 +86,16 @@ export function ActionsBar() {
 
   const hasSelection = selectedDownloadIds.length > 0;
 
-  const counts =
-    queryClient.getQueryData<Record<string, number>>(
-      downloadQueries.countByState(),
-    ) ?? {};
-  const completedCount = counts.Completed ?? 0;
-  const errorCount = counts.Error ?? 0;
+  // Subscribes to the shared cache entry so the button enabled/disabled state
+  // reactively tracks state transitions. Mirrors the staleTime used by the
+  // primary consumer in DownloadsView so the two reads share a single request.
+  const { data: counts } = useTauriQuery<Record<string, number>>(
+    'download_count_by_state',
+    undefined,
+    { queryKey: downloadQueries.countByState(), staleTime: 2000 },
+  );
+  const completedCount = counts?.Completed ?? 0;
+  const errorCount = counts?.Error ?? 0;
 
   const [dialogTarget, setDialogTarget] =
     useState<ClearDownloadsTarget | null>(null);

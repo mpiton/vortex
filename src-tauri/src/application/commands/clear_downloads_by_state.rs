@@ -1,3 +1,4 @@
+use std::io::ErrorKind;
 use std::path::Path;
 
 use crate::application::command_bus::CommandBus;
@@ -20,10 +21,21 @@ impl CommandBus {
         let mut count: u32 = 0;
 
         for download in downloads {
+            // Repository delete first — if the durable store rejects the write
+            // we must not orphan files on disk under a gone DB row.
+            if let Err(e) = self.download_repo().delete(download.id()) {
+                tracing::error!(
+                    id = download.id().0,
+                    error = %e,
+                    "failed to delete download from repository; skipping file cleanup"
+                );
+                continue;
+            }
+
             if cmd.delete_files {
                 let dest = Path::new(download.destination_path());
-                if dest.exists() {
-                    if let Err(e) = std::fs::remove_file(dest) {
+                if let Err(e) = std::fs::remove_file(dest) {
+                    if e.kind() != ErrorKind::NotFound {
                         tracing::warn!(
                             path = %dest.display(),
                             error = %e,
@@ -39,15 +51,6 @@ impl CommandBus {
                         "failed to delete .vortex-meta sidecar"
                     );
                 }
-            }
-
-            if let Err(e) = self.download_repo().delete(download.id()) {
-                tracing::error!(
-                    id = download.id().0,
-                    error = %e,
-                    "failed to delete download from repository"
-                );
-                continue;
             }
 
             self.event_bus()
