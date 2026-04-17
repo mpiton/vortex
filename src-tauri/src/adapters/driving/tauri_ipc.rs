@@ -751,6 +751,25 @@ pub async fn download_media_start(
                     )
                     .map_err(|e| format!("download_to_file failed: {e}"))?;
 
+                // Defense in depth: `ExtismPluginLoader::download_to_file` already
+                // enforces that the returned path is inside `output_dir`, but the
+                // `PluginLoader` trait does not require it — a future or alternate
+                // loader implementation could return an arbitrary path and we'd
+                // happily move it. Re-check containment here at the IPC boundary.
+                let temp_dir_canonical = temp_dir
+                    .canonicalize()
+                    .map_err(|e| format!("failed to canonicalize temp dir: {e}"))?;
+                let produced_canonical = file_info
+                    .path
+                    .canonicalize()
+                    .map_err(|e| format!("failed to canonicalize downloaded file path: {e}"))?;
+                if !produced_canonical.starts_with(&temp_dir_canonical) {
+                    return Err(format!(
+                        "plugin returned file outside temp dir: {}",
+                        file_info.path.display()
+                    ));
+                }
+
                 // Determine final filename: prefer title override, else keep yt-dlp's name.
                 let filename = title_clone
                     .as_deref()
@@ -776,6 +795,12 @@ pub async fn download_media_start(
                          user-dirs download_dir nor home_dir are available"
                             .to_string()
                     })?;
+                // The user-dirs `Downloads` folder can be configured to a path
+                // that hasn't been created yet (e.g. a fresh user account, or a
+                // CI environment). Ensure it exists before probing filenames.
+                std::fs::create_dir_all(&dest_dir)
+                    .map_err(|e| format!("failed to create destination dir {}: {e}",
+                        dest_dir.display()))?;
                 // If the destination already exists, suffix the filename (" (1)",
                 // " (2)", …) — preserves the previous download instead of silently
                 // overwriting it, matching the browser-download convention.

@@ -154,18 +154,33 @@ impl QueueManager {
 
     /// Persist the `Completed` state when the engine finishes a download, then
     /// free the concurrency slot and try to schedule the next queued item.
+    ///
+    /// The concurrency-slot decrement is gated on whether the download was in
+    /// an active state prior to completion. Some flows publish
+    /// `DownloadCompleted` without ever publishing `DownloadStarted` (notably
+    /// `RegisterLocalFileCommand`, which persists a yt-dlp-produced file as
+    /// already-Completed). Without the gate, each such registration would
+    /// spuriously free a slot that was never occupied — letting
+    /// `on_slot_freed` start one extra download above `max_concurrent`.
     pub async fn handle_download_completed(&self, id: DownloadId) -> Result<(), AppError> {
-        match self.download_repo.find_by_id(id)? {
+        // `None`: race with a delete — assume the download was active and
+        // decrement to avoid leaking a slot. Only the Completed/Error branch
+        // (pre-marked registration via RegisterLocalFileCommand) skips the
+        // decrement, because there we know the download never occupied a slot.
+        let should_decrement = match self.download_repo.find_by_id(id)? {
             Some(mut download) => {
-                if matches!(
+                let was_active = matches!(
                     download.state(),
                     DownloadState::Downloading
                         | DownloadState::Checking
                         | DownloadState::Extracting
-                ) {
+                );
+                if was_active {
                     match download.complete() {
                         Ok(_) => {
                             self.download_repo.save(&download)?;
+                            self.event_bus
+                                .publish(DomainEvent::DownloadCompletedPersisted { id });
                         }
                         Err(e) => {
                             tracing::error!(
@@ -176,15 +191,25 @@ impl QueueManager {
                         }
                     }
                 }
+                was_active
             }
             None => {
                 tracing::warn!(
                     download_id = id.0,
                     "handle_download_completed: download not found in repo"
                 );
+                true
             }
+        };
+
+        if should_decrement {
+            self.decrement_and_schedule().await
+        } else {
+            // Pre-marked registration (e.g. RegisterLocalFile) never occupied a
+            // slot — don't free one, but still try to schedule in case Queued
+            // items are waiting for an unrelated slot release.
+            self.on_slot_freed().await
         }
-        self.decrement_and_schedule().await
     }
 
     pub async fn handle_download_failed(
@@ -710,6 +735,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_handle_completed_skips_decrement_when_not_active() {
+        // Regression: RegisterLocalFileCommand advances a download straight to
+        // Completed before publishing DownloadCompleted. The queue_manager must
+        // NOT decrement active_count in that case — the slot was never occupied.
+        // Without this gate, registering N local files would let the scheduler
+        // start N extra downloads beyond max_concurrent.
+        let d = make_download(1, 5, DownloadState::Completed);
+        let repo = Arc::new(MockDownloadRepo::new(vec![d]));
+        let engine = Arc::new(MockEngine::new());
+        let bus = Arc::new(MockEventBus::new());
+        let qm = make_manager(
+            Arc::clone(&repo),
+            Arc::clone(&engine),
+            Arc::clone(&bus),
+            3,
+            3, // already at max capacity
+        );
+
+        qm.handle_download_completed(DownloadId(1)).await.unwrap();
+
+        // Slot count must not change — the Completed download never occupied a slot.
+        assert_eq!(qm.active_count(), 3);
+        // At max, so no new download should have been started.
+        assert!(engine.started.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
     async fn test_handle_failed_rollback_skips_decrement() {
         // When handle_download_failed sees a download already in Error state
         // (rollback-generated event), it skips safe_decrement to avoid
@@ -870,6 +922,35 @@ mod tests {
             "download must be Completed after engine finishes"
         );
         assert_eq!(qm.active_count(), 0, "active slot must be freed");
+    }
+
+    #[tokio::test]
+    async fn test_handle_download_completed_publishes_persisted_event_after_save() {
+        // Regression for race condition: DownloadCompleted fires before DB write,
+        // so the frontend may re-fetch stale state. DownloadCompletedPersisted must
+        // be published AFTER save() so any subsequent refetch sees state=Completed.
+        let mut d = make_download(1, 5, DownloadState::Queued);
+        d.start().unwrap();
+
+        let repo = Arc::new(MockDownloadRepo::new(vec![d]));
+        let engine = Arc::new(MockEngine::new());
+        let bus = Arc::new(MockEventBus::new());
+        let qm = make_manager(
+            Arc::clone(&repo),
+            Arc::clone(&engine),
+            Arc::clone(&bus),
+            3,
+            1,
+        );
+
+        qm.handle_download_completed(DownloadId(1)).await.unwrap();
+
+        let events = bus.events.lock().unwrap();
+        assert!(
+            events.contains(&DomainEvent::DownloadCompletedPersisted { id: DownloadId(1) }),
+            "DownloadCompletedPersisted must be published after save so the frontend \
+             re-fetch is guaranteed to see state=Completed"
+        );
     }
 
     #[tokio::test]
