@@ -410,7 +410,11 @@ mod tests {
             state: DownloadState::Downloading,
             delete_files: false,
         };
-        let err = h.bus.handle_clear_downloads_by_state(cmd).await.unwrap_err();
+        let err = h
+            .bus
+            .handle_clear_downloads_by_state(cmd)
+            .await
+            .unwrap_err();
         assert!(matches!(err, AppError::Validation(_)));
     }
 
@@ -472,8 +476,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_clear_missing_file_is_idempotent() {
-        let repo = MockDownloadRepo::new()
-            .with(completed_download(1, "/nonexistent/definitely/not/here.zip"));
+        let repo = MockDownloadRepo::new().with(completed_download(
+            1,
+            "/nonexistent/definitely/not/here.zip",
+        ));
         let h = make_harness(repo);
 
         let cmd = ClearDownloadsByStateCommand {
