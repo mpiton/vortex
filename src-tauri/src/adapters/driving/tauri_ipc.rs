@@ -697,6 +697,12 @@ pub async fn download_media_start(
     audio_only: bool,
     title: Option<String>,
 ) -> Result<u64, String> {
+    // Validate the format extension before anything uses it in a filename —
+    // `format!("{}.{}", sanitize_filename(title), format)` below would otherwise
+    // interpolate attacker-controlled path separators after the last `/` char
+    // that `sanitize_filename` already escaped in the stem.
+    let format = sanitize_extension(&format)?;
+
     // Extract the origin hostname (e.g. "www.youtube.com") from the original
     // URL *before* resolving to a CDN URL, so we can store it as the
     // source_hostname instead of "rr1---sn-n4g-cvq6.googlevideo.com".
@@ -773,8 +779,8 @@ pub async fn download_media_start(
                 // If the destination already exists, suffix the filename (" (1)",
                 // " (2)", …) — preserves the previous download instead of silently
                 // overwriting it, matching the browser-download convention.
-                let (dest_path, dest_filename) =
-                    unique_destination(&dest_dir, &filename);
+                let (dest_path, dest_filename) = unique_destination(&dest_dir, &filename)
+                    .map_err(|e| format!("failed to select unique destination: {e}"))?;
 
                 // Atomic move (same filesystem) → fallback copy+delete.
                 if std::fs::rename(&file_info.path, &dest_path).is_err() {
@@ -881,9 +887,25 @@ fn sanitize_filename(name: &str) -> String {
     }
 }
 
-/// Extract the hostname from a URL string (e.g. "www.youtube.com" from
-/// "https://www.youtube.com/watch?v=..."). Returns `None` when the URL
-/// cannot be parsed.
+/// Validate a file extension before splicing it into a filename.
+///
+/// Rejects anything that isn't purely ASCII alphanumeric (no path separators,
+/// no `..`, no NUL). Accepts (and strips) a single leading dot so both `"mp4"`
+/// and `".mp4"` are valid input. Returns the normalized lowercase extension
+/// without the leading dot.
+///
+/// Called at the IPC boundary of `download_media_start` because the raw
+/// `format` parameter flows into `format!("{title}.{format}")` — a crafted
+/// `"../evil"` would otherwise reach `dest_dir.join(&filename)` and escape
+/// the download directory.
+fn sanitize_extension(ext: &str) -> Result<String, String> {
+    let trimmed = ext.trim().trim_start_matches('.');
+    if trimmed.is_empty() || !trimmed.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return Err(format!("invalid format extension: {ext:?}"));
+    }
+    Ok(trimmed.to_ascii_lowercase())
+}
+
 /// If `dir/filename` already exists, probe `filename (1)`, `filename (2)`, …
 /// until a free slot is found. Preserves the extension.
 ///
@@ -891,15 +913,21 @@ fn sanitize_filename(name: &str) -> String {
 /// so callers that store the chosen filename in the download record stay in sync
 /// with what was actually written to disk.
 ///
+/// Errors out after 9999 collisions rather than silently overwriting — that
+/// branch is meant to *prevent* overwrites, not fall back to them.
+///
 /// Race condition note: TOCTOU-safe this is not — another process could create
 /// the same path between the `exists()` check and the subsequent
 /// `rename`/`copy`. That would result in an overwrite. For downloads, the
 /// window is small and the alternative (`O_EXCL`-style create + rename) is not
 /// available on `std::fs::rename`. Accepted as a practical compromise.
-fn unique_destination(dir: &std::path::Path, filename: &str) -> (std::path::PathBuf, String) {
+fn unique_destination(
+    dir: &std::path::Path,
+    filename: &str,
+) -> Result<(std::path::PathBuf, String), String> {
     let base = dir.join(filename);
     if !base.exists() {
-        return (base, filename.to_string());
+        return Ok((base, filename.to_string()));
     }
 
     let path = std::path::Path::new(filename);
@@ -916,16 +944,19 @@ fn unique_destination(dir: &std::path::Path, filename: &str) -> (std::path::Path
         };
         let candidate = dir.join(&candidate_name);
         if !candidate.exists() {
-            return (candidate, candidate_name);
+            return Ok((candidate, candidate_name));
         }
     }
 
-    // Pathological case: thousands of collisions. Fall back to the original
-    // name — the subsequent rename/copy will overwrite, but we've made a
-    // reasonable attempt.
-    (base, filename.to_string())
+    Err(format!(
+        "too many existing files named like {filename:?} in {}",
+        dir.display()
+    ))
 }
 
+/// Extract the hostname from a URL string (e.g. "www.youtube.com" from
+/// "https://www.youtube.com/watch?v=..."). Returns `None` when the URL
+/// cannot be parsed.
 fn extract_hostname_from_url(url: &str) -> Option<String> {
     let after_scheme = url
         .strip_prefix("https://")
@@ -1282,7 +1313,7 @@ fn read_available_space(_: &Path) -> Option<u64> {
 mod tests {
     use super::{
         configured_status_bar_path, extract_hostname_from_url, read_available_space,
-        resolve_existing_disk_path, sanitize_filename, unique_destination,
+        resolve_existing_disk_path, sanitize_extension, sanitize_filename, unique_destination,
     };
     use std::path::PathBuf;
 
@@ -1367,7 +1398,7 @@ mod tests {
     #[test]
     fn unique_destination_returns_original_when_free() {
         let dir = tempfile::tempdir().unwrap();
-        let (path, name) = unique_destination(dir.path(), "video.mp4");
+        let (path, name) = unique_destination(dir.path(), "video.mp4").unwrap();
         assert_eq!(name, "video.mp4");
         assert_eq!(path, dir.path().join("video.mp4"));
     }
@@ -1376,7 +1407,7 @@ mod tests {
     fn unique_destination_suffixes_when_colliding() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("video.mp4"), b"x").unwrap();
-        let (path, name) = unique_destination(dir.path(), "video.mp4");
+        let (path, name) = unique_destination(dir.path(), "video.mp4").unwrap();
         assert_eq!(name, "video (1).mp4");
         assert_eq!(path, dir.path().join("video (1).mp4"));
     }
@@ -1387,7 +1418,7 @@ mod tests {
         std::fs::write(dir.path().join("video.mp4"), b"x").unwrap();
         std::fs::write(dir.path().join("video (1).mp4"), b"x").unwrap();
         std::fs::write(dir.path().join("video (2).mp4"), b"x").unwrap();
-        let (_, name) = unique_destination(dir.path(), "video.mp4");
+        let (_, name) = unique_destination(dir.path(), "video.mp4").unwrap();
         assert_eq!(name, "video (3).mp4");
     }
 
@@ -1395,8 +1426,41 @@ mod tests {
     fn unique_destination_preserves_dotless_names() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("README"), b"x").unwrap();
-        let (_, name) = unique_destination(dir.path(), "README");
+        let (_, name) = unique_destination(dir.path(), "README").unwrap();
         assert_eq!(name, "README (1)");
+    }
+
+    // ── sanitize_extension ────────────────────────────────────────────────────
+
+    #[test]
+    fn sanitize_extension_accepts_common_media_extensions() {
+        assert_eq!(sanitize_extension("mp4").unwrap(), "mp4");
+        assert_eq!(sanitize_extension("webm").unwrap(), "webm");
+        assert_eq!(sanitize_extension("m4a").unwrap(), "m4a");
+    }
+
+    #[test]
+    fn sanitize_extension_strips_leading_dot_and_lowercases() {
+        assert_eq!(sanitize_extension(".MP4").unwrap(), "mp4");
+        assert_eq!(sanitize_extension(" WebM ").unwrap(), "webm");
+    }
+
+    #[test]
+    fn sanitize_extension_rejects_empty() {
+        assert!(sanitize_extension("").is_err());
+        assert!(sanitize_extension(".").is_err());
+        assert!(sanitize_extension("  ").is_err());
+    }
+
+    #[test]
+    fn sanitize_extension_rejects_path_traversal() {
+        // The attack vectors this guard exists to stop.
+        assert!(sanitize_extension("../etc/passwd").is_err());
+        assert!(sanitize_extension("mp4/").is_err());
+        assert!(sanitize_extension("mp4\\evil").is_err());
+        assert!(sanitize_extension("mp4\0").is_err());
+        assert!(sanitize_extension("mp 4").is_err()); // spaces mid-ext
+        assert!(sanitize_extension("mp.4").is_err()); // embedded dot
     }
 
     #[test]
