@@ -184,8 +184,6 @@ impl QueueManager {
                     match download.complete() {
                         Ok(_) => {
                             self.download_repo.save(&download)?;
-                            self.event_bus
-                                .publish(DomainEvent::DownloadCompletedPersisted { id });
                         }
                         Err(e) => {
                             tracing::error!(
@@ -934,35 +932,6 @@ mod tests {
             "download must be Completed after engine finishes"
         );
         assert_eq!(qm.active_count(), 0, "active slot must be freed");
-    }
-
-    #[tokio::test]
-    async fn test_handle_download_completed_publishes_persisted_event_after_save() {
-        // Regression for race condition: DownloadCompleted fires before DB write,
-        // so the frontend may re-fetch stale state. DownloadCompletedPersisted must
-        // be published AFTER save() so any subsequent refetch sees state=Completed.
-        let mut d = make_download(1, 5, DownloadState::Queued);
-        d.start().unwrap();
-
-        let repo = Arc::new(MockDownloadRepo::new(vec![d]));
-        let engine = Arc::new(MockEngine::new());
-        let bus = Arc::new(MockEventBus::new());
-        let qm = make_manager(
-            Arc::clone(&repo),
-            Arc::clone(&engine),
-            Arc::clone(&bus),
-            3,
-            1,
-        );
-
-        qm.handle_download_completed(DownloadId(1)).await.unwrap();
-
-        let events = bus.events.lock().unwrap();
-        assert!(
-            events.contains(&DomainEvent::DownloadCompletedPersisted { id: DownloadId(1) }),
-            "DownloadCompletedPersisted must be published after save so the frontend \
-             re-fetch is guaranteed to see state=Completed"
-        );
     }
 
     #[tokio::test]
