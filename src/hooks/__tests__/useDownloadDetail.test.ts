@@ -28,7 +28,7 @@ function mockDownloadDetail(): DownloadDetailView {
     accountName: null,
     resumeSupported: true,
     retryCount: 0,
-    maxRetries: 3,
+    maxRetries: 5,
     createdAt: Date.now(),
     updatedAt: Date.now(),
   };
