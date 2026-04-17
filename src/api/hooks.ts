@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import type { UseQueryOptions } from '@tanstack/react-query';
 import { tauriInvoke } from '@/api/client';
+import { toast } from '@/lib/toast';
 
 export function useTauriQuery<T>(
   command: string,
@@ -14,10 +15,24 @@ export function useTauriQuery<T>(
   });
 }
 
+// Mutation hook for Tauri IPC commands.
+//
+// Error feedback contract:
+// - If `onError` is NOT provided AND `silentError !== true`, the hook
+//   automatically surfaces `toast.error(errorMessage?.(err) ?? err.message)`.
+// - If `onError` IS provided, the default toast is suppressed — the caller
+//   owns the error UX (inline alert, navigate, custom toast, etc.).
+// - If `silentError === true`, no default toast fires (use for background
+//   polling or transparent retry).
+//
+// Success feedback is always caller-owned: pass an `onSuccess` that calls
+// `toast.success(t('<ns>.toast.<action>'))` with a business-specific label.
 interface UseTauriMutationOptions<TData, TVariables> {
   invalidateKeys?: readonly (readonly unknown[])[];
   onSuccess?: (data: TData, variables: TVariables, context: unknown) => void;
   onError?: (error: Error, variables: TVariables, context: unknown) => void;
+  silentError?: boolean;
+  errorMessage?: (err: Error) => string;
 }
 
 export function useTauriMutation<
@@ -37,6 +52,13 @@ export function useTauriMutation<
       }
       options?.onSuccess?.(data, variables, context);
     },
-    onError: options?.onError,
+    onError: (error, variables, context) => {
+      if (options?.onError) {
+        options.onError(error, variables, context);
+        return;
+      }
+      if (options?.silentError) return;
+      toast.error(options?.errorMessage?.(error) ?? error.message);
+    },
   });
 }
