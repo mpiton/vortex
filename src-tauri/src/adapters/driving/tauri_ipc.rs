@@ -13,10 +13,11 @@ use crate::adapters::driven::logging::download_log_store::DownloadLogStore;
 use crate::application::command_bus::CommandBus;
 use crate::application::commands::store_install::{StoreInstallCommand, StoreUpdateCommand};
 use crate::application::commands::{
-    CancelDownloadCommand, DisablePluginCommand, EnablePluginCommand, InstallPluginCommand,
-    PauseAllDownloadsCommand, PauseDownloadCommand, RemoveDownloadCommand, ResolveLinksCommand,
-    ResolvedLinkDto, ResumeAllDownloadsCommand, ResumeDownloadCommand, RetryDownloadCommand,
-    SetPriorityCommand, StartDownloadCommand, UninstallPluginCommand, UpdateConfigCommand,
+    CancelDownloadCommand, ClearDownloadsByStateCommand, DisablePluginCommand, EnablePluginCommand,
+    InstallPluginCommand, PauseAllDownloadsCommand, PauseDownloadCommand, RemoveDownloadCommand,
+    ResolveLinksCommand, ResolvedLinkDto, ResumeAllDownloadsCommand, ResumeDownloadCommand,
+    RetryDownloadCommand, SetPriorityCommand, StartDownloadCommand, UninstallPluginCommand,
+    UpdateConfigCommand,
 };
 use crate::application::error::AppError;
 use crate::application::queries::{
@@ -148,6 +149,38 @@ pub async fn download_remove(
     state
         .command_bus
         .handle_remove_download(cmd)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn download_clear_completed(
+    state: State<'_, AppState>,
+    delete_files: bool,
+) -> Result<u32, String> {
+    let cmd = ClearDownloadsByStateCommand {
+        state: DownloadState::Completed,
+        delete_files,
+    };
+    state
+        .command_bus
+        .handle_clear_downloads_by_state(cmd)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn download_clear_failed(
+    state: State<'_, AppState>,
+    delete_files: bool,
+) -> Result<u32, String> {
+    let cmd = ClearDownloadsByStateCommand {
+        state: DownloadState::Error,
+        delete_files,
+    };
+    state
+        .command_bus
+        .handle_clear_downloads_by_state(cmd)
         .await
         .map_err(|e| e.to_string())
 }

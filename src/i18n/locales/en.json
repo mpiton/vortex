@@ -133,7 +133,29 @@
     "actions": {
       "pauseAll": "Pause All",
       "resumeAll": "Resume All",
-      "cancelSelected": "Cancel Selected"
+      "cancelSelected": "Cancel Selected",
+      "clearCompleted": "Clear completed",
+      "clearFailed": "Clear failed"
+    },
+    "clearDialog": {
+      "titleCompleted_one": "Clear {{count}} completed download?",
+      "titleCompleted_other": "Clear {{count}} completed downloads?",
+      "titleFailed_one": "Clear {{count}} failed download?",
+      "titleFailed_other": "Clear {{count}} failed downloads?",
+      "description": "This removes the download entries from Vortex. They will no longer appear in the list.",
+      "deleteFilesLabel": "Also delete files from disk",
+      "warningTitle": "Permanent deletion",
+      "warningBody": "Files will be removed from your disk. This action cannot be undone.",
+      "confirm": "Clear",
+      "confirmWithFiles": "Clear and delete files",
+      "cancel": "Cancel"
+    },
+    "toast": {
+      "clearedCompleted_one": "{{count}} completed download cleared",
+      "clearedCompleted_other": "{{count}} completed downloads cleared",
+      "clearedFailed_one": "{{count}} failed download cleared",
+      "clearedFailed_other": "{{count}} failed downloads cleared",
+      "clearError": "Failed to clear downloads: {{error}}"
     },
     "selectedCount_one": "{{count}} selected",
     "selectedCount_other": "{{count}} selected",

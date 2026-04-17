@@ -133,7 +133,29 @@
     "actions": {
       "pauseAll": "Tout suspendre",
       "resumeAll": "Tout reprendre",
-      "cancelSelected": "Annuler la sélection"
+      "cancelSelected": "Annuler la sélection",
+      "clearCompleted": "Effacer terminés",
+      "clearFailed": "Effacer en erreur"
+    },
+    "clearDialog": {
+      "titleCompleted_one": "Effacer {{count}} téléchargement terminé ?",
+      "titleCompleted_other": "Effacer {{count}} téléchargements terminés ?",
+      "titleFailed_one": "Effacer {{count}} téléchargement en erreur ?",
+      "titleFailed_other": "Effacer {{count}} téléchargements en erreur ?",
+      "description": "Les entrées seront retirées de Vortex. Elles n'apparaîtront plus dans la liste.",
+      "deleteFilesLabel": "Également supprimer les fichiers du disque",
+      "warningTitle": "Suppression définitive",
+      "warningBody": "Les fichiers seront supprimés de votre disque. Cette action est irréversible.",
+      "confirm": "Effacer",
+      "confirmWithFiles": "Effacer et supprimer les fichiers",
+      "cancel": "Annuler"
+    },
+    "toast": {
+      "clearedCompleted_one": "{{count}} téléchargement terminé effacé",
+      "clearedCompleted_other": "{{count}} téléchargements terminés effacés",
+      "clearedFailed_one": "{{count}} téléchargement en erreur effacé",
+      "clearedFailed_other": "{{count}} téléchargements en erreur effacés",
+      "clearError": "Échec de l'effacement des téléchargements : {{error}}"
     },
     "selectedCount_one": "{{count}} sélectionné",
     "selectedCount_other": "{{count}} sélectionnés",

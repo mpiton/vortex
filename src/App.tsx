@@ -1,6 +1,7 @@
 import './i18n/i18n';
 import { BrowserRouter, Routes, Route, Navigate } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
+import { Toaster } from "sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { AppLayout } from "@/layouts/AppLayout";
 import {
@@ -39,6 +40,7 @@ export function App() {
           </Route>
         </Routes>
       </BrowserRouter>
+      <Toaster richColors position="bottom-right" closeButton />
       </TooltipProvider>
     </QueryClientProvider>
   );

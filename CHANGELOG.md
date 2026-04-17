@@ -34,6 +34,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `SegmentStarted` event now carries `start_byte` and `end_byte` so downstream consumers can identify which byte range a segment covers
 
 ### Added
+- **Clear completed / Clear failed downloads**: two new toolbar buttons in the Downloads view, separated from the bulk actions by a vertical separator. Each opens a confirmation dialog with an optional "Also delete files from disk" checkbox gated behind a prominent red warning panel. Success and error outcomes are reported via toasts.
+- `sonner` toast notifications (new dependency) mounted globally in `App.tsx`, with a thin `src/lib/toast.ts` wrapper so components do not depend on the library directly.
 - YouTube 1080p+ support: when `resolve_stream_url` returns `AdaptiveStreamOnly`,
   `download_media_start` now falls back to `download_to_file` which delegates the
   full DASH download + ffmpeg merge to yt-dlp. The merged file is moved to the
