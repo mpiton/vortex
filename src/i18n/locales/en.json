@@ -112,6 +112,9 @@
       "compactMode": "Compact mode",
       "compactModeDesc": "Reduce spacing and font sizes",
       "language": "Language"
+    },
+    "toast": {
+      "updateSuccess": "Settings saved"
     }
   },
   "downloads": {
@@ -212,6 +215,11 @@
       "hostname": "By Hostname",
       "extension": "By Extension",
       "type": "By Type"
+    },
+    "toast": {
+      "resolveSuccess_one": "{{count}} link resolved",
+      "resolveSuccess_other": "{{count}} links resolved",
+      "downloadStarted": "Download started"
     }
   },
   "statusBar": {
@@ -237,5 +245,20 @@
     "comingSoon": "Coming soon",
     "clear": "Clear",
     "unlimited": "unlimited"
+  },
+  "plugins": {
+    "toast": {
+      "installSuccess": "Plugin \"{{name}}\" installed",
+      "updateSuccess": "Plugin \"{{name}}\" updated",
+      "refreshSuccess": "Plugin list refreshed",
+      "disableSuccess": "Plugin disabled",
+      "uninstallSuccess": "Plugin uninstalled"
+    }
+  },
+  "clipboard": {
+    "toast": {
+      "enabled": "Clipboard monitoring enabled",
+      "disabled": "Clipboard monitoring disabled"
+    }
   }
 }
