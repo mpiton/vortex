@@ -68,19 +68,19 @@ impl Default for AppConfig {
             download_dir: None,
             start_minimized: false,
             notifications_enabled: true,
-            auto_extract: false,
+            auto_extract: true,
             clipboard_monitoring: true,
             sound_enabled: false,
             confirm_delete: true,
             subfolder_per_package: false,
 
             // Downloads
-            max_concurrent_downloads: 3,
+            max_concurrent_downloads: 4,
             max_segments_per_download: 8,
             speed_limit_bytes_per_sec: None,
-            max_retries: 3,
-            retry_delay_seconds: 5,
-            verify_checksums: false,
+            max_retries: 5,
+            retry_delay_seconds: 10,
+            verify_checksums: true,
             pre_allocate_space: true,
 
             // Network
@@ -92,13 +92,13 @@ impl Default for AppConfig {
 
             // Remote Access
             web_interface_enabled: false,
-            web_interface_port: 9666,
-            rest_api_enabled: false,
+            web_interface_port: 9876,
+            rest_api_enabled: true,
             api_key: String::new(),
-            websocket_enabled: false,
+            websocket_enabled: true,
 
             // Browser Integration
-            min_file_size_mb: 0.0,
+            min_file_size_mb: 1.0,
             excluded_domains: Vec::new(),
             excluded_extensions: Vec::new(),
 
@@ -164,6 +164,36 @@ pub struct ConfigPatch {
     pub accent_color: Option<String>,
     pub compact_mode: Option<bool>,
     pub locale: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_default_app_config_matches_prd_6_10() {
+        let config = AppConfig::default();
+
+        // Domain stays pure: adapter layer hydrates download_dir.
+        assert_eq!(config.download_dir, None);
+
+        // General
+        assert!(config.auto_extract, "PRD §6.10: auto_extract defaults to ON");
+
+        // Downloads
+        assert_eq!(config.max_concurrent_downloads, 4);
+        assert_eq!(config.max_retries, 5);
+        assert_eq!(config.retry_delay_seconds, 10);
+        assert!(config.verify_checksums);
+
+        // Browser integration
+        assert_eq!(config.min_file_size_mb, 1.0);
+
+        // Remote access
+        assert_eq!(config.web_interface_port, 9876);
+        assert!(config.rest_api_enabled);
+        assert!(config.websocket_enabled);
+    }
 }
 
 /// Apply a `ConfigPatch` to an `AppConfig`, updating only fields
