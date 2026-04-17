@@ -52,6 +52,9 @@ export function ClearDownloadsDialog({
     try {
       await onConfirm(deleteFiles);
       onOpenChange(false);
+    } catch {
+      // Failure is surfaced via the mutation's onError toast; we only
+      // keep the dialog open and re-enable the button here.
     } finally {
       setSubmitting(false);
     }

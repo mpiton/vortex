@@ -43,10 +43,9 @@ impl CommandBus {
                         );
                     }
                 }
-                let meta_path = format!("{}.vortex-meta", download.destination_path());
-                if let Err(e) = self.file_storage().delete_meta(Path::new(&meta_path)) {
+                if let Err(e) = self.file_storage().delete_meta(dest) {
                     tracing::warn!(
-                        path = %meta_path,
+                        path = %format!("{}.vortex-meta", download.destination_path()),
                         error = %e,
                         "failed to delete .vortex-meta sidecar"
                     );
@@ -454,7 +453,7 @@ mod tests {
 
         let metas = h.file_storage.deleted_metas.lock().unwrap();
         assert_eq!(metas.len(), 1);
-        assert_eq!(metas[0], "/tmp/a.zip.vortex-meta");
+        assert_eq!(metas[0], "/tmp/a.zip");
     }
 
     #[tokio::test]
