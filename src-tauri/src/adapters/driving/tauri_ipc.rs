@@ -49,6 +49,8 @@ pub async fn download_start(
     let cmd = StartDownloadCommand {
         url,
         destination: destination.map(PathBuf::from),
+        filename: None,
+        source_hostname_override: None,
     };
     state
         .command_bus
@@ -681,6 +683,11 @@ fn is_known_media_platform(url: &str) -> bool {
 /// to the normal download engine. For generic HTTP URLs (claimed by the
 /// built-in HTTP module), the URL is used as-is — unless the URL belongs to a
 /// known media platform, in which case a "plugin required" error is returned.
+///
+/// `title` is the human-readable video title (e.g. "Rick Astley - Never Gonna
+/// Give You Up"). When provided it is sanitised and used as the filename
+/// (appended with `.{format}`), so the saved file has a meaningful name instead
+/// of the CDN path segment ("videoplayback").
 #[tauri::command]
 pub async fn download_media_start(
     state: State<'_, AppState>,
@@ -688,22 +695,138 @@ pub async fn download_media_start(
     quality: String,
     format: String,
     audio_only: bool,
+    title: Option<String>,
 ) -> Result<u64, String> {
+    // Validate the format extension before anything uses it in a filename —
+    // `format!("{}.{}", sanitize_filename(title), format)` below would otherwise
+    // interpolate attacker-controlled path separators after the last `/` char
+    // that `sanitize_filename` already escaped in the stem.
+    let format = sanitize_extension(&format)?;
+
+    // Extract the origin hostname (e.g. "www.youtube.com") from the original
+    // URL *before* resolving to a CDN URL, so we can store it as the
+    // source_hostname instead of "rr1---sn-n4g-cvq6.googlevideo.com".
+    let source_hostname_override = extract_hostname_from_url(&url);
+
     let plugin_loader = state.plugin_loader.clone();
     let url_clone = url.clone();
     let quality_clone = quality.clone();
     let format_clone = format.clone();
+    let title_clone = title.clone();
 
     // Plugin calls are synchronous (Extism runs inside a Mutex). Run on the
     // blocking thread pool so we don't starve the async executor.
-    let stream_url = tokio::task::spawn_blocking(move || {
+    enum StreamResolution {
+        CdnUrl(String),
+        LocalFile {
+            path: std::path::PathBuf,
+            size: u64,
+            filename: String,
+        },
+    }
+
+    let resolution = tokio::task::spawn_blocking(move || -> Result<StreamResolution, String> {
         match plugin_loader.resolve_stream_url(
             &url_clone,
             &quality_clone,
             &format_clone,
             audio_only,
         ) {
-            Ok(cdn_url) => Ok(cdn_url),
+            Ok(cdn_url) => Ok(StreamResolution::CdnUrl(cdn_url)),
+
+            Err(crate::domain::error::DomainError::AdaptiveStreamOnly) => {
+                // yt-dlp must handle the full download+merge.
+                let temp_dir = std::env::temp_dir().join("vortex-downloads");
+                std::fs::create_dir_all(&temp_dir)
+                    .map_err(|e| format!("failed to create temp dir: {e}"))?;
+
+                let file_info = plugin_loader
+                    .download_to_file(
+                        &url_clone,
+                        &quality_clone,
+                        &format_clone,
+                        temp_dir.to_str()
+                            .ok_or_else(|| "temp dir path is not valid UTF-8".to_string())?,
+                        audio_only,
+                    )
+                    .map_err(|e| format!("download_to_file failed: {e}"))?;
+
+                // Defense in depth: `ExtismPluginLoader::download_to_file` already
+                // enforces that the returned path is inside `output_dir`, but the
+                // `PluginLoader` trait does not require it — a future or alternate
+                // loader implementation could return an arbitrary path and we'd
+                // happily move it. Re-check containment here at the IPC boundary.
+                let temp_dir_canonical = temp_dir
+                    .canonicalize()
+                    .map_err(|e| format!("failed to canonicalize temp dir: {e}"))?;
+                let produced_canonical = file_info
+                    .path
+                    .canonicalize()
+                    .map_err(|e| format!("failed to canonicalize downloaded file path: {e}"))?;
+                if !produced_canonical.starts_with(&temp_dir_canonical) {
+                    return Err(format!(
+                        "plugin returned file outside temp dir: {}",
+                        file_info.path.display()
+                    ));
+                }
+
+                // Determine final filename: prefer title override, else keep yt-dlp's name.
+                let filename = title_clone
+                    .as_deref()
+                    .filter(|t| !t.trim().is_empty())
+                    .map(|t| format!("{}.{}", sanitize_filename(t), format_clone))
+                    .unwrap_or_else(|| {
+                        file_info
+                            .path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("download")
+                            .to_string()
+                    });
+
+                // Determine final destination directory. Prefer the platform
+                // download dir (XDG `user-dirs`, `~/Downloads`, …); fall back to
+                // the home dir rather than CWD — dropping a 1GB merged video
+                // into the Tauri binary's directory or / is a bad outcome.
+                let dest_dir = dirs::download_dir()
+                    .or_else(dirs::home_dir)
+                    .ok_or_else(|| {
+                        "cannot determine download destination: neither \
+                         user-dirs download_dir nor home_dir are available"
+                            .to_string()
+                    })?;
+                // The user-dirs `Downloads` folder can be configured to a path
+                // that hasn't been created yet (e.g. a fresh user account, or a
+                // CI environment). Ensure it exists before probing filenames.
+                std::fs::create_dir_all(&dest_dir)
+                    .map_err(|e| format!("failed to create destination dir {}: {e}",
+                        dest_dir.display()))?;
+                // If the destination already exists, suffix the filename (" (1)",
+                // " (2)", …) — preserves the previous download instead of silently
+                // overwriting it, matching the browser-download convention.
+                let (dest_path, dest_filename) = unique_destination(&dest_dir, &filename)
+                    .map_err(|e| format!("failed to select unique destination: {e}"))?;
+
+                // Atomic move (same filesystem) → fallback copy+delete.
+                if std::fs::rename(&file_info.path, &dest_path).is_err() {
+                    std::fs::copy(&file_info.path, &dest_path)
+                        .map_err(|e| format!("failed to copy merged file: {e}"))?;
+                    if let Err(e) = std::fs::remove_file(&file_info.path) {
+                        tracing::warn!(
+                            path = %file_info.path.display(),
+                            error = %e,
+                            "failed to remove temp file after copy"
+                        );
+                    }
+                }
+
+                Ok(StreamResolution::LocalFile {
+                    path: dest_path,
+                    size: file_info.size,
+                    filename: dest_filename,
+                })
+            }
+
             // builtin-http: no WASM plugin claimed the URL.
             // For known media platforms this means the required plugin is not
             // installed — return a clear error rather than feeding the HTML
@@ -717,25 +840,169 @@ pub async fn download_media_start(
                     )
                 } else {
                     // Generic direct-download URL — pass through as-is.
-                    Ok(url_clone)
+                    Ok(StreamResolution::CdnUrl(url_clone))
                 }
             }
+
             Err(e) => Err(format!("Failed to resolve stream URL: {e}")),
         }
     })
     .await
     .map_err(|e| format!("Task join error: {e}"))??;
 
-    let cmd = crate::application::commands::StartDownloadCommand {
-        url: stream_url,
-        destination: None,
-    };
-    state
-        .command_bus
-        .handle_start_download(cmd)
-        .await
-        .map(|id| id.0)
-        .map_err(|e| e.to_string())
+    match resolution {
+        StreamResolution::CdnUrl(stream_url) => {
+            // Build a meaningful filename from the title and format when available.
+            // Falls back to the URL-based derivation in handle_start_download when None.
+            let filename = title
+                .as_deref()
+                .filter(|t| !t.trim().is_empty())
+                .map(|t| format!("{}.{}", sanitize_filename(t), format));
+
+            let cmd = crate::application::commands::StartDownloadCommand {
+                url: stream_url,
+                destination: None,
+                filename,
+                source_hostname_override,
+            };
+            state
+                .command_bus
+                .handle_start_download(cmd)
+                .await
+                .map(|id| id.0)
+                .map_err(|e| e.to_string())
+        }
+
+        StreamResolution::LocalFile {
+            path,
+            size,
+            filename,
+        } => {
+            let cmd = crate::application::commands::RegisterLocalFileCommand {
+                source_url: url,
+                destination_path: path,
+                filename,
+                source_hostname: source_hostname_override,
+                file_size: size,
+            };
+            state
+                .command_bus
+                .handle_register_local_file(cmd)
+                .await
+                .map(|id| id.0)
+                .map_err(|e| e.to_string())
+        }
+    }
+}
+
+/// Remove characters that are invalid in filenames on Linux / macOS / Windows.
+/// Replaces `/`, `\`, `:`, `*`, `?`, `"`, `<`, `>`, `|` and null bytes with `_`.
+/// Truncates to 200 chars to stay well inside filesystem limits.
+fn sanitize_filename(name: &str) -> String {
+    let sanitized: String = name
+        .chars()
+        .map(|c| match c {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '\0' => '_',
+            c => c,
+        })
+        .collect();
+    // Trim leading/trailing dots and spaces (problematic on Windows and visually
+    // misleading on any platform), then truncate to a sane length.
+    let trimmed = sanitized.trim_matches(|c| c == '.' || c == ' ');
+    if trimmed.is_empty() {
+        "download".to_string()
+    } else {
+        trimmed.chars().take(200).collect()
+    }
+}
+
+/// Validate a file extension before splicing it into a filename.
+///
+/// Rejects anything that isn't purely ASCII alphanumeric (no path separators,
+/// no `..`, no NUL). Accepts (and strips) a single leading dot so both `"mp4"`
+/// and `".mp4"` are valid input. Returns the normalized lowercase extension
+/// without the leading dot.
+///
+/// Called at the IPC boundary of `download_media_start` because the raw
+/// `format` parameter flows into `format!("{title}.{format}")` — a crafted
+/// `"../evil"` would otherwise reach `dest_dir.join(&filename)` and escape
+/// the download directory.
+fn sanitize_extension(ext: &str) -> Result<String, String> {
+    let trimmed = ext.trim().trim_start_matches('.');
+    if trimmed.is_empty() || !trimmed.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return Err(format!("invalid format extension: {ext:?}"));
+    }
+    Ok(trimmed.to_ascii_lowercase())
+}
+
+/// If `dir/filename` already exists, probe `filename (1)`, `filename (2)`, …
+/// until a free slot is found. Preserves the extension.
+///
+/// Returns `(path, filename)` both reflecting the final (possibly suffixed) name,
+/// so callers that store the chosen filename in the download record stay in sync
+/// with what was actually written to disk.
+///
+/// Errors out after 9999 collisions rather than silently overwriting — that
+/// branch is meant to *prevent* overwrites, not fall back to them.
+///
+/// Race condition note: TOCTOU-safe this is not — another process could create
+/// the same path between the `exists()` check and the subsequent
+/// `rename`/`copy`. That would result in an overwrite. For downloads, the
+/// window is small and the alternative (`O_EXCL`-style create + rename) is not
+/// available on `std::fs::rename`. Accepted as a practical compromise.
+fn unique_destination(
+    dir: &std::path::Path,
+    filename: &str,
+) -> Result<(std::path::PathBuf, String), String> {
+    let base = dir.join(filename);
+    if !base.exists() {
+        return Ok((base, filename.to_string()));
+    }
+
+    let path = std::path::Path::new(filename);
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(filename);
+    let ext = path.extension().and_then(|s| s.to_str());
+
+    for n in 1..=9999 {
+        let candidate_name = match ext {
+            Some(e) => format!("{stem} ({n}).{e}"),
+            None => format!("{stem} ({n})"),
+        };
+        let candidate = dir.join(&candidate_name);
+        if !candidate.exists() {
+            return Ok((candidate, candidate_name));
+        }
+    }
+
+    Err(format!(
+        "too many existing files named like {filename:?} in {}",
+        dir.display()
+    ))
+}
+
+/// Extract the hostname from a URL string (e.g. "www.youtube.com" from
+/// "https://www.youtube.com/watch?v=..."). Returns `None` when the URL
+/// cannot be parsed.
+fn extract_hostname_from_url(url: &str) -> Option<String> {
+    let after_scheme = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .or_else(|| url.strip_prefix("ftp://"))?;
+    let authority = after_scheme.split('/').next()?;
+    // Strip any `user:pass@` userinfo prefix — `rsplit('@').next()` returns
+    // the host portion when '@' is present, or the whole string otherwise.
+    // Using rsplit (not split) correctly handles passwords that themselves
+    // contain '@'.
+    let host_and_port = authority.rsplit('@').next().unwrap_or(authority);
+    let host = host_and_port.split(':').next()?;
+    if host.is_empty() {
+        None
+    } else {
+        Some(host.to_string())
+    }
 }
 
 // ── Media Metadata ───────────────────────────────────────────────────
@@ -1073,8 +1340,182 @@ fn read_available_space(_: &Path) -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
-    use super::{configured_status_bar_path, read_available_space, resolve_existing_disk_path};
+    use super::{
+        configured_status_bar_path, extract_hostname_from_url, read_available_space,
+        resolve_existing_disk_path, sanitize_extension, sanitize_filename, unique_destination,
+    };
     use std::path::PathBuf;
+
+    // ── sanitize_filename ─────────────────────────────────────────────────────
+
+    #[test]
+    fn sanitize_filename_replaces_path_separators() {
+        assert_eq!(
+            sanitize_filename("AC/DC - Back in Black"),
+            "AC_DC - Back in Black"
+        );
+    }
+
+    #[test]
+    fn sanitize_filename_replaces_colon() {
+        // ":" is common in video titles (e.g. "Part 1: Introduction")
+        assert_eq!(
+            sanitize_filename("Tutorial: Getting Started"),
+            "Tutorial_ Getting Started"
+        );
+    }
+
+    #[test]
+    fn sanitize_filename_replaces_all_invalid_chars() {
+        assert_eq!(
+            sanitize_filename(r#"a/b\c:d*e?f"g<h>i|j"#),
+            "a_b_c_d_e_f_g_h_i_j"
+        );
+    }
+
+    #[test]
+    fn sanitize_filename_trims_leading_trailing_dots() {
+        assert_eq!(sanitize_filename("..video.."), "video");
+    }
+
+    #[test]
+    fn sanitize_filename_trims_leading_trailing_spaces() {
+        assert_eq!(sanitize_filename("  video  "), "video");
+    }
+
+    #[test]
+    fn sanitize_filename_returns_download_for_empty_result() {
+        assert_eq!(sanitize_filename("..."), "download");
+        assert_eq!(sanitize_filename(""), "download");
+    }
+
+    #[test]
+    fn sanitize_filename_truncates_long_names() {
+        let long = "a".repeat(300);
+        assert_eq!(sanitize_filename(&long).len(), 200);
+    }
+
+    // ── extract_hostname_from_url ─────────────────────────────────────────────
+
+    #[test]
+    fn extract_hostname_from_youtube_url() {
+        assert_eq!(
+            extract_hostname_from_url("https://www.youtube.com/watch?v=dQw4w9WgXcQ"),
+            Some("www.youtube.com".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_hostname_from_cdn_url() {
+        assert_eq!(
+            extract_hostname_from_url(
+                "https://rr1---sn-n4g-cvq6.googlevideo.com/videoplayback?expire=123"
+            ),
+            Some("rr1---sn-n4g-cvq6.googlevideo.com".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_hostname_from_url_with_port() {
+        assert_eq!(
+            extract_hostname_from_url("https://example.com:8080/path"),
+            Some("example.com".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_hostname_returns_none_for_non_url() {
+        assert_eq!(extract_hostname_from_url("not-a-url"), None);
+    }
+
+    // ── unique_destination ────────────────────────────────────────────────────
+
+    #[test]
+    fn unique_destination_returns_original_when_free() {
+        let dir = tempfile::tempdir().unwrap();
+        let (path, name) = unique_destination(dir.path(), "video.mp4").unwrap();
+        assert_eq!(name, "video.mp4");
+        assert_eq!(path, dir.path().join("video.mp4"));
+    }
+
+    #[test]
+    fn unique_destination_suffixes_when_colliding() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("video.mp4"), b"x").unwrap();
+        let (path, name) = unique_destination(dir.path(), "video.mp4").unwrap();
+        assert_eq!(name, "video (1).mp4");
+        assert_eq!(path, dir.path().join("video (1).mp4"));
+    }
+
+    #[test]
+    fn unique_destination_increments_until_free() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("video.mp4"), b"x").unwrap();
+        std::fs::write(dir.path().join("video (1).mp4"), b"x").unwrap();
+        std::fs::write(dir.path().join("video (2).mp4"), b"x").unwrap();
+        let (_, name) = unique_destination(dir.path(), "video.mp4").unwrap();
+        assert_eq!(name, "video (3).mp4");
+    }
+
+    #[test]
+    fn unique_destination_preserves_dotless_names() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("README"), b"x").unwrap();
+        let (_, name) = unique_destination(dir.path(), "README").unwrap();
+        assert_eq!(name, "README (1)");
+    }
+
+    // ── sanitize_extension ────────────────────────────────────────────────────
+
+    #[test]
+    fn sanitize_extension_accepts_common_media_extensions() {
+        assert_eq!(sanitize_extension("mp4").unwrap(), "mp4");
+        assert_eq!(sanitize_extension("webm").unwrap(), "webm");
+        assert_eq!(sanitize_extension("m4a").unwrap(), "m4a");
+    }
+
+    #[test]
+    fn sanitize_extension_strips_leading_dot_and_lowercases() {
+        assert_eq!(sanitize_extension(".MP4").unwrap(), "mp4");
+        assert_eq!(sanitize_extension(" WebM ").unwrap(), "webm");
+    }
+
+    #[test]
+    fn sanitize_extension_rejects_empty() {
+        assert!(sanitize_extension("").is_err());
+        assert!(sanitize_extension(".").is_err());
+        assert!(sanitize_extension("  ").is_err());
+    }
+
+    #[test]
+    fn sanitize_extension_rejects_path_traversal() {
+        // The attack vectors this guard exists to stop.
+        assert!(sanitize_extension("../etc/passwd").is_err());
+        assert!(sanitize_extension("mp4/").is_err());
+        assert!(sanitize_extension("mp4\\evil").is_err());
+        assert!(sanitize_extension("mp4\0").is_err());
+        assert!(sanitize_extension("mp 4").is_err()); // spaces mid-ext
+        assert!(sanitize_extension("mp.4").is_err()); // embedded dot
+    }
+
+    #[test]
+    fn extract_hostname_strips_userinfo() {
+        // RFC 3986 allows `user:pass@host` in authority; the original split-on-':'
+        // logic returned "user" here. rsplit('@') recovers the real host.
+        assert_eq!(
+            extract_hostname_from_url("https://user:pass@example.com/path"),
+            Some("example.com".to_string())
+        );
+        assert_eq!(
+            extract_hostname_from_url("https://user@example.com:8080/"),
+            Some("example.com".to_string())
+        );
+        // Password containing '@' must not split the host — rsplit handles this.
+        assert_eq!(
+            extract_hostname_from_url("https://user:p@ss@example.com/"),
+            Some("example.com".to_string())
+        );
+    }
 
     #[test]
     fn configured_status_bar_path_rejects_empty_values() {

@@ -254,6 +254,11 @@ impl Download {
         self
     }
 
+    pub fn with_source_hostname(mut self, hostname: String) -> Self {
+        self.source_hostname = hostname;
+        self
+    }
+
     pub fn with_created_at(mut self, ts: u64) -> Self {
         self.created_at = ts;
         self.updated_at = ts;
@@ -266,6 +271,12 @@ impl Download {
 
     pub fn update_progress(&mut self, downloaded_bytes: u64) {
         self.downloaded_bytes = downloaded_bytes;
+    }
+
+    pub fn set_file_size(&mut self, bytes: u64) {
+        self.file_size = Some(FileSize(bytes));
+        // Also marks download as 100% complete (file already exists locally).
+        self.downloaded_bytes = bytes;
     }
 
     // --- Getters ---
@@ -765,5 +776,16 @@ mod tests {
         let event = d.start_extracting().unwrap();
         assert_eq!(d.state(), DownloadState::Extracting);
         assert_eq!(event, DomainEvent::DownloadExtracting { id: DownloadId(1) });
+    }
+
+    #[test]
+    fn test_with_source_hostname_overrides_derived_hostname() {
+        // Regression for YouTube downloads: the CDN URL hostname
+        // (e.g. "rr1---sn-n4g-cvq6.googlevideo.com") should be overridable
+        // so that "youtube.com" is stored instead.
+        let d = make_download();
+        assert_eq!(d.source_hostname(), "example.com");
+        let d = d.with_source_hostname("youtube.com".to_string());
+        assert_eq!(d.source_hostname(), "youtube.com");
     }
 }

@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- YouTube downloads silently downgrading to 360p when 1080p was requested but only
+  DASH streams were available.
+- YouTube `download_to_file` returning `HTTP Error 403: Forbidden` on protected
+  videos (VEVO music, age-gated content). Bumped `vortex-mod-youtube` to 1.2.3
+  which passes `--extractor-args "youtube:player_client=default,web_safari,android_vr,tv"`,
+  `--retries 3`, `--fragment-retries 3`, and `--quiet` to yt-dlp.
 - Completed downloads showed ~96% progress instead of 100%: the last `DownloadProgress` event (throttled to 500ms) could arrive before the final chunk was written; `compute_progress_percent()` now forces 100.0 when `state == "Completed"`
 - Progress values showed excessive decimal places (e.g. "96.247262...%"); rounded to one decimal place using `(v * 10.0).round() / 10.0`
 - Downloads never transitioned to Completed state: queue_manager received DownloadCompleted events but never persisted the state change; added `handle_download_completed()` analogous to `handle_download_failed()` to load the aggregate, call `.complete()`, and save it
@@ -24,6 +30,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `SegmentStarted` event now carries `start_byte` and `end_byte` so downstream consumers can identify which byte range a segment covers
 
 ### Added
+- YouTube 1080p+ support: when `resolve_stream_url` returns `AdaptiveStreamOnly`,
+  `download_media_start` now falls back to `download_to_file` which delegates the
+  full DASH download + ffmpeg merge to yt-dlp. The merged file is moved to the
+  downloads folder and registered as a completed download.
 - `download_media_start` IPC command: resolves the direct CDN stream URL via the WASM plugin that claims the URL (`resolve_stream_url` export), then starts the download — fixes the retry loop where the engine received a YouTube/Vimeo/SoundCloud page URL instead of a downloadable CDN URL
 - `resolve_stream_url` method on `PluginLoader` trait: delegates URL resolution to WASM plugins; implemented in `ExtismPluginLoader` via `registry.call_plugin`; default impl returns `NotFound` for loaders that don't support it
 - `command_get_media_metadata` IPC command: invokes `yt-dlp --dump-single-json --flat-playlist` and returns video title, thumbnail, duration, deduplicated quality options (sorted by height), video/audio container formats, subtitles (excluding live_chat), and playlist entries — fixes the "Failed to load media metadata" error in the Media Grabber Options dialog

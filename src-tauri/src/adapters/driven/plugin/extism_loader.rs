@@ -6,6 +6,7 @@ use std::sync::Arc;
 use crate::domain::error::DomainError;
 use crate::domain::model::plugin::{PluginInfo, PluginManifest};
 use crate::domain::ports::driven::PluginLoader;
+use crate::domain::ports::driven::plugin_loader::DownloadedFileInfo;
 
 use super::builtin::HttpModule;
 use super::capabilities::{SharedHostResources, build_host_functions};
@@ -42,6 +43,16 @@ impl ExtismPluginLoader {
 
     pub fn builtin_http(&self) -> &HttpModule {
         &self.builtin_http
+    }
+
+    fn resolve_wasm_plugin(&self, url: &str) -> Result<PluginInfo, DomainError> {
+        let info = self
+            .resolve_url(url)?
+            .ok_or_else(|| DomainError::PluginError(format!("no plugin can handle URL: {url}")))?;
+        if info.name() == "builtin-http" {
+            return Err(DomainError::NotFound("builtin-http".into()));
+        }
+        Ok(info)
     }
 }
 
@@ -141,15 +152,7 @@ impl PluginLoader for ExtismPluginLoader {
         format: &str,
         audio_only: bool,
     ) -> Result<String, DomainError> {
-        // Find the plugin that claims this URL.
-        let info = self
-            .resolve_url(url)?
-            .ok_or_else(|| DomainError::PluginError(format!("no plugin can handle URL: {url}")))?;
-
-        // The built-in HTTP module handles direct URLs — no resolution needed.
-        if info.name() == "builtin-http" {
-            return Err(DomainError::NotFound("builtin-http".into()));
-        }
+        let info = self.resolve_wasm_plugin(url)?;
 
         let input = serde_json::json!({
             "url": url,
@@ -162,11 +165,71 @@ impl PluginLoader for ExtismPluginLoader {
         self.registry
             .call_plugin(info.name(), "resolve_stream_url", &input)
             .map_err(|e| {
+                let msg = e.to_string();
+                if is_adaptive_stream_error(&msg) {
+                    DomainError::AdaptiveStreamOnly
+                } else {
+                    DomainError::PluginError(format!(
+                        "plugin '{}' resolve_stream_url failed: {msg}",
+                        info.name()
+                    ))
+                }
+            })
+    }
+
+    fn download_to_file(
+        &self,
+        url: &str,
+        quality: &str,
+        format: &str,
+        output_dir: &str,
+        audio_only: bool,
+    ) -> Result<DownloadedFileInfo, DomainError> {
+        let info = self.resolve_wasm_plugin(url)?;
+
+        let input = serde_json::json!({
+            "url": url,
+            "quality": quality,
+            "format": format,
+            "output_dir": output_dir,
+            "audio_only": audio_only,
+        })
+        .to_string();
+
+        let path_str = self
+            .registry
+            .call_plugin(info.name(), "download_to_file", &input)
+            .map_err(|e| {
                 DomainError::PluginError(format!(
-                    "plugin '{}' resolve_stream_url failed: {e}",
+                    "plugin '{}' download_to_file failed: {e}",
                     info.name()
                 ))
-            })
+            })?;
+
+        let path = std::path::PathBuf::from(path_str.trim());
+
+        // Validate the returned path is within output_dir (path traversal protection).
+        let canon_output = std::path::Path::new(output_dir)
+            .canonicalize()
+            .map_err(|e| DomainError::StorageError(format!("output_dir invalid: {e}")))?;
+        let canon_path = path
+            .canonicalize()
+            .map_err(|e| DomainError::StorageError(format!("returned path invalid: {e}")))?;
+        if !canon_path.starts_with(&canon_output) {
+            return Err(DomainError::ValidationError(format!(
+                "plugin returned path outside output_dir: {}",
+                path.display()
+            )));
+        }
+
+        let size = std::fs::metadata(&canon_path)
+            .map_err(|e| DomainError::StorageError(format!("failed to stat downloaded file: {e}")))?
+            .len();
+
+        Ok(DownloadedFileInfo {
+            path: canon_path,
+            size,
+        })
     }
 
     fn load_from_dir(&self, dir: &std::path::Path) -> Result<(), DomainError> {
@@ -206,6 +269,25 @@ impl PluginLoader for ExtismPluginLoader {
 
         self.load(&manifest)
     }
+}
+
+/// Returns `true` if the plugin error message indicates an adaptive-only stream.
+///
+/// ⚠ **Fragile coupling**: this is a human-readable-string contract with plugin
+/// authors. It matches the substring `"adaptive stream (HLS/DASH)"` emitted by
+/// `vortex-mod-youtube ≥ 1.2.0`'s `PluginError::AdaptiveStreamOnly`. If the
+/// plugin wording drifts or another plugin reuses `PluginError::AdaptiveStreamOnly`
+/// with different text, the 1080p DASH fallback silently breaks (error maps to
+/// `PluginError` instead of `DomainError::AdaptiveStreamOnly` and
+/// `download_media_start` never invokes `download_to_file`).
+///
+/// A structured sentinel (e.g. plugin returns `{"error_code":"adaptive_stream_only"}`)
+/// would be a more robust contract — tracked for a future plugin API iteration.
+/// For now, the parenthesised `(HLS/DASH)` qualifier is matched instead of the
+/// bare `"adaptive stream"` token to reduce the risk of false positives from
+/// unrelated error messages.
+fn is_adaptive_stream_error(msg: &str) -> bool {
+    msg.contains("adaptive stream (HLS/DASH)")
 }
 
 #[cfg(test)]
@@ -369,6 +451,22 @@ description = "Test plugin"
 
         loader.unload("removable-plugin").unwrap();
         assert_eq!(loader.list_loaded().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn test_resolve_stream_url_maps_adaptive_stream_error() {
+        let msg = "video is only available as an adaptive stream (HLS/DASH) at this quality; try 360p or 480p for a direct download";
+        assert!(is_adaptive_stream_error(msg));
+    }
+
+    #[test]
+    fn test_resolve_stream_url_does_not_map_other_errors() {
+        assert!(!is_adaptive_stream_error(
+            "no format matches requested quality"
+        ));
+        assert!(!is_adaptive_stream_error(
+            "yt-dlp failed (exit code 1): video unavailable"
+        ));
     }
 
     #[test]

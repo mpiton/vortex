@@ -25,11 +25,30 @@ impl CommandBus {
     ) -> Result<DownloadId, AppError> {
         let url = Url::new(&cmd.url)?;
 
-        // file_size and resume_supported are discovered by the engine at download time.
-        // The HEAD probe here is used only for filename resolution.
-        let file_name = match self.http_client().head(url.as_str()) {
-            Ok(resp) => extract_filename(&resp, &url),
-            Err(_) => filename_from_url(&url),
+        // Use the pre-computed filename when available (e.g. set by media plugins
+        // that already know the video title). Otherwise probe via HEAD or fall back
+        // to extracting the last URL path segment.
+        //
+        // Reject path-bearing overrides: since `dest_dir.join(&file_name)` is
+        // used below, an absolute path or one containing `..` would escape the
+        // configured download directory.
+        let file_name = if let Some(name) = cmd.filename.as_deref().filter(|s| !s.is_empty()) {
+            let candidate = std::path::Path::new(name);
+            if candidate.is_absolute() || candidate.components().count() != 1 {
+                return Err(AppError::Domain(
+                    crate::domain::error::DomainError::ValidationError(format!(
+                        "invalid filename override (must be a single file component): {name}"
+                    )),
+                ));
+            }
+            name.to_string()
+        } else {
+            // file_size and resume_supported are discovered by the engine at download time.
+            // The HEAD probe here is used only for filename resolution.
+            match self.http_client().head(url.as_str()) {
+                Ok(resp) => extract_filename(&resp, &url),
+                Err(_) => filename_from_url(&url),
+            }
         };
 
         let dest_dir = cmd.destination.unwrap_or_else(|| {
@@ -46,7 +65,11 @@ impl CommandBus {
 
         let id = next_download_id();
 
-        let download = Download::new(id, url, file_name, dest.to_string_lossy().to_string());
+        let mut download = Download::new(id, url, file_name, dest.to_string_lossy().to_string());
+
+        if let Some(hostname) = cmd.source_hostname_override {
+            download = download.with_source_hostname(hostname);
+        }
 
         self.download_repo().save(&download)?;
         self.event_bus()
@@ -63,7 +86,7 @@ impl CommandBus {
 /// low 12 bits. Disjoint bit ranges prevent the `(T, seq)` vs
 /// `(T+seq, 0)` collision class. 12-bit counter allows 4096 downloads
 /// per millisecond.
-fn next_download_id() -> DownloadId {
+pub(super) fn next_download_id() -> DownloadId {
     let seq = NEXT_DOWNLOAD_SEQ.fetch_add(1, Ordering::Relaxed) & 0xFFF;
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -399,6 +422,8 @@ mod tests {
         let cmd = StartDownloadCommand {
             url: "https://example.com/files/report.pdf".to_string(),
             destination: Some(PathBuf::from("/tmp/downloads")),
+            filename: None,
+            source_hostname_override: None,
         };
 
         let id = bus.handle_start_download(cmd).await.unwrap();
@@ -421,6 +446,8 @@ mod tests {
         let cmd = StartDownloadCommand {
             url: "not-a-valid-url".to_string(),
             destination: None,
+            filename: None,
+            source_hostname_override: None,
         };
 
         let result = bus.handle_start_download(cmd).await;
@@ -434,6 +461,8 @@ mod tests {
         let cmd = StartDownloadCommand {
             url: "https://example.com/path/archive.tar.gz".to_string(),
             destination: Some(PathBuf::from("/tmp")),
+            filename: None,
+            source_hostname_override: None,
         };
 
         let id = bus.handle_start_download(cmd).await.unwrap();
@@ -469,5 +498,52 @@ mod tests {
             crate::domain::model::download::Url::new("https://example.com/file.bin?token=abc")
                 .unwrap();
         assert_eq!(super::filename_from_url(&url), "file.bin");
+    }
+
+    #[tokio::test]
+    async fn test_filename_override_skips_head_probe() {
+        // Regression for YouTube downloads: when a filename override is provided
+        // (e.g. "Rick Astley - Never Gonna Give You Up.mp4") the HEAD probe must
+        // be skipped and the override used directly.
+        let (bus, repo, _) = make_command_bus(Arc::new(MockHttpClient::failing()));
+
+        let cmd = StartDownloadCommand {
+            url: "https://rr1---sn-n4g-cvq6.googlevideo.com/videoplayback?expire=123".to_string(),
+            destination: Some(PathBuf::from("/tmp")),
+            filename: Some("Rick Astley - Never Gonna Give You Up.mp4".to_string()),
+            source_hostname_override: None,
+        };
+
+        let id = bus.handle_start_download(cmd).await.unwrap();
+
+        let saved = repo.store.lock().unwrap().get(&id.0).cloned().unwrap();
+        assert_eq!(
+            saved.file_name(),
+            "Rick Astley - Never Gonna Give You Up.mp4",
+            "filename override must be used, not the CDN URL path segment"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_source_hostname_override_replaces_cdn_hostname() {
+        // Regression for YouTube downloads: the download must store "youtube.com"
+        // (the origin) rather than "rr1---sn-n4g-cvq6.googlevideo.com" (the CDN).
+        let (bus, repo, _) = make_command_bus(Arc::new(MockHttpClient::failing()));
+
+        let cmd = StartDownloadCommand {
+            url: "https://rr1---sn-n4g-cvq6.googlevideo.com/videoplayback?expire=123".to_string(),
+            destination: Some(PathBuf::from("/tmp")),
+            filename: Some("video.mp4".to_string()),
+            source_hostname_override: Some("www.youtube.com".to_string()),
+        };
+
+        let id = bus.handle_start_download(cmd).await.unwrap();
+
+        let saved = repo.store.lock().unwrap().get(&id.0).cloned().unwrap();
+        assert_eq!(
+            saved.source_hostname(),
+            "www.youtube.com",
+            "source_hostname must reflect the origin, not the CDN"
+        );
     }
 }
