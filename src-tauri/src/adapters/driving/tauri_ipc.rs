@@ -873,7 +873,11 @@ pub async fn download_media_start(
                 .map_err(|e| e.to_string())
         }
 
-        StreamResolution::LocalFile { path, size, filename } => {
+        StreamResolution::LocalFile {
+            path,
+            size,
+            filename,
+        } => {
             let cmd = crate::application::commands::RegisterLocalFileCommand {
                 source_url: url,
                 destination_path: path,
@@ -1346,7 +1350,10 @@ mod tests {
 
     #[test]
     fn sanitize_filename_replaces_path_separators() {
-        assert_eq!(sanitize_filename("AC/DC - Back in Black"), "AC_DC - Back in Black");
+        assert_eq!(
+            sanitize_filename("AC/DC - Back in Black"),
+            "AC_DC - Back in Black"
+        );
     }
 
     #[test]
@@ -1360,7 +1367,10 @@ mod tests {
 
     #[test]
     fn sanitize_filename_replaces_all_invalid_chars() {
-        assert_eq!(sanitize_filename(r#"a/b\c:d*e?f"g<h>i|j"#), "a_b_c_d_e_f_g_h_i_j");
+        assert_eq!(
+            sanitize_filename(r#"a/b\c:d*e?f"g<h>i|j"#),
+            "a_b_c_d_e_f_g_h_i_j"
+        );
     }
 
     #[test]

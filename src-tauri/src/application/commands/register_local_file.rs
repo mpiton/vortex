@@ -70,7 +70,8 @@ impl CommandBus {
         let completed_event = download.complete().map_err(AppError::Domain)?;
 
         self.download_repo().save(&download)?;
-        self.event_bus().publish(DomainEvent::DownloadCreated { id });
+        self.event_bus()
+            .publish(DomainEvent::DownloadCreated { id });
         self.event_bus().publish(completed_event);
 
         Ok(id)
@@ -101,92 +102,196 @@ mod tests {
     use std::sync::Arc;
 
     struct MockRepo(Mutex<HashMap<u64, Download>>);
-    impl MockRepo { fn new() -> Self { Self(Mutex::new(HashMap::new())) } }
+    impl MockRepo {
+        fn new() -> Self {
+            Self(Mutex::new(HashMap::new()))
+        }
+    }
     impl DownloadRepository for MockRepo {
         fn find_by_id(&self, id: DownloadId) -> Result<Option<Download>, DomainError> {
             Ok(self.0.lock().unwrap().get(&id.0).cloned())
         }
         fn save(&self, d: &Download) -> Result<(), DomainError> {
-            self.0.lock().unwrap().insert(d.id().0, d.clone()); Ok(())
+            self.0.lock().unwrap().insert(d.id().0, d.clone());
+            Ok(())
         }
         fn delete(&self, id: DownloadId) -> Result<(), DomainError> {
-            self.0.lock().unwrap().remove(&id.0); Ok(())
+            self.0.lock().unwrap().remove(&id.0);
+            Ok(())
         }
         fn find_by_state(&self, s: DownloadState) -> Result<Vec<Download>, DomainError> {
-            Ok(self.0.lock().unwrap().values().filter(|d| d.state() == s).cloned().collect())
+            Ok(self
+                .0
+                .lock()
+                .unwrap()
+                .values()
+                .filter(|d| d.state() == s)
+                .cloned()
+                .collect())
         }
     }
     struct MockEngine;
     impl DownloadEngine for MockEngine {
-        fn start(&self, _: &Download) -> Result<(), DomainError> { Ok(()) }
-        fn pause(&self, _: DownloadId) -> Result<(), DomainError> { Ok(()) }
-        fn resume(&self, _: DownloadId) -> Result<(), DomainError> { Ok(()) }
-        fn cancel(&self, _: DownloadId) -> Result<(), DomainError> { Ok(()) }
+        fn start(&self, _: &Download) -> Result<(), DomainError> {
+            Ok(())
+        }
+        fn pause(&self, _: DownloadId) -> Result<(), DomainError> {
+            Ok(())
+        }
+        fn resume(&self, _: DownloadId) -> Result<(), DomainError> {
+            Ok(())
+        }
+        fn cancel(&self, _: DownloadId) -> Result<(), DomainError> {
+            Ok(())
+        }
     }
     struct MockBus(Mutex<Vec<DomainEvent>>);
-    impl MockBus { fn new() -> Self { Self(Mutex::new(vec![])) } }
+    impl MockBus {
+        fn new() -> Self {
+            Self(Mutex::new(vec![]))
+        }
+    }
     impl EventBus for MockBus {
-        fn publish(&self, e: DomainEvent) { self.0.lock().unwrap().push(e); }
+        fn publish(&self, e: DomainEvent) {
+            self.0.lock().unwrap().push(e);
+        }
         fn subscribe(&self, _: Box<dyn Fn(&DomainEvent) + Send + Sync>) {}
     }
     struct MockHttp;
     impl HttpClient for MockHttp {
-        fn head(&self, _: &str) -> Result<HttpResponse, DomainError> { Err(DomainError::NetworkError("no".into())) }
-        fn get_range(&self, _: &str, s: u64, e: u64) -> Result<Vec<u8>, DomainError> { Ok(vec![0u8; (e - s + 1) as usize]) }
-        fn supports_range(&self, _: &str) -> Result<bool, DomainError> { Ok(false) }
+        fn head(&self, _: &str) -> Result<HttpResponse, DomainError> {
+            Err(DomainError::NetworkError("no".into()))
+        }
+        fn get_range(&self, _: &str, s: u64, e: u64) -> Result<Vec<u8>, DomainError> {
+            Ok(vec![0u8; (e - s + 1) as usize])
+        }
+        fn supports_range(&self, _: &str) -> Result<bool, DomainError> {
+            Ok(false)
+        }
     }
     struct MockFs;
     impl FileStorage for MockFs {
-        fn create_file(&self, _: &std::path::Path, _: u64) -> Result<(), DomainError> { Ok(()) }
-        fn write_segment(&self, _: &std::path::Path, _: u64, _: &[u8]) -> Result<(), DomainError> { Ok(()) }
-        fn read_meta(&self, _: &std::path::Path) -> Result<Option<DownloadMeta>, DomainError> { Ok(None) }
-        fn write_meta(&self, _: &std::path::Path, _: &DownloadMeta) -> Result<(), DomainError> { Ok(()) }
-        fn delete_meta(&self, _: &std::path::Path) -> Result<(), DomainError> { Ok(()) }
+        fn create_file(&self, _: &std::path::Path, _: u64) -> Result<(), DomainError> {
+            Ok(())
+        }
+        fn write_segment(&self, _: &std::path::Path, _: u64, _: &[u8]) -> Result<(), DomainError> {
+            Ok(())
+        }
+        fn read_meta(&self, _: &std::path::Path) -> Result<Option<DownloadMeta>, DomainError> {
+            Ok(None)
+        }
+        fn write_meta(&self, _: &std::path::Path, _: &DownloadMeta) -> Result<(), DomainError> {
+            Ok(())
+        }
+        fn delete_meta(&self, _: &std::path::Path) -> Result<(), DomainError> {
+            Ok(())
+        }
     }
     struct MockPlugin;
     impl PluginLoader for MockPlugin {
-        fn load(&self, _: &PluginManifest) -> Result<(), DomainError> { Ok(()) }
-        fn unload(&self, _: &str) -> Result<(), DomainError> { Ok(()) }
-        fn resolve_url(&self, _: &str) -> Result<Option<PluginInfo>, DomainError> { Ok(None) }
-        fn list_loaded(&self) -> Result<Vec<PluginInfo>, DomainError> { Ok(vec![]) }
-        fn set_enabled(&self, _: &str, _: bool) -> Result<(), DomainError> { Ok(()) }
+        fn load(&self, _: &PluginManifest) -> Result<(), DomainError> {
+            Ok(())
+        }
+        fn unload(&self, _: &str) -> Result<(), DomainError> {
+            Ok(())
+        }
+        fn resolve_url(&self, _: &str) -> Result<Option<PluginInfo>, DomainError> {
+            Ok(None)
+        }
+        fn list_loaded(&self) -> Result<Vec<PluginInfo>, DomainError> {
+            Ok(vec![])
+        }
+        fn set_enabled(&self, _: &str, _: bool) -> Result<(), DomainError> {
+            Ok(())
+        }
     }
     struct MockCfg;
     impl ConfigStore for MockCfg {
-        fn get_config(&self) -> Result<AppConfig, DomainError> { Ok(AppConfig::default()) }
-        fn update_config(&self, _: ConfigPatch) -> Result<AppConfig, DomainError> { Ok(AppConfig::default()) }
+        fn get_config(&self) -> Result<AppConfig, DomainError> {
+            Ok(AppConfig::default())
+        }
+        fn update_config(&self, _: ConfigPatch) -> Result<AppConfig, DomainError> {
+            Ok(AppConfig::default())
+        }
     }
     struct MockCred;
     impl CredentialStore for MockCred {
-        fn get(&self, _: &str) -> Result<Option<Credential>, DomainError> { Ok(None) }
-        fn store(&self, _: &str, _: &Credential) -> Result<(), DomainError> { Ok(()) }
-        fn delete(&self, _: &str) -> Result<(), DomainError> { Ok(()) }
+        fn get(&self, _: &str) -> Result<Option<Credential>, DomainError> {
+            Ok(None)
+        }
+        fn store(&self, _: &str, _: &Credential) -> Result<(), DomainError> {
+            Ok(())
+        }
+        fn delete(&self, _: &str) -> Result<(), DomainError> {
+            Ok(())
+        }
     }
     struct MockClip;
     impl ClipboardObserver for MockClip {
-        fn start(&self) -> Result<(), DomainError> { Ok(()) }
-        fn stop(&self) -> Result<(), DomainError> { Ok(()) }
-        fn get_urls(&self) -> Result<Vec<String>, DomainError> { Ok(vec![]) }
+        fn start(&self) -> Result<(), DomainError> {
+            Ok(())
+        }
+        fn stop(&self) -> Result<(), DomainError> {
+            Ok(())
+        }
+        fn get_urls(&self) -> Result<Vec<String>, DomainError> {
+            Ok(vec![])
+        }
     }
     struct FakeArchive;
     impl crate::domain::ports::driven::ArchiveExtractor for FakeArchive {
-        fn detect_format(&self, _: &std::path::Path) -> Result<Option<crate::domain::model::archive::ArchiveFormat>, DomainError> { Ok(None) }
-        fn can_extract(&self, _: &std::path::Path) -> Result<bool, DomainError> { Ok(false) }
-        fn extract(&self, _: &std::path::Path, _: &std::path::Path, _: Option<&str>) -> Result<crate::domain::model::archive::ExtractSummary, DomainError> {
-            Ok(crate::domain::model::archive::ExtractSummary { extracted_files: 0, extracted_bytes: 0, duration_ms: 0, warnings: vec![] })
+        fn detect_format(
+            &self,
+            _: &std::path::Path,
+        ) -> Result<Option<crate::domain::model::archive::ArchiveFormat>, DomainError> {
+            Ok(None)
         }
-        fn list_contents(&self, _: &std::path::Path, _: Option<&str>) -> Result<Vec<crate::domain::model::archive::ArchiveEntry>, DomainError> { Ok(vec![]) }
-        fn detect_segments(&self, _: &std::path::Path) -> Result<Option<Vec<std::path::PathBuf>>, DomainError> { Ok(None) }
+        fn can_extract(&self, _: &std::path::Path) -> Result<bool, DomainError> {
+            Ok(false)
+        }
+        fn extract(
+            &self,
+            _: &std::path::Path,
+            _: &std::path::Path,
+            _: Option<&str>,
+        ) -> Result<crate::domain::model::archive::ExtractSummary, DomainError> {
+            Ok(crate::domain::model::archive::ExtractSummary {
+                extracted_files: 0,
+                extracted_bytes: 0,
+                duration_ms: 0,
+                warnings: vec![],
+            })
+        }
+        fn list_contents(
+            &self,
+            _: &std::path::Path,
+            _: Option<&str>,
+        ) -> Result<Vec<crate::domain::model::archive::ArchiveEntry>, DomainError> {
+            Ok(vec![])
+        }
+        fn detect_segments(
+            &self,
+            _: &std::path::Path,
+        ) -> Result<Option<Vec<std::path::PathBuf>>, DomainError> {
+            Ok(None)
+        }
     }
 
     fn make_bus() -> (CommandBus, Arc<MockRepo>, Arc<MockBus>) {
         let repo = Arc::new(MockRepo::new());
         let events = Arc::new(MockBus::new());
         let bus = CommandBus::new(
-            repo.clone(), Arc::new(MockEngine), events.clone(),
-            Arc::new(MockFs), Arc::new(MockHttp), Arc::new(MockPlugin),
-            Arc::new(MockCfg), Arc::new(MockCred), Arc::new(MockClip),
-            Arc::new(FakeArchive), None,
+            repo.clone(),
+            Arc::new(MockEngine),
+            events.clone(),
+            Arc::new(MockFs),
+            Arc::new(MockHttp),
+            Arc::new(MockPlugin),
+            Arc::new(MockCfg),
+            Arc::new(MockCred),
+            Arc::new(MockClip),
+            Arc::new(FakeArchive),
+            None,
         );
         (bus, repo, events)
     }
@@ -214,7 +319,10 @@ mod tests {
         let id = bus.handle_register_local_file(cmd).await.unwrap();
         let saved = repo.0.lock().unwrap().get(&id.0).cloned().unwrap();
         assert_eq!(saved.state(), DownloadState::Completed);
-        assert_eq!(saved.file_name(), "Rick Astley - Never Gonna Give You Up.mp4");
+        assert_eq!(
+            saved.file_name(),
+            "Rick Astley - Never Gonna Give You Up.mp4"
+        );
         assert_eq!(saved.source_hostname(), "www.youtube.com");
         assert_eq!(
             saved.file_size(),
@@ -236,8 +344,16 @@ mod tests {
         };
         let id = bus.handle_register_local_file(cmd).await.unwrap();
         let evs = events.0.lock().unwrap();
-        assert!(evs.iter().any(|e| *e == DomainEvent::DownloadCreated { id }), "must emit DownloadCreated");
-        assert!(evs.iter().any(|e| *e == DomainEvent::DownloadCompleted { id }), "must emit DownloadCompleted");
+        assert!(
+            evs.iter()
+                .any(|e| *e == DomainEvent::DownloadCreated { id }),
+            "must emit DownloadCreated"
+        );
+        assert!(
+            evs.iter()
+                .any(|e| *e == DomainEvent::DownloadCompleted { id }),
+            "must emit DownloadCompleted"
+        );
     }
 
     #[tokio::test]

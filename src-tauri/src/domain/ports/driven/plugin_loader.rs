@@ -103,11 +103,21 @@ mod tests {
 
     struct MinimalLoader;
     impl PluginLoader for MinimalLoader {
-        fn load(&self, _: &PluginManifest) -> Result<(), DomainError> { Ok(()) }
-        fn unload(&self, _: &str) -> Result<(), DomainError> { Ok(()) }
-        fn resolve_url(&self, _: &str) -> Result<Option<PluginInfo>, DomainError> { Ok(None) }
-        fn list_loaded(&self) -> Result<Vec<PluginInfo>, DomainError> { Ok(vec![]) }
-        fn set_enabled(&self, _: &str, _: bool) -> Result<(), DomainError> { Ok(()) }
+        fn load(&self, _: &PluginManifest) -> Result<(), DomainError> {
+            Ok(())
+        }
+        fn unload(&self, _: &str) -> Result<(), DomainError> {
+            Ok(())
+        }
+        fn resolve_url(&self, _: &str) -> Result<Option<PluginInfo>, DomainError> {
+            Ok(None)
+        }
+        fn list_loaded(&self) -> Result<Vec<PluginInfo>, DomainError> {
+            Ok(vec![])
+        }
+        fn set_enabled(&self, _: &str, _: bool) -> Result<(), DomainError> {
+            Ok(())
+        }
     }
 
     #[test]

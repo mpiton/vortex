@@ -5,8 +5,8 @@ use std::sync::Arc;
 
 use crate::domain::error::DomainError;
 use crate::domain::model::plugin::{PluginInfo, PluginManifest};
-use crate::domain::ports::driven::plugin_loader::DownloadedFileInfo;
 use crate::domain::ports::driven::PluginLoader;
+use crate::domain::ports::driven::plugin_loader::DownloadedFileInfo;
 
 use super::builtin::HttpModule;
 use super::capabilities::{SharedHostResources, build_host_functions};
@@ -461,8 +461,12 @@ description = "Test plugin"
 
     #[test]
     fn test_resolve_stream_url_does_not_map_other_errors() {
-        assert!(!is_adaptive_stream_error("no format matches requested quality"));
-        assert!(!is_adaptive_stream_error("yt-dlp failed (exit code 1): video unavailable"));
+        assert!(!is_adaptive_stream_error(
+            "no format matches requested quality"
+        ));
+        assert!(!is_adaptive_stream_error(
+            "yt-dlp failed (exit code 1): video unavailable"
+        ));
     }
 
     #[test]
