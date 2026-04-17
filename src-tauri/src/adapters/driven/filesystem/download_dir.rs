@@ -6,7 +6,7 @@
 /// Returns the OS-specific default Downloads directory, if one exists.
 ///
 /// Platforms:
-/// - Linux : `$XDG_DOWNLOAD_DIR` or `~/Downloads`
+/// - Linux : reads `~/.config/user-dirs.dirs`, falls back to `$HOME/Downloads`
 /// - macOS : `~/Downloads`
 /// - Windows : `%USERPROFILE%\Downloads`
 /// - Others / FHS-only : `None`
@@ -30,10 +30,5 @@ mod tests {
         assert!(!path.is_empty(), "resolved path must not be empty");
     }
 
-    #[test]
-    fn returns_string_not_pathbuf_for_config_compatibility() {
-        // Contract test: AppConfig::download_dir is Option<String>,
-        // so this function MUST also return Option<String>.
-        let _assert_type: Option<String> = resolve_system_download_dir();
-    }
+    // Return type Option<String> is enforced at compile time by the function signature.
 }
