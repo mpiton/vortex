@@ -34,14 +34,14 @@ impl CommandBus {
 
             if cmd.delete_files {
                 let dest = Path::new(download.destination_path());
-                if let Err(e) = std::fs::remove_file(dest) {
-                    if e.kind() != ErrorKind::NotFound {
-                        tracing::warn!(
-                            path = %dest.display(),
-                            error = %e,
-                            "failed to delete download file"
-                        );
-                    }
+                if let Err(e) = std::fs::remove_file(dest)
+                    && e.kind() != ErrorKind::NotFound
+                {
+                    tracing::warn!(
+                        path = %dest.display(),
+                        error = %e,
+                        "failed to delete download file"
+                    );
                 }
                 if let Err(e) = self.file_storage().delete_meta(dest) {
                     tracing::warn!(
