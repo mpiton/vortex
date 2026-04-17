@@ -293,7 +293,7 @@ function getColumns(t: Translate): ColumnDef<DownloadView>[] {
       header: t('downloads.table.columns.host'),
       cell: ({ row }) => (
         <span className="text-xs text-muted-foreground">
-          {extractHostname(row.original.url)}
+          {row.original.sourceHostname || extractHostname(row.original.url)}
         </span>
       ),
     },

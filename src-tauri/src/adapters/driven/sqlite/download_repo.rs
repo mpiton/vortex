@@ -50,13 +50,16 @@ impl SqliteDownloadRepo {
             on_conflict
                 // SpeedBytesPerSec excluded: it's a runtime value
                 // written by the download engine, not the write repo.
+                // DownloadedBytes excluded from update_columns: we use a
+                // MAX expression below so that progress_bridge writes
+                // (which may race with state-transition saves) are never
+                // regressed back to a stale lower value.
                 .update_columns([
                     download::Column::Url,
                     download::Column::FileName,
                     download::Column::State,
                     download::Column::Priority,
                     download::Column::TotalBytes,
-                    download::Column::DownloadedBytes,
                     download::Column::RetryCount,
                     download::Column::MaxRetries,
                     download::Column::SegmentsCount,
@@ -82,6 +85,16 @@ impl SqliteDownloadRepo {
                             ),
                         )
                         .value(download::Column::UpdatedAt, now as i64)
+                        // Keep the larger of the two values so that a
+                        // state-transition save (which may carry a stale 0)
+                        // never overwrites bytes already written by
+                        // progress_bridge's update_download_progress().
+                        .value(
+                            download::Column::DownloadedBytes,
+                            Expr::cust(
+                                "MAX(excluded.downloaded_bytes, COALESCE(downloads.downloaded_bytes, 0))",
+                            ),
+                        )
                         .to_owned(),
                 )
                 .exec(&self.db)

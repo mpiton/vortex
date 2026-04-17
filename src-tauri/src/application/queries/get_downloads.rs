@@ -179,6 +179,7 @@ mod tests {
             id: DownloadId(id),
             file_name: name.to_string(),
             url: format!("http://example.com/{name}"),
+            source_hostname: "example.com".to_string(),
             state,
             progress_percent: 0.0,
             speed_bytes_per_sec: 0,

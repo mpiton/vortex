@@ -146,6 +146,7 @@ mod tests {
             id: DownloadId(42),
             file_name: "test.zip".to_string(),
             url: "http://example.com/test.zip".to_string(),
+            source_hostname: "example.com".to_string(),
             state: DownloadState::Downloading,
             progress_percent: 50.0,
             speed_bytes_per_sec: 1024,

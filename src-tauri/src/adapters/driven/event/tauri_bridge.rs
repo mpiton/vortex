@@ -7,9 +7,25 @@ use crate::domain::ports::driven::EventBus;
 /// Subscribes to the EventBus and emits each event to the Tauri webview.
 pub fn spawn_tauri_event_bridge(app_handle: AppHandle, event_bus: &dyn EventBus) {
     event_bus.subscribe(Box::new(move |event: &DomainEvent| {
+        if !should_forward_to_frontend(event) {
+            return;
+        }
         let (name, payload) = to_tauri_event(event);
         app_handle.emit(name, payload).ok();
     }));
+}
+
+/// Gate `DomainEvent::DownloadCompleted` at the bridge.
+///
+/// The engine publishes `DownloadCompleted` synchronously when the last
+/// segment is written. `QueueManager` subscribes to that same event to
+/// persist `state = Completed` to SQLite and then re-publishes
+/// `DownloadCompletedPersisted`. Only the second one should reach the
+/// frontend — otherwise the UI receives two `"download-completed"`
+/// notifications per download and the first refetch runs against the
+/// pre-persist state (the race this flow exists to fix).
+fn should_forward_to_frontend(event: &DomainEvent) -> bool {
+    !matches!(event, DomainEvent::DownloadCompleted { .. })
 }
 
 fn event_name(event: &DomainEvent) -> &'static str {
@@ -20,6 +36,9 @@ fn event_name(event: &DomainEvent) -> &'static str {
         DomainEvent::DownloadResumed { .. } => "download-resumed",
         DomainEvent::DownloadResumedFromWait { .. } => "download-resumed-from-wait",
         DomainEvent::DownloadCompleted { .. } => "download-completed",
+        // Post-persist notification: same frontend event, guaranteed to
+        // fire after QueueManager has written state = Completed to SQLite.
+        DomainEvent::DownloadCompletedPersisted { .. } => "download-completed",
         DomainEvent::DownloadFailed { .. } => "download-failed",
         DomainEvent::DownloadRetrying { .. } => "download-retrying",
         DomainEvent::DownloadWaiting { .. } => "download-waiting",
@@ -47,6 +66,7 @@ fn event_payload(event: &DomainEvent) -> serde_json::Value {
         | DomainEvent::DownloadResumed { id }
         | DomainEvent::DownloadResumedFromWait { id }
         | DomainEvent::DownloadCompleted { id }
+        | DomainEvent::DownloadCompletedPersisted { id }
         | DomainEvent::DownloadCancelled { id }
         | DomainEvent::DownloadRemoved { id }
         | DomainEvent::DownloadWaiting { id }
@@ -110,6 +130,29 @@ fn to_tauri_event(event: &DomainEvent) -> (&'static str, serde_json::Value) {
 mod tests {
     use super::*;
     use crate::domain::model::download::DownloadId;
+
+    #[test]
+    fn test_download_completed_persisted_is_the_frontend_completion_event() {
+        // Post-persist event: must be forwarded and carry the `download-completed`
+        // name the frontend listens to.
+        assert!(should_forward_to_frontend(
+            &DomainEvent::DownloadCompletedPersisted { id: DownloadId(5) }
+        ));
+        let (name, payload) =
+            to_tauri_event(&DomainEvent::DownloadCompletedPersisted { id: DownloadId(42) });
+        assert_eq!(name, "download-completed");
+        assert_eq!(payload["id"], 42);
+    }
+
+    #[test]
+    fn test_pre_persist_download_completed_is_not_forwarded() {
+        // The engine's DownloadCompleted fires before SQLite is written; only
+        // DownloadCompletedPersisted should reach the frontend so a re-fetch
+        // never races the write.
+        assert!(!should_forward_to_frontend(
+            &DomainEvent::DownloadCompleted { id: DownloadId(7) }
+        ));
+    }
 
     #[test]
     fn test_event_name_download_variants() {

@@ -14,6 +14,7 @@ function mockDownloadDetail(): DownloadDetailView {
     id: 'dl-1',
     fileName: 'test-file.zip',
     url: 'https://example.com/test-file.zip',
+    sourceHostname: 'example.com',
     state: 'Downloading',
     progressPercent: 50,
     speedBytesPerSec: 1048576,

@@ -35,4 +35,7 @@ export interface MediaGrabberOptions {
   subtitles: string[];
   audioOnly: boolean;
   playlistItems: string[];
+  /** Video title used to build the filename (e.g. "Rick Astley - Never Gonna Give You Up").
+   * The backend sanitises it and appends the format extension. */
+  title?: string;
 }
