@@ -14,7 +14,9 @@ use crate::domain::ports::driven::ConfigStore;
 pub struct TomlConfigStore {
     path: PathBuf,
     /// Injected at construction. Used to hydrate `AppConfig::download_dir`
-    /// when the TOML file does not yet exist on disk.
+    /// only when the TOML file does not yet exist on disk (first launch).
+    /// After the first write, the persisted value takes precedence and
+    /// this field has no further effect on subsequent reads.
     default_download_dir: Option<String>,
     lock: Mutex<()>,
 }
@@ -398,12 +400,18 @@ mod tests {
         let path = dir.path().join("config.toml");
         std::fs::write(&path, "theme = \"dark\"\n").unwrap();
 
-        let store = TomlConfigStore::new(path, Some("/should/not/be/used".to_string()));
+        let injected = "/should/not/be/used".to_string();
+        let store = TomlConfigStore::new(path, Some(injected.clone()));
         let config = store.get_config().unwrap();
 
+        assert_ne!(
+            config.download_dir.as_deref(),
+            Some(injected.as_str()),
+            "injected system default must not leak into existing configs"
+        );
         assert_eq!(
             config.download_dir, None,
-            "existing config must not be overwritten by system default"
+            "existing config with no download_dir key stays None"
         );
         assert_eq!(config.theme, "dark");
     }
