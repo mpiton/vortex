@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -11,6 +12,7 @@ import { Button } from "@/components/ui/button";
 import { PluginStoreRow } from "./PluginsView/PluginStoreRow";
 import { usePluginStore } from "./PluginsView/usePluginStore";
 import { useTauriMutation } from "@/api/hooks";
+import { toast } from "@/lib/toast";
 
 const CATEGORIES = [
   "all",
@@ -27,6 +29,7 @@ const CATEGORIES = [
 const STORE_INVALIDATE_KEYS = [["plugin_store_list"]] as const;
 
 export function PluginsView() {
+  const { t } = useTranslation();
   const [search, setSearch] = useState("");
   const [category, setCategory] = useState("all");
 
@@ -44,12 +47,18 @@ export function PluginsView() {
 
   const disableMutation = useTauriMutation<void, { name: string }>(
     "plugin_disable",
-    { invalidateKeys: STORE_INVALIDATE_KEYS },
+    {
+      invalidateKeys: STORE_INVALIDATE_KEYS,
+      onSuccess: () => toast.success(t("plugins.toast.disableSuccess")),
+    },
   );
 
   const uninstallMutation = useTauriMutation<void, { name: string }>(
     "plugin_uninstall",
-    { invalidateKeys: STORE_INVALIDATE_KEYS },
+    {
+      invalidateKeys: STORE_INVALIDATE_KEYS,
+      onSuccess: () => toast.success(t("plugins.toast.uninstallSuccess")),
+    },
   );
 
   const filtered = entries.filter((e) => {

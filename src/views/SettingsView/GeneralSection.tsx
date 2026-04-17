@@ -1,5 +1,6 @@
 import { useTranslation } from 'react-i18next';
 import { useTauriMutation } from '@/api/hooks';
+import { toast } from '@/lib/toast';
 import type { AppConfig, AppConfigPatch } from '@/types/settings';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
@@ -14,6 +15,9 @@ export function GeneralSection({ config }: GeneralSectionProps) {
   const { t } = useTranslation();
   const { mutate } = useTauriMutation<AppConfig, { patch: AppConfigPatch }>('settings_update', {
     invalidateKeys: [['settings_get']],
+    onSuccess: () => {
+      toast.success(t('settings.toast.updateSuccess'));
+    },
   });
 
   const handleChange = <K extends keyof AppConfig>(key: K, value: AppConfig[K]) => {

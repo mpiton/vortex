@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `useTauriMutation` now accepts `silentError` (opt-out of the default toast) and `errorMessage` (remap the error message before toasting) options. (#74)
+
+### Changed
+- Every IPC mutation now surfaces an error toast by default via `useTauriMutation`; migrated all call sites (downloads, settings, plugins, link grabber, clipboard monitoring) to rely on this default. Inline error state removed from the link grabber. (#74)
+
 ### Fixed
 - Frontend briefly showing stale state after a download completed: `DownloadCompleted` fired before `QueueManager` persisted `state = Completed` to SQLite, so a re-fetch triggered by the event could read the previous state. New `DownloadCompletedPersisted` event emitted *after* the save; the Tauri bridge maps it to the same `download-completed` frontend event so existing invalidation logic is reused without changes.
 - `downloaded_bytes` stayed at 0 in SQLite for downloads that finished in under 500 ms (the `DownloadProgress` throttle window): `segment_worker` now emits one final `DownloadProgress` right before `SegmentCompleted` so `progress_bridge` always observes the real byte count.

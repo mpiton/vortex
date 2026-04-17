@@ -4,6 +4,7 @@ import { useLocation, useNavigate } from "react-router";
 import { Switch } from "@/components/ui/switch";
 import { useTauriMutation } from "@/api/hooks";
 import { tauriInvoke } from "@/api/client";
+import { toast } from "@/lib/toast";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { PasteZone } from "./PasteZone";
 import { FilterBar } from "./FilterBar";
@@ -19,7 +20,6 @@ export function LinkGrabberView() {
   const location = useLocation();
   const navigate = useNavigate();
   const [resolvedLinks, setResolvedLinks] = useState<ResolvedLink[]>([]);
-  const [resolveError, setResolveError] = useState<string | null>(null);
   const [filter, setFilter] = useState<FilterType>("all");
   const [selectedLinkIds, setSelectedLinkIds] = useState<string[]>([]);
   const [groupingMode, setGroupingMode] = useState<GroupingMode>("hostname");
@@ -36,12 +36,9 @@ export function LinkGrabberView() {
     { urls: string[] }
   >("link_resolve", {
     onSuccess: (resolved) => {
-      setResolveError(null);
       setResolvedLinks(resolved);
       setSelectedLinkIds([]);
-    },
-    onError: (error) => {
-      setResolveError(error.message);
+      toast.success(t("linkGrabber.toast.resolveSuccess", { count: resolved.length }));
     },
   });
 
@@ -54,16 +51,13 @@ export function LinkGrabberView() {
     { url: string; quality: string; format: string; audioOnly: boolean; title?: string }
   >("download_media_start", {
     onSuccess: () => {
+      toast.success(t("linkGrabber.toast.downloadStarted"));
       void navigate("/");
-    },
-    onError: (error) => {
-      setResolveError(error.message);
     },
   });
 
   const handlePasteUrls = (urls: string[]) => {
     // TODO: container: entries need a dedicated backend command for decryption
-    setResolveError(null);
     const validUrls = urls.filter(
       (u) =>
         u.startsWith("http://") ||
@@ -150,7 +144,6 @@ export function LinkGrabberView() {
       <PasteZone
         onPasteUrls={handlePasteUrls}
         isLoading={isResolving}
-        errorMessage={resolveError}
       />
 
       {resolvedLinks.length > 0 && (

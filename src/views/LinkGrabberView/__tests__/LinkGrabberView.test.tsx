@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router";
 import { invoke } from "@tauri-apps/api/core";
+import { toast } from "@/lib/toast";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { LinkGrabberView } from "../LinkGrabberView";
 
@@ -13,6 +14,13 @@ vi.mock("@tauri-apps/api/core", () => ({
 
 vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn().mockResolvedValue(vi.fn()),
+}));
+
+vi.mock("@/lib/toast", () => ({
+  toast: {
+    success: vi.fn(),
+    error: vi.fn(),
+  },
 }));
 
 const mockInvoke = vi.mocked(invoke);
@@ -39,6 +47,7 @@ describe("LinkGrabberView", () => {
   beforeEach(() => {
     mockInvoke.mockReset();
     mockInvoke.mockResolvedValue([]);
+    vi.clearAllMocks();
   });
 
   it("should render the header title", () => {
@@ -91,7 +100,7 @@ describe("LinkGrabberView", () => {
     });
   });
 
-  it("should clear inline error when retry succeeds", async () => {
+  it("should surface error toast on failure and success toast on retry", async () => {
     mockInvoke
       .mockRejectedValueOnce(new Error("AppState not registered"))
       .mockResolvedValueOnce([
@@ -114,15 +123,17 @@ describe("LinkGrabberView", () => {
     await user.type(textarea, "https://example.com/file.zip");
     await user.click(screen.getByRole("button", { name: "Analyze Links" }));
 
-    expect(await screen.findByRole("alert")).toHaveTextContent(
-      "Failed to analyze links. Please try again.",
-    );
-    expect(screen.getByText("AppState not registered")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(toast.error).toHaveBeenCalledWith("AppState not registered");
+    });
 
+    // Clear the textarea and retry
+    await user.clear(textarea);
+    await user.type(textarea, "https://example.com/file.zip");
     await user.click(screen.getByRole("button", { name: "Analyze Links" }));
 
     await waitFor(() => {
-      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+      expect(toast.success).toHaveBeenCalled();
       expect(
         screen.getByRole("button", { name: "Select All (1)" }),
       ).toBeInTheDocument();

@@ -112,6 +112,9 @@
       "compactMode": "Mode compact",
       "compactModeDesc": "Réduire les espacements et les tailles de police",
       "language": "Langue"
+    },
+    "toast": {
+      "updateSuccess": "Paramètres enregistrés"
     }
   },
   "downloads": {
@@ -193,7 +196,6 @@
     "pastePlaceholder": "Collez des URL ici (une par ligne)…",
     "analyze": "Analyser les liens",
     "resolving": "Résolution…",
-    "analyzeFailed": "Échec de l'analyse des liens. Veuillez réessayer.",
     "clipboardComingSoon": "Disponible dans une prochaine mise à jour",
     "filters": {
       "all": "Tous",
@@ -212,6 +214,11 @@
       "hostname": "Par hôte",
       "extension": "Par extension",
       "type": "Par type"
+    },
+    "toast": {
+      "resolveSuccess_one": "{{count}} lien analysé",
+      "resolveSuccess_other": "{{count}} liens analysés",
+      "downloadStarted": "Téléchargement démarré"
     }
   },
   "statusBar": {
@@ -237,5 +244,20 @@
     "comingSoon": "Bientôt disponible",
     "clear": "Effacer",
     "unlimited": "illimitée"
+  },
+  "plugins": {
+    "toast": {
+      "installSuccess": "Plugin « {{name}} » installé",
+      "updateSuccess": "Plugin « {{name}} » mis à jour",
+      "refreshSuccess": "Liste des plugins rafraîchie",
+      "disableSuccess": "Plugin désactivé",
+      "uninstallSuccess": "Plugin désinstallé"
+    }
+  },
+  "clipboard": {
+    "toast": {
+      "enabled": "Surveillance du presse-papiers activée",
+      "disabled": "Surveillance du presse-papiers désactivée"
+    }
   }
 }

@@ -8,8 +8,16 @@ vi.mock('@/api/client', () => ({
   queryClient: new QueryClient({ defaultOptions: { queries: { retry: false } } }),
 }));
 
+vi.mock('@/lib/toast', () => ({
+  toast: {
+    success: vi.fn(),
+    error: vi.fn(),
+  },
+}));
+
 import { tauriInvoke } from '@/api/client';
 import { useTauriQuery, useTauriMutation } from '@/api/hooks';
+import { toast } from '@/lib/toast';
 
 function makeWrapper() {
   const testClient = new QueryClient({
@@ -94,5 +102,116 @@ describe('useTauriMutation', () => {
     });
     await waitFor(() => expect(result.current.isError).toBe(true));
     expect(result.current.error?.message).toBe('pause failed');
+  });
+
+  it('should surface toast.error by default when mutation fails and no onError is provided', async () => {
+    vi.mocked(tauriInvoke).mockRejectedValueOnce(new Error('boom'));
+    const { result } = renderHook(
+      () => useTauriMutation('download_pause'),
+      { wrapper: makeWrapper() }
+    );
+    await act(async () => {
+      result.current.mutate({ id: '1' } as Record<string, unknown>);
+    });
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect(toast.error).toHaveBeenCalledWith('boom');
+  });
+
+  it('should NOT surface toast.error when silentError is true', async () => {
+    vi.mocked(tauriInvoke).mockRejectedValueOnce(new Error('quiet'));
+    const { result } = renderHook(
+      () => useTauriMutation('download_pause', { silentError: true }),
+      { wrapper: makeWrapper() }
+    );
+    await act(async () => {
+      result.current.mutate({ id: '1' } as Record<string, unknown>);
+    });
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect(toast.error).not.toHaveBeenCalled();
+  });
+
+  it('should NOT surface toast.error when a custom onError is provided', async () => {
+    vi.mocked(tauriInvoke).mockRejectedValueOnce(new Error('custom'));
+    const customOnError = vi.fn();
+    const { result } = renderHook(
+      () => useTauriMutation('download_pause', { onError: customOnError }),
+      { wrapper: makeWrapper() }
+    );
+    await act(async () => {
+      result.current.mutate({ id: '1' } as Record<string, unknown>);
+    });
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect(customOnError).toHaveBeenCalled();
+    expect(toast.error).not.toHaveBeenCalled();
+  });
+
+  it('should fall back to raw error message when errorMessage mapper returns a blank string', async () => {
+    vi.mocked(tauriInvoke).mockRejectedValueOnce(new Error('raw'));
+    const { result } = renderHook(
+      () =>
+        useTauriMutation('download_pause', {
+          errorMessage: () => '   ',
+        }),
+      { wrapper: makeWrapper() }
+    );
+    await act(async () => {
+      result.current.mutate({ id: '1' } as Record<string, unknown>);
+    });
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect(toast.error).toHaveBeenCalledWith('raw');
+  });
+
+  it('should fall back to raw error message when errorMessage mapper throws', async () => {
+    vi.mocked(tauriInvoke).mockRejectedValueOnce(new Error('raw'));
+    const { result } = renderHook(
+      () =>
+        useTauriMutation('download_pause', {
+          errorMessage: () => {
+            throw new Error('mapper exploded');
+          },
+        }),
+      { wrapper: makeWrapper() }
+    );
+    await act(async () => {
+      result.current.mutate({ id: '1' } as Record<string, unknown>);
+    });
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect(toast.error).toHaveBeenCalledWith('raw');
+    expect(result.current.error?.message).toBe('raw');
+  });
+
+  it('should let onError take precedence over silentError', async () => {
+    vi.mocked(tauriInvoke).mockRejectedValueOnce(new Error('conflict'));
+    const customOnError = vi.fn();
+    const { result } = renderHook(
+      () =>
+        useTauriMutation('download_pause', {
+          onError: customOnError,
+          silentError: true,
+        }),
+      { wrapper: makeWrapper() }
+    );
+    await act(async () => {
+      result.current.mutate({ id: '1' } as Record<string, unknown>);
+    });
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect(customOnError).toHaveBeenCalled();
+    expect(toast.error).not.toHaveBeenCalled();
+  });
+
+  it('should use errorMessage mapper when provided', async () => {
+    vi.mocked(tauriInvoke).mockRejectedValueOnce(new Error('raw'));
+    const { result } = renderHook(
+      () =>
+        useTauriMutation('download_pause', {
+          errorMessage: (err) => `Mapped: ${err.message}`,
+        }),
+      { wrapper: makeWrapper() }
+    );
+    await act(async () => {
+      result.current.mutate({ id: '1' } as Record<string, unknown>);
+    });
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect(toast.error).toHaveBeenCalledWith('Mapped: raw');
   });
 });

@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useTauriMutation } from '@/api/hooks';
+import { toast } from '@/lib/toast';
 import type { AppConfig, AppConfigPatch } from '@/types/settings';
 import { SettingNumberInput } from './SettingField';
 
@@ -12,6 +13,9 @@ export function BrowserSection({ config }: BrowserSectionProps) {
   const { t } = useTranslation();
   const { mutate } = useTauriMutation<AppConfig, { patch: AppConfigPatch }>('settings_update', {
     invalidateKeys: [['settings_get']],
+    onSuccess: () => {
+      toast.success(t('settings.toast.updateSuccess'));
+    },
   });
 
   const handleChange = <K extends keyof AppConfig>(key: K, value: AppConfig[K]) => {

@@ -5,7 +5,6 @@ import { Button } from "@/components/ui/button";
 interface PasteZoneProps {
   onPasteUrls: (urls: string[]) => void;
   isLoading?: boolean;
-  errorMessage?: string | null;
 }
 
 export function extractUrls(text: string): string[] {
@@ -18,7 +17,6 @@ export function extractUrls(text: string): string[] {
 export function PasteZone({
   onPasteUrls,
   isLoading,
-  errorMessage,
 }: PasteZoneProps) {
   const { t } = useTranslation();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -97,14 +95,6 @@ export function PasteZone({
           {isLoading ? t("linkGrabber.resolving") : t("linkGrabber.analyze")}
         </Button>
       </div>
-      {errorMessage && (
-        <div className="mt-3 space-y-1" role="alert">
-          <p className="text-sm text-destructive">
-            {t("linkGrabber.analyzeFailed")}
-          </p>
-          <p className="text-xs text-muted-foreground">{errorMessage}</p>
-        </div>
-      )}
     </div>
   );
 }
