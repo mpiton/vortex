@@ -4,6 +4,7 @@
 //! Handler implementations live in submodules and add methods to `CommandBus`.
 
 mod cancel_download;
+mod clear_downloads_by_state;
 mod extract_archive;
 mod install_plugin;
 mod pause_all;
@@ -116,6 +117,13 @@ pub struct RemoveDownloadCommand {
     pub delete_files: bool,
 }
 impl Command for RemoveDownloadCommand {}
+
+#[derive(Debug)]
+pub struct ClearDownloadsByStateCommand {
+    pub state: crate::domain::model::download::DownloadState,
+    pub delete_files: bool,
+}
+impl Command for ClearDownloadsByStateCommand {}
 
 #[derive(Debug)]
 pub struct ResolveLinksCommand {
