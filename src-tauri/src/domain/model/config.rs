@@ -200,10 +200,16 @@ mod tests {
         // Browser integration
         assert_eq!(config.min_file_size_mb, 1.0);
 
-        // Remote access
+        // Remote access — protocols enabled by PRD, but the gatekeeper
+        // (`web_interface_enabled`) stays off and `api_key` empty in the
+        // domain. The adapter layer is responsible for hydrating a generated
+        // key on first launch; we lock the bare-domain defaults here so a
+        // future change cannot accidentally expose the server with no auth.
+        assert!(!config.web_interface_enabled);
         assert_eq!(config.web_interface_port, 9876);
         assert!(config.rest_api_enabled);
         assert!(config.websocket_enabled);
+        assert!(config.api_key.is_empty());
     }
 }
 

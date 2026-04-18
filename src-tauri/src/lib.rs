@@ -114,6 +114,7 @@ pub fn run() {
             let config_store: Arc<dyn ConfigStore> = Arc::new(TomlConfigStore::new(
                 config_path,
                 resolve_system_download_dir(),
+                Some(uuid::Uuid::new_v4().to_string()),
             ));
             let credential_store: Arc<dyn CredentialStore> = Arc::new(KeyringCredentialStore);
             let clipboard_observer: Arc<dyn ClipboardObserver> =

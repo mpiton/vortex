@@ -18,22 +18,37 @@ pub struct TomlConfigStore {
     /// After the first write, the persisted value takes precedence and
     /// this field has no further effect on subsequent reads.
     default_download_dir: Option<String>,
+    /// Injected at construction. Hydrates `AppConfig::api_key` on first
+    /// launch (file absent) so a fresh install never starts with the
+    /// REST/WebSocket protocols enabled and an empty credential. Same
+    /// semantics as `default_download_dir`: inert after the first write.
+    default_api_key: Option<String>,
     lock: Mutex<()>,
 }
 
 impl TomlConfigStore {
-    pub fn new(path: PathBuf, default_download_dir: Option<String>) -> Self {
+    pub fn new(
+        path: PathBuf,
+        default_download_dir: Option<String>,
+        default_api_key: Option<String>,
+    ) -> Self {
         Self {
             path,
             default_download_dir,
+            default_api_key,
             lock: Mutex::new(()),
         }
     }
 
     fn read_or_default(&self) -> Result<AppConfig, DomainError> {
         if !self.path.exists() {
+            let api_key = self
+                .default_api_key
+                .clone()
+                .unwrap_or_else(|| AppConfig::default().api_key);
             return Ok(AppConfig {
                 download_dir: self.default_download_dir.clone(),
+                api_key,
                 ..AppConfig::default()
             });
         }
@@ -254,7 +269,7 @@ mod tests {
     fn test_get_config_returns_defaults_when_file_missing() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
-        let store = TomlConfigStore::new(path.clone(), None);
+        let store = TomlConfigStore::new(path.clone(), None, None);
 
         let config = store.get_config().unwrap();
         assert_eq!(config, AppConfig::default());
@@ -266,7 +281,7 @@ mod tests {
     fn test_save_load_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
-        let store = TomlConfigStore::new(path, None);
+        let store = TomlConfigStore::new(path, None, None);
 
         let patch = ConfigPatch {
             max_concurrent_downloads: Some(10),
@@ -289,7 +304,7 @@ mod tests {
     fn test_partial_patch_preserves_other_fields() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
-        let store = TomlConfigStore::new(path, None);
+        let store = TomlConfigStore::new(path, None, None);
 
         // Set some values
         store
@@ -316,7 +331,7 @@ mod tests {
     fn test_creates_parent_directories() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("nested").join("deep").join("config.toml");
-        let store = TomlConfigStore::new(path.clone(), None);
+        let store = TomlConfigStore::new(path.clone(), None, None);
 
         let config = store.get_config().unwrap();
         assert_eq!(config, AppConfig::default());
@@ -330,7 +345,7 @@ mod tests {
         // Write a partial TOML file
         std::fs::write(&path, "theme = \"dark\"\n").unwrap();
 
-        let store = TomlConfigStore::new(path, None);
+        let store = TomlConfigStore::new(path, None, None);
         let config = store.get_config().unwrap();
 
         assert_eq!(config.theme, "dark");
@@ -343,7 +358,7 @@ mod tests {
     fn test_nullable_fields_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
-        let store = TomlConfigStore::new(path, None);
+        let store = TomlConfigStore::new(path, None, None);
 
         // Set a nullable field
         let updated = store
@@ -376,7 +391,7 @@ mod tests {
         let path = dir.path().join("config.toml");
         let system_dir = Some("/home/alice/Downloads".to_string());
 
-        let store = TomlConfigStore::new(path.clone(), system_dir.clone());
+        let store = TomlConfigStore::new(path.clone(), system_dir.clone(), None);
         let config = store.get_config().unwrap();
 
         assert_eq!(config.download_dir, system_dir);
@@ -388,7 +403,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
 
-        let store = TomlConfigStore::new(path, None);
+        let store = TomlConfigStore::new(path, None, None);
         let config = store.get_config().unwrap();
 
         assert_eq!(config.download_dir, None);
@@ -401,7 +416,7 @@ mod tests {
         std::fs::write(&path, "theme = \"dark\"\n").unwrap();
 
         let injected = "/should/not/be/used".to_string();
-        let store = TomlConfigStore::new(path, Some(injected.clone()));
+        let store = TomlConfigStore::new(path, Some(injected.clone()), None);
         let config = store.get_config().unwrap();
 
         assert_ne!(
@@ -414,5 +429,33 @@ mod tests {
             "existing config with no download_dir key stays None"
         );
         assert_eq!(config.theme, "dark");
+    }
+
+    #[test]
+    fn test_first_load_hydrates_api_key_from_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let key = "test-api-key-uuid".to_string();
+
+        let store = TomlConfigStore::new(path.clone(), None, Some(key.clone()));
+        let config = store.get_config().unwrap();
+
+        assert_eq!(config.api_key, key);
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn test_existing_config_preserves_user_api_key_even_if_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "api_key = \"\"\n").unwrap();
+
+        let store = TomlConfigStore::new(path, None, Some("should-not-leak".to_string()));
+        let config = store.get_config().unwrap();
+
+        assert_eq!(
+            config.api_key, "",
+            "user-cleared api_key must not be overwritten on subsequent loads"
+        );
     }
 }
