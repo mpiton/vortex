@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `useTauriMutation` now accepts `silentError` (opt-out of the default toast) and `errorMessage` (remap the error message before toasting) options. (#74)
 
 ### Changed
+- Default settings values now match PRD §6.10 (fresh installs only — existing `config.toml` files are not migrated): `autoExtract` on, `maxConcurrentDownloads=4`, `maxRetries=5`, `retryDelaySeconds=10`, `minFileSizeMb=1.0`, `verifyChecksums` on, `webInterfacePort=9876`, REST API and WebSocket enabled by default. `downloadDir` now resolves to the OS default Downloads directory on first launch, and `apiKey` is generated as a random UUIDv4 so the REST/WS protocols never start with an empty credential. (#67)
 - Every IPC mutation now surfaces an error toast by default via `useTauriMutation`; migrated all call sites (downloads, settings, plugins, link grabber, clipboard monitoring) to rely on this default. Inline error state removed from the link grabber. (#74)
 
 ### Fixed

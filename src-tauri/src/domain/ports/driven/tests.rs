@@ -657,7 +657,7 @@ fn credential_store_crud() {
 fn config_store_get_and_update() {
     let store = InMemoryConfigStore::new();
     let config = store.get_config().unwrap();
-    assert_eq!(config.max_concurrent_downloads, 3);
+    assert_eq!(config.max_concurrent_downloads, 4);
 
     let patch = ConfigPatch {
         max_concurrent_downloads: Some(10),

@@ -41,8 +41,11 @@ fn test_appstate_wiring_with_in_memory_db() {
     let http_client: Arc<dyn HttpClient> =
         Arc::new(ReqwestHttpClient::with_client(reqwest_client.clone()));
     let config_dir = tempfile::tempdir().expect("temp dir");
-    let config_store: Arc<dyn ConfigStore> =
-        Arc::new(TomlConfigStore::new(config_dir.path().join("config.toml")));
+    let config_store: Arc<dyn ConfigStore> = Arc::new(TomlConfigStore::new(
+        config_dir.path().join("config.toml"),
+        None,
+        Some("test-bootstrap-key".to_string()),
+    ));
     let credential_store: Arc<dyn CredentialStore> = Arc::new(NoopCredentialStore);
     let archive_extractor: Arc<dyn ArchiveExtractor> =
         Arc::new(VortexArchiveExtractor::new(ExtractionConfig::default()));

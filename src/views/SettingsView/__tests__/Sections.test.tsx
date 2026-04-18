@@ -32,17 +32,17 @@ const mockConfig: AppConfig = {
   downloadDir: '/tmp/downloads',
   startMinimized: false,
   notificationsEnabled: true,
-  autoExtract: false,
+  autoExtract: true,
   clipboardMonitoring: true,
   soundEnabled: false,
   confirmDelete: true,
   subfolderPerPackage: false,
-  maxConcurrentDownloads: 3,
+  maxConcurrentDownloads: 4,
   maxSegmentsPerDownload: 8,
   speedLimitBytesPerSec: null,
-  maxRetries: 3,
-  retryDelaySeconds: 5,
-  verifyChecksums: false,
+  maxRetries: 5,
+  retryDelaySeconds: 10,
+  verifyChecksums: true,
   preAllocateSpace: true,
   proxyType: 'none',
   proxyUrl: null,
@@ -50,11 +50,11 @@ const mockConfig: AppConfig = {
   dnsOverHttps: false,
   connectionTimeoutSeconds: 30,
   webInterfaceEnabled: false,
-  webInterfacePort: 9666,
-  restApiEnabled: false,
+  webInterfacePort: 9876,
+  restApiEnabled: true,
   apiKey: 'test-api-key-abc-123',
-  websocketEnabled: false,
-  minFileSizeMb: 0,
+  websocketEnabled: true,
+  minFileSizeMb: 1,
   excludedDomains: [],
   excludedExtensions: [],
   theme: 'auto',
@@ -177,7 +177,9 @@ describe('RemoteAccessSection', () => {
   });
 
   it('should not show API key when REST API is disabled', () => {
-    renderWithQuery(<RemoteAccessSection config={mockConfig} />);
+    renderWithQuery(
+      <RemoteAccessSection config={{ ...mockConfig, restApiEnabled: false }} />,
+    );
     expect(screen.queryByText('API Key')).not.toBeInTheDocument();
   });
 

@@ -40,10 +40,18 @@ pub struct AppConfig {
     pub connection_timeout_seconds: u32,
 
     // ── Remote Access ────────────────────────────────────────────────
+    /// Whether to spawn the embedded web/REST server on startup.
+    /// When `false` (default), no socket is bound regardless of the
+    /// `rest_api_enabled` / `websocket_enabled` preferences below.
     pub web_interface_enabled: bool,
     pub web_interface_port: u16,
+    /// User-facing preference: inert while `web_interface_enabled` is
+    /// `false`. Callers that spawn the server MUST also enforce
+    /// `api_key` validity before serving requests.
     pub rest_api_enabled: bool,
     pub api_key: String,
+    /// User-facing preference: inert while `web_interface_enabled` is
+    /// `false`. See `rest_api_enabled`.
     pub websocket_enabled: bool,
 
     // ── Browser Integration ──────────────────────────────────────────
@@ -68,19 +76,19 @@ impl Default for AppConfig {
             download_dir: None,
             start_minimized: false,
             notifications_enabled: true,
-            auto_extract: false,
+            auto_extract: true,
             clipboard_monitoring: true,
             sound_enabled: false,
             confirm_delete: true,
             subfolder_per_package: false,
 
             // Downloads
-            max_concurrent_downloads: 3,
+            max_concurrent_downloads: 4,
             max_segments_per_download: 8,
             speed_limit_bytes_per_sec: None,
-            max_retries: 3,
-            retry_delay_seconds: 5,
-            verify_checksums: false,
+            max_retries: 5,
+            retry_delay_seconds: 10,
+            verify_checksums: true,
             pre_allocate_space: true,
 
             // Network
@@ -92,13 +100,13 @@ impl Default for AppConfig {
 
             // Remote Access
             web_interface_enabled: false,
-            web_interface_port: 9666,
-            rest_api_enabled: false,
+            web_interface_port: 9876,
+            rest_api_enabled: true,
             api_key: String::new(),
-            websocket_enabled: false,
+            websocket_enabled: true,
 
             // Browser Integration
-            min_file_size_mb: 0.0,
+            min_file_size_mb: 1.0,
             excluded_domains: Vec::new(),
             excluded_extensions: Vec::new(),
 
@@ -164,6 +172,45 @@ pub struct ConfigPatch {
     pub accent_color: Option<String>,
     pub compact_mode: Option<bool>,
     pub locale: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_default_app_config_matches_prd_6_10() {
+        let config = AppConfig::default();
+
+        // Domain stays pure: adapter layer hydrates download_dir.
+        assert_eq!(config.download_dir, None);
+
+        // General
+        assert!(
+            config.auto_extract,
+            "PRD §6.10: auto_extract defaults to ON"
+        );
+
+        // Downloads
+        assert_eq!(config.max_concurrent_downloads, 4);
+        assert_eq!(config.max_retries, 5);
+        assert_eq!(config.retry_delay_seconds, 10);
+        assert!(config.verify_checksums);
+
+        // Browser integration
+        assert_eq!(config.min_file_size_mb, 1.0);
+
+        // Remote access — protocols enabled by PRD, but the gatekeeper
+        // (`web_interface_enabled`) stays off and `api_key` empty in the
+        // domain. The adapter layer is responsible for hydrating a generated
+        // key on first launch; we lock the bare-domain defaults here so a
+        // future change cannot accidentally expose the server with no auth.
+        assert!(!config.web_interface_enabled);
+        assert_eq!(config.web_interface_port, 9876);
+        assert!(config.rest_api_enabled);
+        assert!(config.websocket_enabled);
+        assert!(config.api_key.is_empty());
+    }
 }
 
 /// Apply a `ConfigPatch` to an `AppConfig`, updating only fields
