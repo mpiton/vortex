@@ -45,7 +45,12 @@ impl TomlConfigStore {
             let api_key = self
                 .default_api_key
                 .clone()
-                .unwrap_or_else(|| AppConfig::default().api_key);
+                .filter(|k| !k.trim().is_empty())
+                .ok_or_else(|| {
+                    DomainError::StorageError(
+                        "missing non-empty default_api_key for first-launch bootstrap".to_string(),
+                    )
+                })?;
             return Ok(AppConfig {
                 download_dir: self.default_download_dir.clone(),
                 api_key,
@@ -265,14 +270,25 @@ impl From<ConfigDto> for AppConfig {
 mod tests {
     use super::*;
 
+    /// Non-empty bootstrap key used by tests that don't assert on `api_key`
+    /// but still exercise a fresh-config code path, which now requires one.
+    const TEST_API_KEY: &str = "test-bootstrap-key";
+
+    fn expected_defaults_with_bootstrap_key() -> AppConfig {
+        AppConfig {
+            api_key: TEST_API_KEY.to_string(),
+            ..AppConfig::default()
+        }
+    }
+
     #[test]
     fn test_get_config_returns_defaults_when_file_missing() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
-        let store = TomlConfigStore::new(path.clone(), None, None);
+        let store = TomlConfigStore::new(path.clone(), None, Some(TEST_API_KEY.to_string()));
 
         let config = store.get_config().unwrap();
-        assert_eq!(config, AppConfig::default());
+        assert_eq!(config, expected_defaults_with_bootstrap_key());
         // File should be created with defaults
         assert!(path.exists());
     }
@@ -281,7 +297,7 @@ mod tests {
     fn test_save_load_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
-        let store = TomlConfigStore::new(path, None, None);
+        let store = TomlConfigStore::new(path, None, Some(TEST_API_KEY.to_string()));
 
         let patch = ConfigPatch {
             max_concurrent_downloads: Some(10),
@@ -304,7 +320,7 @@ mod tests {
     fn test_partial_patch_preserves_other_fields() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
-        let store = TomlConfigStore::new(path, None, None);
+        let store = TomlConfigStore::new(path, None, Some(TEST_API_KEY.to_string()));
 
         // Set some values
         store
@@ -331,10 +347,10 @@ mod tests {
     fn test_creates_parent_directories() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("nested").join("deep").join("config.toml");
-        let store = TomlConfigStore::new(path.clone(), None, None);
+        let store = TomlConfigStore::new(path.clone(), None, Some(TEST_API_KEY.to_string()));
 
         let config = store.get_config().unwrap();
-        assert_eq!(config, AppConfig::default());
+        assert_eq!(config, expected_defaults_with_bootstrap_key());
         assert!(path.exists());
     }
 
@@ -358,7 +374,7 @@ mod tests {
     fn test_nullable_fields_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
-        let store = TomlConfigStore::new(path, None, None);
+        let store = TomlConfigStore::new(path, None, Some(TEST_API_KEY.to_string()));
 
         // Set a nullable field
         let updated = store
@@ -391,7 +407,11 @@ mod tests {
         let path = dir.path().join("config.toml");
         let system_dir = Some("/home/alice/Downloads".to_string());
 
-        let store = TomlConfigStore::new(path.clone(), system_dir.clone(), None);
+        let store = TomlConfigStore::new(
+            path.clone(),
+            system_dir.clone(),
+            Some(TEST_API_KEY.to_string()),
+        );
         let config = store.get_config().unwrap();
 
         assert_eq!(config.download_dir, system_dir);
@@ -403,10 +423,40 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
 
-        let store = TomlConfigStore::new(path, None, None);
+        let store = TomlConfigStore::new(path, None, Some(TEST_API_KEY.to_string()));
         let config = store.get_config().unwrap();
 
         assert_eq!(config.download_dir, None);
+    }
+
+    #[test]
+    fn test_first_load_fails_when_default_api_key_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+
+        let store = TomlConfigStore::new(path, None, None);
+        let err = store.get_config().unwrap_err();
+
+        let msg = err.to_string();
+        assert!(
+            msg.contains("default_api_key"),
+            "unexpected error message: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_first_load_fails_when_default_api_key_is_whitespace() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+
+        let store = TomlConfigStore::new(path, None, Some("   ".to_string()));
+        let err = store.get_config().unwrap_err();
+
+        let msg = err.to_string();
+        assert!(
+            msg.contains("default_api_key"),
+            "unexpected error message: {msg}"
+        );
     }
 
     #[test]

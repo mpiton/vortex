@@ -44,7 +44,7 @@ fn test_appstate_wiring_with_in_memory_db() {
     let config_store: Arc<dyn ConfigStore> = Arc::new(TomlConfigStore::new(
         config_dir.path().join("config.toml"),
         None,
-        None,
+        Some("test-bootstrap-key".to_string()),
     ));
     let credential_store: Arc<dyn CredentialStore> = Arc::new(NoopCredentialStore);
     let archive_extractor: Arc<dyn ArchiveExtractor> =
