@@ -1136,6 +1136,18 @@ fn find_ytdlp() -> Result<std::path::PathBuf, String> {
     Err("yt-dlp not found — install it with: pip install yt-dlp".to_string())
 }
 
+/// Canonical YouTube vertical-resolution ladder supported by
+/// `vortex-mod-youtube`. Kept in sync with the `default_quality.options` array
+/// in the plugin's `plugin.toml`. Anything off this list either has no
+/// pre-merged HTTPS stream (yt-dlp fails with "Requested format is not
+/// available") or is a non-standard encode the plugin's quality selector
+/// cannot target.
+const SUPPORTED_YOUTUBE_HEIGHTS: &[u32] = &[360, 480, 720, 1080, 1440, 2160, 4320];
+
+fn is_supported_youtube_height(height: u32) -> bool {
+    SUPPORTED_YOUTUBE_HEIGHTS.contains(&height)
+}
+
 fn parse_ytdlp_json(json: &serde_json::Value) -> Result<MediaMetadataDto, String> {
     let title = json["title"].as_str().unwrap_or("").to_string();
     let thumbnail_url = json["thumbnail"].as_str().unwrap_or("").to_string();
@@ -1150,11 +1162,16 @@ fn parse_ytdlp_json(json: &serde_json::Value) -> Result<MediaMetadataDto, String
     let mut available_audio_formats: Vec<String> = Vec::new();
 
     if let Some(formats) = json["formats"].as_array() {
-        // Build quality list: deduplicated by height, sorted highest first
+        // Build quality list: deduplicated by height, sorted highest first.
+        // Only heights declared in vortex-mod-youtube's plugin.toml
+        // `default_quality` options are surfaced; anything else (144p, 240p,
+        // non-standard heights like 270/1072) would fail in the plugin's
+        // `resolve_stream_url` because it only bypasses the pre-merged-HTTPS
+        // path for >=720 on the canonical ladder.
         let mut video_formats: Vec<&serde_json::Value> = formats
             .iter()
             .filter(|f| f["vcodec"].as_str().unwrap_or("none") != "none")
-            .filter(|f| f["height"].as_u64().unwrap_or(0) > 0)
+            .filter(|f| is_supported_youtube_height(f["height"].as_u64().unwrap_or(0) as u32))
             .collect();
         video_formats.sort_by(|a, b| {
             b["height"]
@@ -1727,6 +1744,83 @@ mod tests {
         assert_eq!(items.len(), 2);
         assert_eq!(items[0].id, "abc123");
         assert_eq!(items[1].duration_seconds, 180);
+    }
+
+    #[test]
+    fn test_parse_ytdlp_drops_heights_below_360p() {
+        // 144p and 240p are DASH-only on YouTube and are NOT declared in
+        // vortex-mod-youtube's plugin.toml `default_quality` options. If the
+        // UI were to offer them, picking either would fail with yt-dlp's
+        // "Requested format is not available" error because
+        // `resolve_stream_url` only bypasses its pre-merged-HTTPS path for
+        // heights >=720. The metadata IPC must filter these out so the UI
+        // only surfaces qualities the plugin actually supports.
+        let json = serde_json::json!({
+            "title": "Low Res Clip",
+            "thumbnail": "",
+            "duration": 42.0,
+            "_type": "video",
+            "formats": [
+                make_format("avc1", "mp4a", "mp4", 144, 256, 30.0, 100.0),
+                make_format("avc1", "mp4a", "mp4", 240, 426, 30.0, 300.0),
+                make_format("avc1", "mp4a", "mp4", 360, 640, 30.0, 500.0),
+                make_format("avc1", "mp4a", "mp4", 1080, 1920, 30.0, 4000.0),
+            ],
+            "subtitles": {}
+        });
+
+        let result = parse_ytdlp_json(&json).expect("parse should succeed");
+
+        let heights: Vec<u32> = result
+            .available_qualities
+            .iter()
+            .map(|q| q.height)
+            .collect();
+        assert!(
+            !heights.contains(&144),
+            "144p must be filtered out: plugin does not support it"
+        );
+        assert!(
+            !heights.contains(&240),
+            "240p must be filtered out: plugin does not support it"
+        );
+        assert!(heights.contains(&360), "360p must remain");
+        assert!(heights.contains(&1080), "1080p must remain");
+    }
+
+    #[test]
+    fn test_parse_ytdlp_drops_non_standard_heights() {
+        // yt-dlp sometimes reports unusual heights (e.g. 144-ish custom
+        // encodes) that are not in the plugin's supported set. Only the
+        // canonical YouTube ladder {360, 480, 720, 1080, 1440, 2160, 4320}
+        // should reach the UI.
+        let json = serde_json::json!({
+            "title": "Weird Heights",
+            "thumbnail": "",
+            "duration": 10.0,
+            "_type": "video",
+            "formats": [
+                make_format("avc1", "mp4a", "mp4", 144, 256, 30.0, 100.0),
+                make_format("avc1", "mp4a", "mp4", 270, 480, 30.0, 400.0),
+                make_format("avc1", "mp4a", "mp4", 1072, 1920, 30.0, 3900.0),
+                make_format("avc1", "mp4a", "mp4", 1080, 1920, 30.0, 4000.0),
+                make_format("avc1", "mp4a", "mp4", 2160, 3840, 60.0, 20000.0),
+            ],
+            "subtitles": {}
+        });
+
+        let result = parse_ytdlp_json(&json).expect("parse should succeed");
+
+        let heights: Vec<u32> = result
+            .available_qualities
+            .iter()
+            .map(|q| q.height)
+            .collect();
+        assert_eq!(
+            heights,
+            vec![2160, 1080],
+            "only canonical ladder heights must survive"
+        );
     }
 
     #[test]
