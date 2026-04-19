@@ -44,6 +44,15 @@ export function PluginsView() {
     isRefreshing,
   } = usePluginStore();
 
+  // plugin_disable triggers the backend but the PluginStoreEntryDto has no
+  // "disabled" variant yet, so the row keeps rendering as installed after the
+  // refetch. Users get the toast confirmation but no persistent UI state until
+  // the DTO grows a field to carry it.
+  const disableMutation = useTauriMutation<void, { name: string }>("plugin_disable", {
+    invalidateKeys: STORE_INVALIDATE_KEYS,
+    onSuccess: () => toast.success(t("plugins.toast.disableSuccess")),
+  });
+
   const uninstallMutation = useTauriMutation<void, { name: string }>("plugin_uninstall", {
     invalidateKeys: STORE_INVALIDATE_KEYS,
     onSuccess: () => toast.success(t("plugins.toast.uninstallSuccess")),
@@ -127,6 +136,7 @@ export function PluginsView() {
                       entry={entry}
                       onInstall={installPlugin}
                       onUpdate={updatePlugin}
+                      onDisable={(name) => disableMutation.mutate({ name })}
                       onUninstall={(name) => uninstallMutation.mutate({ name })}
                       isInstalling={isInstalling(entry.name)}
                       isUpdating={isUpdating(entry.name)}

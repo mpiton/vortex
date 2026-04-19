@@ -19,6 +19,7 @@ function renderRow(override: Partial<PluginStoreEntry> = {}, handlers = {}) {
   const defaultHandlers = {
     onInstall: vi.fn(),
     onUpdate: vi.fn(),
+    onDisable: vi.fn(),
     onUninstall: vi.fn(),
     isInstalling: false,
     isUpdating: false,
@@ -86,6 +87,14 @@ describe("PluginStoreRow", () => {
   it("displays the installed version next to the actions when installed", () => {
     renderRow({ status: "installed", installedVersion: "1.1.2" });
     expect(screen.getByText("v1.1.2")).toBeInTheDocument();
+  });
+
+  it("exposes a disable action in the kebab menu for installed plugins", async () => {
+    const user = userEvent.setup();
+    const handlers = renderRow({ status: "installed" });
+    await user.click(screen.getByRole("button", { name: /(more actions|plus d'actions)/i }));
+    await user.click(screen.getByRole("menuitem", { name: /(^disable$|désactiver)/i }));
+    expect(handlers.onDisable).toHaveBeenCalledWith("vortex-mod-youtube");
   });
 
   it("exposes an uninstall action in the kebab menu for installed plugins", async () => {

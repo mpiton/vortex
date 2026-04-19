@@ -6,6 +6,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import type { PluginStoreEntry } from "@/types/plugin-store";
@@ -14,6 +15,7 @@ interface PluginStoreRowProps {
   entry: PluginStoreEntry;
   onInstall: (name: string) => void;
   onUpdate: (name: string) => void;
+  onDisable?: (name: string) => void;
   onUninstall?: (name: string) => void;
   isInstalling: boolean;
   isUpdating: boolean;
@@ -34,6 +36,7 @@ export function PluginStoreRow({
   entry,
   onInstall,
   onUpdate,
+  onDisable,
   onUninstall,
   isInstalling,
   isUpdating,
@@ -106,7 +109,7 @@ export function PluginStoreRow({
           </Button>
         )}
 
-        {installed && onUninstall && (
+        {installed && (onDisable || onUninstall) && (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button
@@ -119,12 +122,20 @@ export function PluginStoreRow({
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
-              <DropdownMenuItem
-                variant="destructive"
-                onSelect={() => onUninstall(entry.name)}
-              >
-                {t("plugins.action.uninstall")}
-              </DropdownMenuItem>
+              {onDisable && (
+                <DropdownMenuItem onSelect={() => onDisable(entry.name)}>
+                  {t("plugins.action.disable")}
+                </DropdownMenuItem>
+              )}
+              {onDisable && onUninstall && <DropdownMenuSeparator />}
+              {onUninstall && (
+                <DropdownMenuItem
+                  variant="destructive"
+                  onSelect={() => onUninstall(entry.name)}
+                >
+                  {t("plugins.action.uninstall")}
+                </DropdownMenuItem>
+              )}
             </DropdownMenuContent>
           </DropdownMenu>
         )}

@@ -256,6 +256,7 @@
     },
     "action": {
       "install": "Install",
+      "disable": "Disable",
       "uninstall": "Uninstall",
       "update": "Update",
       "more": "More actions",
@@ -287,6 +288,7 @@
       "installSuccess": "Plugin \"{{name}}\" installed",
       "updateSuccess": "Plugin \"{{name}}\" updated",
       "refreshSuccess": "Plugin list refreshed",
+      "disableSuccess": "Plugin disabled",
       "uninstallSuccess": "Plugin uninstalled"
     }
   },
