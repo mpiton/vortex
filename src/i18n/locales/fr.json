@@ -256,7 +256,6 @@
     },
     "action": {
       "install": "Installer",
-      "disable": "Désactiver",
       "uninstall": "Désinstaller",
       "update": "Mettre à jour",
       "more": "Plus d'actions",
@@ -288,7 +287,6 @@
       "installSuccess": "Plugin « {{name}} » installé",
       "updateSuccess": "Plugin « {{name}} » mis à jour",
       "refreshSuccess": "Liste des plugins rafraîchie",
-      "disableSuccess": "Plugin désactivé",
       "uninstallSuccess": "Plugin désinstallé"
     }
   },

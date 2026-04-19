@@ -44,11 +44,6 @@ export function PluginsView() {
     isRefreshing,
   } = usePluginStore();
 
-  const disableMutation = useTauriMutation<void, { name: string }>("plugin_disable", {
-    invalidateKeys: STORE_INVALIDATE_KEYS,
-    onSuccess: () => toast.success(t("plugins.toast.disableSuccess")),
-  });
-
   const uninstallMutation = useTauriMutation<void, { name: string }>("plugin_uninstall", {
     invalidateKeys: STORE_INVALIDATE_KEYS,
     onSuccess: () => toast.success(t("plugins.toast.uninstallSuccess")),
@@ -132,7 +127,6 @@ export function PluginsView() {
                       entry={entry}
                       onInstall={installPlugin}
                       onUpdate={updatePlugin}
-                      onDisable={(name) => disableMutation.mutate({ name })}
                       onUninstall={(name) => uninstallMutation.mutate({ name })}
                       isInstalling={isInstalling(entry.name)}
                       isUpdating={isUpdating(entry.name)}

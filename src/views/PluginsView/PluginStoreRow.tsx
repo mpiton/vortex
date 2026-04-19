@@ -6,7 +6,6 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import type { PluginStoreEntry } from "@/types/plugin-store";
@@ -15,7 +14,6 @@ interface PluginStoreRowProps {
   entry: PluginStoreEntry;
   onInstall: (name: string) => void;
   onUpdate: (name: string) => void;
-  onDisable?: (name: string) => void;
   onUninstall?: (name: string) => void;
   isInstalling: boolean;
   isUpdating: boolean;
@@ -36,13 +34,15 @@ export function PluginStoreRow({
   entry,
   onInstall,
   onUpdate,
-  onDisable,
   onUninstall,
   isInstalling,
   isUpdating,
 }: PluginStoreRowProps) {
   const { t } = useTranslation();
   const installed = isInstalledLike(entry.status);
+  const categoryLabel = t(`plugins.categories.${entry.category}`, {
+    defaultValue: entry.category,
+  });
   const iconColorClass = CRAWLER_CATEGORIES.has(entry.category)
     ? "bg-accent-light text-accent"
     : "bg-surface-muted text-muted";
@@ -68,7 +68,7 @@ export function PluginStoreRow({
         <p className="text-[10px] text-text-dim mt-0.5 truncate">
           {entry.description}
           <span className="mx-1.5">·</span>
-          {entry.category}
+          {categoryLabel}
           <span className="mx-1.5">·</span>
           {entry.author}
         </p>
@@ -106,7 +106,7 @@ export function PluginStoreRow({
           </Button>
         )}
 
-        {installed && (
+        {installed && onUninstall && (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button
@@ -119,20 +119,12 @@ export function PluginStoreRow({
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
-              {onDisable && (
-                <DropdownMenuItem onSelect={() => onDisable(entry.name)}>
-                  {t("plugins.action.disable")}
-                </DropdownMenuItem>
-              )}
-              {onDisable && onUninstall && <DropdownMenuSeparator />}
-              {onUninstall && (
-                <DropdownMenuItem
-                  variant="destructive"
-                  onSelect={() => onUninstall(entry.name)}
-                >
-                  {t("plugins.action.uninstall")}
-                </DropdownMenuItem>
-              )}
+              <DropdownMenuItem
+                variant="destructive"
+                onSelect={() => onUninstall(entry.name)}
+              >
+                {t("plugins.action.uninstall")}
+              </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
         )}
