@@ -13,9 +13,11 @@ import type { PluginStoreEntry } from "@/types/plugin-store";
 
 interface PluginStoreRowProps {
   entry: PluginStoreEntry;
+  isLocallyDisabled?: boolean;
   onInstall: (name: string) => void;
   onUpdate: (name: string) => void;
   onDisable?: (name: string) => void;
+  onEnable?: (name: string) => void;
   onUninstall?: (name: string) => void;
   isInstalling: boolean;
   isUpdating: boolean;
@@ -34,9 +36,11 @@ function isInstalledLike(status: PluginStoreEntry["status"]): boolean {
 
 export function PluginStoreRow({
   entry,
+  isLocallyDisabled = false,
   onInstall,
   onUpdate,
   onDisable,
+  onEnable,
   onUninstall,
   isInstalling,
   isUpdating,
@@ -49,9 +53,12 @@ export function PluginStoreRow({
   const iconColorClass = CRAWLER_CATEGORIES.has(entry.category)
     ? "bg-accent-light text-accent"
     : "bg-surface-muted text-muted";
+  const rowClassName = `flex items-center gap-3 px-4 py-2.5 border-b border-border-soft last:border-0 hover:bg-surface-alt/60 transition-colors${
+    isLocallyDisabled ? " opacity-60" : ""
+  }`;
 
   return (
-    <div className="flex items-center gap-3 px-4 py-2.5 border-b border-border-soft last:border-0 hover:bg-surface-alt/60 transition-colors">
+    <div className={rowClassName}>
       <div
         data-testid="plugin-icon"
         className={`w-7 h-7 rounded-md flex items-center justify-center text-[10px] font-semibold shrink-0 ${iconColorClass}`}
@@ -67,6 +74,14 @@ export function PluginStoreRow({
               {t("plugins.badge.official")}
             </Badge>
           )}
+          {isLocallyDisabled && (
+            <Badge
+              variant="outline"
+              className="text-[10px] px-1.5 py-0 h-4 shrink-0 border-text-ghost text-text-dim"
+            >
+              {t("plugins.badge.inactive")}
+            </Badge>
+          )}
         </div>
         <p className="text-[10px] text-text-dim mt-0.5 truncate">
           {entry.description}
@@ -78,7 +93,7 @@ export function PluginStoreRow({
       </div>
 
       <div className="flex items-center gap-2 shrink-0">
-        {entry.status === "update_available" && (
+        {entry.status === "update_available" && !isLocallyDisabled && (
           <Button
             size="sm"
             variant="outline"
@@ -109,7 +124,7 @@ export function PluginStoreRow({
           </Button>
         )}
 
-        {installed && (onDisable || onUninstall) && (
+        {installed && (onDisable || onEnable || onUninstall) && (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button
@@ -122,12 +137,20 @@ export function PluginStoreRow({
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
-              {onDisable && (
-                <DropdownMenuItem onSelect={() => onDisable(entry.name)}>
-                  {t("plugins.action.disable")}
-                </DropdownMenuItem>
+              {isLocallyDisabled
+                ? onEnable && (
+                    <DropdownMenuItem onSelect={() => onEnable(entry.name)}>
+                      {t("plugins.action.enable")}
+                    </DropdownMenuItem>
+                  )
+                : onDisable && (
+                    <DropdownMenuItem onSelect={() => onDisable(entry.name)}>
+                      {t("plugins.action.disable")}
+                    </DropdownMenuItem>
+                  )}
+              {((isLocallyDisabled ? onEnable : onDisable) && onUninstall) && (
+                <DropdownMenuSeparator />
               )}
-              {onDisable && onUninstall && <DropdownMenuSeparator />}
               {onUninstall && (
                 <DropdownMenuItem
                   variant="destructive"

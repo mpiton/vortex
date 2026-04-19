@@ -31,6 +31,13 @@ export function PluginsView() {
   const { t } = useTranslation();
   const [search, setSearch] = useState("");
   const [category, setCategory] = useState("all");
+  // Session-local optimistic disabled state. PluginStoreEntryDto has no
+  // "disabled" variant yet, so the refetch after plugin_disable still reports
+  // the plugin as installed. We track disabled names here so the row can
+  // render as inactive and expose "Enable" until the DTO grows a matching
+  // field. State is not persisted across reloads on purpose — same as the
+  // pre-PR behaviour.
+  const [locallyDisabled, setLocallyDisabled] = useState<ReadonlySet<string>>(new Set());
 
   const {
     entries,
@@ -44,13 +51,28 @@ export function PluginsView() {
     isRefreshing,
   } = usePluginStore();
 
-  // plugin_disable triggers the backend but the PluginStoreEntryDto has no
-  // "disabled" variant yet, so the row keeps rendering as installed after the
-  // refetch. Users get the toast confirmation but no persistent UI state until
-  // the DTO grows a field to carry it.
   const disableMutation = useTauriMutation<void, { name: string }>("plugin_disable", {
     invalidateKeys: STORE_INVALIDATE_KEYS,
-    onSuccess: () => toast.success(t("plugins.toast.disableSuccess")),
+    onSuccess: (_data, variables) => {
+      setLocallyDisabled((prev) => {
+        const next = new Set(prev);
+        next.add(variables.name);
+        return next;
+      });
+      toast.success(t("plugins.toast.disableSuccess"));
+    },
+  });
+
+  const enableMutation = useTauriMutation<void, { name: string }>("plugin_enable", {
+    invalidateKeys: STORE_INVALIDATE_KEYS,
+    onSuccess: (_data, variables) => {
+      setLocallyDisabled((prev) => {
+        const next = new Set(prev);
+        next.delete(variables.name);
+        return next;
+      });
+      toast.success(t("plugins.toast.enableSuccess"));
+    },
   });
 
   const uninstallMutation = useTauriMutation<void, { name: string }>("plugin_uninstall", {
@@ -72,8 +94,9 @@ export function PluginsView() {
   }, [entries, search, category]);
 
   const enabledCount = useMemo(
-    () => entries.filter((e) => isInstalled(e.status)).length,
-    [entries],
+    () =>
+      entries.filter((e) => isInstalled(e.status) && !locallyDisabled.has(e.name)).length,
+    [entries, locallyDisabled],
   );
 
   const groups = useMemo(() => groupByCategory(filtered), [filtered]);
@@ -134,9 +157,11 @@ export function PluginsView() {
                     <PluginStoreRow
                       key={entry.name}
                       entry={entry}
+                      isLocallyDisabled={locallyDisabled.has(entry.name)}
                       onInstall={installPlugin}
                       onUpdate={updatePlugin}
                       onDisable={(name) => disableMutation.mutate({ name })}
+                      onEnable={(name) => enableMutation.mutate({ name })}
                       onUninstall={(name) => uninstallMutation.mutate({ name })}
                       isInstalling={isInstalling(entry.name)}
                       isUpdating={isUpdating(entry.name)}

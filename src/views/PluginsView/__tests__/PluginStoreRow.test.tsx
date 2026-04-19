@@ -15,14 +15,19 @@ const baseEntry: PluginStoreEntry = {
   status: "installed",
 };
 
-function renderRow(override: Partial<PluginStoreEntry> = {}, handlers = {}) {
+function renderRow(
+  override: Partial<PluginStoreEntry> = {},
+  handlers: Record<string, unknown> = {},
+) {
   const defaultHandlers = {
     onInstall: vi.fn(),
     onUpdate: vi.fn(),
     onDisable: vi.fn(),
+    onEnable: vi.fn(),
     onUninstall: vi.fn(),
     isInstalling: false,
     isUpdating: false,
+    isLocallyDisabled: false,
   };
   const merged = { ...defaultHandlers, ...handlers };
   render(<PluginStoreRow entry={{ ...baseEntry, ...override }} {...merged} />);
@@ -92,7 +97,7 @@ describe("PluginStoreRow", () => {
   it("exposes a disable action in the kebab menu for installed plugins", async () => {
     const user = userEvent.setup();
     const handlers = renderRow({ status: "installed" });
-    await user.click(screen.getByRole("button", { name: /(more actions|plus d'actions)/i }));
+    await user.click(screen.getByRole("button", { name: /(more actions|plus d['\u2019]actions)/i }));
     await user.click(screen.getByRole("menuitem", { name: /(^disable$|désactiver)/i }));
     expect(handlers.onDisable).toHaveBeenCalledWith("vortex-mod-youtube");
   });
@@ -100,7 +105,7 @@ describe("PluginStoreRow", () => {
   it("exposes an uninstall action in the kebab menu for installed plugins", async () => {
     const user = userEvent.setup();
     const handlers = renderRow({ status: "installed" });
-    await user.click(screen.getByRole("button", { name: /(more actions|plus d'actions)/i }));
+    await user.click(screen.getByRole("button", { name: /(more actions|plus d['\u2019]actions)/i }));
     await user.click(screen.getByRole("menuitem", { name: /(uninstall|désinstaller)/i }));
     expect(handlers.onUninstall).toHaveBeenCalledWith("vortex-mod-youtube");
   });
@@ -113,5 +118,28 @@ describe("PluginStoreRow", () => {
   it("does not render official badge when official is false", () => {
     renderRow({ official: false });
     expect(screen.queryByText(/^(official|officiel)$/i)).not.toBeInTheDocument();
+  });
+
+  it("shows the inactive badge when the plugin is locally disabled", () => {
+    renderRow({ status: "installed" }, { isLocallyDisabled: true });
+    expect(screen.getByText(/(inactive|inactif)/i)).toBeInTheDocument();
+  });
+
+  it("swaps Disable for Enable in the kebab menu when locally disabled", async () => {
+    const user = userEvent.setup();
+    const handlers = renderRow(
+      { status: "installed" },
+      { isLocallyDisabled: true },
+    );
+    await user.click(
+      screen.getByRole("button", { name: /(more actions|plus d['\u2019]actions)/i }),
+    );
+    await user.click(
+      screen.getByRole("menuitem", { name: /(^enable$|activer)/i }),
+    );
+    expect(handlers.onEnable).toHaveBeenCalledWith("vortex-mod-youtube");
+    expect(
+      screen.queryByRole("menuitem", { name: /(^disable$|désactiver)/i }),
+    ).not.toBeInTheDocument();
   });
 });

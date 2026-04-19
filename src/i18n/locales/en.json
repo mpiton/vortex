@@ -252,11 +252,13 @@
       "enabled_other": "enabled"
     },
     "badge": {
-      "official": "official"
+      "official": "official",
+      "inactive": "inactive"
     },
     "action": {
       "install": "Install",
       "disable": "Disable",
+      "enable": "Enable",
       "uninstall": "Uninstall",
       "update": "Update",
       "more": "More actions",
@@ -289,6 +291,7 @@
       "updateSuccess": "Plugin \"{{name}}\" updated",
       "refreshSuccess": "Plugin list refreshed",
       "disableSuccess": "Plugin disabled",
+      "enableSuccess": "Plugin enabled",
       "uninstallSuccess": "Plugin uninstalled"
     }
   },

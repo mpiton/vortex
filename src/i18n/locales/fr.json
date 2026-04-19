@@ -252,11 +252,13 @@
       "enabled_other": "activés"
     },
     "badge": {
-      "official": "officiel"
+      "official": "officiel",
+      "inactive": "inactif"
     },
     "action": {
       "install": "Installer",
       "disable": "Désactiver",
+      "enable": "Activer",
       "uninstall": "Désinstaller",
       "update": "Mettre à jour",
       "more": "Plus d'actions",
@@ -289,6 +291,7 @@
       "updateSuccess": "Plugin « {{name}} » mis à jour",
       "refreshSuccess": "Liste des plugins rafraîchie",
       "disableSuccess": "Plugin désactivé",
+      "enableSuccess": "Plugin activé",
       "uninstallSuccess": "Plugin désinstallé"
     }
   },
