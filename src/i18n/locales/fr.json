@@ -246,6 +246,46 @@
     "unlimited": "illimitée"
   },
   "plugins": {
+    "title": "Plugins",
+    "stats": {
+      "enabled": "activé",
+      "enabled_plural": "activés",
+      "disabled": "désactivé",
+      "disabled_plural": "désactivés"
+    },
+    "badge": {
+      "official": "officiel"
+    },
+    "action": {
+      "install": "Installer",
+      "disable": "Désactiver",
+      "uninstall": "Désinstaller",
+      "update": "Mettre à jour",
+      "more": "Plus d'actions",
+      "refresh": "Vérifier les mises à jour",
+      "browseRepo": "Parcourir le dépôt"
+    },
+    "search": {
+      "placeholder": "Rechercher un plugin…"
+    },
+    "categories": {
+      "all": "Toutes",
+      "crawler": "Crawlers",
+      "hoster": "Hébergeurs",
+      "debrid": "Debrid",
+      "container": "Conteneurs",
+      "captcha": "Captcha",
+      "extractor": "Extracteurs",
+      "notifier": "Notifiers",
+      "utility": "Utilitaires"
+    },
+    "empty": "Aucun plugin trouvé",
+    "error": "Erreur de chargement",
+    "loading": "Chargement du catalogue…",
+    "retry": "Réessayer",
+    "group": {
+      "count": "{{label}} ({{count}})"
+    },
     "toast": {
       "installSuccess": "Plugin « {{name}} » installé",
       "updateSuccess": "Plugin « {{name}} » mis à jour",

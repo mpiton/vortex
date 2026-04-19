@@ -246,6 +246,46 @@
     "unlimited": "unlimited"
   },
   "plugins": {
+    "title": "Plugins",
+    "stats": {
+      "enabled": "enabled",
+      "enabled_plural": "enabled",
+      "disabled": "disabled",
+      "disabled_plural": "disabled"
+    },
+    "badge": {
+      "official": "official"
+    },
+    "action": {
+      "install": "Install",
+      "disable": "Disable",
+      "uninstall": "Uninstall",
+      "update": "Update",
+      "more": "More actions",
+      "refresh": "Check updates",
+      "browseRepo": "Browse repository"
+    },
+    "search": {
+      "placeholder": "Search plugins…"
+    },
+    "categories": {
+      "all": "All",
+      "crawler": "Crawlers",
+      "hoster": "Hosters",
+      "debrid": "Debrid",
+      "container": "Containers",
+      "captcha": "Captcha",
+      "extractor": "Extractors",
+      "notifier": "Notifiers",
+      "utility": "Utilities"
+    },
+    "empty": "No plugins found",
+    "error": "Failed to load catalog",
+    "loading": "Loading catalog…",
+    "retry": "Retry",
+    "group": {
+      "count": "{{label}} ({{count}})"
+    },
     "toast": {
       "installSuccess": "Plugin \"{{name}}\" installed",
       "updateSuccess": "Plugin \"{{name}}\" updated",
