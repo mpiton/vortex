@@ -71,7 +71,6 @@ export function PluginsView() {
     () => entries.filter((e) => isInstalled(e.status)).length,
     [entries],
   );
-  const disabledCount = 0;
 
   const groups = useMemo(() => groupByCategory(filtered), [filtered]);
 
@@ -79,7 +78,6 @@ export function PluginsView() {
     <div className="flex flex-col h-full bg-surface-alt">
       <PluginsHeader
         enabledCount={enabledCount}
-        disabledCount={disabledCount}
         onRefresh={refreshStore}
         isRefreshing={isRefreshing}
       />

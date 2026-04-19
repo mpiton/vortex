@@ -4,14 +4,12 @@ import { Button } from "@/components/ui/button";
 
 interface PluginsHeaderProps {
   enabledCount: number;
-  disabledCount: number;
   onRefresh: () => void;
   isRefreshing: boolean;
 }
 
 export function PluginsHeader({
   enabledCount,
-  disabledCount,
   onRefresh,
   isRefreshing,
 }: PluginsHeaderProps) {
@@ -30,15 +28,6 @@ export function PluginsHeader({
               {enabledCount}
             </span>
             {t("plugins.stats.enabled", { count: enabledCount })}
-          </span>
-          <span className="flex items-center gap-1.5">
-            <span
-              data-testid="plugins-disabled-count"
-              className="font-semibold text-text-ghost tabular-nums"
-            >
-              {disabledCount}
-            </span>
-            {t("plugins.stats.disabled", { count: disabledCount })}
           </span>
         </div>
       </div>

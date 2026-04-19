@@ -55,34 +55,36 @@ describe("PluginStoreRow", () => {
     expect(handlers.onInstall).toHaveBeenCalledWith("vortex-mod-youtube");
   });
 
-  it("shows an enabled toggle when the plugin is installed", () => {
+  it("does not render an install button when the plugin is already installed", () => {
     renderRow({ status: "installed" });
-    const toggle = screen.getByRole("switch");
-    expect(toggle).toHaveAttribute("data-state", "checked");
+    expect(
+      screen.queryByRole("button", { name: /^install(er)?$/i }),
+    ).not.toBeInTheDocument();
   });
 
-  it("calls onDisable when the toggle is turned off", async () => {
-    const user = userEvent.setup();
-    const handlers = renderRow({ status: "installed" });
-    await user.click(screen.getByRole("switch"));
-    expect(handlers.onDisable).toHaveBeenCalledWith("vortex-mod-youtube");
-  });
-
-  it("renders an update pill when an update is available", async () => {
+  it("renders an update pill prefixed with v when an update is available", async () => {
     const user = userEvent.setup();
     const handlers = renderRow({
       status: "update_available",
       version: "1.2.0",
       installedVersion: "1.1.0",
     });
-    const pill = screen.getByRole("button", { name: /1\.2\.0/ });
+    const pill = screen.getByRole("button", { name: /v1\.2\.0/ });
     await user.click(pill);
     expect(handlers.onUpdate).toHaveBeenCalledWith("vortex-mod-youtube");
   });
 
-  it("displays the installed version next to the toggle when installed", () => {
+  it("displays the installed version next to the actions when installed", () => {
     renderRow({ status: "installed", installedVersion: "1.1.2" });
     expect(screen.getByText("v1.1.2")).toBeInTheDocument();
+  });
+
+  it("exposes the disable action from the kebab menu for installed plugins", async () => {
+    const user = userEvent.setup();
+    const handlers = renderRow({ status: "installed" });
+    await user.click(screen.getByRole("button", { name: /(more actions|plus d'actions)/i }));
+    await user.click(screen.getByRole("menuitem", { name: /(disable|désactiver)/i }));
+    expect(handlers.onDisable).toHaveBeenCalledWith("vortex-mod-youtube");
   });
 
   it("exposes an uninstall action in the kebab menu for installed plugins", async () => {

@@ -2,11 +2,11 @@ import { MoreVertical, ArrowUpCircle } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Switch } from "@/components/ui/switch";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import type { PluginStoreEntry } from "@/types/plugin-store";
@@ -84,7 +84,7 @@ export function PluginStoreRow({
             className="h-7 text-[10px] px-2 gap-1 text-warning border-warning/50 hover:bg-warning/10 hover:text-warning"
           >
             <ArrowUpCircle className="h-3 w-3" />
-            {entry.version}
+            v{entry.version}
           </Button>
         )}
 
@@ -94,7 +94,7 @@ export function PluginStoreRow({
           </span>
         )}
 
-        {entry.status === "not_installed" ? (
+        {entry.status === "not_installed" && (
           <Button
             size="sm"
             variant="outline"
@@ -104,13 +104,6 @@ export function PluginStoreRow({
           >
             {t("plugins.action.install")}
           </Button>
-        ) : (
-          <Switch
-            checked
-            size="sm"
-            aria-label={t("plugins.action.disable")}
-            onCheckedChange={() => onDisable?.(entry.name)}
-          />
         )}
 
         {installed && (
@@ -126,9 +119,20 @@ export function PluginStoreRow({
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
-              <DropdownMenuItem variant="destructive" onSelect={() => onUninstall?.(entry.name)}>
-                {t("plugins.action.uninstall")}
-              </DropdownMenuItem>
+              {onDisable && (
+                <DropdownMenuItem onSelect={() => onDisable(entry.name)}>
+                  {t("plugins.action.disable")}
+                </DropdownMenuItem>
+              )}
+              {onDisable && onUninstall && <DropdownMenuSeparator />}
+              {onUninstall && (
+                <DropdownMenuItem
+                  variant="destructive"
+                  onSelect={() => onUninstall(entry.name)}
+                >
+                  {t("plugins.action.uninstall")}
+                </DropdownMenuItem>
+              )}
             </DropdownMenuContent>
           </DropdownMenu>
         )}

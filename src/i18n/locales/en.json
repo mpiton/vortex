@@ -248,10 +248,8 @@
   "plugins": {
     "title": "Plugins",
     "stats": {
-      "enabled": "enabled",
-      "enabled_plural": "enabled",
-      "disabled": "disabled",
-      "disabled_plural": "disabled"
+      "enabled_one": "enabled",
+      "enabled_other": "enabled"
     },
     "badge": {
       "official": "official"
