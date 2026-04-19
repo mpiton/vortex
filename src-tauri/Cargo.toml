@@ -29,7 +29,9 @@ tokio-util = { version = "0.7.18", features = ["rt"] }
 futures-util = "0.3.32"
 bytes = "1.11.1"
 bincode = "2"
-extism = "1.21.0"
+# Temporary: direct git dep until extism upstream ships with wasmtime >=43.
+# Clears GHSA-jhxm-h53p-jm7w (aarch64 Cranelift) and GHSA-xx5w-cvp6-jv83 (Winch).
+extism = { git = "https://github.com/mpiton/extism.git", rev = "89bf61c849e52b075f4ea06ee20a95591c4bba69" }
 notify = "8.2.0"
 toml = "1.1.2"
 dashmap = "6.1.0"
@@ -61,10 +63,3 @@ windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem"] }
 [dev-dependencies]
 tempfile = "3.27.0"
 wiremock = "0.6.5"
-
-[patch.crates-io]
-# Temporary: upgrades wasmtime/wasi-common/wiggle from ^41 to ^43.
-# Clears GHSA-jhxm-h53p-jm7w (aarch64 Cranelift sandbox escape) and
-# GHSA-xx5w-cvp6-jv83 (Winch sandbox escape). Remove once extism upstream
-# releases a version that depends on wasmtime >=42.
-extism = { git = "https://github.com/mpiton/extism.git", rev = "89bf61c849e52b075f4ea06ee20a95591c4bba69" }
