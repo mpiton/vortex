@@ -1148,6 +1148,32 @@ fn is_supported_youtube_height(height: u32) -> bool {
     SUPPORTED_YOUTUBE_HEIGHTS.contains(&height)
 }
 
+/// Detect whether yt-dlp's `--dump-single-json` payload describes a YouTube
+/// source. The canonical-ladder filter only applies to YouTube; Vimeo,
+/// SoundCloud and other extractors expose their own resolution sets (Vimeo
+/// for instance serves 540p, which would be wrongly dropped).
+///
+/// yt-dlp always sets `extractor_key` (e.g. `"Youtube"`, `"Vimeo"`,
+/// `"Soundcloud"`); we also check `webpage_url_domain` as a belt-and-braces
+/// fallback in case a future yt-dlp release renames the extractor.
+fn is_youtube_source(json: &serde_json::Value) -> bool {
+    let extractor_key = json["extractor_key"]
+        .as_str()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if extractor_key.contains("youtube") {
+        return true;
+    }
+    let webpage_domain = json["webpage_url_domain"]
+        .as_str()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    matches!(
+        webpage_domain.as_str(),
+        "youtube.com" | "www.youtube.com" | "m.youtube.com" | "music.youtube.com" | "youtu.be"
+    )
+}
+
 fn parse_ytdlp_json(json: &serde_json::Value) -> Result<MediaMetadataDto, String> {
     let title = json["title"].as_str().unwrap_or("").to_string();
     let thumbnail_url = json["thumbnail"].as_str().unwrap_or("").to_string();
@@ -1163,15 +1189,21 @@ fn parse_ytdlp_json(json: &serde_json::Value) -> Result<MediaMetadataDto, String
 
     if let Some(formats) = json["formats"].as_array() {
         // Build quality list: deduplicated by height, sorted highest first.
-        // Only heights declared in vortex-mod-youtube's plugin.toml
-        // `default_quality` options are surfaced; anything else (144p, 240p,
-        // non-standard heights like 270/1072) would fail in the plugin's
-        // `resolve_stream_url` because it only bypasses the pre-merged-HTTPS
-        // path for >=720 on the canonical ladder.
+        // For YouTube sources only, restrict heights to the set declared in
+        // vortex-mod-youtube's `plugin.toml :: default_quality.options`;
+        // anything else (144p, 240p, non-standard heights like 270/1072)
+        // would fail in the plugin's `resolve_stream_url`. Other extractors
+        // (Vimeo, SoundCloud, …) keep every positive height they report —
+        // they have their own resolution sets (Vimeo for instance serves
+        // 540p, which is not on the YouTube ladder).
+        let youtube_only = is_youtube_source(json);
         let mut video_formats: Vec<&serde_json::Value> = formats
             .iter()
             .filter(|f| f["vcodec"].as_str().unwrap_or("none") != "none")
-            .filter(|f| is_supported_youtube_height(f["height"].as_u64().unwrap_or(0) as u32))
+            .filter(|f| {
+                let height = f["height"].as_u64().unwrap_or(0) as u32;
+                height > 0 && (!youtube_only || is_supported_youtube_height(height))
+            })
             .collect();
         video_formats.sort_by(|a, b| {
             b["height"]
@@ -1747,7 +1779,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_ytdlp_drops_heights_below_360p() {
+    fn test_parse_ytdlp_drops_youtube_heights_below_360p() {
         // 144p and 240p are DASH-only on YouTube and are NOT declared in
         // vortex-mod-youtube's plugin.toml `default_quality` options. If the
         // UI were to offer them, picking either would fail with yt-dlp's
@@ -1760,6 +1792,8 @@ mod tests {
             "thumbnail": "",
             "duration": 42.0,
             "_type": "video",
+            "extractor_key": "Youtube",
+            "webpage_url_domain": "youtube.com",
             "formats": [
                 make_format("avc1", "mp4a", "mp4", 144, 256, 30.0, 100.0),
                 make_format("avc1", "mp4a", "mp4", 240, 426, 30.0, 300.0),
@@ -1789,16 +1823,18 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_ytdlp_drops_non_standard_heights() {
-        // yt-dlp sometimes reports unusual heights (e.g. 144-ish custom
-        // encodes) that are not in the plugin's supported set. Only the
+    fn test_parse_ytdlp_drops_youtube_non_standard_heights() {
+        // yt-dlp sometimes reports unusual heights (e.g. 1072 on transcoded
+        // uploads) that are not in the plugin's supported set. Only the
         // canonical YouTube ladder {360, 480, 720, 1080, 1440, 2160, 4320}
-        // should reach the UI.
+        // should reach the UI for YouTube sources.
         let json = serde_json::json!({
             "title": "Weird Heights",
             "thumbnail": "",
             "duration": 10.0,
             "_type": "video",
+            "extractor_key": "Youtube",
+            "webpage_url_domain": "www.youtube.com",
             "formats": [
                 make_format("avc1", "mp4a", "mp4", 144, 256, 30.0, 100.0),
                 make_format("avc1", "mp4a", "mp4", 270, 480, 30.0, 400.0),
@@ -1820,6 +1856,104 @@ mod tests {
             heights,
             vec![2160, 1080],
             "only canonical ladder heights must survive"
+        );
+    }
+
+    #[test]
+    fn test_parse_ytdlp_preserves_vimeo_non_canonical_heights() {
+        // Regression guard for PR #79 review: `parse_ytdlp_json` is shared
+        // across all extractors, so the YouTube height allow-list must NOT
+        // apply to Vimeo. Vimeo serves 540p (and other off-ladder sizes like
+        // 640p), which must reach the quality selector for those sources.
+        let json = serde_json::json!({
+            "title": "Vimeo Sample",
+            "thumbnail": "",
+            "duration": 60.0,
+            "_type": "video",
+            "extractor_key": "Vimeo",
+            "webpage_url_domain": "vimeo.com",
+            "formats": [
+                make_format("avc1", "mp4a", "mp4", 240, 426, 30.0, 300.0),
+                make_format("avc1", "mp4a", "mp4", 360, 640, 30.0, 700.0),
+                make_format("avc1", "mp4a", "mp4", 540, 960, 30.0, 1500.0),
+                make_format("avc1", "mp4a", "mp4", 720, 1280, 30.0, 2500.0),
+                make_format("avc1", "mp4a", "mp4", 1080, 1920, 30.0, 4000.0),
+            ],
+            "subtitles": {}
+        });
+
+        let result = parse_ytdlp_json(&json).expect("parse should succeed");
+
+        let heights: Vec<u32> = result
+            .available_qualities
+            .iter()
+            .map(|q| q.height)
+            .collect();
+        assert_eq!(
+            heights,
+            vec![1080, 720, 540, 360, 240],
+            "Vimeo heights must not be filtered through the YouTube allow-list"
+        );
+    }
+
+    #[test]
+    fn test_parse_ytdlp_detects_youtube_via_webpage_domain_only() {
+        // Belt-and-braces: if yt-dlp renames `extractor_key` in a future
+        // release but still sets `webpage_url_domain`, YouTube filtering must
+        // still fire for known YouTube endpoints (youtu.be, music.youtube.com
+        // …).
+        let json = serde_json::json!({
+            "title": "Shared Short",
+            "thumbnail": "",
+            "duration": 15.0,
+            "_type": "video",
+            "webpage_url_domain": "youtu.be",
+            "formats": [
+                make_format("avc1", "mp4a", "mp4", 240, 426, 30.0, 300.0),
+                make_format("avc1", "mp4a", "mp4", 720, 1280, 30.0, 2500.0),
+            ],
+            "subtitles": {}
+        });
+
+        let result = parse_ytdlp_json(&json).expect("parse should succeed");
+
+        let heights: Vec<u32> = result
+            .available_qualities
+            .iter()
+            .map(|q| q.height)
+            .collect();
+        assert_eq!(heights, vec![720], "240p must be dropped on youtu.be URLs");
+    }
+
+    #[test]
+    fn test_parse_ytdlp_unknown_source_keeps_all_positive_heights() {
+        // Payloads without an extractor key (e.g. generic extractor, unknown
+        // fallback) must not be assumed to be YouTube: keep every positive
+        // height so new providers work without modifying this parser.
+        let json = serde_json::json!({
+            "title": "Unknown Source",
+            "thumbnail": "",
+            "duration": 30.0,
+            "_type": "video",
+            "formats": [
+                make_format("avc1", "mp4a", "mp4", 144, 256, 30.0, 100.0),
+                make_format("avc1", "mp4a", "mp4", 480, 854, 30.0, 800.0),
+                make_format("avc1", "mp4a", "mp4", 540, 960, 30.0, 1500.0),
+            ],
+            "subtitles": {}
+        });
+
+        let result = parse_ytdlp_json(&json).expect("parse should succeed");
+
+        let heights: Vec<u32> = result
+            .available_qualities
+            .iter()
+            .map(|q| q.height)
+            .collect();
+        assert_eq!(
+            heights,
+            vec![540, 480, 144],
+            "unknown-source heights must survive, including 144p and 540p"
         );
     }
 
