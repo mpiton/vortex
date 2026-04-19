@@ -194,6 +194,16 @@ impl QueueManager {
                         }
                     }
                 }
+                // Notify the frontend *after* the state is durable in SQLite.
+                // The Tauri bridge swallows DownloadCompleted on purpose to
+                // avoid a refetch racing with the save above; it only forwards
+                // DownloadCompletedPersisted. Gated on the current state being
+                // Completed so that late events arriving after a cancel/fail
+                // don't mislead the UI.
+                if download.state() == DownloadState::Completed {
+                    self.event_bus
+                        .publish(DomainEvent::DownloadCompletedPersisted { id });
+                }
                 was_active
             }
             None => {
@@ -953,5 +963,134 @@ mod tests {
         // the same slot.)
         qm.handle_download_completed(DownloadId(999)).await.unwrap();
         assert_eq!(qm.active_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_handle_download_completed_publishes_persisted_event_when_active() {
+        // Regression: the Tauri bridge intentionally swallows DownloadCompleted
+        // and only forwards DownloadCompletedPersisted (to avoid a race with
+        // SQLite persistence). Without this publish the frontend never sees
+        // `download-completed`, so `useDownloadEvents` never invalidates the
+        // query cache and the UI stays stuck on "Downloading" until reload.
+        let mut d = make_download(1, 5, DownloadState::Queued);
+        d.start().unwrap();
+        assert_eq!(d.state(), DownloadState::Downloading);
+
+        let repo = Arc::new(MockDownloadRepo::new(vec![d]));
+        let engine = Arc::new(MockEngine::new());
+        let bus = Arc::new(MockEventBus::new());
+        let qm = make_manager(
+            Arc::clone(&repo),
+            Arc::clone(&engine),
+            Arc::clone(&bus),
+            3,
+            1,
+        );
+
+        qm.handle_download_completed(DownloadId(1)).await.unwrap();
+
+        let events = bus.events.lock().unwrap();
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                DomainEvent::DownloadCompletedPersisted { id } if id.0 == 1
+            )),
+            "must publish DownloadCompletedPersisted after persisting Completed state, got {events:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_handle_download_completed_publishes_persisted_event_for_prepersisted_completed() {
+        // RegisterLocalFileCommand persists a download directly as Completed
+        // and then publishes DownloadCompleted. The frontend must still be
+        // notified via DownloadCompletedPersisted so the UI invalidates its
+        // cache — otherwise yt-dlp-produced downloads would never leave the
+        // "Downloading" state in the list view.
+        let mut d = make_download(1, 5, DownloadState::Queued);
+        d.start().unwrap();
+        d.complete().unwrap();
+        assert_eq!(d.state(), DownloadState::Completed);
+
+        let repo = Arc::new(MockDownloadRepo::new(vec![d]));
+        let engine = Arc::new(MockEngine::new());
+        let bus = Arc::new(MockEventBus::new());
+        let qm = make_manager(
+            Arc::clone(&repo),
+            Arc::clone(&engine),
+            Arc::clone(&bus),
+            3,
+            0,
+        );
+
+        qm.handle_download_completed(DownloadId(1)).await.unwrap();
+
+        let events = bus.events.lock().unwrap();
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                DomainEvent::DownloadCompletedPersisted { id } if id.0 == 1
+            )),
+            "must publish DownloadCompletedPersisted for pre-completed downloads (register_local_file flow)"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_handle_download_completed_does_not_publish_persisted_when_missing() {
+        // A late DownloadCompleted arriving after a cancel/remove finds no row
+        // in the repo. We must NOT publish DownloadCompletedPersisted then:
+        // the frontend would invalidate and refetch for a ghost id.
+        let repo = Arc::new(MockDownloadRepo::new(vec![]));
+        let engine = Arc::new(MockEngine::new());
+        let bus = Arc::new(MockEventBus::new());
+        let qm = make_manager(
+            Arc::clone(&repo),
+            Arc::clone(&engine),
+            Arc::clone(&bus),
+            3,
+            1,
+        );
+
+        qm.handle_download_completed(DownloadId(999)).await.unwrap();
+
+        let events = bus.events.lock().unwrap();
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, DomainEvent::DownloadCompletedPersisted { .. })),
+            "must not publish DownloadCompletedPersisted when download is missing"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_handle_download_completed_does_not_publish_persisted_for_non_completed_terminal()
+    {
+        // Late DownloadCompleted arriving after the download was marked
+        // Cancelled/Error: the repo row exists but its state is not Completed.
+        // Publishing DownloadCompletedPersisted here would lie to the UI.
+        let mut d = make_download(1, 5, DownloadState::Queued);
+        d.start().unwrap();
+        d.fail("boom".into()).unwrap();
+        assert_eq!(d.state(), DownloadState::Error);
+
+        let repo = Arc::new(MockDownloadRepo::new(vec![d]));
+        let engine = Arc::new(MockEngine::new());
+        let bus = Arc::new(MockEventBus::new());
+        let qm = make_manager(
+            Arc::clone(&repo),
+            Arc::clone(&engine),
+            Arc::clone(&bus),
+            3,
+            0,
+        );
+
+        qm.handle_download_completed(DownloadId(1)).await.unwrap();
+
+        let events = bus.events.lock().unwrap();
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, DomainEvent::DownloadCompletedPersisted { .. })),
+            "must not publish DownloadCompletedPersisted when repo state is not Completed"
+        );
     }
 }
