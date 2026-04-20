@@ -29,7 +29,9 @@ tokio-util = { version = "0.7.18", features = ["rt"] }
 futures-util = "0.3.32"
 bytes = "1.11.1"
 bincode = "2"
-extism = "1.21.0"
+# Temporary: direct git dep until extism upstream ships with wasmtime >=43.
+# Clears GHSA-jhxm-h53p-jm7w (aarch64 Cranelift) and GHSA-xx5w-cvp6-jv83 (Winch).
+extism = { git = "https://github.com/mpiton/extism.git", rev = "f14e56ddf0f994f04f363545d3d01880b7876f82" }
 notify = "8.2.0"
 toml = "1.1.2"
 dashmap = "6.1.0"
