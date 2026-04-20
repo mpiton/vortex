@@ -77,7 +77,15 @@ export function PluginsView() {
 
   const uninstallMutation = useTauriMutation<void, { name: string }>("plugin_uninstall", {
     invalidateKeys: STORE_INVALIDATE_KEYS,
-    onSuccess: () => toast.success(t("plugins.toast.uninstallSuccess")),
+    onSuccess: (_data, variables) => {
+      setLocallyDisabled((prev) => {
+        if (!prev.has(variables.name)) return prev;
+        const next = new Set(prev);
+        next.delete(variables.name);
+        return next;
+      });
+      toast.success(t("plugins.toast.uninstallSuccess"));
+    },
   });
 
   const filtered = useMemo(() => {
