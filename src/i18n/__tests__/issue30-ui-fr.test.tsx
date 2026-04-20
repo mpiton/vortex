@@ -39,10 +39,7 @@ function createQueryClient() {
   });
 }
 
-function renderWithProviders(
-  ui: React.ReactElement,
-  options: { tooltip?: boolean } = {},
-) {
+function renderWithProviders(ui: React.ReactElement, options: { tooltip?: boolean } = {}) {
   const content = options.tooltip ? <TooltipProvider>{ui}</TooltipProvider> : ui;
 
   return render(
@@ -116,13 +113,9 @@ describe("issue #30 — French UI translations", () => {
 
     expect(screen.getByText("Capteur de liens")).toBeInTheDocument();
     expect(screen.getByText("Surveillance du presse-papiers")).toBeInTheDocument();
-    expect(
-      screen.getByPlaceholderText("Collez des URL ici (une par ligne)…"),
-    ).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("Collez des URL ici (une par ligne)…")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Effacer" })).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: "Analyser les liens" }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Analyser les liens" })).toBeInTheDocument();
   });
 
   it("renders status bar strings in French", () => {
@@ -156,9 +149,7 @@ describe("issue #30 — French UI translations", () => {
     mockInvoke.mockResolvedValue([]);
     renderWithProviders(<PluginsView />);
 
-    expect(
-      screen.getByPlaceholderText("Rechercher un plugin..."),
-    ).toBeInTheDocument();
-    expect(screen.getByText("Toutes catégories")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("Rechercher un plugin…")).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Toutes" })).toBeInTheDocument();
   });
 });

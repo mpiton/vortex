@@ -8,16 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+
 - `useTauriMutation` now accepts `silentError` (opt-out of the default toast) and `errorMessage` (remap the error message before toasting) options. (#74)
 
 ### Changed
+
+- Plugins view refreshed to match the design mockup: a header with enabled/disabled counters and a "Check updates" action, a segmented category filter replacing the dropdown, grouped sections per category with uppercase labels, monogram icons with accent coloring for crawlers/extractors, a toggle for installed plugins, and a kebab menu hosting the destructive "Uninstall" action. Installable plugins keep a single `Install` button; pending updates surface as an inline pill on the row.
 - Default settings values now match PRD §6.10 (fresh installs only — existing `config.toml` files are not migrated): `autoExtract` on, `maxConcurrentDownloads=4`, `maxRetries=5`, `retryDelaySeconds=10`, `minFileSizeMb=1.0`, `verifyChecksums` on, `webInterfacePort=9876`, REST API and WebSocket enabled by default. `downloadDir` now resolves to the OS default Downloads directory on first launch, and `apiKey` is generated as a random UUIDv4 so the REST/WS protocols never start with an empty credential. (#67)
 - Every IPC mutation now surfaces an error toast by default via `useTauriMutation`; migrated all call sites (downloads, settings, plugins, link grabber, clipboard monitoring) to rely on this default. Inline error state removed from the link grabber. (#74)
 
 ### Fixed
+
 - YouTube `get_media_metadata` surfaced 144p, 240p, and other non-canonical heights in the quality selector even though `vortex-mod-youtube` does not support them. Picking one produced a raw yt-dlp "Requested format is not available" error because the plugin only bypasses its pre-merged-HTTPS path for heights >=720 on the canonical ladder. `parse_ytdlp_json` now filters `available_qualities` against the plugin's supported set `{360, 480, 720, 1080, 1440, 2160, 4320}`, kept in sync with `plugin.toml :: default_quality.options`. The filter is scoped to YouTube sources (detected via yt-dlp's `extractor_key` / `webpage_url_domain`) so Vimeo, SoundCloud and other providers keep their own ladders (e.g. Vimeo's 540p).
 - Completed downloads stayed stuck on `Downloading` in the UI until a manual reload: `QueueManager::handle_download_completed` persisted `state = Completed` to SQLite but never published the `DownloadCompletedPersisted` event the Tauri bridge forwards as `download-completed`, so `useDownloadEvents` never invalidated the TanStack Query cache. Now emitted after the save (and also for pre-persisted completions from `RegisterLocalFileCommand`/`ExtractArchive`), gated on the repo state being `Completed` so late events after cancel/fail do not mislead the UI.
-- Frontend briefly showing stale state after a download completed: `DownloadCompleted` fired before `QueueManager` persisted `state = Completed` to SQLite, so a re-fetch triggered by the event could read the previous state. New `DownloadCompletedPersisted` event emitted *after* the save; the Tauri bridge maps it to the same `download-completed` frontend event so existing invalidation logic is reused without changes.
+- Frontend briefly showing stale state after a download completed: `DownloadCompleted` fired before `QueueManager` persisted `state = Completed` to SQLite, so a re-fetch triggered by the event could read the previous state. New `DownloadCompletedPersisted` event emitted _after_ the save; the Tauri bridge maps it to the same `download-completed` frontend event so existing invalidation logic is reused without changes.
 - `downloaded_bytes` stayed at 0 in SQLite for downloads that finished in under 500 ms (the `DownloadProgress` throttle window): `segment_worker` now emits one final `DownloadProgress` right before `SegmentCompleted` so `progress_bridge` always observes the real byte count.
 - State-transition saves could regress `downloaded_bytes` back to a stale lower value when racing with `progress_bridge` writes. `SqliteDownloadRepo.save` now excludes `downloaded_bytes` from the UPSERT column list and uses `MAX(excluded.downloaded_bytes, COALESCE(downloads.downloaded_bytes, 0))` so only larger values win.
 - `DownloadView` / `DownloadDetailView` now expose `source_hostname` so the UI can show the origin host (e.g. `www.youtube.com`) rather than the CDN host (`rr1---sn-n4g-cvq6.googlevideo.com`) that the download URL resolves to.
@@ -43,6 +47,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `SegmentStarted` event now carries `start_byte` and `end_byte` so downstream consumers can identify which byte range a segment covers
 
 ### Added
+
 - **Clear completed / Clear failed downloads**: two new toolbar buttons in the Downloads view, separated from the bulk actions by a vertical separator. Each opens a confirmation dialog with an optional "Also delete files from disk" checkbox gated behind a prominent red warning panel. Success and error outcomes are reported via toasts.
 - `sonner` toast notifications (new dependency) mounted globally in `App.tsx`, with a thin `src/lib/toast.ts` wrapper so components do not depend on the library directly.
 - YouTube 1080p+ support: when `resolve_stream_url` returns `AdaptiveStreamOnly`,
@@ -268,11 +273,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `contrib/homebrew/vortex.rb` — Homebrew cask template (TODO placeholders for future submission)
 
 ### Changed
+
 - `KeyringCredentialStore` replaces `NoopCredentialStore` as the default credential adapter (#35)
   - Credentials now persist in the OS keychain (macOS Keychain, Linux Secret Service/keyutils, Windows Credential Manager)
   - `NoopCredentialStore` remains available for tests
 
 ### Fixed
+
 - HTML `lang` attribute now updates when the app locale changes — screen readers and browser features use the correct language pronunciation rules (#33)
 - Link Grabber now shows an inline error message when `link_resolve` fails, instead of silently resetting after "Analyze Links" (#29)
 - Settings view now displays the actual backend error message when `settings_get` fails, instead of only a generic "Failed to load settings" (#28)
