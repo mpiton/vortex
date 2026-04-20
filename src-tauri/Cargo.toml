@@ -31,7 +31,7 @@ bytes = "1.11.1"
 bincode = "2"
 # Temporary: direct git dep until extism upstream ships with wasmtime >=43.
 # Clears GHSA-jhxm-h53p-jm7w (aarch64 Cranelift) and GHSA-xx5w-cvp6-jv83 (Winch).
-extism = { git = "https://github.com/mpiton/extism.git", rev = "71746f9edaec6b82237467f994b28c3a15a427a6" }
+extism = { git = "https://github.com/mpiton/extism.git", rev = "f14e56ddf0f994f04f363545d3d01880b7876f82" }
 notify = "8.2.0"
 toml = "1.1.2"
 dashmap = "6.1.0"

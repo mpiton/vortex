@@ -1921,7 +1921,7 @@ dependencies = [
 [[package]]
 name = "extism"
 version = "0.0.0+replaced-by-ci"
-source = "git+https://github.com/mpiton/extism.git?rev=71746f9edaec6b82237467f994b28c3a15a427a6#71746f9edaec6b82237467f994b28c3a15a427a6"
+source = "git+https://github.com/mpiton/extism.git?rev=f14e56ddf0f994f04f363545d3d01880b7876f82#f14e56ddf0f994f04f363545d3d01880b7876f82"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1947,7 +1947,7 @@ dependencies = [
 [[package]]
 name = "extism-convert"
 version = "0.0.0+replaced-by-ci"
-source = "git+https://github.com/mpiton/extism.git?rev=71746f9edaec6b82237467f994b28c3a15a427a6#71746f9edaec6b82237467f994b28c3a15a427a6"
+source = "git+https://github.com/mpiton/extism.git?rev=f14e56ddf0f994f04f363545d3d01880b7876f82#f14e56ddf0f994f04f363545d3d01880b7876f82"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -1962,7 +1962,7 @@ dependencies = [
 [[package]]
 name = "extism-convert-macros"
 version = "0.0.0+replaced-by-ci"
-source = "git+https://github.com/mpiton/extism.git?rev=71746f9edaec6b82237467f994b28c3a15a427a6#71746f9edaec6b82237467f994b28c3a15a427a6"
+source = "git+https://github.com/mpiton/extism.git?rev=f14e56ddf0f994f04f363545d3d01880b7876f82#f14e56ddf0f994f04f363545d3d01880b7876f82"
 dependencies = [
  "manyhow",
  "proc-macro-crate 3.5.0",
@@ -1974,7 +1974,7 @@ dependencies = [
 [[package]]
 name = "extism-manifest"
 version = "0.0.0+replaced-by-ci"
-source = "git+https://github.com/mpiton/extism.git?rev=71746f9edaec6b82237467f994b28c3a15a427a6#71746f9edaec6b82237467f994b28c3a15a427a6"
+source = "git+https://github.com/mpiton/extism.git?rev=f14e56ddf0f994f04f363545d3d01880b7876f82#f14e56ddf0f994f04f363545d3d01880b7876f82"
 dependencies = [
  "base64 0.22.1",
  "serde",
