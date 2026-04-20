@@ -54,6 +54,22 @@ impl ExtismPluginLoader {
         }
         Ok(info)
     }
+
+    fn call_url_plugin_function(&self, url: &str, func: &str) -> Result<String, DomainError> {
+        let info = self.resolve_wasm_plugin(url)?;
+        if !self.registry.function_exists(info.name(), func)? {
+            return Err(DomainError::NotFound(format!(
+                "plugin '{}' does not export '{func}'",
+                info.name()
+            )));
+        }
+
+        self.registry
+            .call_plugin(info.name(), func, url)
+            .map_err(|e| {
+                DomainError::PluginError(format!("plugin '{}' {func} failed: {e}", info.name()))
+            })
+    }
 }
 
 impl PluginLoader for ExtismPluginLoader {
@@ -143,6 +159,14 @@ impl PluginLoader for ExtismPluginLoader {
 
     fn set_enabled(&self, name: &str, enabled: bool) -> Result<(), DomainError> {
         self.registry.set_enabled(name, enabled)
+    }
+
+    fn extract_links(&self, url: &str) -> Result<String, DomainError> {
+        self.call_url_plugin_function(url, "extract_links")
+    }
+
+    fn get_media_variants(&self, url: &str) -> Result<String, DomainError> {
+        self.call_url_plugin_function(url, "get_media_variants")
     }
 
     fn resolve_stream_url(

@@ -48,7 +48,14 @@ export function LinkGrabberView() {
 
   const { mutate: startMediaDownload } = useTauriMutation<
     unknown,
-    { url: string; quality: string; format: string; audioOnly: boolean; title?: string }
+    {
+      url: string;
+      quality: string;
+      format: string;
+      audioOnly: boolean;
+      title?: string;
+      playlistItems: string[];
+    }
   >("download_media_start", {
     onSuccess: () => {
       toast.success(t("linkGrabber.toast.downloadStarted"));
@@ -100,6 +107,7 @@ export function LinkGrabberView() {
         format: options.format,
         audioOnly: options.audioOnly,
         title: options.title,
+        playlistItems: options.playlistItems,
       });
     }
   };

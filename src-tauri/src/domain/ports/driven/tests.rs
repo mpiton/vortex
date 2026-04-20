@@ -408,6 +408,18 @@ impl PluginLoader for FakePluginLoader {
         Ok(None)
     }
 
+    fn extract_links(&self, _url: &str) -> Result<String, DomainError> {
+        Err(DomainError::NotFound(
+            "extract_links not implemented".to_string(),
+        ))
+    }
+
+    fn get_media_variants(&self, _url: &str) -> Result<String, DomainError> {
+        Err(DomainError::NotFound(
+            "get_media_variants not implemented".to_string(),
+        ))
+    }
+
     fn list_loaded(&self) -> Result<Vec<PluginInfo>, DomainError> {
         Ok(self.plugins.lock().unwrap().values().cloned().collect())
     }

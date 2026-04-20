@@ -48,6 +48,11 @@ export function MediaGrabberDialog({
     isError,
     refetch,
   } = useMediaMetadata(link.originalUrl, open);
+  const requiresAudioOnly = !!metadata &&
+    link.mediaType === "audio" &&
+    metadata.availableQualities.length === 0 &&
+    metadata.availableAudioFormats.length > 0;
+  const effectiveAudioOnly = requiresAudioOnly || audioOnly;
 
   useEffect(() => {
     if (!open) return;
@@ -58,22 +63,33 @@ export function MediaGrabberDialog({
 
   useEffect(() => {
     if (!metadata) return;
-    const firstQuality = metadata.availableQualities[0]?.quality ?? "1080p";
+    const shouldForceAudioOnly =
+      link.mediaType === "audio" &&
+      metadata.availableQualities.length === 0 &&
+      metadata.availableAudioFormats.length > 0;
+    const firstQuality =
+      metadata.defaultQuality ?? metadata.availableQualities[0]?.quality ?? "1080p";
     const firstFormat = metadata.availableFormats[0] ?? "mp4";
-    const firstAudioFormat = metadata.availableAudioFormats[0] ?? "m4a";
+    const firstAudioFormat =
+      metadata.availableAudioFormats[0] ??
+      (shouldForceAudioOnly ? "mp3" : "m4a");
+    setAudioOnly(shouldForceAudioOnly);
     setQualitySelection(firstQuality);
     setFormatSelection(firstFormat);
     setAudioFormat(firstAudioFormat);
-  }, [metadata]);
+  }, [link.mediaType, metadata]);
 
   const handleConfirm = () => {
+    const downloadTitle = metadata?.artist
+      ? `${metadata.artist} - ${metadata.title}`
+      : metadata?.title;
     onConfirm({
-      quality: audioOnly ? "audio_only" : qualitySelection,
-      format: audioOnly ? audioFormat : formatSelection,
+      quality: effectiveAudioOnly ? "audio_only" : qualitySelection,
+      format: effectiveAudioOnly ? audioFormat : formatSelection,
       subtitles: selectedSubtitles,
-      audioOnly,
+      audioOnly: effectiveAudioOnly,
       playlistItems: selectedPlaylistItems,
-      title: metadata?.title,
+      title: downloadTitle,
     });
     onOpenChange(false);
   };
@@ -92,6 +108,7 @@ export function MediaGrabberDialog({
             <MediaPreview
               title={metadata.title}
               thumbnail={metadata.thumbnailUrl}
+              subtitle={metadata.artist}
             />
 
             {metadata.isPlaylist && metadata.playlistItems && metadata.playlistItems.length > 0 && (
@@ -103,7 +120,7 @@ export function MediaGrabberDialog({
             )}
 
             <div className="space-y-4 border-t pt-6">
-              {!audioOnly && metadata.availableQualities.length > 0 && (
+              {!effectiveAudioOnly && metadata.availableQualities.length > 0 && (
                 <QualitySelector
                   qualities={metadata.availableQualities}
                   formats={metadata.availableFormats}
@@ -115,8 +132,9 @@ export function MediaGrabberDialog({
               )}
 
               <AudioOnlySection
-                enabled={audioOnly}
+                enabled={effectiveAudioOnly}
                 onEnabledChange={setAudioOnly}
+                disabled={requiresAudioOnly}
                 audioFormats={metadata.availableAudioFormats}
                 selectedFormat={audioFormat}
                 onSelectFormat={setAudioFormat}
@@ -132,8 +150,8 @@ export function MediaGrabberDialog({
             </div>
 
             <SizeEstimate
-              quality={audioOnly ? "audio_only" : qualitySelection}
-              format={audioOnly ? audioFormat : formatSelection}
+              quality={effectiveAudioOnly ? "audio_only" : qualitySelection}
+              format={effectiveAudioOnly ? audioFormat : formatSelection}
               duration={metadata.durationSeconds}
               qualities={metadata.availableQualities}
             />

@@ -1,5 +1,6 @@
 //! Parse `plugin.toml` files into domain [`PluginManifest`].
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
@@ -11,6 +12,8 @@ use crate::domain::model::plugin::{PluginCategory, PluginInfo, PluginManifest};
 struct RawManifest {
     plugin: RawPluginSection,
     capabilities: Option<RawCapabilities>,
+    #[serde(default)]
+    config: HashMap<String, RawConfigEntry>,
 }
 
 #[derive(Deserialize)]
@@ -29,6 +32,11 @@ struct RawCapabilities {
     http: Option<bool>,
     filesystem: Option<bool>,
     subprocess: Option<Vec<String>>,
+}
+
+#[derive(Deserialize)]
+struct RawConfigEntry {
+    default: Option<toml::Value>,
 }
 
 /// Parse a plugin directory containing `plugin.toml` and a `.wasm` file.
@@ -74,8 +82,11 @@ pub fn parse_manifest(dir: &Path) -> Result<(PluginManifest, PathBuf), DomainErr
         .as_ref()
         .map(build_capabilities)
         .unwrap_or_default();
+    let config_defaults = build_config_defaults(&raw.config)?;
 
-    let mut manifest = PluginManifest::new(info).with_capabilities(caps);
+    let mut manifest = PluginManifest::new(info)
+        .with_capabilities(caps)
+        .with_config_defaults(config_defaults);
     if let Some(v) = raw.plugin.min_vortex_version {
         manifest = manifest.with_min_version(v);
     }
@@ -114,6 +125,31 @@ fn build_capabilities(caps: &RawCapabilities) -> Vec<String> {
         }
     }
     result
+}
+
+fn build_config_defaults(
+    raw_config: &HashMap<String, RawConfigEntry>,
+) -> Result<HashMap<String, String>, DomainError> {
+    let mut defaults = HashMap::new();
+    for (key, entry) in raw_config {
+        let Some(value) = &entry.default else {
+            continue;
+        };
+        defaults.insert(key.clone(), encode_config_default(value)?);
+    }
+    Ok(defaults)
+}
+
+fn encode_config_default(value: &toml::Value) -> Result<String, DomainError> {
+    match value {
+        toml::Value::String(s) => Ok(s.clone()),
+        toml::Value::Integer(i) => Ok(i.to_string()),
+        toml::Value::Float(f) => Ok(f.to_string()),
+        toml::Value::Boolean(b) => Ok(b.to_string()),
+        toml::Value::Datetime(dt) => Ok(dt.to_string()),
+        toml::Value::Array(_) | toml::Value::Table(_) => serde_json::to_string(value)
+            .map_err(|e| DomainError::PluginError(format!("invalid config default value: {e}"))),
+    }
 }
 
 /// Find exactly one `.wasm` file in the plugin directory.
@@ -193,6 +229,53 @@ subprocess = ["ffmpeg"]
         assert!(!manifest.has_capability("filesystem"));
         assert!(manifest.has_capability("subprocess:ffmpeg"));
         assert!(wasm_path.ends_with("my-hoster.wasm"));
+    }
+
+    #[test]
+    fn test_parse_manifest_extracts_config_defaults() {
+        let tmp = TempDir::new().unwrap();
+        let plugin_dir = tmp.path().join("with-config");
+        std::fs::create_dir_all(&plugin_dir).unwrap();
+        write_plugin_toml(
+            &plugin_dir,
+            r#"
+[plugin]
+name = "with-config"
+version = "1.0.0"
+category = "crawler"
+author = "Alice"
+description = "Config defaults"
+
+[config]
+default_quality = { type = "string", default = "720p", options = ["360p", "720p"] }
+extract_audio_only = { type = "boolean", default = false }
+subtitle_languages = { type = "array", default = ["en", "fr"] }
+"#,
+        );
+        write_dummy_wasm(&plugin_dir, "with-config.wasm");
+
+        let (manifest, _) = parse_manifest(&plugin_dir).unwrap();
+        assert_eq!(
+            manifest
+                .config_defaults()
+                .get("default_quality")
+                .map(String::as_str),
+            Some("720p")
+        );
+        assert_eq!(
+            manifest
+                .config_defaults()
+                .get("extract_audio_only")
+                .map(String::as_str),
+            Some("false")
+        );
+        assert_eq!(
+            manifest
+                .config_defaults()
+                .get("subtitle_languages")
+                .map(String::as_str),
+            Some("[\"en\",\"fr\"]")
+        );
     }
 
     #[test]

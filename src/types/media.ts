@@ -19,9 +19,11 @@ export interface PlaylistItem {
 
 export interface MediaMetadata {
   title: string;
+  artist?: string;
   thumbnailUrl: string;
   durationSeconds: number;
   isPlaylist: boolean;
+  defaultQuality?: string;
   availableQualities: QualityOption[];
   availableFormats: string[];
   availableAudioFormats: string[];

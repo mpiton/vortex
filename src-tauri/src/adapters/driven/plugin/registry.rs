@@ -74,6 +74,20 @@ impl PluginRegistry {
         Ok(())
     }
 
+    pub fn function_exists(&self, name: &str, func: &str) -> Result<bool, DomainError> {
+        let plugin_handle = {
+            let entry = self
+                .plugins
+                .get(name)
+                .ok_or_else(|| DomainError::NotFound(name.to_string()))?;
+            Arc::clone(&entry.plugin)
+        };
+        let plugin = plugin_handle
+            .lock()
+            .map_err(|_| DomainError::PluginError(format!("plugin '{name}' mutex poisoned")))?;
+        Ok(plugin.function_exists(func))
+    }
+
     pub fn call_plugin(&self, name: &str, func: &str, input: &str) -> Result<String, DomainError> {
         // Clone the Arc<Mutex<Plugin>> and drop the DashMap shard guard
         // before locking. This prevents holding the shard during slow WASM execution.
@@ -212,5 +226,14 @@ mod tests {
         let result = registry.list_loaded();
         assert!(result.is_ok());
         assert_eq!(result.unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_function_exists_returns_false_for_missing_export() {
+        let registry = PluginRegistry::new();
+        registry.insert("plug-a".to_string(), make_loaded("plug-a"));
+
+        let result = registry.function_exists("plug-a", "extract_links");
+        assert_eq!(result.unwrap(), false);
     }
 }

@@ -3,9 +3,10 @@ import { useEffect, useState } from "react";
 interface MediaPreviewProps {
   title: string;
   thumbnail: string;
+  subtitle?: string;
 }
 
-export function MediaPreview({ title, thumbnail }: MediaPreviewProps) {
+export function MediaPreview({ title, thumbnail, subtitle }: MediaPreviewProps) {
   const [imgError, setImgError] = useState(false);
 
   useEffect(() => {
@@ -26,7 +27,12 @@ export function MediaPreview({ title, thumbnail }: MediaPreviewProps) {
           onError={() => setImgError(true)}
         />
       )}
-      <p className="text-sm font-semibold">{title}</p>
+      <div className="space-y-1">
+        <p className="text-sm font-semibold">{title}</p>
+        {subtitle ? (
+          <p className="text-xs text-muted-foreground">{subtitle}</p>
+        ) : null}
+      </div>
     </div>
   );
 }

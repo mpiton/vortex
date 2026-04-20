@@ -278,6 +278,16 @@ mod tests {
     }
 
     #[test]
+    fn test_is_media_url_detects_soundcloud_artist_profile() {
+        assert!(is_media_url("https://soundcloud.com/forss"));
+    }
+
+    #[test]
+    fn test_is_media_url_detects_soundcloud_playlist() {
+        assert!(is_media_url("https://soundcloud.com/forss/sets/soulhack"));
+    }
+
+    #[test]
     fn test_is_media_url_returns_false_for_regular_url() {
         assert!(!is_media_url("https://example.com/file.zip"));
     }
@@ -294,6 +304,22 @@ mod tests {
     fn test_detect_media_type_returns_audio_for_soundcloud() {
         assert_eq!(
             detect_media_type("https://soundcloud.com/artist/track"),
+            Some("audio".to_string())
+        );
+    }
+
+    #[test]
+    fn test_detect_media_type_returns_audio_for_soundcloud_artist_profile() {
+        assert_eq!(
+            detect_media_type("https://soundcloud.com/forss"),
+            Some("audio".to_string())
+        );
+    }
+
+    #[test]
+    fn test_detect_media_type_returns_audio_for_soundcloud_playlist() {
+        assert_eq!(
+            detect_media_type("https://soundcloud.com/forss/sets/soulhack"),
             Some("audio".to_string())
         );
     }
