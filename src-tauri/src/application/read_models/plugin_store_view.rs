@@ -77,6 +77,11 @@ fn derive_status_str(registry_version: &str, installed: Option<&str>) -> &'stati
         None => "not_installed",
         Some(v) if v == registry_version => "installed",
         Some(v) => match (parse_semver(v), parse_semver(registry_version)) {
+            // Two versions that differ only in their pre-release / build
+            // suffix (e.g. `1.0.0+build.1` vs `1.0.0`) collapse to the
+            // same normalised core — treat them as installed, not as
+            // update_available.
+            (Some(inst), Some(reg)) if inst == reg => "installed",
             (Some(inst), Some(reg)) if inst > reg => "downgrade",
             _ => "update_available",
         },
@@ -203,5 +208,15 @@ mod tests {
         let mut dto = PluginStoreEntryDto::from(make_entry(PluginStoreStatus::NotInstalled, None));
         dto.enrich_with_installed(Some("0.9.0+build.1".into()));
         assert_eq!(dto.status, "update_available");
+    }
+
+    #[test]
+    fn test_enrich_with_installed_treats_build_metadata_as_installed() {
+        // `1.0.0+build.1` and `1.0.0` share the same (major, minor, patch)
+        // core — they must be considered installed, not `update_available`,
+        // since the build metadata is not part of semantic ordering.
+        let mut dto = PluginStoreEntryDto::from(make_entry(PluginStoreStatus::NotInstalled, None));
+        dto.enrich_with_installed(Some("1.0.0+build.1".into()));
+        assert_eq!(dto.status, "installed");
     }
 }
