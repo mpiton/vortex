@@ -95,6 +95,14 @@ impl CommandBus {
             .map_err(|e| AppError::Plugin(format!("download task failed: {e}")))?
             .map_err(|e| AppError::Plugin(e.to_string()))?;
 
+        // Unload any prior in-memory instance so re-install is idempotent.
+        // Without this, a plugin already loaded by the file watcher (on
+        // startup) or by a prior successful install in the same session
+        // makes the DashMap insert in `load()` fail with AlreadyExists,
+        // even though the UI (driven by the cache) still shows the plugin
+        // as "not_installed" because the cache hasn't been refreshed.
+        let _ = self.plugin_loader().unload(&cmd.name);
+
         // Parse manifest from the downloaded directory and load via the plugin loader.
         // Uses load_from_dir which calls parse_manifest internally (adapter concern).
         let loader = self.plugin_loader_arc();
@@ -113,9 +121,9 @@ impl CommandBus {
         cmd: StoreUpdateCommand,
         cache_path: &std::path::Path,
     ) -> Result<(), AppError> {
-        // Unload from memory first (ignore error if not loaded)
-        let _ = self.plugin_loader().unload(&cmd.name);
-        // Reinstall (load_from_dir will remove and replace old files on disk)
+        // `handle_store_install` already unloads the previous instance
+        // before loading, so update is just a re-install with a clearer
+        // intent-telegraphing name.
         self.handle_store_install(StoreInstallCommand { name: cmd.name }, cache_path)
             .await
     }
