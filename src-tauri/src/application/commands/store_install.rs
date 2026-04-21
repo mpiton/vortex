@@ -115,10 +115,26 @@ impl CommandBus {
         // Parse manifest from the downloaded directory and load via the plugin loader.
         // Uses load_from_dir which calls parse_manifest internally (adapter concern).
         let loader = self.plugin_loader_arc();
+        let staging_for_cleanup = plugin_dir.clone();
         tokio::task::spawn_blocking(move || loader.load_from_dir(&plugin_dir))
             .await
             .map_err(|e| AppError::Plugin(format!("plugin install task failed: {e}")))?
             .map_err(AppError::from)?;
+
+        // Staging is only meaningful until `load_from_dir` has copied the
+        // files to the permanent plugins directory. After that the staged
+        // copy is dead weight that would otherwise accumulate one
+        // subdirectory per install. Best-effort — a leftover here doesn't
+        // break future installs (the store client overwrites on next
+        // download) so we log and continue.
+        if let Err(e) = std::fs::remove_dir_all(&staging_for_cleanup) {
+            tracing::warn!(
+                plugin = %cmd.name,
+                path = %staging_for_cleanup.display(),
+                error = %e,
+                "failed to clean up plugin staging dir after install",
+            );
+        }
 
         tracing::info!(plugin = %cmd.name, "plugin installed from store");
         Ok(())

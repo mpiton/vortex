@@ -3,6 +3,8 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use dashmap::DashSet;
+
 use crate::domain::error::DomainError;
 use crate::domain::model::plugin::{PluginInfo, PluginManifest};
 use crate::domain::ports::driven::PluginLoader;
@@ -18,6 +20,26 @@ pub struct ExtismPluginLoader {
     plugins_dir: PathBuf,
     shared_resources: Arc<SharedHostResources>,
     builtin_http: HttpModule,
+    /// Plugin names whose install is currently in flight. The watcher
+    /// skips events for these so watcher-driven unload/load calls don't
+    /// race the install's own `load_from_dir` and leave the plugin out
+    /// of the registry after the user sees a success toast.
+    installs_in_progress: Arc<DashSet<String>>,
+}
+
+/// RAII guard: clears the `installs_in_progress` flag when dropped, so
+/// the flag is released even if `load_from_dir`'s body returns an error
+/// or panics. Leaking the flag would make the watcher permanently ignore
+/// events for that plugin name.
+struct InstallInFlight<'a> {
+    set: &'a DashSet<String>,
+    name: &'a str,
+}
+
+impl Drop for InstallInFlight<'_> {
+    fn drop(&mut self) {
+        self.set.remove(self.name);
+    }
 }
 
 impl ExtismPluginLoader {
@@ -30,6 +52,7 @@ impl ExtismPluginLoader {
             plugins_dir,
             shared_resources,
             builtin_http: HttpModule::new()?,
+            installs_in_progress: Arc::new(DashSet::new()),
         })
     }
 
@@ -43,6 +66,21 @@ impl ExtismPluginLoader {
 
     pub fn builtin_http(&self) -> &HttpModule {
         &self.builtin_http
+    }
+
+    /// Returns `true` if `name` is currently being installed via
+    /// `load_from_dir`. The plugin watcher consults this to avoid
+    /// reacting to events from the install's own filesystem writes.
+    pub fn is_install_in_progress(&self, name: &str) -> bool {
+        self.installs_in_progress.contains(name)
+    }
+
+    /// Test-only: mark a plugin as being installed without actually going
+    /// through `load_from_dir`, so watcher tests can assert that events
+    /// are suppressed while an install is in flight.
+    #[cfg(test)]
+    pub fn mark_install_in_progress_for_testing(&self, name: &str) {
+        self.installs_in_progress.insert(name.to_string());
     }
 
     fn resolve_wasm_plugin(&self, url: &str) -> Result<PluginInfo, DomainError> {
@@ -259,6 +297,16 @@ impl PluginLoader for ExtismPluginLoader {
     fn load_from_dir(&self, dir: &std::path::Path) -> Result<(), DomainError> {
         let (manifest, _wasm_path) = parse_manifest(dir)?;
         let name = manifest.info().name();
+
+        // Mark the install so the watcher ignores its own copy-path
+        // events (remove_dir_all + copy fire REMOVE/CREATE events that
+        // would otherwise race this function's final `self.load()` and
+        // potentially leave the plugin unloaded in memory).
+        self.installs_in_progress.insert(name.to_string());
+        let _in_flight = InstallInFlight {
+            set: &self.installs_in_progress,
+            name,
+        };
 
         // Copy staged files to the permanent plugins directory
         let dest_dir = self.plugins_dir.join(name);
