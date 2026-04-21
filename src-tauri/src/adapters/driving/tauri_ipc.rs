@@ -949,6 +949,11 @@ async fn start_media_download_for_url(
     let quality_clone = quality.clone();
     let format_clone = format.clone();
     let title_clone = title.clone();
+    let configured_download_dir = command_bus
+        .config_store()
+        .get_config()
+        .ok()
+        .and_then(|config| configured_download_destination(config.download_dir.as_deref()));
 
     let resolution = tokio::task::spawn_blocking(move || {
         resolve_media_stream(
@@ -958,6 +963,7 @@ async fn start_media_download_for_url(
             &format_clone,
             audio_only,
             title_clone,
+            configured_download_dir,
         )
     })
     .await
@@ -1010,6 +1016,7 @@ fn resolve_media_stream(
     format: &str,
     audio_only: bool,
     title: Option<String>,
+    configured_download_dir: Option<PathBuf>,
 ) -> Result<StreamResolution, String> {
     match plugin_loader.resolve_stream_url(url, quality, format, audio_only) {
         Ok(cdn_url) => Ok(StreamResolution::CdnUrl(cdn_url)),
@@ -1057,11 +1064,12 @@ fn resolve_media_stream(
                         .to_string()
                 });
 
-            let dest_dir = dirs::download_dir()
+            let dest_dir = configured_download_dir
+                .or_else(dirs::download_dir)
                 .or_else(dirs::home_dir)
                 .ok_or_else(|| {
                     "cannot determine download destination: neither \
-                     user-dirs download_dir nor home_dir are available"
+                     configured download_dir, user-dirs download_dir, nor home_dir are available"
                         .to_string()
                 })?;
             std::fs::create_dir_all(&dest_dir).map_err(|e| {
@@ -1104,6 +1112,13 @@ fn resolve_media_stream(
         }
         Err(e) => Err(format!("Failed to resolve stream URL: {e}")),
     }
+}
+
+fn configured_download_destination(download_dir: Option<&str>) -> Option<PathBuf> {
+    download_dir
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
 }
 
 // ── Media Metadata ───────────────────────────────────────────────────
@@ -1846,14 +1861,16 @@ fn read_available_space(_: &Path) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::{
-        configured_status_bar_path, extract_hostname_from_url, load_plugin_media_metadata,
-        parse_plugin_video_metadata, parse_soundcloud_metadata, parse_soundcloud_playlist_targets,
-        read_available_space, resolve_existing_disk_path, sanitize_extension, sanitize_filename,
+        StreamResolution, configured_download_destination, configured_status_bar_path,
+        extract_hostname_from_url, load_plugin_media_metadata, parse_plugin_video_metadata,
+        parse_soundcloud_metadata, parse_soundcloud_playlist_targets, read_available_space,
+        resolve_existing_disk_path, resolve_media_stream, sanitize_extension, sanitize_filename,
         soundcloud_track_download_title, unique_destination,
     };
     use crate::domain::error::DomainError;
     use crate::domain::model::plugin::{PluginCategory, PluginInfo, PluginManifest};
     use crate::domain::ports::driven::PluginLoader;
+    use crate::domain::ports::driven::plugin_loader::DownloadedFileInfo;
     use std::path::PathBuf;
 
     #[derive(Clone)]
@@ -1890,6 +1907,62 @@ mod tests {
 
         fn get_media_variants(&self, _url: &str) -> Result<String, DomainError> {
             self.variants.clone()
+        }
+    }
+
+    #[derive(Clone)]
+    struct AdaptiveDownloadPluginLoader;
+
+    impl PluginLoader for AdaptiveDownloadPluginLoader {
+        fn load(&self, _manifest: &PluginManifest) -> Result<(), DomainError> {
+            Ok(())
+        }
+
+        fn unload(&self, _name: &str) -> Result<(), DomainError> {
+            Ok(())
+        }
+
+        fn resolve_url(&self, _url: &str) -> Result<Option<PluginInfo>, DomainError> {
+            Ok(None)
+        }
+
+        fn list_loaded(&self) -> Result<Vec<PluginInfo>, DomainError> {
+            Ok(Vec::new())
+        }
+
+        fn set_enabled(&self, _name: &str, _enabled: bool) -> Result<(), DomainError> {
+            Ok(())
+        }
+
+        fn resolve_stream_url(
+            &self,
+            _url: &str,
+            _quality: &str,
+            _format: &str,
+            _audio_only: bool,
+        ) -> Result<String, DomainError> {
+            Err(DomainError::AdaptiveStreamOnly)
+        }
+
+        fn download_to_file(
+            &self,
+            _url: &str,
+            _quality: &str,
+            _format: &str,
+            output_dir: &str,
+            _audio_only: bool,
+        ) -> Result<DownloadedFileInfo, DomainError> {
+            let output_dir = PathBuf::from(output_dir);
+            std::fs::create_dir_all(&output_dir)
+                .map_err(|e| DomainError::StorageError(e.to_string()))?;
+            let unique = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos();
+            let path = output_dir.join(format!("adaptive-{unique}.mp4"));
+            std::fs::write(&path, b"merged")
+                .map_err(|e| DomainError::StorageError(e.to_string()))?;
+            Ok(DownloadedFileInfo { path, size: 6 })
         }
     }
 
@@ -2096,6 +2169,14 @@ mod tests {
     }
 
     #[test]
+    fn configured_download_destination_keeps_relative_values() {
+        assert_eq!(
+            configured_download_destination(Some("downloads")),
+            Some(PathBuf::from("downloads"))
+        );
+    }
+
+    #[test]
     fn resolve_existing_disk_path_returns_existing_path_unchanged() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
 
@@ -2233,6 +2314,39 @@ mod tests {
         assert_eq!(metadata.available_qualities.len(), 1);
         assert_eq!(metadata.available_qualities[0].quality, "720p");
         assert_eq!(metadata.available_formats, vec!["mp4"]);
+    }
+
+    #[test]
+    fn test_resolve_media_stream_uses_configured_destination_for_adaptive_downloads() {
+        let configured_root = tempfile::tempdir().expect("temp dir");
+        let configured_dir = configured_root.path().join("custom-downloads");
+
+        let resolution = resolve_media_stream(
+            &AdaptiveDownloadPluginLoader,
+            "https://example.com/video",
+            "720p",
+            "mp4",
+            false,
+            Some("Adaptive Title".to_string()),
+            Some(configured_dir.clone()),
+        )
+        .expect("adaptive stream should resolve to a local file");
+
+        match resolution {
+            StreamResolution::LocalFile {
+                path,
+                size,
+                filename,
+            } => {
+                assert!(path.starts_with(&configured_dir));
+                assert_eq!(filename, "Adaptive Title.mp4");
+                assert_eq!(size, 6);
+                assert!(path.exists());
+            }
+            StreamResolution::CdnUrl(url) => {
+                panic!("expected local file resolution, got CDN URL: {url}")
+            }
+        }
     }
 
     #[test]
