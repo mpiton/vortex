@@ -101,6 +101,20 @@ impl GithubStoreClient {
     }
 }
 
+/// Extract `[plugin].version` from raw `plugin.toml` bytes.
+///
+/// Returns `None` if the bytes are not valid UTF-8, not valid TOML,
+/// or the `[plugin].version` field is missing or not a string.
+fn parse_manifest_version(bytes: &[u8]) -> Option<String> {
+    let text = std::str::from_utf8(bytes).ok()?;
+    let value: toml::Value = toml::from_str(text).ok()?;
+    value
+        .get("plugin")?
+        .get("version")?
+        .as_str()
+        .map(str::to_string)
+}
+
 /// Validate that a plugin name is safe and well-formed.
 fn validate_plugin_name(name: &str) -> Result<(), DomainError> {
     if name.is_empty() || name.len() > 64 {
@@ -203,6 +217,25 @@ impl PluginStoreClient for GithubStoreClient {
                     entry.name
                 )));
             }
+        }
+
+        // Integrity: the manifest's declared version must match what the
+        // registry advertises. Catches releases where the author bumped the
+        // binary but forgot to bump `plugin.toml` (or vice versa) — both
+        // checksums will still match because the registry was generated from
+        // the same inconsistent artefacts, so the mismatch would otherwise
+        // silently install as the manifest's declared version.
+        let manifest_version = parse_manifest_version(&toml_bytes).ok_or_else(|| {
+            DomainError::PluginError(format!(
+                "plugin '{}': downloaded plugin.toml is missing `[plugin].version` or is not valid TOML",
+                entry.name
+            ))
+        })?;
+        if manifest_version != entry.version {
+            return Err(DomainError::PluginError(format!(
+                "plugin '{}': release inconsistency — registry advertises v{}, but plugin.toml declares v{}. The release is broken; please contact the plugin author.",
+                entry.name, entry.version, manifest_version
+            )));
         }
 
         // Path-safe staging directory (name already validated above)
@@ -324,6 +357,46 @@ official = false
         assert!(validate_plugin_name(&long).is_err());
         let ok = "a".repeat(64);
         assert!(validate_plugin_name(&ok).is_ok());
+    }
+
+    #[test]
+    fn test_parse_manifest_version_extracts_version_field() {
+        let toml = br#"
+[plugin]
+name = "vortex-mod-test"
+version = "1.2.3"
+category = "utility"
+"#;
+        assert_eq!(parse_manifest_version(toml), Some("1.2.3".to_string()));
+    }
+
+    #[test]
+    fn test_parse_manifest_version_returns_none_when_field_missing() {
+        let toml = br#"
+[plugin]
+name = "no-version"
+category = "utility"
+"#;
+        assert_eq!(parse_manifest_version(toml), None);
+    }
+
+    #[test]
+    fn test_parse_manifest_version_returns_none_on_invalid_toml() {
+        let garbage = b"this is not toml :: \0\xff";
+        assert_eq!(parse_manifest_version(garbage), None);
+    }
+
+    #[test]
+    fn test_parse_manifest_version_returns_none_when_version_not_string() {
+        // `version = 123` (integer) must not be coerced to a string — the
+        // manifest schema mandates a semver string, and silently accepting
+        // a non-string would let a malformed release pass the cross-check.
+        let toml = br#"
+[plugin]
+name = "weird"
+version = 123
+"#;
+        assert_eq!(parse_manifest_version(toml), None);
     }
 
     #[test]
