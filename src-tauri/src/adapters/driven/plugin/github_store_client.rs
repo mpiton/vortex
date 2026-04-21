@@ -115,6 +115,30 @@ fn parse_manifest_version(bytes: &[u8]) -> Option<String> {
         .map(str::to_string)
 }
 
+/// Verify that the `[plugin].version` declared in `toml_bytes` matches
+/// `expected_version`.
+///
+/// Callers must pre-authenticate `toml_bytes` against the registry's
+/// `checksum_sha256_toml` before invoking this check — otherwise the
+/// comparison is made against unverified data and loses its guarantee.
+fn verify_manifest_version(
+    toml_bytes: &[u8],
+    expected_version: &str,
+    plugin_name: &str,
+) -> Result<(), DomainError> {
+    let manifest_version = parse_manifest_version(toml_bytes).ok_or_else(|| {
+        DomainError::PluginError(format!(
+            "plugin '{plugin_name}': downloaded plugin.toml is missing `[plugin].version` or is not valid TOML"
+        ))
+    })?;
+    if manifest_version != expected_version {
+        return Err(DomainError::PluginError(format!(
+            "plugin '{plugin_name}': release inconsistency — registry advertises v{expected_version}, but plugin.toml declares v{manifest_version}. The release is broken; please contact the plugin author."
+        )));
+    }
+    Ok(())
+}
+
 /// Validate that a plugin name is safe and well-formed.
 fn validate_plugin_name(name: &str) -> Result<(), DomainError> {
     if name.is_empty() || name.len() > 64 {
@@ -187,6 +211,18 @@ impl PluginStoreClient for GithubStoreClient {
             )));
         }
 
+        // The manifest version cross-check further down is only trustworthy
+        // when the plugin.toml bytes are authenticated by their own checksum.
+        // Refuse up-front if the registry leaves it unpinned — otherwise a
+        // tampered plugin.toml could smuggle in any version string and still
+        // pass the check against unverified data.
+        let expected_toml_checksum = entry.checksum_sha256_toml.as_ref().ok_or_else(|| {
+            DomainError::PluginError(format!(
+                "plugin '{}': registry is missing checksum_sha256_toml; refusing install (plugin.toml would be unauthenticated)",
+                entry.name
+            ))
+        })?;
+
         let wasm_url = Self::build_wasm_url(&entry.repository, &entry.version, &entry.name);
         let toml_url = Self::build_toml_url(&entry.repository, &entry.version);
 
@@ -203,40 +239,26 @@ impl PluginStoreClient for GithubStoreClient {
             )));
         }
 
-        // Download plugin.toml
+        // Download + verify plugin.toml
         let toml_bytes = self.download_bytes(&toml_url, MAX_REGISTRY_BYTES)?;
 
-        // Verify plugin.toml checksum if provided
-        if let Some(ref expected_toml_checksum) = entry.checksum_sha256_toml {
-            let mut hasher = Sha256::new();
-            hasher.update(&toml_bytes);
-            let toml_digest = hex::encode(hasher.finalize());
-            if toml_digest != *expected_toml_checksum {
-                return Err(DomainError::PluginError(format!(
-                    "plugin.toml checksum mismatch for '{}': expected {expected_toml_checksum}, got {toml_digest}",
-                    entry.name
-                )));
-            }
+        let mut hasher = Sha256::new();
+        hasher.update(&toml_bytes);
+        let toml_digest = hex::encode(hasher.finalize());
+        if toml_digest != *expected_toml_checksum {
+            return Err(DomainError::PluginError(format!(
+                "plugin.toml checksum mismatch for '{}': expected {expected_toml_checksum}, got {toml_digest}",
+                entry.name
+            )));
         }
 
         // Integrity: the manifest's declared version must match what the
         // registry advertises. Catches releases where the author bumped the
         // binary but forgot to bump `plugin.toml` (or vice versa) — both
-        // checksums will still match because the registry was generated from
-        // the same inconsistent artefacts, so the mismatch would otherwise
-        // silently install as the manifest's declared version.
-        let manifest_version = parse_manifest_version(&toml_bytes).ok_or_else(|| {
-            DomainError::PluginError(format!(
-                "plugin '{}': downloaded plugin.toml is missing `[plugin].version` or is not valid TOML",
-                entry.name
-            ))
-        })?;
-        if manifest_version != entry.version {
-            return Err(DomainError::PluginError(format!(
-                "plugin '{}': release inconsistency — registry advertises v{}, but plugin.toml declares v{}. The release is broken; please contact the plugin author.",
-                entry.name, entry.version, manifest_version
-            )));
-        }
+        // per-asset checksums will still match because the registry was
+        // generated from the same inconsistent artefacts, so the mismatch
+        // would otherwise silently install as the manifest's declared version.
+        verify_manifest_version(&toml_bytes, &entry.version, &entry.name)?;
 
         // Path-safe staging directory (name already validated above)
         let plugin_dir = self.staging_dir.join(&entry.name);
@@ -397,6 +419,84 @@ name = "weird"
 version = 123
 "#;
         assert_eq!(parse_manifest_version(toml), None);
+    }
+
+    #[test]
+    fn test_verify_manifest_version_accepts_matching_version() {
+        let toml = br#"
+[plugin]
+name = "my-plugin"
+version = "1.1.1"
+category = "utility"
+"#;
+        assert!(verify_manifest_version(toml, "1.1.1", "my-plugin").is_ok());
+    }
+
+    #[test]
+    fn test_verify_manifest_version_rejects_version_mismatch() {
+        // The exact case that motivated the check: the release binary carries
+        // the new version but plugin.toml still declares the old one.
+        let toml = br#"
+[plugin]
+name = "vortex-mod-vimeo"
+version = "1.0.0"
+category = "crawler"
+"#;
+        let err = verify_manifest_version(toml, "1.1.0", "vortex-mod-vimeo").unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("release inconsistency"),
+            "expected 'release inconsistency' in: {msg}"
+        );
+        assert!(msg.contains("1.0.0"), "expected manifest version in: {msg}");
+        assert!(msg.contains("1.1.0"), "expected registry version in: {msg}");
+    }
+
+    #[test]
+    fn test_verify_manifest_version_rejects_missing_version_field() {
+        let toml = br#"
+[plugin]
+name = "no-version"
+category = "utility"
+"#;
+        let err = verify_manifest_version(toml, "1.0.0", "no-version").unwrap_err();
+        assert!(err.to_string().contains("missing `[plugin].version`"));
+    }
+
+    #[test]
+    fn test_download_plugin_rejects_missing_toml_checksum() {
+        // Without a pinned `checksum_sha256_toml`, the plugin.toml bytes
+        // would be unauthenticated — and the manifest version cross-check
+        // done after download would compare against untrusted data. Refuse
+        // up-front instead. This test piggybacks on the early-return path
+        // so it doesn't require HTTP mocking.
+        use tempfile::TempDir;
+        let tmp = TempDir::new().unwrap();
+        let client = GithubStoreClient::new("http://localhost/registry.toml", tmp.path().into());
+        let entry = PluginStoreEntry {
+            name: "my-plugin".into(),
+            description: "test".into(),
+            author: "author".into(),
+            version: "1.0.0".into(),
+            category: PluginCategory::Utility,
+            repository: "https://github.com/author/my-plugin".into(),
+            checksum_sha256: "a".repeat(64), // non-zero, valid-length
+            checksum_sha256_toml: None,
+            official: false,
+            min_vortex_version: None,
+            status: PluginStoreStatus::NotInstalled,
+            installed_version: None,
+        };
+        let err = client.download_plugin(&entry).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("checksum_sha256_toml"),
+            "expected message to name the missing field: {msg}"
+        );
+        assert!(
+            msg.contains("unauthenticated") || msg.contains("refusing"),
+            "expected message to explain the refusal: {msg}"
+        );
     }
 
     #[test]
