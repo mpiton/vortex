@@ -52,7 +52,7 @@ impl From<PluginStoreEntry> for PluginStoreEntryDto {
 
 impl PluginStoreEntryDto {
     /// Override `installed_version` and re-derive `status` against the
-    /// current registry version. Used by `handle_store_list` to keep the
+    /// current registry version. Used by `get_plugin_store` to keep the
     /// status in sync with the live loader state without having to rewrite
     /// the on-disk cache after every install/uninstall.
     pub fn enrich_with_installed(&mut self, installed: Option<String>) {
