@@ -31,6 +31,10 @@ export interface MediaMetadata {
   playlistItems?: PlaylistItem[];
 }
 
+export interface MediaDownloadResult {
+  downloadIds: number[];
+}
+
 export interface MediaGrabberOptions {
   quality: string;
   format: string;

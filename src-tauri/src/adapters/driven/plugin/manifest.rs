@@ -279,6 +279,31 @@ subtitle_languages = { type = "array", default = ["en", "fr"] }
     }
 
     #[test]
+    fn test_encode_config_default_covers_remaining_scalar_and_table_branches() {
+        let integer = toml::Value::Integer(720);
+        let float = toml::Value::Float(1.5);
+        let datetime = toml::Value::Datetime("1979-05-27T07:32:00Z".parse().unwrap());
+        let table = toml::from_str::<toml::Value>(
+            r#"
+enabled = true
+nested = { quality = "720p" }
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(encode_config_default(&integer).unwrap(), "720");
+        assert_eq!(encode_config_default(&float).unwrap(), "1.5");
+        assert_eq!(
+            encode_config_default(&datetime).unwrap(),
+            "1979-05-27T07:32:00Z"
+        );
+        assert_eq!(
+            encode_config_default(&table).unwrap(),
+            serde_json::to_string(&table).unwrap()
+        );
+    }
+
+    #[test]
     fn test_parse_manifest_missing_field() {
         let tmp = TempDir::new().unwrap();
         let plugin_dir = tmp.path().join("bad-plugin");

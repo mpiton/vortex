@@ -727,6 +727,21 @@ pub struct MediaDownloadResultDto {
     pub download_ids: Vec<u64>,
 }
 
+async fn rollback_media_download_batch(command_bus: Arc<CommandBus>, download_ids: &[u64]) {
+    for id in download_ids.iter().rev().copied() {
+        if let Err(error) = command_bus
+            .handle_cancel_download(CancelDownloadCommand { id: DownloadId(id) })
+            .await
+        {
+            tracing::warn!(
+                download_id = id,
+                error = %error,
+                "failed to roll back partially-started media download batch"
+            );
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn download_media_start(
     state: State<'_, AppState>,
@@ -759,8 +774,9 @@ pub async fn download_media_start(
     if let Some(targets) = batch_targets {
         let mut download_ids = Vec::with_capacity(targets.len());
         for target in targets {
-            let title = Some(soundcloud_track_download_title(&target));
-            let id = start_media_download_for_url(
+            let download_title = soundcloud_track_download_title(&target);
+            let title = Some(download_title.clone());
+            match start_media_download_for_url(
                 state.command_bus.clone(),
                 state.plugin_loader.clone(),
                 target.url,
@@ -769,8 +785,16 @@ pub async fn download_media_start(
                 true,
                 title,
             )
-            .await?;
-            download_ids.push(id);
+            .await
+            {
+                Ok(id) => download_ids.push(id),
+                Err(error) => {
+                    rollback_media_download_batch(state.command_bus.clone(), &download_ids).await;
+                    return Err(format!(
+                        "failed to start batch download for {download_title}: {error}"
+                    ));
+                }
+            }
         }
         return Ok(MediaDownloadResultDto { download_ids });
     }
@@ -1132,14 +1156,21 @@ pub async fn command_get_media_metadata(
 ) -> Result<MediaMetadataDto, String> {
     let plugin_loader = state.plugin_loader.clone();
     let url_clone = url.clone();
-    if let Some(metadata) = tokio::task::spawn_blocking(move || {
+    let plugin_metadata = tokio::task::spawn_blocking(move || {
         load_plugin_media_metadata(plugin_loader.as_ref(), &url_clone)
     })
     .await
-    .map_err(|e| format!("Task join error: {e}"))?
-    .map_err(|e| e.to_string())?
-    {
-        return Ok(metadata);
+    .map_err(|e| format!("Task join error: {e}"))?;
+    match plugin_metadata {
+        Ok(Some(metadata)) => return Ok(metadata),
+        Ok(None) => {}
+        Err(error) => {
+            tracing::warn!(
+                url = %url,
+                error = %error,
+                "plugin metadata extraction failed; falling back to yt-dlp"
+            );
+        }
     }
 
     let output = tokio::task::spawn_blocking(move || -> Result<std::process::Output, String> {
@@ -1166,6 +1197,11 @@ pub async fn command_get_media_metadata(
         .map_err(|e| format!("Failed to parse yt-dlp output: {e}"))?;
 
     parse_ytdlp_json(&json)
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct PluginExtractLinksKind {
+    kind: String,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -1233,24 +1269,34 @@ fn load_plugin_media_metadata(
     plugin_loader: &dyn PluginLoader,
     url: &str,
 ) -> Result<Option<MediaMetadataDto>, crate::domain::DomainError> {
-    let Some(info) = plugin_loader.resolve_url(url)? else {
+    let Some(_) = plugin_loader.resolve_url(url)? else {
         return Ok(None);
     };
+    let extract_links = match plugin_loader.extract_links(url) {
+        Ok(payload) => payload,
+        Err(crate::domain::DomainError::NotFound(_)) => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let kind: PluginExtractLinksKind = serde_json::from_str(&extract_links).map_err(|e| {
+        crate::domain::DomainError::PluginError(format!(
+            "Failed to parse plugin extract_links output: {e}"
+        ))
+    })?;
 
-    match info.name() {
-        "vortex-mod-vimeo" => {
-            let extract_links = plugin_loader.extract_links(url)?;
-            let variants = plugin_loader.get_media_variants(url)?;
+    match kind.kind.as_str() {
+        "video" => {
+            let variants = match plugin_loader.get_media_variants(url) {
+                Ok(payload) => payload,
+                Err(crate::domain::DomainError::NotFound(_)) => return Ok(None),
+                Err(error) => return Err(error),
+            };
             parse_plugin_video_metadata(&extract_links, &variants)
                 .map(Some)
                 .map_err(crate::domain::DomainError::PluginError)
         }
-        "vortex-mod-soundcloud" => {
-            let extract_links = plugin_loader.extract_links(url)?;
-            parse_soundcloud_metadata(&extract_links)
-                .map(Some)
-                .map_err(crate::domain::DomainError::PluginError)
-        }
+        "track" | "playlist" | "artist" => parse_soundcloud_metadata(&extract_links)
+            .map(Some)
+            .map_err(crate::domain::DomainError::PluginError),
         _ => Ok(None),
     }
 }
@@ -1286,7 +1332,14 @@ fn parse_plugin_video_metadata(
 
     for variant in variants.variants {
         match variant.kind {
-            PluginVariantKind::Video => {
+            kind @ (PluginVariantKind::Video | PluginVariantKind::Adaptive) => {
+                if matches!(kind, PluginVariantKind::Adaptive) {
+                    tracing::warn!(
+                        ext = %variant.ext,
+                        height = ?variant.height,
+                        "surfacing Adaptive plugin variant via merged-download fallback",
+                    );
+                }
                 if let Some(height) = variant.height.filter(|height| *height > 0) {
                     if seen_heights.insert(height) {
                         available_qualities.push(QualityOptionDto {
@@ -1307,13 +1360,6 @@ fn parse_plugin_video_metadata(
                 if !variant.ext.is_empty() && seen_audio_exts.insert(variant.ext.clone()) {
                     available_audio_formats.push(variant.ext);
                 }
-            }
-            PluginVariantKind::Adaptive => {
-                tracing::warn!(
-                    ext = %variant.ext,
-                    height = ?variant.height,
-                    "dropping Adaptive plugin variant — adaptive streams not yet supported",
-                );
             }
         }
     }
@@ -1800,12 +1846,62 @@ fn read_available_space(_: &Path) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::{
-        configured_status_bar_path, extract_hostname_from_url, parse_plugin_video_metadata,
-        parse_soundcloud_metadata, parse_soundcloud_playlist_targets, read_available_space,
-        resolve_existing_disk_path, sanitize_extension, sanitize_filename,
+        configured_status_bar_path, extract_hostname_from_url, load_plugin_media_metadata,
+        parse_plugin_video_metadata, parse_soundcloud_metadata, parse_soundcloud_playlist_targets,
+        read_available_space, resolve_existing_disk_path, sanitize_extension, sanitize_filename,
         soundcloud_track_download_title, unique_destination,
     };
+    use crate::domain::error::DomainError;
+    use crate::domain::model::plugin::{PluginCategory, PluginInfo, PluginManifest};
+    use crate::domain::ports::driven::PluginLoader;
     use std::path::PathBuf;
+
+    #[derive(Clone)]
+    struct MetadataPluginLoader {
+        resolved: Option<PluginInfo>,
+        extract_links: Result<String, DomainError>,
+        variants: Result<String, DomainError>,
+    }
+
+    impl PluginLoader for MetadataPluginLoader {
+        fn load(&self, _manifest: &PluginManifest) -> Result<(), DomainError> {
+            Ok(())
+        }
+
+        fn unload(&self, _name: &str) -> Result<(), DomainError> {
+            Ok(())
+        }
+
+        fn resolve_url(&self, _url: &str) -> Result<Option<PluginInfo>, DomainError> {
+            Ok(self.resolved.clone())
+        }
+
+        fn list_loaded(&self) -> Result<Vec<PluginInfo>, DomainError> {
+            Ok(Vec::new())
+        }
+
+        fn set_enabled(&self, _name: &str, _enabled: bool) -> Result<(), DomainError> {
+            Ok(())
+        }
+
+        fn extract_links(&self, _url: &str) -> Result<String, DomainError> {
+            self.extract_links.clone()
+        }
+
+        fn get_media_variants(&self, _url: &str) -> Result<String, DomainError> {
+            self.variants.clone()
+        }
+    }
+
+    fn make_plugin_info(name: &str) -> PluginInfo {
+        PluginInfo::new(
+            name.to_string(),
+            "1.0.0".to_string(),
+            "Test plugin".to_string(),
+            "tester".to_string(),
+            PluginCategory::Utility,
+        )
+    }
 
     // ── sanitize_filename ─────────────────────────────────────────────────────
 
@@ -2104,6 +2200,99 @@ mod tests {
             .unwrap_err();
 
         assert!(err.contains("unsupported extract_links kind"));
+    }
+
+    #[test]
+    fn test_parse_plugin_video_metadata_keeps_adaptive_variants_available() {
+        let extract_links = serde_json::json!({
+            "kind": "video",
+            "videos": [{
+                "title": "Adaptive Vimeo",
+                "duration": 91,
+                "thumbnail": "https://example.com/thumb.jpg"
+            }]
+        });
+        let variants = serde_json::json!({
+            "variants": [
+                {
+                    "kind": "adaptive",
+                    "ext": "mp4",
+                    "width": 1280,
+                    "height": 720,
+                    "fps": 30.0,
+                    "abr": 2400.0
+                }
+            ]
+        });
+
+        let metadata =
+            parse_plugin_video_metadata(&extract_links.to_string(), &variants.to_string())
+                .expect("adaptive metadata should parse");
+
+        assert_eq!(metadata.default_quality.as_deref(), Some("720p"));
+        assert_eq!(metadata.available_qualities.len(), 1);
+        assert_eq!(metadata.available_qualities[0].quality, "720p");
+        assert_eq!(metadata.available_formats, vec!["mp4"]);
+    }
+
+    #[test]
+    fn test_load_plugin_media_metadata_dispatches_by_extract_links_kind() {
+        let extract_links = serde_json::json!({
+            "kind": "video",
+            "videos": [{
+                "title": "Future Provider",
+                "duration": 45,
+                "thumbnail": "https://example.com/future.jpg"
+            }]
+        });
+        let variants = serde_json::json!({
+            "variants": [
+                {
+                    "kind": "video",
+                    "ext": "mp4",
+                    "width": 1920,
+                    "height": 1080,
+                    "fps": 30.0,
+                    "abr": 3200.0
+                }
+            ]
+        });
+        let loader = MetadataPluginLoader {
+            resolved: Some(make_plugin_info("future-video-plugin")),
+            extract_links: Ok(extract_links.to_string()),
+            variants: Ok(variants.to_string()),
+        };
+
+        let metadata = load_plugin_media_metadata(&loader, "https://example.com/video")
+            .expect("metadata lookup should succeed")
+            .expect("video metadata should be returned");
+
+        assert_eq!(metadata.title, "Future Provider");
+        assert_eq!(metadata.default_quality.as_deref(), Some("1080p"));
+    }
+
+    #[test]
+    fn test_load_plugin_media_metadata_returns_none_when_variants_export_missing() {
+        let extract_links = serde_json::json!({
+            "kind": "video",
+            "videos": [{
+                "title": "Video Without Variants",
+                "duration": 45,
+                "thumbnail": "https://example.com/future.jpg"
+            }]
+        });
+        let loader = MetadataPluginLoader {
+            resolved: Some(make_plugin_info("video-without-variants")),
+            extract_links: Ok(extract_links.to_string()),
+            variants: Err(DomainError::NotFound(
+                "get_media_variants not supported by this loader".to_string(),
+            )),
+        };
+
+        let metadata = load_plugin_media_metadata(&loader, "https://example.com/video")
+            .expect("missing exports should fall back cleanly");
+
+        assert!(metadata.is_none());
     }
 
     #[test]

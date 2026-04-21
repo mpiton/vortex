@@ -63,21 +63,17 @@ export function MediaGrabberDialog({
 
   useEffect(() => {
     if (!metadata) return;
-    const shouldForceAudioOnly =
-      link.mediaType === "audio" &&
-      metadata.availableQualities.length === 0 &&
-      metadata.availableAudioFormats.length > 0;
     const firstQuality =
       metadata.defaultQuality ?? metadata.availableQualities[0]?.quality ?? "1080p";
     const firstFormat = metadata.availableFormats[0] ?? "mp4";
     const firstAudioFormat =
       metadata.availableAudioFormats[0] ??
-      (shouldForceAudioOnly ? "mp3" : "m4a");
-    setAudioOnly(shouldForceAudioOnly);
+      (requiresAudioOnly ? "mp3" : "m4a");
+    setAudioOnly(requiresAudioOnly);
     setQualitySelection(firstQuality);
     setFormatSelection(firstFormat);
     setAudioFormat(firstAudioFormat);
-  }, [link.mediaType, metadata]);
+  }, [metadata, requiresAudioOnly]);
 
   const handleConfirm = () => {
     const downloadTitle = metadata?.artist

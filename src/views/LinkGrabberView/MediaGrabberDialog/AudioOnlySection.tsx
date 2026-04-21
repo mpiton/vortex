@@ -29,7 +29,7 @@ export function AudioOnlySection({
         />
         <label
           htmlFor="audio-only"
-          className="cursor-pointer text-sm font-semibold"
+          className={`${disabled ? "cursor-not-allowed" : "cursor-pointer"} text-sm font-semibold`}
         >
           Audio Only
         </label>
