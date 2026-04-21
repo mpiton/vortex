@@ -759,6 +759,7 @@ pub async fn download_media_start(
     if let Some(targets) = batch_targets {
         let mut download_ids = Vec::with_capacity(targets.len());
         for target in targets {
+            let title = Some(soundcloud_track_download_title(&target));
             let id = start_media_download_for_url(
                 state.command_bus.clone(),
                 state.plugin_loader.clone(),
@@ -766,7 +767,7 @@ pub async fn download_media_start(
                 quality.clone(),
                 format.clone(),
                 true,
-                Some(soundcloud_track_download_title(&target)),
+                title,
             )
             .await?;
             download_ids.push(id);
@@ -1282,15 +1283,11 @@ fn parse_plugin_video_metadata(
     let mut seen_heights = std::collections::HashSet::<u32>::new();
     let mut seen_video_exts = std::collections::HashSet::<String>::new();
     let mut seen_audio_exts = std::collections::HashSet::<String>::new();
-    let mut default_quality = None;
 
     for variant in variants.variants {
         match variant.kind {
             PluginVariantKind::Video => {
                 if let Some(height) = variant.height.filter(|height| *height > 0) {
-                    if default_quality.is_none() {
-                        default_quality = Some(format!("{height}p"));
-                    }
                     if seen_heights.insert(height) {
                         available_qualities.push(QualityOptionDto {
                             quality: format!("{height}p"),
@@ -1311,11 +1308,19 @@ fn parse_plugin_video_metadata(
                     available_audio_formats.push(variant.ext);
                 }
             }
-            PluginVariantKind::Adaptive => {}
+            PluginVariantKind::Adaptive => {
+                tracing::warn!(
+                    ext = %variant.ext,
+                    height = ?variant.height,
+                    "dropping Adaptive plugin variant — adaptive streams not yet supported",
+                );
+            }
         }
     }
 
     available_qualities.sort_by(|a, b| b.height.cmp(&a.height));
+    // Pick default_quality from the sorted top so UI and default agree.
+    let default_quality = available_qualities.first().map(|q| q.quality.clone());
 
     Ok(MediaMetadataDto {
         title: video.title,
@@ -2034,7 +2039,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_plugin_video_metadata_selects_first_variant_as_default() {
+    fn test_parse_plugin_video_metadata_selects_highest_quality_as_default() {
         let extract_links = serde_json::json!({
             "kind": "video",
             "videos": [{
@@ -2077,7 +2082,7 @@ mod tests {
                 .expect("plugin metadata should parse");
 
         assert_eq!(metadata.title, "Vimeo Plugin Video");
-        assert_eq!(metadata.default_quality.as_deref(), Some("720p"));
+        assert_eq!(metadata.default_quality.as_deref(), Some("1080p"));
         let heights: Vec<u32> = metadata
             .available_qualities
             .iter()
