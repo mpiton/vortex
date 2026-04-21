@@ -50,6 +50,35 @@ impl From<PluginStoreEntry> for PluginStoreEntryDto {
     }
 }
 
+impl PluginStoreEntryDto {
+    /// Override `installed_version` and re-derive `status` against the
+    /// current registry version. Used by `handle_store_list` to keep the
+    /// status in sync with the live loader state without having to rewrite
+    /// the on-disk cache after every install/uninstall.
+    pub fn enrich_with_installed(&mut self, installed: Option<String>) {
+        self.status = derive_status_str(&self.version, installed.as_deref()).to_string();
+        self.installed_version = installed;
+    }
+}
+
+fn derive_status_str(registry_version: &str, installed: Option<&str>) -> &'static str {
+    fn parse_semver(s: &str) -> Option<(u64, u64, u64)> {
+        let mut parts = s.splitn(3, '.');
+        let major = parts.next()?.parse().ok()?;
+        let minor = parts.next()?.parse().ok()?;
+        let patch = parts.next().unwrap_or("0").parse().ok()?;
+        Some((major, minor, patch))
+    }
+    match installed {
+        None => "not_installed",
+        Some(v) if v == registry_version => "installed",
+        Some(v) => match (parse_semver(v), parse_semver(registry_version)) {
+            (Some(inst), Some(reg)) if inst > reg => "downgrade",
+            _ => "update_available",
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -113,5 +142,43 @@ mod tests {
         let v = serde_json::to_value(&dto).unwrap();
         assert!(v.get("installedVersion").is_some());
         assert!(v.get("installed_version").is_none());
+    }
+
+    #[test]
+    fn test_enrich_with_installed_marks_installed_at_same_version() {
+        // A cached "not_installed" entry becomes "installed" once the loader
+        // reports the plugin at the registry version.
+        let mut dto = PluginStoreEntryDto::from(make_entry(PluginStoreStatus::NotInstalled, None));
+        dto.enrich_with_installed(Some("1.0.0".into()));
+        assert_eq!(dto.status, "installed");
+        assert_eq!(dto.installed_version, Some("1.0.0".into()));
+    }
+
+    #[test]
+    fn test_enrich_with_installed_flags_update_available() {
+        // Cached entry version=1.0.0, loader reports 0.9.0 → update_available.
+        let mut dto = PluginStoreEntryDto::from(make_entry(PluginStoreStatus::NotInstalled, None));
+        dto.enrich_with_installed(Some("0.9.0".into()));
+        assert_eq!(dto.status, "update_available");
+    }
+
+    #[test]
+    fn test_enrich_with_installed_flags_downgrade() {
+        // Cached entry version=1.0.0, loader reports 2.0.0 → downgrade
+        // (e.g. local dev build ahead of the registry).
+        let mut dto = PluginStoreEntryDto::from(make_entry(PluginStoreStatus::NotInstalled, None));
+        dto.enrich_with_installed(Some("2.0.0".into()));
+        assert_eq!(dto.status, "downgrade");
+    }
+
+    #[test]
+    fn test_enrich_with_installed_reverts_to_not_installed_when_none() {
+        // Loader no longer reports the plugin → status reverts to not_installed
+        // even if the cache previously recorded it as installed.
+        let mut dto =
+            PluginStoreEntryDto::from(make_entry(PluginStoreStatus::Installed, Some("1.0.0")));
+        dto.enrich_with_installed(None);
+        assert_eq!(dto.status, "not_installed");
+        assert_eq!(dto.installed_version, None);
     }
 }

@@ -11,6 +11,11 @@ use crate::application::read_models::plugin_store_view::PluginStoreEntryDto;
 impl CommandBus {
     /// Read the local cache and return enriched store entries.
     ///
+    /// The cache only stores the remote registry snapshot. Install status
+    /// (`installed_version` + `status`) is re-derived on every call from
+    /// the live `PluginLoader` state so the UI reflects install / uninstall
+    /// without requiring a network refresh or cache rewrite in between.
+    ///
     /// Does NOT fetch from the network. Callers should call `handle_store_refresh`
     /// first if the cache is absent or stale.
     pub async fn handle_store_list(
@@ -18,7 +23,7 @@ impl CommandBus {
         cache_path: &std::path::Path,
     ) -> Result<Vec<PluginStoreEntryDto>, AppError> {
         let raw = read_cache(cache_path)?;
-        let dtos: Vec<PluginStoreEntryDto> = raw
+        let mut dtos: Vec<PluginStoreEntryDto> = raw
             .into_iter()
             .filter_map(|v| {
                 serde_json::from_value(v)
@@ -26,6 +31,19 @@ impl CommandBus {
                     .ok()
             })
             .collect();
+
+        let loaded = self
+            .plugin_loader()
+            .list_loaded()
+            .map_err(|e| AppError::Plugin(e.to_string()))?;
+        for dto in &mut dtos {
+            let installed_version = loaded
+                .iter()
+                .find(|i| i.name() == dto.name)
+                .map(|i| i.version().to_string());
+            dto.enrich_with_installed(installed_version);
+        }
+
         Ok(dtos)
     }
 }
