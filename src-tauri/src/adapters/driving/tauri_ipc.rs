@@ -1340,16 +1340,16 @@ fn parse_plugin_video_metadata(
                         "surfacing Adaptive plugin variant via merged-download fallback",
                     );
                 }
-                if let Some(height) = variant.height.filter(|height| *height > 0) {
-                    if seen_heights.insert(height) {
-                        available_qualities.push(QualityOptionDto {
-                            quality: format!("{height}p"),
-                            height,
-                            width: variant.width.unwrap_or(0),
-                            fps: variant.fps.unwrap_or(0.0).round() as u32,
-                            bitrate_kbps: variant.abr.unwrap_or(0.0).round() as u32,
-                        });
-                    }
+                if let Some(height) = variant.height.filter(|height| *height > 0)
+                    && seen_heights.insert(height)
+                {
+                    available_qualities.push(QualityOptionDto {
+                        quality: format!("{height}p"),
+                        height,
+                        width: variant.width.unwrap_or(0),
+                        fps: variant.fps.unwrap_or(0.0).round() as u32,
+                        bitrate_kbps: variant.abr.unwrap_or(0.0).round() as u32,
+                    });
                 }
 
                 if !variant.ext.is_empty() && seen_video_exts.insert(variant.ext.clone()) {
@@ -1364,7 +1364,7 @@ fn parse_plugin_video_metadata(
         }
     }
 
-    available_qualities.sort_by(|a, b| b.height.cmp(&a.height));
+    available_qualities.sort_by_key(|quality| std::cmp::Reverse(quality.height));
     // Pick default_quality from the sorted top so UI and default agree.
     let default_quality = available_qualities.first().map(|q| q.quality.clone());
 
