@@ -57,6 +57,28 @@ const mockPlaylistMetadata: MediaMetadata = {
   ],
 };
 
+const mockAudioLink: ResolvedLink = {
+  ...mockMediaLink,
+  id: "media-audio-1",
+  originalUrl: "https://soundcloud.com/forss/flickermood",
+  resolvedUrl: "https://soundcloud.com/forss/flickermood",
+  filename: "Flickermood.mp3",
+  moduleName: "vortex-mod-soundcloud",
+  mediaType: "audio",
+};
+
+const mockAudioMetadata: MediaMetadata = {
+  title: "Flickermood",
+  artist: "Forss",
+  thumbnailUrl: "https://i1.sndcdn.com/artworks-12345-t500x500.jpg",
+  durationSeconds: 225,
+  isPlaylist: false,
+  availableQualities: [],
+  availableFormats: [],
+  availableAudioFormats: ["mp3"],
+  availableSubtitles: [],
+};
+
 beforeAll(() => {
   Element.prototype.hasPointerCapture = vi.fn().mockReturnValue(false);
   Element.prototype.setPointerCapture = vi.fn();
@@ -275,6 +297,30 @@ describe("MediaGrabberDialog", () => {
         audioOnly: true,
       }),
     );
+  });
+
+  it("should force audio-only defaults for audio media", async () => {
+    mockInvoke.mockResolvedValue(mockAudioMetadata);
+    const user = userEvent.setup();
+    const { onConfirm } = renderDialog({ link: mockAudioLink });
+
+    expect(await screen.findByText("Flickermood")).toBeInTheDocument();
+    expect(screen.getByText("Forss")).toBeInTheDocument();
+
+    const audioSwitch = screen.getByRole("switch");
+    expect(audioSwitch).toBeDisabled();
+    expect(audioSwitch).toBeChecked();
+
+    await user.click(screen.getByRole("button", { name: "Download" }));
+
+    expect(onConfirm).toHaveBeenCalledWith({
+      quality: "audio_only",
+      format: "mp3",
+      subtitles: [],
+      audioOnly: true,
+      playlistItems: [],
+      title: "Forss - Flickermood",
+    });
   });
 
   it("should close dialog on Cancel click", async () => {

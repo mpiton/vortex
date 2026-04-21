@@ -19,14 +19,20 @@ export interface PlaylistItem {
 
 export interface MediaMetadata {
   title: string;
+  artist?: string;
   thumbnailUrl: string;
   durationSeconds: number;
   isPlaylist: boolean;
+  defaultQuality?: string;
   availableQualities: QualityOption[];
   availableFormats: string[];
   availableAudioFormats: string[];
   availableSubtitles: SubtitleLanguage[];
   playlistItems?: PlaylistItem[];
+}
+
+export interface MediaDownloadResult {
+  downloadIds: number[];
 }
 
 export interface MediaGrabberOptions {

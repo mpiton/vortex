@@ -13,7 +13,7 @@ import { ActionsBar } from "./ActionsBar";
 import { ResolvedLinksSection } from "./ResolvedLinksSection";
 import { MediaGrabberDialog } from "./MediaGrabberDialog";
 import type { ResolvedLink, FilterType, GroupingMode } from "./types";
-import type { MediaGrabberOptions } from "@/types/media";
+import type { MediaDownloadResult, MediaGrabberOptions } from "@/types/media";
 
 export function LinkGrabberView() {
   const { t } = useTranslation();
@@ -47,8 +47,15 @@ export function LinkGrabberView() {
   );
 
   const { mutate: startMediaDownload } = useTauriMutation<
-    unknown,
-    { url: string; quality: string; format: string; audioOnly: boolean; title?: string }
+    MediaDownloadResult,
+    {
+      url: string;
+      quality: string;
+      format: string;
+      audioOnly: boolean;
+      title?: string;
+      playlistItems: string[];
+    }
   >("download_media_start", {
     onSuccess: () => {
       toast.success(t("linkGrabber.toast.downloadStarted"));
@@ -100,6 +107,7 @@ export function LinkGrabberView() {
         format: options.format,
         audioOnly: options.audioOnly,
         title: options.title,
+        playlistItems: options.playlistItems,
       });
     }
   };

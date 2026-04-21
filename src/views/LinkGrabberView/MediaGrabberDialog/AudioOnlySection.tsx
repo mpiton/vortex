@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 interface AudioOnlySectionProps {
   enabled: boolean;
   onEnabledChange: (enabled: boolean) => void;
+  disabled?: boolean;
   audioFormats: string[];
   selectedFormat: string;
   onSelectFormat: (format: string) => void;
@@ -12,6 +13,7 @@ interface AudioOnlySectionProps {
 export function AudioOnlySection({
   enabled,
   onEnabledChange,
+  disabled = false,
   audioFormats,
   selectedFormat,
   onSelectFormat,
@@ -22,11 +24,12 @@ export function AudioOnlySection({
         <Switch
           id="audio-only"
           checked={enabled}
+          disabled={disabled}
           onCheckedChange={onEnabledChange}
         />
         <label
           htmlFor="audio-only"
-          className="cursor-pointer text-sm font-semibold"
+          className={`${disabled ? "cursor-not-allowed" : "cursor-pointer"} text-sm font-semibold`}
         >
           Audio Only
         </label>

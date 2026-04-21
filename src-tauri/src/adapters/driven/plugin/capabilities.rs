@@ -97,7 +97,12 @@ pub fn build_host_functions(
     let name = manifest.info().name().to_string();
 
     // Ensure per-plugin config/state maps exist before any function runs.
-    shared.plugin_configs.entry(name.clone()).or_default();
+    let plugin_configs = shared.plugin_configs.entry(name.clone()).or_default();
+    for (key, value) in manifest.config_defaults() {
+        plugin_configs
+            .entry(key.clone())
+            .or_insert_with(|| value.clone());
+    }
     shared.plugin_states.entry(name.clone()).or_default();
 
     let ctx = PluginHostContext {
@@ -192,6 +197,42 @@ mod tests {
 
         assert!(shared.plugin_configs().contains_key("test-plugin"));
         assert!(shared.plugin_states().contains_key("test-plugin"));
+    }
+
+    #[test]
+    fn test_build_host_functions_seeds_config_defaults() {
+        let shared = Arc::new(SharedHostResources::new());
+        let info = PluginInfo::new(
+            "test-plugin".to_string(),
+            "1.0.0".to_string(),
+            "Test plugin".to_string(),
+            "tester".to_string(),
+            PluginCategory::Utility,
+        );
+        let manifest =
+            PluginManifest::new(info).with_config_defaults(std::collections::HashMap::from([
+                ("default_quality".to_string(), "720p".to_string()),
+                ("extract_audio_only".to_string(), "false".to_string()),
+            ]));
+
+        build_host_functions(&manifest, &shared);
+
+        let plugin_config = shared
+            .plugin_configs()
+            .get("test-plugin")
+            .expect("plugin config map");
+        assert_eq!(
+            plugin_config
+                .get("default_quality")
+                .map(|v| v.value().clone()),
+            Some("720p".to_string())
+        );
+        assert_eq!(
+            plugin_config
+                .get("extract_audio_only")
+                .map(|v| v.value().clone()),
+            Some("false".to_string())
+        );
     }
 
     #[test]

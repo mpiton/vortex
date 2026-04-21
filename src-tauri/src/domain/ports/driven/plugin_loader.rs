@@ -48,6 +48,20 @@ pub trait PluginLoader: Send + Sync {
     /// Enable or disable a loaded plugin by name.
     fn set_enabled(&self, name: &str, enabled: bool) -> Result<(), DomainError>;
 
+    /// Extract media-link metadata from the plugin that claims the URL.
+    fn extract_links(&self, _url: &str) -> Result<String, DomainError> {
+        Err(DomainError::NotFound(
+            "extract_links not supported by this loader".into(),
+        ))
+    }
+
+    /// Fetch selectable media variants from the plugin that claims the URL.
+    fn get_media_variants(&self, _url: &str) -> Result<String, DomainError> {
+        Err(DomainError::NotFound(
+            "get_media_variants not supported by this loader".into(),
+        ))
+    }
+
     /// Resolve a media URL to a direct CDN stream URL via the plugin that
     /// claims the URL.
     ///
@@ -124,6 +138,20 @@ mod tests {
     fn test_download_to_file_default_returns_not_found() {
         let loader = MinimalLoader;
         let result = loader.download_to_file("https://youtu.be/x", "1080p", "mp4", "/tmp", false);
+        assert!(matches!(result, Err(DomainError::NotFound(_))));
+    }
+
+    #[test]
+    fn test_extract_links_default_returns_not_found() {
+        let loader = MinimalLoader;
+        let result = loader.extract_links("https://vimeo.com/123");
+        assert!(matches!(result, Err(DomainError::NotFound(_))));
+    }
+
+    #[test]
+    fn test_get_media_variants_default_returns_not_found() {
+        let loader = MinimalLoader;
+        let result = loader.get_media_variants("https://vimeo.com/123");
         assert!(matches!(result, Err(DomainError::NotFound(_))));
     }
 }

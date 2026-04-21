@@ -721,6 +721,27 @@ fn is_known_media_platform(url: &str) -> bool {
 /// Give You Up"). When provided it is sanitised and used as the filename
 /// (appended with `.{format}`), so the saved file has a meaningful name instead
 /// of the CDN path segment ("videoplayback").
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaDownloadResultDto {
+    pub download_ids: Vec<u64>,
+}
+
+async fn rollback_media_download_batch(command_bus: Arc<CommandBus>, download_ids: &[u64]) {
+    for id in download_ids.iter().rev().copied() {
+        if let Err(error) = command_bus
+            .handle_cancel_download(CancelDownloadCommand { id: DownloadId(id) })
+            .await
+        {
+            tracing::warn!(
+                download_id = id,
+                error = %error,
+                "failed to roll back partially-started media download batch"
+            );
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn download_media_start(
     state: State<'_, AppState>,
@@ -729,203 +750,69 @@ pub async fn download_media_start(
     format: String,
     audio_only: bool,
     title: Option<String>,
-) -> Result<u64, String> {
+    playlist_items: Option<Vec<String>>,
+) -> Result<MediaDownloadResultDto, String> {
     // Validate the format extension before anything uses it in a filename —
     // `format!("{}.{}", sanitize_filename(title), format)` below would otherwise
     // interpolate attacker-controlled path separators after the last `/` char
     // that `sanitize_filename` already escaped in the stem.
     let format = sanitize_extension(&format)?;
-
-    // Extract the origin hostname (e.g. "www.youtube.com") from the original
-    // URL *before* resolving to a CDN URL, so we can store it as the
-    // source_hostname instead of "rr1---sn-n4g-cvq6.googlevideo.com".
-    let source_hostname_override = extract_hostname_from_url(&url);
-
-    let plugin_loader = state.plugin_loader.clone();
     let url_clone = url.clone();
-    let quality_clone = quality.clone();
-    let format_clone = format.clone();
-    let title_clone = title.clone();
-
-    // Plugin calls are synchronous (Extism runs inside a Mutex). Run on the
-    // blocking thread pool so we don't starve the async executor.
-    enum StreamResolution {
-        CdnUrl(String),
-        LocalFile {
-            path: std::path::PathBuf,
-            size: u64,
-            filename: String,
-        },
-    }
-
-    let resolution = tokio::task::spawn_blocking(move || -> Result<StreamResolution, String> {
-        match plugin_loader.resolve_stream_url(
+    let selected_playlist_items = playlist_items.unwrap_or_default();
+    let plugin_loader = state.plugin_loader.clone();
+    let batch_targets = tokio::task::spawn_blocking(move || {
+        load_soundcloud_playlist_download_targets(
+            plugin_loader.as_ref(),
             &url_clone,
-            &quality_clone,
-            &format_clone,
-            audio_only,
-        ) {
-            Ok(cdn_url) => Ok(StreamResolution::CdnUrl(cdn_url)),
-
-            Err(crate::domain::error::DomainError::AdaptiveStreamOnly) => {
-                // yt-dlp must handle the full download+merge.
-                let temp_dir = std::env::temp_dir().join("vortex-downloads");
-                std::fs::create_dir_all(&temp_dir)
-                    .map_err(|e| format!("failed to create temp dir: {e}"))?;
-
-                let file_info = plugin_loader
-                    .download_to_file(
-                        &url_clone,
-                        &quality_clone,
-                        &format_clone,
-                        temp_dir.to_str()
-                            .ok_or_else(|| "temp dir path is not valid UTF-8".to_string())?,
-                        audio_only,
-                    )
-                    .map_err(|e| format!("download_to_file failed: {e}"))?;
-
-                // Defense in depth: `ExtismPluginLoader::download_to_file` already
-                // enforces that the returned path is inside `output_dir`, but the
-                // `PluginLoader` trait does not require it — a future or alternate
-                // loader implementation could return an arbitrary path and we'd
-                // happily move it. Re-check containment here at the IPC boundary.
-                let temp_dir_canonical = temp_dir
-                    .canonicalize()
-                    .map_err(|e| format!("failed to canonicalize temp dir: {e}"))?;
-                let produced_canonical = file_info
-                    .path
-                    .canonicalize()
-                    .map_err(|e| format!("failed to canonicalize downloaded file path: {e}"))?;
-                if !produced_canonical.starts_with(&temp_dir_canonical) {
-                    return Err(format!(
-                        "plugin returned file outside temp dir: {}",
-                        file_info.path.display()
-                    ));
-                }
-
-                // Determine final filename: prefer title override, else keep yt-dlp's name.
-                let filename = title_clone
-                    .as_deref()
-                    .filter(|t| !t.trim().is_empty())
-                    .map(|t| format!("{}.{}", sanitize_filename(t), format_clone))
-                    .unwrap_or_else(|| {
-                        file_info
-                            .path
-                            .file_name()
-                            .and_then(|n| n.to_str())
-                            .unwrap_or("download")
-                            .to_string()
-                    });
-
-                // Determine final destination directory. Prefer the platform
-                // download dir (XDG `user-dirs`, `~/Downloads`, …); fall back to
-                // the home dir rather than CWD — dropping a 1GB merged video
-                // into the Tauri binary's directory or / is a bad outcome.
-                let dest_dir = dirs::download_dir()
-                    .or_else(dirs::home_dir)
-                    .ok_or_else(|| {
-                        "cannot determine download destination: neither \
-                         user-dirs download_dir nor home_dir are available"
-                            .to_string()
-                    })?;
-                // The user-dirs `Downloads` folder can be configured to a path
-                // that hasn't been created yet (e.g. a fresh user account, or a
-                // CI environment). Ensure it exists before probing filenames.
-                std::fs::create_dir_all(&dest_dir)
-                    .map_err(|e| format!("failed to create destination dir {}: {e}",
-                        dest_dir.display()))?;
-                // If the destination already exists, suffix the filename (" (1)",
-                // " (2)", …) — preserves the previous download instead of silently
-                // overwriting it, matching the browser-download convention.
-                let (dest_path, dest_filename) = unique_destination(&dest_dir, &filename)
-                    .map_err(|e| format!("failed to select unique destination: {e}"))?;
-
-                // Atomic move (same filesystem) → fallback copy+delete.
-                if std::fs::rename(&file_info.path, &dest_path).is_err() {
-                    std::fs::copy(&file_info.path, &dest_path)
-                        .map_err(|e| format!("failed to copy merged file: {e}"))?;
-                    if let Err(e) = std::fs::remove_file(&file_info.path) {
-                        tracing::warn!(
-                            path = %file_info.path.display(),
-                            error = %e,
-                            "failed to remove temp file after copy"
-                        );
-                    }
-                }
-
-                Ok(StreamResolution::LocalFile {
-                    path: dest_path,
-                    size: file_info.size,
-                    filename: dest_filename,
-                })
-            }
-
-            // builtin-http: no WASM plugin claimed the URL.
-            // For known media platforms this means the required plugin is not
-            // installed — return a clear error rather than feeding the HTML
-            // page URL to the download engine and entering a retry loop.
-            Err(crate::domain::error::DomainError::NotFound(_)) => {
-                if is_known_media_platform(&url_clone) {
-                    Err(
-                        "No media plugin installed for this URL. \
-                         Open the Plugin Store and install the appropriate plugin (e.g. vortex-mod-youtube)."
-                            .to_string(),
-                    )
-                } else {
-                    // Generic direct-download URL — pass through as-is.
-                    Ok(StreamResolution::CdnUrl(url_clone))
-                }
-            }
-
-            Err(e) => Err(format!("Failed to resolve stream URL: {e}")),
-        }
+            &selected_playlist_items,
+        )
     })
     .await
-    .map_err(|e| format!("Task join error: {e}"))??;
+    .map_err(|e| format!("Task join error: {e}"))?
+    .map_err(|e| e.to_string())?;
 
-    match resolution {
-        StreamResolution::CdnUrl(stream_url) => {
-            // Build a meaningful filename from the title and format when available.
-            // Falls back to the URL-based derivation in handle_start_download when None.
-            let filename = title
-                .as_deref()
-                .filter(|t| !t.trim().is_empty())
-                .map(|t| format!("{}.{}", sanitize_filename(t), format));
-
-            let cmd = crate::application::commands::StartDownloadCommand {
-                url: stream_url,
-                destination: None,
-                filename,
-                source_hostname_override,
-            };
-            state
-                .command_bus
-                .handle_start_download(cmd)
-                .await
-                .map(|id| id.0)
-                .map_err(|e| e.to_string())
+    if let Some(targets) = batch_targets {
+        let mut download_ids = Vec::with_capacity(targets.len());
+        for target in targets {
+            let download_title = soundcloud_track_download_title(&target);
+            let title = Some(download_title.clone());
+            match start_media_download_for_url(
+                state.command_bus.clone(),
+                state.plugin_loader.clone(),
+                target.url,
+                quality.clone(),
+                format.clone(),
+                true,
+                title,
+            )
+            .await
+            {
+                Ok(id) => download_ids.push(id),
+                Err(error) => {
+                    rollback_media_download_batch(state.command_bus.clone(), &download_ids).await;
+                    return Err(format!(
+                        "failed to start batch download for {download_title}: {error}"
+                    ));
+                }
+            }
         }
-
-        StreamResolution::LocalFile {
-            path,
-            size,
-            filename,
-        } => {
-            let cmd = crate::application::commands::RegisterLocalFileCommand {
-                source_url: url,
-                destination_path: path,
-                filename,
-                source_hostname: source_hostname_override,
-                file_size: size,
-            };
-            state
-                .command_bus
-                .handle_register_local_file(cmd)
-                .await
-                .map(|id| id.0)
-                .map_err(|e| e.to_string())
-        }
+        return Ok(MediaDownloadResultDto { download_ids });
     }
+
+    let download_id = start_media_download_for_url(
+        state.command_bus.clone(),
+        state.plugin_loader.clone(),
+        url,
+        quality,
+        format,
+        audio_only,
+        title,
+    )
+    .await?;
+
+    Ok(MediaDownloadResultDto {
+        download_ids: vec![download_id],
+    })
 }
 
 /// Remove characters that are invalid in filenames on Linux / macOS / Windows.
@@ -1038,15 +925,213 @@ fn extract_hostname_from_url(url: &str) -> Option<String> {
     }
 }
 
+#[derive(Debug)]
+enum StreamResolution {
+    CdnUrl(String),
+    LocalFile {
+        path: std::path::PathBuf,
+        size: u64,
+        filename: String,
+    },
+}
+
+async fn start_media_download_for_url(
+    command_bus: Arc<CommandBus>,
+    plugin_loader: Arc<dyn PluginLoader>,
+    url: String,
+    quality: String,
+    format: String,
+    audio_only: bool,
+    title: Option<String>,
+) -> Result<u64, String> {
+    let source_hostname_override = extract_hostname_from_url(&url);
+    let url_clone = url.clone();
+    let quality_clone = quality.clone();
+    let format_clone = format.clone();
+    let title_clone = title.clone();
+    let configured_download_dir = command_bus
+        .config_store()
+        .get_config()
+        .ok()
+        .and_then(|config| configured_download_destination(config.download_dir.as_deref()));
+
+    let resolution = tokio::task::spawn_blocking(move || {
+        resolve_media_stream(
+            plugin_loader.as_ref(),
+            &url_clone,
+            &quality_clone,
+            &format_clone,
+            audio_only,
+            title_clone,
+            configured_download_dir,
+        )
+    })
+    .await
+    .map_err(|e| format!("Task join error: {e}"))??;
+
+    match resolution {
+        StreamResolution::CdnUrl(stream_url) => {
+            let filename = title
+                .as_deref()
+                .filter(|t| !t.trim().is_empty())
+                .map(|t| format!("{}.{}", sanitize_filename(t), format));
+
+            let cmd = crate::application::commands::StartDownloadCommand {
+                url: stream_url,
+                destination: None,
+                filename,
+                source_hostname_override,
+            };
+            command_bus
+                .handle_start_download(cmd)
+                .await
+                .map(|id| id.0)
+                .map_err(|e| e.to_string())
+        }
+        StreamResolution::LocalFile {
+            path,
+            size,
+            filename,
+        } => {
+            let cmd = crate::application::commands::RegisterLocalFileCommand {
+                source_url: url,
+                destination_path: path,
+                filename,
+                source_hostname: source_hostname_override,
+                file_size: size,
+            };
+            command_bus
+                .handle_register_local_file(cmd)
+                .await
+                .map(|id| id.0)
+                .map_err(|e| e.to_string())
+        }
+    }
+}
+
+fn resolve_media_stream(
+    plugin_loader: &dyn PluginLoader,
+    url: &str,
+    quality: &str,
+    format: &str,
+    audio_only: bool,
+    title: Option<String>,
+    configured_download_dir: Option<PathBuf>,
+) -> Result<StreamResolution, String> {
+    match plugin_loader.resolve_stream_url(url, quality, format, audio_only) {
+        Ok(cdn_url) => Ok(StreamResolution::CdnUrl(cdn_url)),
+        Err(crate::domain::error::DomainError::AdaptiveStreamOnly) => {
+            let temp_dir = std::env::temp_dir().join("vortex-downloads");
+            std::fs::create_dir_all(&temp_dir)
+                .map_err(|e| format!("failed to create temp dir: {e}"))?;
+
+            let file_info = plugin_loader
+                .download_to_file(
+                    url,
+                    quality,
+                    format,
+                    temp_dir
+                        .to_str()
+                        .ok_or_else(|| "temp dir path is not valid UTF-8".to_string())?,
+                    audio_only,
+                )
+                .map_err(|e| format!("download_to_file failed: {e}"))?;
+
+            let temp_dir_canonical = temp_dir
+                .canonicalize()
+                .map_err(|e| format!("failed to canonicalize temp dir: {e}"))?;
+            let produced_canonical = file_info
+                .path
+                .canonicalize()
+                .map_err(|e| format!("failed to canonicalize downloaded file path: {e}"))?;
+            if !produced_canonical.starts_with(&temp_dir_canonical) {
+                return Err(format!(
+                    "plugin returned file outside temp dir: {}",
+                    file_info.path.display()
+                ));
+            }
+
+            let filename = title
+                .as_deref()
+                .filter(|t| !t.trim().is_empty())
+                .map(|t| format!("{}.{}", sanitize_filename(t), format))
+                .unwrap_or_else(|| {
+                    file_info
+                        .path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("download")
+                        .to_string()
+                });
+
+            let dest_dir = configured_download_dir
+                .or_else(dirs::download_dir)
+                .or_else(dirs::home_dir)
+                .ok_or_else(|| {
+                    "cannot determine download destination: neither \
+                     configured download_dir, user-dirs download_dir, nor home_dir are available"
+                        .to_string()
+                })?;
+            std::fs::create_dir_all(&dest_dir).map_err(|e| {
+                format!(
+                    "failed to create destination dir {}: {e}",
+                    dest_dir.display()
+                )
+            })?;
+            let (dest_path, dest_filename) = unique_destination(&dest_dir, &filename)
+                .map_err(|e| format!("failed to select unique destination: {e}"))?;
+
+            if std::fs::rename(&file_info.path, &dest_path).is_err() {
+                std::fs::copy(&file_info.path, &dest_path)
+                    .map_err(|e| format!("failed to copy merged file: {e}"))?;
+                if let Err(e) = std::fs::remove_file(&file_info.path) {
+                    tracing::warn!(
+                        path = %file_info.path.display(),
+                        error = %e,
+                        "failed to remove temp file after copy"
+                    );
+                }
+            }
+
+            Ok(StreamResolution::LocalFile {
+                path: dest_path,
+                size: file_info.size,
+                filename: dest_filename,
+            })
+        }
+        Err(crate::domain::error::DomainError::NotFound(_)) => {
+            if is_known_media_platform(url) {
+                Err(
+                    "No media plugin installed for this URL. \
+                     Open the Plugin Store and install the appropriate plugin (e.g. vortex-mod-youtube)."
+                        .to_string(),
+                )
+            } else {
+                Ok(StreamResolution::CdnUrl(url.to_string()))
+            }
+        }
+        Err(e) => Err(format!("Failed to resolve stream URL: {e}")),
+    }
+}
+
+fn configured_download_destination(download_dir: Option<&str>) -> Option<PathBuf> {
+    download_dir
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+}
+
 // ── Media Metadata ───────────────────────────────────────────────────
 
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MediaMetadataDto {
     pub title: String,
+    pub artist: Option<String>,
     pub thumbnail_url: String,
     pub duration_seconds: u64,
     pub is_playlist: bool,
+    pub default_quality: Option<String>,
     pub available_qualities: Vec<QualityOptionDto>,
     pub available_formats: Vec<String>,
     pub available_audio_formats: Vec<String>,
@@ -1080,7 +1165,29 @@ pub struct PlaylistItemDto {
 }
 
 #[tauri::command]
-pub async fn command_get_media_metadata(url: String) -> Result<MediaMetadataDto, String> {
+pub async fn command_get_media_metadata(
+    state: State<'_, AppState>,
+    url: String,
+) -> Result<MediaMetadataDto, String> {
+    let plugin_loader = state.plugin_loader.clone();
+    let url_clone = url.clone();
+    let plugin_metadata = tokio::task::spawn_blocking(move || {
+        load_plugin_media_metadata(plugin_loader.as_ref(), &url_clone)
+    })
+    .await
+    .map_err(|e| format!("Task join error: {e}"))?;
+    match plugin_metadata {
+        Ok(Some(metadata)) => return Ok(metadata),
+        Ok(None) => {}
+        Err(error) => {
+            tracing::warn!(
+                url = %url,
+                error = %error,
+                "plugin metadata extraction failed; falling back to yt-dlp"
+            );
+        }
+    }
+
     let output = tokio::task::spawn_blocking(move || -> Result<std::process::Output, String> {
         let binary = find_ytdlp()?;
         std::process::Command::new(&binary)
@@ -1105,6 +1212,335 @@ pub async fn command_get_media_metadata(url: String) -> Result<MediaMetadataDto,
         .map_err(|e| format!("Failed to parse yt-dlp output: {e}"))?;
 
     parse_ytdlp_json(&json)
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct PluginExtractLinksKind {
+    kind: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct PluginVideoExtractLinksResponse {
+    kind: String,
+    #[serde(default)]
+    videos: Vec<PluginVideoMediaLink>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct PluginVideoMediaLink {
+    title: String,
+    duration: Option<u64>,
+    thumbnail: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct PluginMediaVariantsResponse {
+    #[serde(default)]
+    variants: Vec<PluginMediaVariant>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct PluginMediaVariant {
+    kind: PluginVariantKind,
+    ext: String,
+    width: Option<u32>,
+    height: Option<u32>,
+    fps: Option<f64>,
+    abr: Option<f64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum PluginVariantKind {
+    Video,
+    Audio,
+    Adaptive,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct SoundcloudExtractLinksResponse {
+    kind: String,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    artist: Option<String>,
+    #[serde(default)]
+    artwork_url: Option<String>,
+    #[serde(default)]
+    tracks: Vec<SoundcloudTrackLink>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct SoundcloudTrackLink {
+    id: String,
+    title: String,
+    url: String,
+    artist: Option<String>,
+    duration_ms: Option<u64>,
+    artwork_url: Option<String>,
+}
+
+fn load_plugin_media_metadata(
+    plugin_loader: &dyn PluginLoader,
+    url: &str,
+) -> Result<Option<MediaMetadataDto>, crate::domain::DomainError> {
+    let Some(_) = plugin_loader.resolve_url(url)? else {
+        return Ok(None);
+    };
+    let extract_links = match plugin_loader.extract_links(url) {
+        Ok(payload) => payload,
+        Err(crate::domain::DomainError::NotFound(_)) => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let kind: PluginExtractLinksKind = serde_json::from_str(&extract_links).map_err(|e| {
+        crate::domain::DomainError::PluginError(format!(
+            "Failed to parse plugin extract_links output: {e}"
+        ))
+    })?;
+
+    match kind.kind.as_str() {
+        "video" => {
+            let variants = match plugin_loader.get_media_variants(url) {
+                Ok(payload) => payload,
+                Err(crate::domain::DomainError::NotFound(_)) => return Ok(None),
+                Err(error) => return Err(error),
+            };
+            parse_plugin_video_metadata(&extract_links, &variants)
+                .map(Some)
+                .map_err(crate::domain::DomainError::PluginError)
+        }
+        "track" | "playlist" | "artist" => parse_soundcloud_metadata(&extract_links)
+            .map(Some)
+            .map_err(crate::domain::DomainError::PluginError),
+        _ => Ok(None),
+    }
+}
+
+fn parse_plugin_video_metadata(
+    extract_links_json: &str,
+    variants_json: &str,
+) -> Result<MediaMetadataDto, String> {
+    let extract_links: PluginVideoExtractLinksResponse =
+        serde_json::from_str(extract_links_json)
+            .map_err(|e| format!("Failed to parse plugin extract_links output: {e}"))?;
+    if extract_links.kind != "video" {
+        return Err(format!(
+            "plugin returned unsupported extract_links kind: {}",
+            extract_links.kind
+        ));
+    }
+    let video = extract_links
+        .videos
+        .into_iter()
+        .next()
+        .ok_or_else(|| "plugin returned no video entries".to_string())?;
+
+    let variants: PluginMediaVariantsResponse = serde_json::from_str(variants_json)
+        .map_err(|e| format!("Failed to parse plugin get_media_variants output: {e}"))?;
+
+    let mut available_qualities = Vec::new();
+    let mut available_formats = Vec::new();
+    let mut available_audio_formats = Vec::new();
+    let mut seen_heights = std::collections::HashSet::<u32>::new();
+    let mut seen_video_exts = std::collections::HashSet::<String>::new();
+    let mut seen_audio_exts = std::collections::HashSet::<String>::new();
+
+    for variant in variants.variants {
+        match variant.kind {
+            kind @ (PluginVariantKind::Video | PluginVariantKind::Adaptive) => {
+                if matches!(kind, PluginVariantKind::Adaptive) {
+                    tracing::warn!(
+                        ext = %variant.ext,
+                        height = ?variant.height,
+                        "surfacing Adaptive plugin variant via merged-download fallback",
+                    );
+                }
+                if let Some(height) = variant.height.filter(|height| *height > 0)
+                    && seen_heights.insert(height)
+                {
+                    available_qualities.push(QualityOptionDto {
+                        quality: format!("{height}p"),
+                        height,
+                        width: variant.width.unwrap_or(0),
+                        fps: variant.fps.unwrap_or(0.0).round() as u32,
+                        bitrate_kbps: variant.abr.unwrap_or(0.0).round() as u32,
+                    });
+                }
+
+                if !variant.ext.is_empty() && seen_video_exts.insert(variant.ext.clone()) {
+                    available_formats.push(variant.ext);
+                }
+            }
+            PluginVariantKind::Audio => {
+                if !variant.ext.is_empty() && seen_audio_exts.insert(variant.ext.clone()) {
+                    available_audio_formats.push(variant.ext);
+                }
+            }
+        }
+    }
+
+    available_qualities.sort_by_key(|quality| std::cmp::Reverse(quality.height));
+    // Pick default_quality from the sorted top so UI and default agree.
+    let default_quality = available_qualities.first().map(|q| q.quality.clone());
+
+    Ok(MediaMetadataDto {
+        title: video.title,
+        artist: None,
+        thumbnail_url: video.thumbnail.unwrap_or_default(),
+        duration_seconds: video.duration.unwrap_or_default(),
+        is_playlist: false,
+        default_quality,
+        available_qualities,
+        available_formats,
+        available_audio_formats,
+        available_subtitles: Vec::new(),
+        playlist_items: None,
+    })
+}
+
+fn parse_soundcloud_metadata(extract_links_json: &str) -> Result<MediaMetadataDto, String> {
+    let extract_links: SoundcloudExtractLinksResponse = serde_json::from_str(extract_links_json)
+        .map_err(|e| format!("Failed to parse SoundCloud extract_links output: {e}"))?;
+
+    match extract_links.kind.as_str() {
+        "track" => {
+            let track = extract_links
+                .tracks
+                .into_iter()
+                .next()
+                .ok_or_else(|| "plugin returned no SoundCloud track entries".to_string())?;
+
+            Ok(MediaMetadataDto {
+                title: extract_links.title.unwrap_or(track.title),
+                artist: track.artist.or(extract_links.artist),
+                thumbnail_url: extract_links
+                    .artwork_url
+                    .or(track.artwork_url)
+                    .unwrap_or_default(),
+                duration_seconds: millis_to_seconds(track.duration_ms),
+                is_playlist: false,
+                default_quality: None,
+                available_qualities: Vec::new(),
+                available_formats: Vec::new(),
+                available_audio_formats: vec!["mp3".to_string()],
+                available_subtitles: Vec::new(),
+                playlist_items: None,
+            })
+        }
+        "playlist" | "artist" => {
+            if extract_links.tracks.is_empty() {
+                return Err("plugin returned no SoundCloud collection entries".to_string());
+            }
+
+            let total_duration_ms: u64 = extract_links
+                .tracks
+                .iter()
+                .filter_map(|track| track.duration_ms)
+                .sum();
+            let playlist_items = extract_links
+                .tracks
+                .iter()
+                .map(|track| PlaylistItemDto {
+                    id: track.id.clone(),
+                    title: soundcloud_track_download_title(track),
+                    duration_seconds: millis_to_seconds(track.duration_ms),
+                })
+                .collect::<Vec<_>>();
+
+            let collection_title =
+                extract_links
+                    .title
+                    .unwrap_or_else(|| match extract_links.kind.as_str() {
+                        "artist" => format!("SoundCloud artist ({})", extract_links.tracks.len()),
+                        _ => format!("SoundCloud playlist ({})", extract_links.tracks.len()),
+                    });
+
+            Ok(MediaMetadataDto {
+                title: collection_title,
+                artist: None,
+                thumbnail_url: extract_links.artwork_url.unwrap_or_else(|| {
+                    extract_links
+                        .tracks
+                        .iter()
+                        .find_map(|track| track.artwork_url.clone())
+                        .unwrap_or_default()
+                }),
+                duration_seconds: total_duration_ms / 1000,
+                is_playlist: true,
+                default_quality: None,
+                available_qualities: Vec::new(),
+                available_formats: Vec::new(),
+                available_audio_formats: vec!["mp3".to_string()],
+                available_subtitles: Vec::new(),
+                playlist_items: Some(playlist_items),
+            })
+        }
+        other => Err(format!(
+            "unsupported SoundCloud extract_links kind: {other}"
+        )),
+    }
+}
+
+fn load_soundcloud_playlist_download_targets(
+    plugin_loader: &dyn PluginLoader,
+    url: &str,
+    selected_item_ids: &[String],
+) -> Result<Option<Vec<SoundcloudTrackLink>>, crate::domain::DomainError> {
+    let Some(info) = plugin_loader.resolve_url(url)? else {
+        return Ok(None);
+    };
+    if info.name() != "vortex-mod-soundcloud" {
+        return Ok(None);
+    }
+
+    let extract_links = plugin_loader.extract_links(url)?;
+    let tracks = parse_soundcloud_playlist_targets(&extract_links, selected_item_ids)
+        .map_err(crate::domain::DomainError::PluginError)?;
+    if tracks.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(tracks))
+    }
+}
+
+fn parse_soundcloud_playlist_targets(
+    extract_links_json: &str,
+    selected_item_ids: &[String],
+) -> Result<Vec<SoundcloudTrackLink>, String> {
+    let extract_links: SoundcloudExtractLinksResponse = serde_json::from_str(extract_links_json)
+        .map_err(|e| format!("Failed to parse SoundCloud extract_links output: {e}"))?;
+
+    if extract_links.kind != "playlist" && extract_links.kind != "artist" {
+        return Ok(Vec::new());
+    }
+
+    let selected_ids: std::collections::HashSet<_> = selected_item_ids.iter().cloned().collect();
+    let tracks = extract_links
+        .tracks
+        .into_iter()
+        .filter(|track| selected_ids.is_empty() || selected_ids.contains(&track.id))
+        .collect::<Vec<_>>();
+
+    if tracks.is_empty() {
+        return Err("no SoundCloud tracks matched the selected playlist items".to_string());
+    }
+
+    Ok(tracks)
+}
+
+fn soundcloud_track_download_title(track: &SoundcloudTrackLink) -> String {
+    match track
+        .artist
+        .as_deref()
+        .filter(|artist| !artist.trim().is_empty())
+    {
+        Some(artist) => format!("{artist} - {}", track.title),
+        None => track.title.clone(),
+    }
+}
+
+fn millis_to_seconds(duration_ms: Option<u64>) -> u64 {
+    duration_ms.unwrap_or_default() / 1000
 }
 
 fn find_ytdlp() -> Result<std::path::PathBuf, String> {
@@ -1280,9 +1716,11 @@ fn parse_ytdlp_json(json: &serde_json::Value) -> Result<MediaMetadataDto, String
 
     Ok(MediaMetadataDto {
         title,
+        artist: None,
         thumbnail_url,
         duration_seconds,
         is_playlist,
+        default_quality: None,
         available_qualities,
         available_formats,
         available_audio_formats,
@@ -1423,10 +1861,120 @@ fn read_available_space(_: &Path) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::{
-        configured_status_bar_path, extract_hostname_from_url, read_available_space,
-        resolve_existing_disk_path, sanitize_extension, sanitize_filename, unique_destination,
+        StreamResolution, configured_download_destination, configured_status_bar_path,
+        extract_hostname_from_url, load_plugin_media_metadata, parse_plugin_video_metadata,
+        parse_soundcloud_metadata, parse_soundcloud_playlist_targets, read_available_space,
+        resolve_existing_disk_path, resolve_media_stream, sanitize_extension, sanitize_filename,
+        soundcloud_track_download_title, unique_destination,
     };
+    use crate::domain::error::DomainError;
+    use crate::domain::model::plugin::{PluginCategory, PluginInfo, PluginManifest};
+    use crate::domain::ports::driven::PluginLoader;
+    use crate::domain::ports::driven::plugin_loader::DownloadedFileInfo;
     use std::path::PathBuf;
+
+    #[derive(Clone)]
+    struct MetadataPluginLoader {
+        resolved: Option<PluginInfo>,
+        extract_links: Result<String, DomainError>,
+        variants: Result<String, DomainError>,
+    }
+
+    impl PluginLoader for MetadataPluginLoader {
+        fn load(&self, _manifest: &PluginManifest) -> Result<(), DomainError> {
+            Ok(())
+        }
+
+        fn unload(&self, _name: &str) -> Result<(), DomainError> {
+            Ok(())
+        }
+
+        fn resolve_url(&self, _url: &str) -> Result<Option<PluginInfo>, DomainError> {
+            Ok(self.resolved.clone())
+        }
+
+        fn list_loaded(&self) -> Result<Vec<PluginInfo>, DomainError> {
+            Ok(Vec::new())
+        }
+
+        fn set_enabled(&self, _name: &str, _enabled: bool) -> Result<(), DomainError> {
+            Ok(())
+        }
+
+        fn extract_links(&self, _url: &str) -> Result<String, DomainError> {
+            self.extract_links.clone()
+        }
+
+        fn get_media_variants(&self, _url: &str) -> Result<String, DomainError> {
+            self.variants.clone()
+        }
+    }
+
+    #[derive(Clone)]
+    struct AdaptiveDownloadPluginLoader;
+
+    impl PluginLoader for AdaptiveDownloadPluginLoader {
+        fn load(&self, _manifest: &PluginManifest) -> Result<(), DomainError> {
+            Ok(())
+        }
+
+        fn unload(&self, _name: &str) -> Result<(), DomainError> {
+            Ok(())
+        }
+
+        fn resolve_url(&self, _url: &str) -> Result<Option<PluginInfo>, DomainError> {
+            Ok(None)
+        }
+
+        fn list_loaded(&self) -> Result<Vec<PluginInfo>, DomainError> {
+            Ok(Vec::new())
+        }
+
+        fn set_enabled(&self, _name: &str, _enabled: bool) -> Result<(), DomainError> {
+            Ok(())
+        }
+
+        fn resolve_stream_url(
+            &self,
+            _url: &str,
+            _quality: &str,
+            _format: &str,
+            _audio_only: bool,
+        ) -> Result<String, DomainError> {
+            Err(DomainError::AdaptiveStreamOnly)
+        }
+
+        fn download_to_file(
+            &self,
+            _url: &str,
+            _quality: &str,
+            _format: &str,
+            output_dir: &str,
+            _audio_only: bool,
+        ) -> Result<DownloadedFileInfo, DomainError> {
+            let output_dir = PathBuf::from(output_dir);
+            std::fs::create_dir_all(&output_dir)
+                .map_err(|e| DomainError::StorageError(e.to_string()))?;
+            let unique = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos();
+            let path = output_dir.join(format!("adaptive-{unique}.mp4"));
+            std::fs::write(&path, b"merged")
+                .map_err(|e| DomainError::StorageError(e.to_string()))?;
+            Ok(DownloadedFileInfo { path, size: 6 })
+        }
+    }
+
+    fn make_plugin_info(name: &str) -> PluginInfo {
+        PluginInfo::new(
+            name.to_string(),
+            "1.0.0".to_string(),
+            "Test plugin".to_string(),
+            "tester".to_string(),
+            PluginCategory::Utility,
+        )
+    }
 
     // ── sanitize_filename ─────────────────────────────────────────────────────
 
@@ -1621,6 +2169,14 @@ mod tests {
     }
 
     #[test]
+    fn configured_download_destination_keeps_relative_values() {
+        assert_eq!(
+            configured_download_destination(Some("downloads")),
+            Some(PathBuf::from("downloads"))
+        );
+    }
+
+    #[test]
     fn resolve_existing_disk_path_returns_existing_path_unchanged() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
 
@@ -1657,6 +2213,350 @@ mod tests {
         let temp_dir = tempfile::tempdir().expect("temp dir");
 
         assert!(read_available_space(temp_dir.path()).is_some());
+    }
+
+    #[test]
+    fn test_parse_plugin_video_metadata_selects_highest_quality_as_default() {
+        let extract_links = serde_json::json!({
+            "kind": "video",
+            "videos": [{
+                "title": "Vimeo Plugin Video",
+                "duration": 91,
+                "thumbnail": "https://example.com/thumb.jpg"
+            }]
+        });
+        let variants = serde_json::json!({
+            "variants": [
+                {
+                    "kind": "video",
+                    "ext": "mp4",
+                    "width": 1280,
+                    "height": 720,
+                    "fps": 30.0,
+                    "abr": 2400.0
+                },
+                {
+                    "kind": "video",
+                    "ext": "mp4",
+                    "width": 1920,
+                    "height": 1080,
+                    "fps": 30.0,
+                    "abr": 4200.0
+                },
+                {
+                    "kind": "video",
+                    "ext": "mp4",
+                    "width": 640,
+                    "height": 360,
+                    "fps": 30.0,
+                    "abr": 900.0
+                }
+            ]
+        });
+
+        let metadata =
+            parse_plugin_video_metadata(&extract_links.to_string(), &variants.to_string())
+                .expect("plugin metadata should parse");
+
+        assert_eq!(metadata.title, "Vimeo Plugin Video");
+        assert_eq!(metadata.default_quality.as_deref(), Some("1080p"));
+        let heights: Vec<u32> = metadata
+            .available_qualities
+            .iter()
+            .map(|q| q.height)
+            .collect();
+        assert_eq!(heights, vec![1080, 720, 360]);
+        assert_eq!(metadata.available_formats, vec!["mp4"]);
+    }
+
+    #[test]
+    fn test_parse_plugin_video_metadata_rejects_non_video_kind() {
+        let extract_links = serde_json::json!({
+            "kind": "playlist",
+            "videos": []
+        });
+        let variants = serde_json::json!({ "variants": [] });
+
+        let err = parse_plugin_video_metadata(&extract_links.to_string(), &variants.to_string())
+            .unwrap_err();
+
+        assert!(err.contains("unsupported extract_links kind"));
+    }
+
+    #[test]
+    fn test_parse_plugin_video_metadata_keeps_adaptive_variants_available() {
+        let extract_links = serde_json::json!({
+            "kind": "video",
+            "videos": [{
+                "title": "Adaptive Vimeo",
+                "duration": 91,
+                "thumbnail": "https://example.com/thumb.jpg"
+            }]
+        });
+        let variants = serde_json::json!({
+            "variants": [
+                {
+                    "kind": "adaptive",
+                    "ext": "mp4",
+                    "width": 1280,
+                    "height": 720,
+                    "fps": 30.0,
+                    "abr": 2400.0
+                }
+            ]
+        });
+
+        let metadata =
+            parse_plugin_video_metadata(&extract_links.to_string(), &variants.to_string())
+                .expect("adaptive metadata should parse");
+
+        assert_eq!(metadata.default_quality.as_deref(), Some("720p"));
+        assert_eq!(metadata.available_qualities.len(), 1);
+        assert_eq!(metadata.available_qualities[0].quality, "720p");
+        assert_eq!(metadata.available_formats, vec!["mp4"]);
+    }
+
+    #[test]
+    fn test_resolve_media_stream_uses_configured_destination_for_adaptive_downloads() {
+        let configured_root = tempfile::tempdir().expect("temp dir");
+        let configured_dir = configured_root.path().join("custom-downloads");
+
+        let resolution = resolve_media_stream(
+            &AdaptiveDownloadPluginLoader,
+            "https://example.com/video",
+            "720p",
+            "mp4",
+            false,
+            Some("Adaptive Title".to_string()),
+            Some(configured_dir.clone()),
+        )
+        .expect("adaptive stream should resolve to a local file");
+
+        match resolution {
+            StreamResolution::LocalFile {
+                path,
+                size,
+                filename,
+            } => {
+                assert!(path.starts_with(&configured_dir));
+                assert_eq!(filename, "Adaptive Title.mp4");
+                assert_eq!(size, 6);
+                assert!(path.exists());
+            }
+            StreamResolution::CdnUrl(url) => {
+                panic!("expected local file resolution, got CDN URL: {url}")
+            }
+        }
+    }
+
+    #[test]
+    fn test_load_plugin_media_metadata_dispatches_by_extract_links_kind() {
+        let extract_links = serde_json::json!({
+            "kind": "video",
+            "videos": [{
+                "title": "Future Provider",
+                "duration": 45,
+                "thumbnail": "https://example.com/future.jpg"
+            }]
+        });
+        let variants = serde_json::json!({
+            "variants": [
+                {
+                    "kind": "video",
+                    "ext": "mp4",
+                    "width": 1920,
+                    "height": 1080,
+                    "fps": 30.0,
+                    "abr": 3200.0
+                }
+            ]
+        });
+        let loader = MetadataPluginLoader {
+            resolved: Some(make_plugin_info("future-video-plugin")),
+            extract_links: Ok(extract_links.to_string()),
+            variants: Ok(variants.to_string()),
+        };
+
+        let metadata = load_plugin_media_metadata(&loader, "https://example.com/video")
+            .expect("metadata lookup should succeed")
+            .expect("video metadata should be returned");
+
+        assert_eq!(metadata.title, "Future Provider");
+        assert_eq!(metadata.default_quality.as_deref(), Some("1080p"));
+    }
+
+    #[test]
+    fn test_load_plugin_media_metadata_returns_none_when_variants_export_missing() {
+        let extract_links = serde_json::json!({
+            "kind": "video",
+            "videos": [{
+                "title": "Video Without Variants",
+                "duration": 45,
+                "thumbnail": "https://example.com/future.jpg"
+            }]
+        });
+        let loader = MetadataPluginLoader {
+            resolved: Some(make_plugin_info("video-without-variants")),
+            extract_links: Ok(extract_links.to_string()),
+            variants: Err(DomainError::NotFound(
+                "get_media_variants not supported by this loader".to_string(),
+            )),
+        };
+
+        let metadata = load_plugin_media_metadata(&loader, "https://example.com/video")
+            .expect("missing exports should fall back cleanly");
+
+        assert!(metadata.is_none());
+    }
+
+    #[test]
+    fn test_parse_soundcloud_metadata_for_track() {
+        let extract_links = serde_json::json!({
+            "kind": "track",
+            "title": "Flickermood",
+            "artist": "Forss",
+            "artwork_url": "https://i1.sndcdn.com/artworks-12345-t500x500.jpg",
+            "tracks": [{
+                "id": "123",
+                "title": "Flickermood",
+                "url": "https://soundcloud.com/forss/flickermood",
+                "artist": "Forss",
+                "duration_ms": 225000,
+                "artwork_url": "https://i1.sndcdn.com/artworks-12345-t500x500.jpg"
+            }]
+        });
+
+        let metadata = parse_soundcloud_metadata(&extract_links.to_string())
+            .expect("SoundCloud track metadata should parse");
+
+        assert_eq!(metadata.title, "Flickermood");
+        assert_eq!(metadata.artist.as_deref(), Some("Forss"));
+        assert_eq!(metadata.duration_seconds, 225);
+        assert_eq!(metadata.available_audio_formats, vec!["mp3"]);
+        assert!(!metadata.is_playlist);
+        assert!(metadata.playlist_items.is_none());
+    }
+
+    #[test]
+    fn test_parse_soundcloud_metadata_for_playlist() {
+        let extract_links = serde_json::json!({
+            "kind": "playlist",
+            "title": "Soulhack",
+            "tracks": [
+                {
+                    "id": "123",
+                    "title": "Flickermood",
+                    "url": "https://soundcloud.com/forss/flickermood",
+                    "artist": "Forss",
+                    "duration_ms": 225000,
+                    "artwork_url": "https://i1.sndcdn.com/artworks-12345-t500x500.jpg"
+                },
+                {
+                    "id": "124",
+                    "title": "Journeyman",
+                    "url": "https://soundcloud.com/forss/journeyman",
+                    "artist": "Forss",
+                    "duration_ms": 180000,
+                    "artwork_url": null
+                }
+            ]
+        });
+
+        let metadata = parse_soundcloud_metadata(&extract_links.to_string())
+            .expect("SoundCloud playlist metadata should parse");
+
+        assert!(metadata.is_playlist);
+        assert_eq!(metadata.title, "Soulhack");
+        assert_eq!(metadata.duration_seconds, 405);
+        assert_eq!(
+            metadata.playlist_items.as_ref().map(Vec::len),
+            Some(2),
+            "playlist items should be populated"
+        );
+        assert_eq!(metadata.available_audio_formats, vec!["mp3"]);
+        assert_eq!(
+            metadata.thumbnail_url,
+            "https://i1.sndcdn.com/artworks-12345-t500x500.jpg"
+        );
+    }
+
+    #[test]
+    fn test_parse_soundcloud_metadata_for_artist_collection() {
+        let extract_links = serde_json::json!({
+            "kind": "artist",
+            "title": "Forss",
+            "artwork_url": "https://i1.sndcdn.com/avatars-42.jpg",
+            "tracks": [
+                {
+                    "id": "123",
+                    "title": "Flickermood",
+                    "url": "https://soundcloud.com/forss/flickermood",
+                    "artist": "Forss",
+                    "duration_ms": 225000,
+                    "artwork_url": null
+                },
+                {
+                    "id": "124",
+                    "title": "Journeyman",
+                    "url": "https://soundcloud.com/forss/journeyman",
+                    "artist": "Forss",
+                    "duration_ms": 180000,
+                    "artwork_url": null
+                }
+            ]
+        });
+
+        let metadata = parse_soundcloud_metadata(&extract_links.to_string())
+            .expect("SoundCloud artist metadata should parse");
+
+        assert!(metadata.is_playlist);
+        assert_eq!(metadata.title, "Forss");
+        assert_eq!(metadata.duration_seconds, 405);
+        assert_eq!(
+            metadata.thumbnail_url,
+            "https://i1.sndcdn.com/avatars-42.jpg"
+        );
+        assert_eq!(
+            metadata.playlist_items.as_ref().map(Vec::len),
+            Some(2),
+            "artist tracks should be populated"
+        );
+    }
+
+    #[test]
+    fn test_parse_soundcloud_playlist_targets_filters_selection() {
+        let extract_links = serde_json::json!({
+            "kind": "playlist",
+            "tracks": [
+                {
+                    "id": "123",
+                    "title": "Flickermood",
+                    "url": "https://soundcloud.com/forss/flickermood",
+                    "artist": "Forss",
+                    "duration_ms": 225000,
+                    "artwork_url": null
+                },
+                {
+                    "id": "124",
+                    "title": "Journeyman",
+                    "url": "https://soundcloud.com/forss/journeyman",
+                    "artist": "Forss",
+                    "duration_ms": 180000,
+                    "artwork_url": null
+                }
+            ]
+        });
+
+        let tracks =
+            parse_soundcloud_playlist_targets(&extract_links.to_string(), &["124".to_string()])
+                .expect("playlist targets should parse");
+
+        assert_eq!(tracks.len(), 1);
+        assert_eq!(tracks[0].id, "124");
+        assert_eq!(
+            soundcloud_track_download_title(&tracks[0]),
+            "Forss - Journeyman"
+        );
     }
 
     // ── parse_ytdlp_json tests ────────────────────────────────────────

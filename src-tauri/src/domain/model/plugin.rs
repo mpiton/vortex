@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fmt;
 use std::str::FromStr;
 
@@ -113,6 +114,7 @@ pub struct PluginManifest {
     info: PluginInfo,
     capabilities: Vec<String>,
     min_vortex_version: Option<String>,
+    config_defaults: HashMap<String, String>,
 }
 
 impl PluginManifest {
@@ -121,6 +123,7 @@ impl PluginManifest {
             info,
             capabilities: Vec::new(),
             min_vortex_version: None,
+            config_defaults: HashMap::new(),
         }
     }
 
@@ -131,6 +134,11 @@ impl PluginManifest {
 
     pub fn with_min_version(mut self, v: String) -> Self {
         self.min_vortex_version = Some(v);
+        self
+    }
+
+    pub fn with_config_defaults(mut self, defaults: HashMap<String, String>) -> Self {
+        self.config_defaults = defaults;
         self
     }
 
@@ -148,6 +156,10 @@ impl PluginManifest {
 
     pub fn min_vortex_version(&self) -> Option<&str> {
         self.min_vortex_version.as_deref()
+    }
+
+    pub fn config_defaults(&self) -> &HashMap<String, String> {
+        &self.config_defaults
     }
 }
 
@@ -206,6 +218,18 @@ mod tests {
         assert!(manifest.has_capability("http"));
         assert!(manifest.has_capability("extract"));
         assert!(!manifest.has_capability("ftp"));
+    }
+
+    #[test]
+    fn test_plugin_manifest_config_defaults() {
+        let info = make_info();
+        let defaults = HashMap::from([
+            ("default_quality".to_string(), "720p".to_string()),
+            ("extract_audio_only".to_string(), "false".to_string()),
+        ]);
+        let manifest = PluginManifest::new(info).with_config_defaults(defaults.clone());
+
+        assert_eq!(manifest.config_defaults(), &defaults);
     }
 
     #[test]
