@@ -63,7 +63,11 @@ impl PluginStoreEntryDto {
 
 fn derive_status_str(registry_version: &str, installed: Option<&str>) -> &'static str {
     fn parse_semver(s: &str) -> Option<(u64, u64, u64)> {
-        let mut parts = s.splitn(3, '.');
+        // Strip SemVer pre-release (`-foo`) and build-metadata (`+foo`)
+        // suffixes before parsing so `2.0.0-dev` and `1.2.0+build.1` still
+        // compare on the `MAJOR.MINOR.PATCH` core.
+        let core = s.split(['-', '+']).next().unwrap_or(s);
+        let mut parts = core.splitn(3, '.');
         let major = parts.next()?.parse().ok()?;
         let minor = parts.next()?.parse().ok()?;
         let patch = parts.next().unwrap_or("0").parse().ok()?;
@@ -180,5 +184,24 @@ mod tests {
         dto.enrich_with_installed(None);
         assert_eq!(dto.status, "not_installed");
         assert_eq!(dto.installed_version, None);
+    }
+
+    #[test]
+    fn test_enrich_with_installed_handles_prerelease_suffix_as_downgrade() {
+        // A dev build tagged `2.0.0-dev` against a registry `1.0.0` must
+        // classify as "downgrade" — the pre-release suffix on the patch
+        // segment previously broke `parse_semver` and collapsed to
+        // "update_available".
+        let mut dto = PluginStoreEntryDto::from(make_entry(PluginStoreStatus::NotInstalled, None));
+        dto.enrich_with_installed(Some("2.0.0-dev".into()));
+        assert_eq!(dto.status, "downgrade");
+    }
+
+    #[test]
+    fn test_enrich_with_installed_handles_build_metadata_suffix() {
+        // Build metadata suffixes (`+build.N`) must also not trip the parser.
+        let mut dto = PluginStoreEntryDto::from(make_entry(PluginStoreStatus::NotInstalled, None));
+        dto.enrich_with_installed(Some("0.9.0+build.1".into()));
+        assert_eq!(dto.status, "update_available");
     }
 }

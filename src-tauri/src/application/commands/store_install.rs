@@ -4,6 +4,7 @@ use crate::application::command_bus::CommandBus;
 use crate::application::commands::store_refresh::read_cache;
 use crate::application::error::AppError;
 use crate::application::read_models::plugin_store_view::PluginStoreEntryDto;
+use crate::domain::error::DomainError;
 use crate::domain::model::plugin_store::{PluginStoreEntry, PluginStoreStatus};
 
 pub struct StoreInstallCommand {
@@ -101,7 +102,15 @@ impl CommandBus {
         // makes the DashMap insert in `load()` fail with AlreadyExists,
         // even though the UI (driven by the cache) still shows the plugin
         // as "not_installed" because the cache hasn't been refreshed.
-        let _ = self.plugin_loader().unload(&cmd.name);
+        //
+        // Only swallow `NotFound` — other loader failures (a corrupted
+        // registry, a poisoned mutex) must abort install to avoid leaving
+        // the in-memory state half-mutated.
+        if let Err(e) = self.plugin_loader().unload(&cmd.name)
+            && !matches!(e, DomainError::NotFound(_))
+        {
+            return Err(AppError::from(e));
+        }
 
         // Parse manifest from the downloaded directory and load via the plugin loader.
         // Uses load_from_dir which calls parse_manifest internally (adapter concern).

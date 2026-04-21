@@ -238,15 +238,17 @@ mod tests {
     }
 
     #[test]
-    fn test_build_wasm_url_leaves_underscored_name_untouched() {
+    fn test_build_wasm_url_single_word_name_unchanged() {
+        // `validate_plugin_name` only admits alphanumeric + hyphen, so a
+        // single-word name is the realistic "no replacement needed" case.
         let url = GithubStoreClient::build_wasm_url(
-            "https://github.com/johndoe/already_snake",
+            "https://github.com/johndoe/singleword",
             "2.3.4",
-            "already_snake",
+            "singleword",
         );
         assert_eq!(
             url,
-            "https://github.com/johndoe/already_snake/releases/download/v2.3.4/already_snake.wasm"
+            "https://github.com/johndoe/singleword/releases/download/v2.3.4/singleword.wasm"
         );
     }
 
