@@ -60,9 +60,14 @@ impl GithubStoreClient {
     }
 
     fn build_wasm_url(repository: &str, version: &str, name: &str) -> String {
+        // Cargo replaces hyphens with underscores when building cdylib
+        // targets (Rust identifiers disallow hyphens), so the release
+        // asset is `vortex_mod_<plugin>.wasm` while the registry entry
+        // keeps the kebab-case id. Normalise to the on-disk filename.
+        let wasm_name = name.replace('-', "_");
         format!(
             "{}/releases/download/v{}/{}.wasm",
-            repository, version, name
+            repository, version, wasm_name
         )
     }
 
@@ -220,7 +225,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_build_wasm_url() {
+    fn test_build_wasm_url_normalises_hyphens_to_underscores() {
         let url = GithubStoreClient::build_wasm_url(
             "https://github.com/johndoe/vortex-mod-gallery",
             "1.0.0",
@@ -228,7 +233,20 @@ mod tests {
         );
         assert_eq!(
             url,
-            "https://github.com/johndoe/vortex-mod-gallery/releases/download/v1.0.0/vortex-mod-gallery.wasm"
+            "https://github.com/johndoe/vortex-mod-gallery/releases/download/v1.0.0/vortex_mod_gallery.wasm"
+        );
+    }
+
+    #[test]
+    fn test_build_wasm_url_leaves_underscored_name_untouched() {
+        let url = GithubStoreClient::build_wasm_url(
+            "https://github.com/johndoe/already_snake",
+            "2.3.4",
+            "already_snake",
+        );
+        assert_eq!(
+            url,
+            "https://github.com/johndoe/already_snake/releases/download/v2.3.4/already_snake.wasm"
         );
     }
 
