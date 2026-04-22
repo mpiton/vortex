@@ -199,7 +199,25 @@ pub fn run() {
             // ── Plugin store client ─────────────────────────────────
             let registry_url =
                 "https://raw.githubusercontent.com/mpiton/vortex/main/registry/registry.toml";
-            let store_staging_dir = plugins_dir.join(".staging");
+            // Staging MUST live outside plugins_dir so the recursive plugin
+            // watcher doesn't fire events during an in-progress install.
+            // Those events used to race the install's own load_from_dir
+            // call and could leave the plugin unloaded in memory even after
+            // a successful install (toast said "updated", but the UI then
+            // reported the plugin as not installed).
+            let store_staging_dir = app_data_dir.join("plugin-staging");
+            // One-shot cleanup of the legacy `.staging/` that used to live
+            // inside `plugins_dir`. Harmless if already absent.
+            let legacy_staging = plugins_dir.join(".staging");
+            if legacy_staging.exists()
+                && let Err(e) = std::fs::remove_dir_all(&legacy_staging)
+            {
+                tracing::warn!(
+                    path = %legacy_staging.display(),
+                    error = %e,
+                    "failed to clean up legacy plugin staging dir",
+                );
+            }
             let store_client: Arc<dyn crate::domain::ports::driven::PluginStoreClient> =
                 Arc::new(GithubStoreClient::new(registry_url, store_staging_dir));
 

@@ -1,7 +1,9 @@
 //! Implements [`PluginLoader`] using Extism and [`PluginRegistry`].
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 use crate::domain::error::DomainError;
 use crate::domain::model::plugin::{PluginInfo, PluginManifest};
@@ -13,11 +15,52 @@ use super::capabilities::{SharedHostResources, build_host_functions};
 use super::manifest::{find_wasm_file, parse_manifest};
 use super::registry::{LoadedPlugin, PluginRegistry};
 
+/// Per-plugin install coordination.
+///
+/// - `serializer` is held for the entire `load_from_dir` body so two
+///   concurrent installs of the **same** plugin name can't race on the
+///   staging/destination filesystem writes; the second one blocks until
+///   the first completes.
+/// - `count` is an independent refcount used by the watcher's
+///   `is_install_in_progress` check. A refcount (rather than a boolean)
+///   is needed because several installs for the same plugin can queue up
+///   behind the serializer; the watcher must stay suppressed until the
+///   **last** install finishes, not just the first.
+struct InstallState {
+    serializer: Mutex<()>,
+    count: AtomicUsize,
+}
+
+impl InstallState {
+    fn new() -> Self {
+        Self {
+            serializer: Mutex::new(()),
+            count: AtomicUsize::new(0),
+        }
+    }
+}
+
 pub struct ExtismPluginLoader {
     registry: Arc<PluginRegistry>,
     plugins_dir: PathBuf,
     shared_resources: Arc<SharedHostResources>,
     builtin_http: HttpModule,
+    /// Per-plugin install coordination. See [`InstallState`] for the
+    /// two pieces of state it carries (serializer + refcount).
+    installs: Arc<Mutex<HashMap<String, Arc<InstallState>>>>,
+}
+
+/// RAII guard: decrements the install refcount when dropped, so the
+/// watcher's suppression window closes exactly when the install returns
+/// (success, error, or panic) — never earlier, never later.
+struct InstallInFlight {
+    state: Arc<InstallState>,
+}
+
+impl Drop for InstallInFlight {
+    fn drop(&mut self) {
+        self.state.count.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 impl ExtismPluginLoader {
@@ -30,6 +73,7 @@ impl ExtismPluginLoader {
             plugins_dir,
             shared_resources,
             builtin_http: HttpModule::new()?,
+            installs: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -43,6 +87,53 @@ impl ExtismPluginLoader {
 
     pub fn builtin_http(&self) -> &HttpModule {
         &self.builtin_http
+    }
+
+    /// Get or create the [`InstallState`] for a plugin name. The outer
+    /// map mutex is held only long enough to clone the `Arc`; the
+    /// returned state carries its own serializer.
+    fn get_or_create_install_state(&self, name: &str) -> Arc<InstallState> {
+        let mut map = self
+            .installs
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        map.entry(name.to_string())
+            .or_insert_with(|| Arc::new(InstallState::new()))
+            .clone()
+    }
+
+    /// Returns `true` if at least one install is currently in flight for
+    /// `name`. The plugin watcher consults this to avoid reacting to
+    /// events from the install's own filesystem writes.
+    pub fn is_install_in_progress(&self, name: &str) -> bool {
+        let map = self
+            .installs
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        map.get(name)
+            .is_some_and(|s| s.count.load(Ordering::SeqCst) > 0)
+    }
+
+    /// Test-only: bump the install refcount for a plugin without going
+    /// through `load_from_dir`, so watcher tests can assert that events
+    /// are suppressed while an install is in flight.
+    #[cfg(test)]
+    pub fn mark_install_in_progress_for_testing(&self, name: &str) {
+        let state = self.get_or_create_install_state(name);
+        state.count.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// Test-only mirror of [`Self::mark_install_in_progress_for_testing`]
+    /// used to exercise the refcount's "last one out wins" behaviour.
+    #[cfg(test)]
+    pub fn unmark_install_in_progress_for_testing(&self, name: &str) {
+        let map = self
+            .installs
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(state) = map.get(name) {
+            state.count.fetch_sub(1, Ordering::SeqCst);
+        }
     }
 
     fn resolve_wasm_plugin(&self, url: &str) -> Result<PluginInfo, DomainError> {
@@ -258,10 +349,46 @@ impl PluginLoader for ExtismPluginLoader {
 
     fn load_from_dir(&self, dir: &std::path::Path) -> Result<(), DomainError> {
         let (manifest, _wasm_path) = parse_manifest(dir)?;
-        let name = manifest.info().name();
+        let name = manifest.info().name().to_string();
+
+        // Per-plugin install coordination:
+        //
+        //   1. Bump the refcount up-front so the watcher starts skipping
+        //      events *immediately*, before any filesystem mutation.
+        //   2. Take the per-plugin serializer lock so concurrent installs
+        //      of the same plugin name can't interleave on the staging
+        //      and destination directories.
+        //
+        // The `InstallInFlight` guard decrements the refcount on drop; the
+        // local `_serializer_guard` releases the lock on drop. Both run
+        // even on error or panic, so the state never leaks.
+        let state = self.get_or_create_install_state(&name);
+        state.count.fetch_add(1, Ordering::SeqCst);
+        let _in_flight = InstallInFlight {
+            state: state.clone(),
+        };
+        let _serializer_guard = state
+            .serializer
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        // Ensure any prior in-memory instance is cleared before we touch
+        // the filesystem. Doing this inside the suppression window (after
+        // the refcount bump) closes the gap that would otherwise let a
+        // delayed watcher event re-insert the plugin between an external
+        // `unload()` call and the start of this function, causing the
+        // final `self.load()` below to fail with `AlreadyExists`.
+        //
+        // Only swallow `NotFound` — other errors (poisoned mutex, etc.)
+        // must abort the install to avoid leaving the in-memory state
+        // half-mutated.
+        match self.unload(&name) {
+            Ok(()) | Err(DomainError::NotFound(_)) => {}
+            Err(e) => return Err(e),
+        }
 
         // Copy staged files to the permanent plugins directory
-        let dest_dir = self.plugins_dir.join(name);
+        let dest_dir = self.plugins_dir.join(&name);
         if dest_dir.exists() {
             std::fs::remove_dir_all(&dest_dir).map_err(|e| {
                 DomainError::PluginError(format!(
@@ -352,6 +479,37 @@ description = "Test plugin"
         let wasm_bytes: &[u8] = &[0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00];
         let mut wf = std::fs::File::create(plugin_dir.join(format!("{name}.wasm"))).unwrap();
         wf.write_all(wasm_bytes).unwrap();
+    }
+
+    #[test]
+    fn test_overlapping_installs_keep_suppression_active_until_last_drop() {
+        // The reason we track a refcount rather than a boolean flag: two
+        // concurrent installs of the same plugin must both hold the
+        // watcher's suppression active. If the first install's guard
+        // cleared the flag while the second is still running, watcher
+        // events would resume processing and could race the second
+        // install's final `self.load()`.
+        let tmp = TempDir::new().unwrap();
+        let loader = ExtismPluginLoader::new(
+            tmp.path().to_path_buf(),
+            Arc::new(SharedHostResources::new()),
+        )
+        .unwrap();
+
+        loader.mark_install_in_progress_for_testing("my-plugin");
+        loader.mark_install_in_progress_for_testing("my-plugin");
+        assert!(loader.is_install_in_progress("my-plugin"));
+
+        // First install completes.
+        loader.unmark_install_in_progress_for_testing("my-plugin");
+        assert!(
+            loader.is_install_in_progress("my-plugin"),
+            "suppression must stay active while a second install is still running"
+        );
+
+        // Second install completes — suppression clears.
+        loader.unmark_install_in_progress_for_testing("my-plugin");
+        assert!(!loader.is_install_in_progress("my-plugin"));
     }
 
     #[test]
