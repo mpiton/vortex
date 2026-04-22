@@ -60,46 +60,56 @@ fn handle_fs_event(event: &notify::Event, loader: &ExtismPluginLoader) {
     }
 }
 
-/// Identify the plugin name a filesystem event refers to, if any.
+/// Identify the plugin name when the event path points at one of the
+/// two well-known *plugin files*: `plugins_dir/<name>/plugin.toml` or
+/// `plugins_dir/<name>/<something>.wasm`. Anything else (nested paths,
+/// siblings of a plugin dir, arbitrary files directly under
+/// `plugins_dir`) returns `None`.
 ///
-/// Only two path shapes qualify, both anchored directly under
-/// `plugins_dir` so an event deeper in the tree can't unload a plugin
-/// whose leaf name coincidentally matches some nested directory:
-///
-/// - **File event**: `plugins_dir/<name>/plugin.toml` or
-///   `plugins_dir/<name>/<something>.wasm`. The plugin name is the
-///   parent directory's file name.
-/// - **Folder event**: `plugins_dir/<name>` itself. The plugin name is
-///   the path's own file name. Used for backends that emit a single
-///   `Remove(Folder)` when a plugin directory is deleted (macOS
-///   FSEvents, sometimes Windows ReadDirectoryChangesW).
-///
-/// Any other path (nested subdirectories, sibling files in
-/// `plugins_dir`, paths outside `plugins_dir`) returns `None`.
-fn plugin_name_from_event_path<'a>(
+/// This is the restrictive shape — required for upsert events, where a
+/// folder creation has nothing loadable by itself and would only log
+/// noise.
+fn plugin_name_from_plugin_file<'a>(
     path: &'a std::path::Path,
     plugins_dir: &std::path::Path,
 ) -> Option<&'a str> {
-    if is_plugin_toml(path) || is_wasm_file(path) {
-        let parent = path.parent()?;
-        if parent.parent() == Some(plugins_dir) {
-            return parent.file_name().and_then(|n| n.to_str());
-        }
+    if !(is_plugin_toml(path) || is_wasm_file(path)) {
+        return None;
     }
+    let parent = path.parent()?;
+    if parent.parent() == Some(plugins_dir) {
+        parent.file_name().and_then(|n| n.to_str())
+    } else {
+        None
+    }
+}
+
+/// Identify the plugin name when the event path is the plugin
+/// directory itself (`plugins_dir/<name>`). Needed for backends that
+/// emit a single `Remove(Folder)` when a plugin is deleted (macOS
+/// FSEvents, sometimes Windows ReadDirectoryChangesW) instead of per-
+/// file events.
+fn plugin_name_from_plugin_dir<'a>(
+    path: &'a std::path::Path,
+    plugins_dir: &std::path::Path,
+) -> Option<&'a str> {
     if path.parent() == Some(plugins_dir) {
-        return path.file_name().and_then(|n| n.to_str());
+        path.file_name().and_then(|n| n.to_str())
+    } else {
+        None
     }
-    None
 }
 
 /// Handle a CREATE/MODIFY event for a plugin file.
 ///
-/// Reloads the plugin whose directory contains the changed file. Paths
-/// that aren't a plugin file directly under `plugins_dir/<name>/` are
-/// ignored.
+/// Only reloads when the event is on a `plugin.toml` or `*.wasm`
+/// directly under a plugin directory. Folder-level events (e.g.
+/// `plugins_dir/<name>` being `mkdir`'d before any plugin file is
+/// written) don't carry any loadable content yet; ignoring them keeps
+/// the log quiet and avoids pointless `parse_manifest` failures.
 fn handle_upsert_event(path: &std::path::Path, loader: &ExtismPluginLoader) {
     let plugins_dir = loader.plugins_dir();
-    let Some(name) = plugin_name_from_event_path(path, plugins_dir) else {
+    let Some(name) = plugin_name_from_plugin_file(path, plugins_dir) else {
         return;
     };
 
@@ -133,16 +143,18 @@ fn handle_upsert_event(path: &std::path::Path, loader: &ExtismPluginLoader) {
     }
 }
 
-/// Handle a REMOVE event. Uses the same direct-under-`plugins_dir`
-/// constraint as the upsert branch so a remove of a nested directory
-/// whose leaf name happens to match a loaded plugin can't unload it.
-///
-/// Accepts both file-level removes (`plugins_dir/<name>/plugin.toml`
-/// etc. — inotify) and folder-level removes (`plugins_dir/<name>` —
-/// FSEvents, sometimes ReadDirectoryChangesW).
+/// Handle a REMOVE event. Accepts both file-level removes
+/// (`plugins_dir/<name>/plugin.toml` etc. — typical of inotify) and
+/// folder-level removes (`plugins_dir/<name>` itself — FSEvents,
+/// sometimes ReadDirectoryChangesW). The direct-under-`plugins_dir`
+/// constraint on both shapes keeps a remove of a nested directory
+/// whose leaf name coincidentally matches a loaded plugin from
+/// unloading it by mistake.
 fn handle_remove_event(path: &std::path::Path, loader: &ExtismPluginLoader) {
     let plugins_dir = loader.plugins_dir();
-    let Some(name) = plugin_name_from_event_path(path, plugins_dir) else {
+    let Some(name) = plugin_name_from_plugin_file(path, plugins_dir)
+        .or_else(|| plugin_name_from_plugin_dir(path, plugins_dir))
+    else {
         return;
     };
 
@@ -275,6 +287,38 @@ description = "Test plugin"
 
         handle_fs_event(&event, &loader);
         assert!(!loader.registry().contains("doomed-plugin"));
+    }
+
+    #[test]
+    fn test_handle_fs_event_upsert_ignores_non_plugin_file_events() {
+        // A CREATE event for a path directly under plugins_dir that
+        // isn't a plugin file (e.g. a stray `.txt` a user dropped in)
+        // must not trigger the reload logic. The previous code used the
+        // folder-fallback candidate for upserts too and would have fed
+        // "stray.txt" through parse_manifest, logging a warning.
+        let tmp = TempDir::new().unwrap();
+        let loader = make_loader(tmp.path());
+        // Plug-in dir exists with a valid plugin so we'd notice if the
+        // handler reloaded the wrong thing.
+        setup_plugin_dir(tmp.path(), "real-plugin");
+
+        let stray = tmp.path().join("stray.txt");
+        std::fs::write(&stray, "not a plugin").unwrap();
+        let event = notify::Event {
+            kind: EventKind::Create(CreateKind::File),
+            paths: vec![stray],
+            attrs: Default::default(),
+        };
+
+        handle_fs_event(&event, &loader);
+        assert!(
+            !loader.registry().contains("stray.txt"),
+            "non-plugin file events must not enter the reload path"
+        );
+        assert!(
+            !loader.registry().contains("real-plugin"),
+            "the stray file must not reload unrelated plugins"
+        );
     }
 
     #[test]
