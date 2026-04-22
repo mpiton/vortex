@@ -20,7 +20,15 @@ pub struct SharedHostResources {
 
 impl SharedHostResources {
     fn http_client_builder(timeout: Duration) -> reqwest::blocking::ClientBuilder {
+        // Match the async download client's User-Agent. reqwest's default
+        // (`reqwest/<version>`) triggers bot-detection on some CDNs that
+        // serve an HTML stub without the player/config payload back —
+        // observed on Vimeo, which returned 1.6 KB stubs instead of the
+        // 26 KB embed page when the default UA was used. A named UA also
+        // gives the remote side a way to identify traffic from Vortex
+        // rather than generic scripted clients.
         reqwest::blocking::Client::builder()
+            .user_agent("Vortex/0.1")
             .redirect(reqwest::redirect::Policy::none())
             .timeout(timeout)
     }
