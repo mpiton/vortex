@@ -4,7 +4,6 @@ use crate::application::command_bus::CommandBus;
 use crate::application::commands::store_refresh::read_cache;
 use crate::application::error::AppError;
 use crate::application::read_models::plugin_store_view::PluginStoreEntryDto;
-use crate::domain::error::DomainError;
 use crate::domain::model::plugin_store::{PluginStoreEntry, PluginStoreStatus};
 
 pub struct StoreInstallCommand {
@@ -96,24 +95,13 @@ impl CommandBus {
             .map_err(|e| AppError::Plugin(format!("download task failed: {e}")))?
             .map_err(|e| AppError::Plugin(e.to_string()))?;
 
-        // Unload any prior in-memory instance so re-install is idempotent.
-        // Without this, a plugin already loaded by the file watcher (on
-        // startup) or by a prior successful install in the same session
-        // makes the DashMap insert in `load()` fail with AlreadyExists,
-        // even though the UI (driven by the cache) still shows the plugin
-        // as "not_installed" because the cache hasn't been refreshed.
-        //
-        // Only swallow `NotFound` — other loader failures (a corrupted
-        // registry, a poisoned mutex) must abort install to avoid leaving
-        // the in-memory state half-mutated.
-        if let Err(e) = self.plugin_loader().unload(&cmd.name)
-            && !matches!(e, DomainError::NotFound(_))
-        {
-            return Err(AppError::from(e));
-        }
-
-        // Parse manifest from the downloaded directory and load via the plugin loader.
-        // Uses load_from_dir which calls parse_manifest internally (adapter concern).
+        // Parse manifest from the downloaded directory and load via the
+        // plugin loader. `load_from_dir` performs its own idempotent
+        // unload inside the install-in-progress suppression window, so
+        // the handler no longer does an explicit pre-unload here — doing
+        // it outside the window would leave a narrow gap during which a
+        // delayed watcher event could re-insert the plugin and cause the
+        // final `load()` to fail with `AlreadyExists`.
         let loader = self.plugin_loader_arc();
         let staging_for_cleanup = plugin_dir.clone();
         tokio::task::spawn_blocking(move || loader.load_from_dir(&plugin_dir))

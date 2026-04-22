@@ -45,66 +45,105 @@ impl PluginWatcher {
 }
 
 fn handle_fs_event(event: &notify::Event, loader: &ExtismPluginLoader) {
-    for path in &event.paths {
-        if !(is_plugin_toml(path) || is_wasm_file(path)) {
-            continue;
-        }
-        let Some(plugin_dir) = path.parent() else {
-            continue;
-        };
-        let Some(dir_name) = plugin_dir.file_name().and_then(|n| n.to_str()) else {
-            continue;
-        };
-
-        // Skip watcher events for a plugin while its store install is in
-        // flight. The install handler owns the load/unload lifecycle in
-        // that window; reacting here would race its final `self.load()`
-        // and could leave the plugin unloaded despite a success toast.
-        if loader.is_install_in_progress(dir_name) {
-            tracing::debug!(
-                plugin = %dir_name,
-                kind = ?event.kind,
-                "skipping watcher event while install is in flight",
-            );
-            continue;
-        }
-
-        match event.kind {
-            EventKind::Create(_) | EventKind::Modify(_) => {
-                tracing::info!(
-                    "plugin file changed, attempting load from {}",
-                    plugin_dir.display()
-                );
-                match parse_manifest(plugin_dir) {
-                    Ok((manifest, _)) => {
-                        let name = manifest.info().name().to_string();
-                        // Unload first if present (reload case). Ignore NotFound.
-                        let _ = loader.unload(&name);
-                        if let Err(e) = loader.load(&manifest) {
-                            tracing::warn!("failed to load plugin '{name}': {e}");
-                        } else {
-                            tracing::info!("plugin '{name}' loaded");
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            "failed to parse manifest at {}: {e}",
-                            plugin_dir.display()
-                        );
-                    }
-                }
+    match event.kind {
+        EventKind::Create(_) | EventKind::Modify(_) => {
+            for path in &event.paths {
+                handle_upsert_event(path, loader);
             }
-            EventKind::Remove(_) => {
-                // Convention: plugin directory name matches the plugin's
-                // `name` field in plugin.toml. On removal, the toml may
-                // already be gone so we rely on the directory name.
-                tracing::info!("plugin file removed, unloading '{dir_name}'");
-                if let Err(e) = loader.unload(dir_name) {
-                    tracing::debug!("unload '{dir_name}' after removal: {e}");
-                }
-            }
-            _ => {}
         }
+        EventKind::Remove(_) => {
+            for path in &event.paths {
+                handle_remove_event(path, loader);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Handle a CREATE/MODIFY event for a `plugin.toml` or `*.wasm` file.
+///
+/// Reloads the plugin whose directory contains the changed file. Paths
+/// that aren't a plugin file are ignored.
+fn handle_upsert_event(path: &std::path::Path, loader: &ExtismPluginLoader) {
+    if !(is_plugin_toml(path) || is_wasm_file(path)) {
+        return;
+    }
+    let Some(plugin_dir) = path.parent() else {
+        return;
+    };
+    let Some(dir_name) = plugin_dir.file_name().and_then(|n| n.to_str()) else {
+        return;
+    };
+
+    if loader.is_install_in_progress(dir_name) {
+        tracing::debug!(
+            plugin = %dir_name,
+            "skipping watcher upsert while install is in flight",
+        );
+        return;
+    }
+
+    tracing::info!(
+        "plugin file changed, attempting load from {}",
+        plugin_dir.display()
+    );
+    match parse_manifest(plugin_dir) {
+        Ok((manifest, _)) => {
+            let name = manifest.info().name().to_string();
+            // Unload first if present (reload case). Ignore NotFound.
+            let _ = loader.unload(&name);
+            if let Err(e) = loader.load(&manifest) {
+                tracing::warn!("failed to load plugin '{name}': {e}");
+            } else {
+                tracing::info!("plugin '{name}' loaded");
+            }
+        }
+        Err(e) => {
+            tracing::warn!("failed to parse manifest at {}: {e}", plugin_dir.display());
+        }
+    }
+}
+
+/// Handle a REMOVE event. Tries both shapes the underlying backend may
+/// deliver:
+///
+/// - **Per-file remove** (Linux inotify for files inside a watched dir):
+///   `path = plugins/<name>/plugin.toml` or `…/<name>.wasm`. The plugin
+///   name is the **parent** directory's name.
+/// - **Folder-level remove** (macOS FSEvents, sometimes Windows
+///   ReadDirectoryChangesW): `path = plugins/<name>/`, no per-file
+///   events are emitted. The plugin name is the path's **own** last
+///   segment.
+///
+/// Trying both candidates avoids leaving a plugin loaded when the
+/// backend coalesces the event into a single folder removal. Extra
+/// calls are cheap — `unload` returns `NotFound` when the candidate
+/// doesn't name a registered plugin, which we log at debug level.
+fn handle_remove_event(path: &std::path::Path, loader: &ExtismPluginLoader) {
+    let file_candidate = (is_plugin_toml(path) || is_wasm_file(path))
+        .then(|| {
+            path.parent()
+                .and_then(|p| p.file_name())
+                .and_then(|n| n.to_str())
+        })
+        .flatten();
+    let folder_candidate = path.file_name().and_then(|n| n.to_str());
+
+    let Some(name) = file_candidate.or(folder_candidate) else {
+        return;
+    };
+
+    if loader.is_install_in_progress(name) {
+        tracing::debug!(
+            plugin = %name,
+            "skipping watcher remove while install is in flight",
+        );
+        return;
+    }
+
+    match loader.unload(name) {
+        Ok(()) => tracing::info!("plugin removed, unloaded '{name}'"),
+        Err(e) => tracing::debug!("unload '{name}' after removal: {e}"),
     }
 }
 
@@ -223,6 +262,30 @@ description = "Test plugin"
 
         handle_fs_event(&event, &loader);
         assert!(!loader.registry().contains("doomed-plugin"));
+    }
+
+    #[test]
+    fn test_handle_fs_event_remove_folder_unloads_plugin() {
+        // macOS FSEvents (and occasionally Windows ReadDirectoryChangesW) emit
+        // a single Remove(Folder) event for the plugin directory itself rather
+        // than per-file removes. The watcher must still unload the plugin in
+        // that case.
+        let tmp = TempDir::new().unwrap();
+        setup_plugin_dir(tmp.path(), "folder-doomed");
+        let loader = make_loader(tmp.path());
+
+        loader.load(&make_manifest_for("folder-doomed")).unwrap();
+        assert!(loader.registry().contains("folder-doomed"));
+
+        let plugin_dir = tmp.path().join("folder-doomed");
+        let event = notify::Event {
+            kind: EventKind::Remove(RemoveKind::Folder),
+            paths: vec![plugin_dir],
+            attrs: Default::default(),
+        };
+
+        handle_fs_event(&event, &loader);
+        assert!(!loader.registry().contains("folder-doomed"));
     }
 
     #[test]
