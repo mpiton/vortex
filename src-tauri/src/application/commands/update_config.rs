@@ -296,6 +296,7 @@ mod tests {
             Arc::new(StubCredStore),
             Arc::new(StubClipboard),
             Arc::new(FakeArchiveExtractor),
+            Arc::new(crate::application::test_support::NoopHistoryRepo),
             None,
         )
     }

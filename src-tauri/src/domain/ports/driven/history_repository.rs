@@ -4,7 +4,7 @@
 
 use crate::domain::error::DomainError;
 use crate::domain::model::download::DownloadId;
-use crate::domain::model::views::HistoryEntry;
+use crate::domain::model::views::{HistoryEntry, HistoryFilter, HistorySort};
 
 /// Persists and queries download history.
 ///
@@ -20,6 +20,34 @@ pub trait HistoryRepository: Send + Sync {
 
     /// Find history entries for a specific download.
     fn find_by_download(&self, id: DownloadId) -> Result<Vec<HistoryEntry>, DomainError>;
+
+    /// List history entries with optional filter, sort and pagination.
+    ///
+    /// Defaults: sort by `completed_at DESC`, no pagination.
+    fn list(
+        &self,
+        filter: Option<HistoryFilter>,
+        sort: Option<HistorySort>,
+        limit: Option<usize>,
+        offset: Option<usize>,
+    ) -> Result<Vec<HistoryEntry>, DomainError>;
+
+    /// Full-text search across file name, URL and destination path.
+    ///
+    /// Returns entries where any of those columns contain `query`
+    /// (case-insensitive).
+    fn search(&self, query: &str) -> Result<Vec<HistoryEntry>, DomainError>;
+
+    /// Find a single history entry by its primary key.
+    fn find_by_id(&self, id: u64) -> Result<Option<HistoryEntry>, DomainError>;
+
+    /// Delete a single history entry by its primary key.
+    ///
+    /// Returns `true` if an entry was removed.
+    fn delete_by_id(&self, id: u64) -> Result<bool, DomainError>;
+
+    /// Delete every history entry. Returns the number of rows removed.
+    fn delete_all(&self) -> Result<u64, DomainError>;
 
     /// Delete history entries older than the given Unix timestamp in seconds.
     ///

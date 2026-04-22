@@ -13,24 +13,30 @@ use crate::adapters::driven::logging::download_log_store::DownloadLogStore;
 use crate::application::command_bus::CommandBus;
 use crate::application::commands::store_install::{StoreInstallCommand, StoreUpdateCommand};
 use crate::application::commands::{
-    CancelDownloadCommand, ClearDownloadsByStateCommand, DisablePluginCommand, EnablePluginCommand,
-    InstallPluginCommand, PauseAllDownloadsCommand, PauseDownloadCommand, RemoveDownloadCommand,
-    ResolveLinksCommand, ResolvedLinkDto, ResumeAllDownloadsCommand, ResumeDownloadCommand,
-    RetryDownloadCommand, SetPriorityCommand, StartDownloadCommand, UninstallPluginCommand,
-    UpdateConfigCommand,
+    CancelDownloadCommand, ClearDownloadsByStateCommand, ClearHistoryCommand,
+    DeleteHistoryEntryCommand, DisablePluginCommand, EnablePluginCommand, ExportHistoryCommand,
+    ExportHistoryFormat, InstallPluginCommand, PauseAllDownloadsCommand, PauseDownloadCommand,
+    PurgeHistoryCommand, RemoveDownloadCommand, ResolveLinksCommand, ResolvedLinkDto,
+    ResumeAllDownloadsCommand, ResumeDownloadCommand, RetryDownloadCommand, SetPriorityCommand,
+    StartDownloadCommand, UninstallPluginCommand, UpdateConfigCommand,
 };
 use crate::application::error::AppError;
 use crate::application::queries::{
-    CountDownloadsByStateQuery, GetDownloadDetailQuery, GetDownloadsQuery, ListPluginsQuery,
+    CountDownloadsByStateQuery, GetDownloadDetailQuery, GetDownloadsQuery, GetHistoryEntryQuery,
+    ListHistoryQuery, ListPluginsQuery, SearchHistoryQuery,
 };
 use crate::application::query_bus::QueryBus;
 use crate::application::read_models::download_detail_view::DownloadDetailViewDto;
 use crate::application::read_models::download_view::DownloadViewDto;
+use crate::application::read_models::history_view::HistoryViewDto;
 use crate::application::read_models::plugin_store_view::PluginStoreEntryDto;
 use crate::application::read_models::plugin_view::PluginViewDto;
 use crate::domain::model::config::{AppConfig, ConfigPatch};
 use crate::domain::model::download::{DownloadId, DownloadState};
-use crate::domain::model::views::{DownloadFilter, SortDirection, SortField, SortOrder};
+use crate::domain::model::views::{
+    DownloadFilter, HistoryFilter, HistorySort, HistorySortField, SortDirection, SortField,
+    SortOrder,
+};
 use crate::domain::ports::driven::PluginLoader;
 
 /// Shared application state managed by Tauri.
@@ -1856,6 +1862,164 @@ fn read_available_space(path: &Path) -> Option<u64> {
 #[cfg(not(any(unix, windows)))]
 fn read_available_space(_: &Path) -> Option<u64> {
     None
+}
+
+// ── History IPC ─────────────────────────────────────────────────────
+
+fn parse_history_sort_field(value: &str) -> HistorySortField {
+    match value {
+        "fileName" => HistorySortField::FileName,
+        "totalBytes" => HistorySortField::TotalBytes,
+        "durationSeconds" => HistorySortField::DurationSeconds,
+        _ => HistorySortField::CompletedAt,
+    }
+}
+
+fn parse_history_sort(
+    sort_field: Option<String>,
+    sort_direction: Option<String>,
+) -> Option<HistorySort> {
+    sort_field.map(|field| HistorySort {
+        field: parse_history_sort_field(&field),
+        direction: sort_direction
+            .as_deref()
+            .map(parse_sort_direction)
+            .unwrap_or_default(),
+    })
+}
+
+fn build_history_filter(
+    date_from: Option<u64>,
+    date_to: Option<u64>,
+    hostname: Option<String>,
+) -> Option<HistoryFilter> {
+    if date_from.is_none() && date_to.is_none() && hostname.is_none() {
+        None
+    } else {
+        Some(HistoryFilter {
+            date_from,
+            date_to,
+            hostname,
+        })
+    }
+}
+
+fn parse_export_format(value: &str) -> Result<ExportHistoryFormat, String> {
+    match value.to_ascii_lowercase().as_str() {
+        "csv" => Ok(ExportHistoryFormat::Csv),
+        "json" => Ok(ExportHistoryFormat::Json),
+        other => Err(format!("unsupported export format: {other}")),
+    }
+}
+
+fn current_unix_seconds() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn history_list(
+    state: State<'_, AppState>,
+    date_from: Option<u64>,
+    date_to: Option<u64>,
+    hostname: Option<String>,
+    sort_field: Option<String>,
+    sort_direction: Option<String>,
+    limit: Option<usize>,
+    offset: Option<usize>,
+) -> Result<Vec<HistoryViewDto>, String> {
+    let query = ListHistoryQuery {
+        filter: build_history_filter(date_from, date_to, hostname),
+        sort: parse_history_sort(sort_field, sort_direction),
+        limit,
+        offset,
+    };
+    state
+        .query_bus
+        .handle_list_history(query)
+        .await
+        .map(|entries| entries.into_iter().map(HistoryViewDto::from).collect())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn history_search(
+    state: State<'_, AppState>,
+    q: String,
+) -> Result<Vec<HistoryViewDto>, String> {
+    state
+        .query_bus
+        .handle_search_history(SearchHistoryQuery { query: q })
+        .await
+        .map(|entries| entries.into_iter().map(HistoryViewDto::from).collect())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn history_get_by_id(
+    state: State<'_, AppState>,
+    id: u64,
+) -> Result<HistoryViewDto, String> {
+    state
+        .query_bus
+        .handle_get_history_entry(GetHistoryEntryQuery { id })
+        .await
+        .map(HistoryViewDto::from)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn history_export(
+    state: State<'_, AppState>,
+    format: String,
+    path: String,
+) -> Result<usize, String> {
+    let format = parse_export_format(&format)?;
+    state
+        .command_bus
+        .handle_export_history(ExportHistoryCommand {
+            format,
+            path: PathBuf::from(path),
+        })
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn history_delete_entry(state: State<'_, AppState>, id: u64) -> Result<(), String> {
+    state
+        .command_bus
+        .handle_delete_history_entry(DeleteHistoryEntryCommand { id })
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn history_clear(state: State<'_, AppState>) -> Result<u64, String> {
+    state
+        .command_bus
+        .handle_clear_history(ClearHistoryCommand)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn history_purge_older_than(
+    state: State<'_, AppState>,
+    days: u32,
+) -> Result<u64, String> {
+    let now = current_unix_seconds();
+    let cutoff = now.saturating_sub(u64::from(days) * 86_400);
+    state
+        .command_bus
+        .handle_purge_history(PurgeHistoryCommand {
+            before_timestamp: cutoff,
+        })
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]

@@ -10,3 +10,5 @@ pub mod queries;
 pub mod query_bus;
 pub mod read_models;
 pub mod services;
+#[cfg(test)]
+pub(crate) mod test_support;

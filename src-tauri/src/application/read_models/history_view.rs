@@ -7,6 +7,7 @@ use crate::domain::model::views::HistoryEntry;
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HistoryViewDto {
+    pub entry_id: u64,
     pub download_id: String,
     pub file_name: String,
     pub url: String,
@@ -20,6 +21,7 @@ pub struct HistoryViewDto {
 impl From<HistoryEntry> for HistoryViewDto {
     fn from(e: HistoryEntry) -> Self {
         Self {
+            entry_id: e.id,
             download_id: e.download_id.0.to_string(),
             file_name: e.file_name,
             url: e.url,
@@ -41,6 +43,7 @@ mod tests {
     #[test]
     fn test_history_view_dto_from_domain() {
         let entry = HistoryEntry {
+            id: 7,
             download_id: DownloadId(99),
             file_name: "movie.mkv".to_string(),
             url: "https://example.com/movie.mkv".to_string(),
@@ -51,6 +54,7 @@ mod tests {
             destination_path: "/home/user/Downloads/movie.mkv".to_string(),
         };
         let dto = HistoryViewDto::from(entry);
+        assert_eq!(dto.entry_id, 7);
         assert_eq!(dto.download_id, "99");
         assert_eq!(dto.file_name, "movie.mkv");
         assert_eq!(dto.total_bytes, 2_000_000);
@@ -59,6 +63,7 @@ mod tests {
     #[test]
     fn test_history_view_dto_serializes_to_camel_case() {
         let dto = HistoryViewDto {
+            entry_id: 1,
             download_id: "1".to_string(),
             file_name: "file.zip".to_string(),
             url: "https://example.com".to_string(),
@@ -69,6 +74,7 @@ mod tests {
             destination_path: "/tmp/file.zip".to_string(),
         };
         let value = serde_json::to_value(&dto).unwrap();
+        assert!(value.get("entryId").is_some());
         assert!(value.get("downloadId").is_some());
         assert!(value.get("fileName").is_some());
         assert!(value.get("totalBytes").is_some());

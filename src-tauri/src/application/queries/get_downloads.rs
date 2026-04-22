@@ -29,8 +29,8 @@ mod tests {
     use crate::domain::model::download::{DownloadId, DownloadState};
     use crate::domain::model::plugin::PluginInfo;
     use crate::domain::model::views::{
-        DownloadDetailView, DownloadFilter, DownloadView, HistoryEntry, SortOrder, StateCountMap,
-        StatsView,
+        DownloadDetailView, DownloadFilter, DownloadView, HistoryEntry, HistoryFilter, HistorySort,
+        SortOrder, StateCountMap, StatsView,
     };
     use crate::domain::ports::driven::{
         ArchiveExtractor, DownloadReadRepository, HistoryRepository, PluginReadRepository,
@@ -133,6 +133,27 @@ mod tests {
         }
         fn find_by_download(&self, _id: DownloadId) -> Result<Vec<HistoryEntry>, DomainError> {
             Ok(vec![])
+        }
+        fn list(
+            &self,
+            _filter: Option<HistoryFilter>,
+            _sort: Option<HistorySort>,
+            _limit: Option<usize>,
+            _offset: Option<usize>,
+        ) -> Result<Vec<HistoryEntry>, DomainError> {
+            Ok(vec![])
+        }
+        fn search(&self, _query: &str) -> Result<Vec<HistoryEntry>, DomainError> {
+            Ok(vec![])
+        }
+        fn find_by_id(&self, _id: u64) -> Result<Option<HistoryEntry>, DomainError> {
+            Ok(None)
+        }
+        fn delete_by_id(&self, _id: u64) -> Result<bool, DomainError> {
+            Ok(false)
+        }
+        fn delete_all(&self) -> Result<u64, DomainError> {
+            Ok(0)
         }
         fn delete_older_than(&self, _before: u64) -> Result<u64, DomainError> {
             Ok(0)

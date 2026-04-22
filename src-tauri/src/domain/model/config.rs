@@ -174,45 +174,6 @@ pub struct ConfigPatch {
     pub locale: Option<String>,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_default_app_config_matches_prd_6_10() {
-        let config = AppConfig::default();
-
-        // Domain stays pure: adapter layer hydrates download_dir.
-        assert_eq!(config.download_dir, None);
-
-        // General
-        assert!(
-            config.auto_extract,
-            "PRD §6.10: auto_extract defaults to ON"
-        );
-
-        // Downloads
-        assert_eq!(config.max_concurrent_downloads, 4);
-        assert_eq!(config.max_retries, 5);
-        assert_eq!(config.retry_delay_seconds, 10);
-        assert!(config.verify_checksums);
-
-        // Browser integration
-        assert_eq!(config.min_file_size_mb, 1.0);
-
-        // Remote access — protocols enabled by PRD, but the gatekeeper
-        // (`web_interface_enabled`) stays off and `api_key` empty in the
-        // domain. The adapter layer is responsible for hydrating a generated
-        // key on first launch; we lock the bare-domain defaults here so a
-        // future change cannot accidentally expose the server with no auth.
-        assert!(!config.web_interface_enabled);
-        assert_eq!(config.web_interface_port, 9876);
-        assert!(config.rest_api_enabled);
-        assert!(config.websocket_enabled);
-        assert!(config.api_key.is_empty());
-    }
-}
-
 /// Apply a `ConfigPatch` to an `AppConfig`, updating only fields
 /// that are `Some(...)`. Pure function — no I/O.
 pub fn apply_patch(config: &mut AppConfig, patch: &ConfigPatch) {
@@ -322,5 +283,44 @@ pub fn apply_patch(config: &mut AppConfig, patch: &ConfigPatch) {
     }
     if let Some(ref v) = patch.locale {
         config.locale = v.clone();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_default_app_config_matches_prd_6_10() {
+        let config = AppConfig::default();
+
+        // Domain stays pure: adapter layer hydrates download_dir.
+        assert_eq!(config.download_dir, None);
+
+        // General
+        assert!(
+            config.auto_extract,
+            "PRD §6.10: auto_extract defaults to ON"
+        );
+
+        // Downloads
+        assert_eq!(config.max_concurrent_downloads, 4);
+        assert_eq!(config.max_retries, 5);
+        assert_eq!(config.retry_delay_seconds, 10);
+        assert!(config.verify_checksums);
+
+        // Browser integration
+        assert_eq!(config.min_file_size_mb, 1.0);
+
+        // Remote access — protocols enabled by PRD, but the gatekeeper
+        // (`web_interface_enabled`) stays off and `api_key` empty in the
+        // domain. The adapter layer is responsible for hydrating a generated
+        // key on first launch; we lock the bare-domain defaults here so a
+        // future change cannot accidentally expose the server with no auth.
+        assert!(!config.web_interface_enabled);
+        assert_eq!(config.web_interface_port, 9876);
+        assert!(config.rest_api_enabled);
+        assert!(config.websocket_enabled);
+        assert!(config.api_key.is_empty());
     }
 }

@@ -57,9 +57,11 @@ pub use adapters::driving::tauri_ipc::{
     download_clear_completed, download_clear_failed, download_count_by_state, download_detail,
     download_list, download_logs, download_media_start, download_pause, download_pause_all,
     download_remove, download_resume, download_resume_all, download_retry, download_set_priority,
-    download_start, link_resolve, plugin_disable, plugin_enable, plugin_install, plugin_list,
-    plugin_store_install, plugin_store_list, plugin_store_refresh, plugin_store_update,
-    plugin_uninstall, settings_get, settings_update, status_bar_get,
+    download_start, history_clear, history_delete_entry, history_export, history_get_by_id,
+    history_list, history_purge_older_than, history_search, link_resolve, plugin_disable,
+    plugin_enable, plugin_install, plugin_list, plugin_store_install, plugin_store_list,
+    plugin_store_refresh, plugin_store_update, plugin_uninstall, settings_get, settings_update,
+    status_bar_get,
 };
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -233,6 +235,7 @@ pub fn run() {
                 credential_store,
                 clipboard_observer,
                 archive_extractor.clone(),
+                history_repo.clone(),
                 Some(store_client),
             ));
 
@@ -324,6 +327,13 @@ pub fn run() {
             status_bar_get,
             command_get_media_metadata,
             download_media_start,
+            history_list,
+            history_search,
+            history_get_by_id,
+            history_export,
+            history_delete_entry,
+            history_clear,
+            history_purge_older_than,
         ])
         .run(tauri::generate_context!())
         // Tauri's run() has no meaningful recovery path — panic is intentional here

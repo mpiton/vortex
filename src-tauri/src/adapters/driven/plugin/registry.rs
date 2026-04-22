@@ -234,6 +234,6 @@ mod tests {
         registry.insert("plug-a".to_string(), make_loaded("plug-a"));
 
         let result = registry.function_exists("plug-a", "extract_links");
-        assert_eq!(result.unwrap(), false);
+        assert!(!result.unwrap());
     }
 }

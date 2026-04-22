@@ -5,10 +5,13 @@
 
 mod cancel_download;
 mod clear_downloads_by_state;
+mod delete_history;
+mod export_history;
 mod extract_archive;
 mod install_plugin;
 mod pause_all;
 mod pause_download;
+mod purge_history;
 mod register_local_file;
 mod remove_download;
 mod resolve_links;
@@ -148,6 +151,40 @@ pub struct ExtractArchiveCommand {
     pub dest_dir: Option<PathBuf>,
 }
 impl Command for ExtractArchiveCommand {}
+
+/// Serialization format for history exports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExportHistoryFormat {
+    Csv,
+    Json,
+}
+
+/// Write every history entry to `path` using `format`.
+#[derive(Debug)]
+pub struct ExportHistoryCommand {
+    pub format: ExportHistoryFormat,
+    pub path: PathBuf,
+}
+impl Command for ExportHistoryCommand {}
+
+/// Delete a single history entry by its primary key.
+#[derive(Debug)]
+pub struct DeleteHistoryEntryCommand {
+    pub id: u64,
+}
+impl Command for DeleteHistoryEntryCommand {}
+
+/// Purge every history entry.
+#[derive(Debug)]
+pub struct ClearHistoryCommand;
+impl Command for ClearHistoryCommand {}
+
+/// Purge history entries with `completed_at < before_timestamp` (Unix seconds).
+#[derive(Debug)]
+pub struct PurgeHistoryCommand {
+    pub before_timestamp: u64,
+}
+impl Command for PurgeHistoryCommand {}
 
 /// Register an already-downloaded local file as a Completed download.
 ///
