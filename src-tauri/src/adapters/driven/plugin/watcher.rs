@@ -60,42 +60,71 @@ fn handle_fs_event(event: &notify::Event, loader: &ExtismPluginLoader) {
     }
 }
 
-/// Handle a CREATE/MODIFY event for a `plugin.toml` or `*.wasm` file.
+/// Identify the plugin name a filesystem event refers to, if any.
+///
+/// Only two path shapes qualify, both anchored directly under
+/// `plugins_dir` so an event deeper in the tree can't unload a plugin
+/// whose leaf name coincidentally matches some nested directory:
+///
+/// - **File event**: `plugins_dir/<name>/plugin.toml` or
+///   `plugins_dir/<name>/<something>.wasm`. The plugin name is the
+///   parent directory's file name.
+/// - **Folder event**: `plugins_dir/<name>` itself. The plugin name is
+///   the path's own file name. Used for backends that emit a single
+///   `Remove(Folder)` when a plugin directory is deleted (macOS
+///   FSEvents, sometimes Windows ReadDirectoryChangesW).
+///
+/// Any other path (nested subdirectories, sibling files in
+/// `plugins_dir`, paths outside `plugins_dir`) returns `None`.
+fn plugin_name_from_event_path<'a>(
+    path: &'a std::path::Path,
+    plugins_dir: &std::path::Path,
+) -> Option<&'a str> {
+    if is_plugin_toml(path) || is_wasm_file(path) {
+        let parent = path.parent()?;
+        if parent.parent() == Some(plugins_dir) {
+            return parent.file_name().and_then(|n| n.to_str());
+        }
+    }
+    if path.parent() == Some(plugins_dir) {
+        return path.file_name().and_then(|n| n.to_str());
+    }
+    None
+}
+
+/// Handle a CREATE/MODIFY event for a plugin file.
 ///
 /// Reloads the plugin whose directory contains the changed file. Paths
-/// that aren't a plugin file are ignored.
+/// that aren't a plugin file directly under `plugins_dir/<name>/` are
+/// ignored.
 fn handle_upsert_event(path: &std::path::Path, loader: &ExtismPluginLoader) {
-    if !(is_plugin_toml(path) || is_wasm_file(path)) {
-        return;
-    }
-    let Some(plugin_dir) = path.parent() else {
-        return;
-    };
-    let Some(dir_name) = plugin_dir.file_name().and_then(|n| n.to_str()) else {
+    let plugins_dir = loader.plugins_dir();
+    let Some(name) = plugin_name_from_event_path(path, plugins_dir) else {
         return;
     };
 
-    if loader.is_install_in_progress(dir_name) {
+    if loader.is_install_in_progress(name) {
         tracing::debug!(
-            plugin = %dir_name,
+            plugin = %name,
             "skipping watcher upsert while install is in flight",
         );
         return;
     }
 
+    let plugin_dir = plugins_dir.join(name);
     tracing::info!(
         "plugin file changed, attempting load from {}",
         plugin_dir.display()
     );
-    match parse_manifest(plugin_dir) {
+    match parse_manifest(&plugin_dir) {
         Ok((manifest, _)) => {
-            let name = manifest.info().name().to_string();
+            let manifest_name = manifest.info().name().to_string();
             // Unload first if present (reload case). Ignore NotFound.
-            let _ = loader.unload(&name);
+            let _ = loader.unload(&manifest_name);
             if let Err(e) = loader.load(&manifest) {
-                tracing::warn!("failed to load plugin '{name}': {e}");
+                tracing::warn!("failed to load plugin '{manifest_name}': {e}");
             } else {
-                tracing::info!("plugin '{name}' loaded");
+                tracing::info!("plugin '{manifest_name}' loaded");
             }
         }
         Err(e) => {
@@ -104,32 +133,16 @@ fn handle_upsert_event(path: &std::path::Path, loader: &ExtismPluginLoader) {
     }
 }
 
-/// Handle a REMOVE event. Tries both shapes the underlying backend may
-/// deliver:
+/// Handle a REMOVE event. Uses the same direct-under-`plugins_dir`
+/// constraint as the upsert branch so a remove of a nested directory
+/// whose leaf name happens to match a loaded plugin can't unload it.
 ///
-/// - **Per-file remove** (Linux inotify for files inside a watched dir):
-///   `path = plugins/<name>/plugin.toml` or `…/<name>.wasm`. The plugin
-///   name is the **parent** directory's name.
-/// - **Folder-level remove** (macOS FSEvents, sometimes Windows
-///   ReadDirectoryChangesW): `path = plugins/<name>/`, no per-file
-///   events are emitted. The plugin name is the path's **own** last
-///   segment.
-///
-/// Trying both candidates avoids leaving a plugin loaded when the
-/// backend coalesces the event into a single folder removal. Extra
-/// calls are cheap — `unload` returns `NotFound` when the candidate
-/// doesn't name a registered plugin, which we log at debug level.
+/// Accepts both file-level removes (`plugins_dir/<name>/plugin.toml`
+/// etc. — inotify) and folder-level removes (`plugins_dir/<name>` —
+/// FSEvents, sometimes ReadDirectoryChangesW).
 fn handle_remove_event(path: &std::path::Path, loader: &ExtismPluginLoader) {
-    let file_candidate = (is_plugin_toml(path) || is_wasm_file(path))
-        .then(|| {
-            path.parent()
-                .and_then(|p| p.file_name())
-                .and_then(|n| n.to_str())
-        })
-        .flatten();
-    let folder_candidate = path.file_name().and_then(|n| n.to_str());
-
-    let Some(name) = file_candidate.or(folder_candidate) else {
+    let plugins_dir = loader.plugins_dir();
+    let Some(name) = plugin_name_from_event_path(path, plugins_dir) else {
         return;
     };
 
@@ -262,6 +275,40 @@ description = "Test plugin"
 
         handle_fs_event(&event, &loader);
         assert!(!loader.registry().contains("doomed-plugin"));
+    }
+
+    #[test]
+    fn test_handle_fs_event_remove_nested_path_does_not_unload_plugin() {
+        // A remove event for a path nested deeper than
+        // `plugins_dir/<name>/` — even if its leaf happens to match a
+        // loaded plugin — must NOT unload that plugin. The risk comes
+        // from `RecursiveMode::Recursive`: any subdirectory that gets
+        // created then deleted inside a plugin dir could coincidentally
+        // share a plugin's name.
+        let tmp = TempDir::new().unwrap();
+        setup_plugin_dir(tmp.path(), "safe-plugin");
+        let loader = make_loader(tmp.path());
+        loader.load(&make_manifest_for("safe-plugin")).unwrap();
+        assert!(loader.registry().contains("safe-plugin"));
+
+        // plugins/safe-plugin/subdir/safe-plugin — leaf matches the
+        // loaded plugin but the path isn't a direct child of plugins_dir.
+        let nested_path = tmp
+            .path()
+            .join("safe-plugin")
+            .join("subdir")
+            .join("safe-plugin");
+        let event = notify::Event {
+            kind: EventKind::Remove(RemoveKind::Folder),
+            paths: vec![nested_path],
+            attrs: Default::default(),
+        };
+
+        handle_fs_event(&event, &loader);
+        assert!(
+            loader.registry().contains("safe-plugin"),
+            "nested folder remove must not unload a plugin whose name it coincidentally shares"
+        );
     }
 
     #[test]
