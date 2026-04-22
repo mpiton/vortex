@@ -42,7 +42,10 @@ repository           = "https://github.com/mpiton/vortex-mod-vimeo"
 checksum_sha256      = "9fc8917e6e9366e1ef8522fe53a7b45d3a1e7833f7b2f8f8b2b9cf0d2fb7fe61"
 checksum_sha256_toml = "795dddd1d58f5d7c9828c0469e2b1671917027391271dc2ffe01ec53e96a5496"
 official             = true
-min_vortex_version   = "0.1.0"
+# v1.3.0 uses `AdaptiveStreamOnly`, `download_to_file`, and the
+# `run_subprocess` host function — all introduced in Vortex 0.2.0
+# (same reason vortex-mod-youtube above requires 0.2.0).
+min_vortex_version   = "0.2.0"
 
 [[plugin]]
 name                 = "vortex-mod-soundcloud"
