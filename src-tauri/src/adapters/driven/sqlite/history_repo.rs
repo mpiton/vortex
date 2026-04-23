@@ -167,9 +167,15 @@ impl HistoryRepository for SqliteHistoryRepo {
             .min(MAX_HISTORY_PAGE_SIZE);
         let effective_offset = offset.unwrap_or(0);
 
+        // The primary sort column can have ties (e.g. thousands of rows
+        // sharing a completed_at second), so pagination alone is not stable —
+        // OFFSET would skip or duplicate rows across successive pages.
+        // `id` is the primary key and therefore unique, which makes it a safe
+        // deterministic tie-breaker.
         let base_query = history::Entity::find()
             .filter(condition)
-            .order_by(column, order);
+            .order_by(column, order)
+            .order_by(history::Column::Id, Order::Desc);
 
         let Some(host) = hostname_filter else {
             let models = block_on(
@@ -185,12 +191,14 @@ impl HistoryRepository for SqliteHistoryRepo {
         // With a hostname filter we can't delegate offset/limit to SQL — rows
         // are dropped *after* the fetch. Page through the sorted date range
         // MAX_HISTORY_PAGE_SIZE rows at a time, matching in Rust, until we
-        // have enough to satisfy (offset + limit) or the table is exhausted.
-        let want_total = effective_offset.saturating_add(effective_limit);
-        let mut matches: Vec<HistoryEntry> = Vec::new();
+        // have `limit` entries past the caller's offset or the table is
+        // exhausted. Tracking a `skipped` counter keeps memory at O(limit)
+        // instead of O(offset + limit) when callers page deep.
+        let mut matches: Vec<HistoryEntry> = Vec::with_capacity(effective_limit);
+        let mut skipped = 0usize;
         let mut sql_offset: u64 = 0;
         let page_size = MAX_HISTORY_PAGE_SIZE as u64;
-        loop {
+        'outer: loop {
             let page = block_on(
                 base_query
                     .clone()
@@ -205,23 +213,24 @@ impl HistoryRepository for SqliteHistoryRepo {
             }
             for model in page {
                 let entry = model_to_entry(model);
-                if matches_hostname_filter(&entry.url, &host) {
-                    matches.push(entry);
-                    if matches.len() >= want_total {
-                        break;
-                    }
+                if !matches_hostname_filter(&entry.url, &host) {
+                    continue;
+                }
+                if skipped < effective_offset {
+                    skipped += 1;
+                    continue;
+                }
+                matches.push(entry);
+                if matches.len() >= effective_limit {
+                    break 'outer;
                 }
             }
-            if matches.len() >= want_total || (fetched as u64) < page_size {
+            if (fetched as u64) < page_size {
                 break;
             }
             sql_offset = sql_offset.saturating_add(page_size);
         }
-        Ok(matches
-            .into_iter()
-            .skip(effective_offset)
-            .take(effective_limit)
-            .collect())
+        Ok(matches)
     }
 
     fn search(&self, query: &str) -> Result<Vec<HistoryEntry>, DomainError> {
@@ -542,6 +551,26 @@ mod tests {
     fn test_extract_host_strips_port_and_userinfo() {
         assert_eq!(extract_host("https://u:p@ex.com:443/path"), Some("ex.com"));
         assert_eq!(extract_host("http://ex.com?q=1"), Some("ex.com"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_list_pagination_is_stable_when_sort_has_ties() {
+        let db = setup_test_db().await.expect("failed to setup test db");
+        let repo = SqliteHistoryRepo::new(db);
+        // All entries share the same completed_at so the primary sort key
+        // produces ties — pagination must still return each row exactly once.
+        for i in 1..=10u64 {
+            repo.record(&make_entry(i, 1_700_000_000)).unwrap();
+        }
+
+        let mut seen: Vec<String> = Vec::new();
+        for offset in (0..10).step_by(3) {
+            let page = repo.list(None, None, Some(3), Some(offset)).unwrap();
+            seen.extend(page.into_iter().map(|e| e.file_name));
+        }
+        seen.sort();
+        seen.dedup();
+        assert_eq!(seen.len(), 10, "every row must appear exactly once");
     }
 
     #[tokio::test(flavor = "multi_thread")]
