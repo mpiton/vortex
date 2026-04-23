@@ -60,8 +60,8 @@ pub use adapters::driving::tauri_ipc::{
     download_start, history_clear, history_delete_entry, history_export, history_get_by_id,
     history_list, history_purge_older_than, history_search, link_resolve, plugin_disable,
     plugin_enable, plugin_install, plugin_list, plugin_store_install, plugin_store_list,
-    plugin_store_refresh, plugin_store_update, plugin_uninstall, settings_get, settings_update,
-    stats_get, stats_top_modules, status_bar_get,
+    plugin_store_refresh, plugin_store_update, plugin_uninstall, reveal_in_folder, settings_get,
+    settings_update, stats_get, stats_top_modules, status_bar_get,
 };
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -69,6 +69,7 @@ pub fn run() {
     let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build());
     #[cfg(all(debug_assertions, unix))]
     {
@@ -334,6 +335,7 @@ pub fn run() {
             history_delete_entry,
             history_clear,
             history_purge_older_than,
+            reveal_in_folder,
             stats_get,
             stats_top_modules,
         ])

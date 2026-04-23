@@ -300,5 +300,64 @@
       "enabled": "Surveillance du presse-papiers activée",
       "disabled": "Surveillance du presse-papiers désactivée"
     }
+  },
+  "history": {
+    "searchPlaceholder": "Rechercher dans l'historique…",
+    "searchAriaLabel": "Rechercher dans l'historique",
+    "loading": "Chargement de l'historique…",
+    "empty": "Aucune entrée dans l'historique",
+    "searchEmpty": "Aucune entrée ne correspond à « {{query}} »",
+    "filterEmpty": "Aucune entrée ne correspond au filtre actif",
+    "dayGroupAriaLabel": "Téléchargements terminés le {{date}}",
+    "columns": {
+      "name": "Nom",
+      "host": "Hôte",
+      "size": "Taille",
+      "duration": "Durée",
+      "completedAt": "Terminé",
+      "status": "Statut",
+      "avgSpeed": "Vitesse moyenne",
+      "module": "Module",
+      "account": "Compte",
+      "actions": "Actions"
+    },
+    "filters": {
+      "ariaLabel": "Filtres d'historique",
+      "all": "Tous",
+      "completed": "Terminés",
+      "failed": "Échoués",
+      "cancelled": "Annulés"
+    },
+    "status": {
+      "completed": "Terminé",
+      "failed": "Échoué",
+      "cancelled": "Annulé"
+    },
+    "row": {
+      "redownload": "Re-télécharger",
+      "copyUrl": "Copier l'URL",
+      "delete": "Supprimer l'entrée",
+      "openFolder": "Ouvrir le dossier",
+      "moreActions": "Autres actions",
+      "moduleEmpty": "Module indisponible",
+      "accountEmpty": "Compte indisponible"
+    },
+    "export": {
+      "trigger": "Exporter",
+      "csv": "Exporter en CSV",
+      "json": "Exporter en JSON"
+    },
+    "toast": {
+      "redownloadSuccess": "Téléchargement relancé",
+      "redownloadError": "Échec de la relance du téléchargement",
+      "copySuccess": "URL copiée dans le presse-papiers",
+      "copyError": "Échec de la copie de l'URL",
+      "deleteSuccess": "Entrée supprimée",
+      "deleteError": "Échec de la suppression",
+      "exportSuccess_one": "{{count}} entrée exportée au format {{format}}",
+      "exportSuccess_other": "{{count}} entrées exportées au format {{format}}",
+      "exportError": "Échec de l'export",
+      "openFolderError": "Échec de l'ouverture du dossier"
+    }
   }
 }

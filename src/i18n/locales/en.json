@@ -300,5 +300,64 @@
       "enabled": "Clipboard monitoring enabled",
       "disabled": "Clipboard monitoring disabled"
     }
+  },
+  "history": {
+    "searchPlaceholder": "Search history…",
+    "searchAriaLabel": "Search history",
+    "loading": "Loading history…",
+    "empty": "No history entries yet",
+    "searchEmpty": "No entries match \"{{query}}\"",
+    "filterEmpty": "No entries match the current filter",
+    "dayGroupAriaLabel": "Downloads completed on {{date}}",
+    "columns": {
+      "name": "Name",
+      "host": "Host",
+      "size": "Size",
+      "duration": "Duration",
+      "completedAt": "Completed",
+      "status": "Status",
+      "avgSpeed": "Avg speed",
+      "module": "Module",
+      "account": "Account",
+      "actions": "Actions"
+    },
+    "filters": {
+      "ariaLabel": "History filters",
+      "all": "All",
+      "completed": "Completed",
+      "failed": "Failed",
+      "cancelled": "Cancelled"
+    },
+    "status": {
+      "completed": "Completed",
+      "failed": "Failed",
+      "cancelled": "Cancelled"
+    },
+    "row": {
+      "redownload": "Re-download",
+      "copyUrl": "Copy URL",
+      "delete": "Delete entry",
+      "openFolder": "Open folder",
+      "moreActions": "More actions",
+      "moduleEmpty": "Module unavailable",
+      "accountEmpty": "Account unavailable"
+    },
+    "export": {
+      "trigger": "Export",
+      "csv": "Export as CSV",
+      "json": "Export as JSON"
+    },
+    "toast": {
+      "redownloadSuccess": "Download re-added",
+      "redownloadError": "Failed to re-add download",
+      "copySuccess": "URL copied to clipboard",
+      "copyError": "Failed to copy URL",
+      "deleteSuccess": "Entry deleted",
+      "deleteError": "Failed to delete entry",
+      "exportSuccess_one": "{{count}} entry exported as {{format}}",
+      "exportSuccess_other": "{{count}} entries exported as {{format}}",
+      "exportError": "Export failed",
+      "openFolderError": "Failed to open folder"
+    }
   }
 }

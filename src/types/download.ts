@@ -81,6 +81,8 @@ export interface PluginView {
 }
 
 export interface HistoryView {
+  // Backend emits u64 as a string to survive JS number precision.
+  entryId: string;
   downloadId: string;
   fileName: string;
   url: string;

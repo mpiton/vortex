@@ -1968,8 +1968,9 @@ pub async fn history_search(
 #[tauri::command]
 pub async fn history_get_by_id(
     state: State<'_, AppState>,
-    id: u64,
+    id: String,
 ) -> Result<HistoryViewDto, String> {
+    let id = parse_history_id(&id)?;
     state
         .query_bus
         .handle_get_history_entry(GetHistoryEntryQuery { id })
@@ -1996,12 +1997,18 @@ pub async fn history_export(
 }
 
 #[tauri::command]
-pub async fn history_delete_entry(state: State<'_, AppState>, id: u64) -> Result<(), String> {
+pub async fn history_delete_entry(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    let id = parse_history_id(&id)?;
     state
         .command_bus
         .handle_delete_history_entry(DeleteHistoryEntryCommand { id })
         .await
         .map_err(|e| e.to_string())
+}
+
+fn parse_history_id(raw: &str) -> Result<u64, String> {
+    raw.parse::<u64>()
+        .map_err(|_| format!("invalid history entry id: {raw}"))
 }
 
 #[tauri::command]
@@ -2049,6 +2056,51 @@ pub async fn stats_top_modules(
         .await
         .map(|m| m.into_iter().map(ModuleStatsDto::from).collect())
         .map_err(|e| e.to_string())
+}
+
+/// Open the given file's containing folder in the OS file manager.
+///
+/// We delegate to the platform's native "reveal/open" command rather than
+/// pulling a full shell plugin, because Vortex only needs one shape of this
+/// call and the shell-plugin surface is much wider than we want to expose.
+#[tauri::command]
+pub async fn reveal_in_folder(path: String) -> Result<(), String> {
+    let target = Path::new(&path);
+    // Prefer the target itself only when it is a directory. Otherwise fall
+    // back to the parent — this still works when the download file was
+    // deleted or moved, as long as its containing directory still exists.
+    let folder = if target.is_dir() {
+        target
+    } else {
+        target.parent().unwrap_or(target)
+    };
+    if !folder.is_dir() {
+        return Err(format!("folder does not exist: {}", folder.display()));
+    }
+
+    #[cfg(target_os = "linux")]
+    let program = "xdg-open";
+    #[cfg(target_os = "macos")]
+    let program = "open";
+    #[cfg(target_os = "windows")]
+    let program = "explorer";
+
+    let status = tokio::process::Command::new(program)
+        .arg(folder)
+        .status()
+        .await
+        .map_err(|e| format!("failed to launch {program}: {e}"))?;
+
+    // `explorer.exe` returns 1 even on successful opens because it exits as
+    // soon as it hands the target off to an existing Explorer window, so we
+    // cannot rely on the exit status there.
+    #[cfg(not(target_os = "windows"))]
+    if !status.success() {
+        return Err(format!("{program} exited with status {status}"));
+    }
+    #[cfg(target_os = "windows")]
+    let _ = status;
+    Ok(())
 }
 
 #[tauri::command]
