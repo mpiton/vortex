@@ -140,9 +140,8 @@ describe('StatisticsView', () => {
   it('switches period and refetches stats with the new value', async () => {
     setupMocks();
     renderView();
-    await waitFor(() =>
-      expect(mockInvoke).toHaveBeenCalledWith('stats_get', { period: '7d' }),
-    );
+    await waitFor(() => expect(screen.getByTestId('statistics-view')).toBeInTheDocument());
+    expect(mockInvoke).toHaveBeenCalledWith('stats_get', { period: '7d' });
 
     const user = userEvent.setup();
     await user.click(screen.getByRole('tab', { name: 'Last 30 days' }));
