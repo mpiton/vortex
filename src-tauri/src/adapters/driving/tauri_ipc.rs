@@ -2091,9 +2091,15 @@ pub async fn reveal_in_folder(path: String) -> Result<(), String> {
         .await
         .map_err(|e| format!("failed to launch {program}: {e}"))?;
 
+    // `explorer.exe` returns 1 even on successful opens because it exits as
+    // soon as it hands the target off to an existing Explorer window, so we
+    // cannot rely on the exit status there.
+    #[cfg(not(target_os = "windows"))]
     if !status.success() {
         return Err(format!("{program} exited with status {status}"));
     }
+    #[cfg(target_os = "windows")]
+    let _ = status;
     Ok(())
 }
 
