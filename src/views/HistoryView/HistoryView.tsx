@@ -56,7 +56,7 @@ export function HistoryView() {
     errorMessage: () => t('history.toast.redownloadError'),
   });
 
-  const deleteMut = useTauriMutation<void, { id: number }>('history_delete_entry', {
+  const deleteMut = useTauriMutation<void, { id: string }>('history_delete_entry', {
     invalidateKeys: INVALIDATE_KEYS,
     errorMessage: () => t('history.toast.deleteError'),
   });
@@ -67,6 +67,10 @@ export function HistoryView() {
       errorMessage: () => t('history.toast.exportError'),
     },
   );
+
+  const openFolderMut = useTauriMutation<void, { path: string }>('reveal_in_folder', {
+    errorMessage: () => t('history.toast.openFolderError'),
+  });
 
   const handleRedownload = useCallback(
     (entry: HistoryEntry) => {
@@ -100,9 +104,12 @@ export function HistoryView() {
     [deleteMut, t],
   );
 
-  const handleOpenFolder = useCallback(() => {
-    toast.success(t('history.toast.openFolderPending'));
-  }, [t]);
+  const handleOpenFolder = useCallback(
+    (entry: HistoryEntry) => {
+      openFolderMut.mutate({ path: entry.destinationPath });
+    },
+    [openFolderMut],
+  );
 
   const rowActions = useMemo<HistoryRowActions>(
     () => ({
@@ -117,12 +124,16 @@ export function HistoryView() {
   const handleExport = useCallback(
     async (format: 'csv' | 'json') => {
       const extension = format === 'csv' ? 'csv' : 'json';
-      const selected = await saveDialog({
-        defaultPath: `vortex-history-${Date.now()}.${extension}`,
-        filters: [
-          { name: format.toUpperCase(), extensions: [extension] },
-        ],
-      });
+      let selected: string | null;
+      try {
+        selected = await saveDialog({
+          defaultPath: `vortex-history-${Date.now()}.${extension}`,
+          filters: [{ name: format.toUpperCase(), extensions: [extension] }],
+        });
+      } catch {
+        toast.error(t('history.toast.exportError'));
+        return;
+      }
       if (!selected) return;
       exportMut.mutate(
         { format, path: selected },

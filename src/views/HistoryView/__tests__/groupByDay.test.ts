@@ -4,7 +4,7 @@ import { groupByDay } from '../groupByDay';
 
 function entry(overrides: Partial<HistoryView>): HistoryView {
   return {
-    entryId: 1,
+    entryId: '1',
     downloadId: '1',
     fileName: 'file.zip',
     url: 'https://example.com/file.zip',
@@ -26,8 +26,8 @@ describe('groupByDay', () => {
     const base = new Date(2026, 3, 20, 8, 0, 0).getTime() / 1000;
     const later = new Date(2026, 3, 20, 23, 30, 0).getTime() / 1000;
     const groups = groupByDay([
-      entry({ entryId: 1, completedAt: base }),
-      entry({ entryId: 2, completedAt: later }),
+      entry({ entryId: '1', completedAt: base }),
+      entry({ entryId: '2', completedAt: later }),
     ]);
     expect(groups).toHaveLength(1);
     expect(groups[0].entries).toHaveLength(2);
@@ -37,8 +37,8 @@ describe('groupByDay', () => {
     const day1 = new Date(2026, 3, 20, 12, 0, 0).getTime() / 1000;
     const day2 = new Date(2026, 3, 21, 12, 0, 0).getTime() / 1000;
     const groups = groupByDay([
-      entry({ entryId: 1, completedAt: day1 }),
-      entry({ entryId: 2, completedAt: day2 }),
+      entry({ entryId: '1', completedAt: day1 }),
+      entry({ entryId: '2', completedAt: day2 }),
     ]);
     expect(groups).toHaveLength(2);
   });
@@ -47,22 +47,22 @@ describe('groupByDay', () => {
     const day1 = new Date(2026, 3, 10, 12, 0, 0).getTime() / 1000;
     const day2 = new Date(2026, 3, 20, 12, 0, 0).getTime() / 1000;
     const groups = groupByDay([
-      entry({ entryId: 1, completedAt: day1 }),
-      entry({ entryId: 2, completedAt: day2 }),
+      entry({ entryId: '1', completedAt: day1 }),
+      entry({ entryId: '2', completedAt: day2 }),
     ]);
-    expect(groups[0].entries[0].entryId).toBe(2);
-    expect(groups[1].entries[0].entryId).toBe(1);
+    expect(groups[0].entries[0].entryId).toBe('2');
+    expect(groups[1].entries[0].entryId).toBe('1');
   });
 
   it('should sort entries inside a group by recency', () => {
     const early = new Date(2026, 3, 20, 8, 0, 0).getTime() / 1000;
     const late = new Date(2026, 3, 20, 23, 30, 0).getTime() / 1000;
     const groups = groupByDay([
-      entry({ entryId: 1, completedAt: early }),
-      entry({ entryId: 2, completedAt: late }),
+      entry({ entryId: '1', completedAt: early }),
+      entry({ entryId: '2', completedAt: late }),
     ]);
-    expect(groups[0].entries[0].entryId).toBe(2);
-    expect(groups[0].entries[1].entryId).toBe(1);
+    expect(groups[0].entries[0].entryId).toBe('2');
+    expect(groups[0].entries[1].entryId).toBe('1');
   });
 
   it('should expose a YYYY-MM-DD day key', () => {

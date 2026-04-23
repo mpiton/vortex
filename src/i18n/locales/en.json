@@ -308,6 +308,18 @@
     "empty": "No history entries yet",
     "filterEmpty": "No entries match the current filter",
     "dayGroupAriaLabel": "Downloads completed on {{date}}",
+    "columns": {
+      "name": "Name",
+      "host": "Host",
+      "size": "Size",
+      "duration": "Duration",
+      "completedAt": "Completed",
+      "status": "Status",
+      "avgSpeed": "Avg speed",
+      "module": "Module",
+      "account": "Account",
+      "actions": "Actions"
+    },
     "filters": {
       "ariaLabel": "History filters",
       "all": "All",
@@ -325,7 +337,9 @@
       "copyUrl": "Copy URL",
       "delete": "Delete entry",
       "openFolder": "Open folder",
-      "moreActions": "More actions"
+      "moreActions": "More actions",
+      "moduleEmpty": "Module unavailable",
+      "accountEmpty": "Account unavailable"
     },
     "export": {
       "trigger": "Export",
@@ -339,9 +353,10 @@
       "copyError": "Failed to copy URL",
       "deleteSuccess": "Entry deleted",
       "deleteError": "Failed to delete entry",
-      "exportSuccess": "{{count}} entries exported as {{format}}",
+      "exportSuccess_one": "{{count}} entry exported as {{format}}",
+      "exportSuccess_other": "{{count}} entries exported as {{format}}",
       "exportError": "Export failed",
-      "openFolderPending": "Open folder will be available in a future update"
+      "openFolderError": "Failed to open folder"
     }
   }
 }

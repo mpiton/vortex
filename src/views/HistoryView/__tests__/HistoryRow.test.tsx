@@ -6,7 +6,7 @@ import { HistoryRow } from '../HistoryRow';
 
 function entry(overrides: Partial<HistoryView> = {}): HistoryView {
   return {
-    entryId: 42,
+    entryId: '42',
     downloadId: '42',
     fileName: 'movie.mkv',
     url: 'https://videos.example.com/cdn/movie.mkv',
@@ -56,7 +56,7 @@ describe('HistoryRow', () => {
     const user = userEvent.setup();
     await user.click(screen.getByRole('button', { name: 'Re-download' }));
     expect(actions.redownload).toHaveBeenCalledTimes(1);
-    expect(actions.redownload.mock.calls[0][0].entryId).toBe(42);
+    expect(actions.redownload.mock.calls[0][0].entryId).toBe('42');
   });
 
   it('should expose data-entry-id on the row for querying', () => {

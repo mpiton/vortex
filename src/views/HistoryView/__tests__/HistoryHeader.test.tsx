@@ -1,22 +1,31 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { HistoryHeader } from '../HistoryHeader';
+import { HistoryHeader, type HistoryHeaderProps } from '../HistoryHeader';
 import type { HistoryFilterType } from '../filterEntries';
 
-function renderHeader(overrides: Partial<Parameters<typeof HistoryHeader>[0]> = {}) {
-  const props = {
+interface RenderedHeader {
+  onSearchChange: ReturnType<typeof vi.fn<(next: string) => void>>;
+  onFilterChange: ReturnType<typeof vi.fn<(next: HistoryFilterType) => void>>;
+  onExport: ReturnType<typeof vi.fn<(format: 'csv' | 'json') => void>>;
+}
+
+function renderHeader(overrides: Partial<HistoryHeaderProps> = {}): RenderedHeader {
+  const onSearchChange = vi.fn<(next: string) => void>();
+  const onFilterChange = vi.fn<(next: HistoryFilterType) => void>();
+  const onExport = vi.fn<(format: 'csv' | 'json') => void>();
+  const props: HistoryHeaderProps = {
     search: '',
-    onSearchChange: vi.fn(),
-    filter: 'all' as HistoryFilterType,
-    onFilterChange: vi.fn(),
+    onSearchChange,
+    filter: 'all',
+    onFilterChange,
     counts: { all: 3, completed: 3, failed: 0, cancelled: 0 },
-    onExport: vi.fn(),
+    onExport,
     exportDisabled: false,
     ...overrides,
   };
   render(<HistoryHeader {...props} />);
-  return props;
+  return { onSearchChange, onFilterChange, onExport };
 }
 
 describe('HistoryHeader', () => {
@@ -29,18 +38,18 @@ describe('HistoryHeader', () => {
   });
 
   it('should notify search change on input', async () => {
-    const props = renderHeader();
+    const { onSearchChange } = renderHeader();
     const user = userEvent.setup();
     await user.type(screen.getByLabelText('Search history'), 'hello');
-    expect(props.onSearchChange).toHaveBeenCalledTimes(5);
-    expect(props.onSearchChange.mock.calls.at(-1)).toEqual(['o']);
+    expect(onSearchChange).toHaveBeenCalledTimes(5);
+    expect(onSearchChange).toHaveBeenLastCalledWith('o');
   });
 
   it('should notify filter change on tab click', async () => {
-    const props = renderHeader();
+    const { onFilterChange } = renderHeader();
     const user = userEvent.setup();
     await user.click(screen.getByRole('tab', { name: /Failed/i }));
-    expect(props.onFilterChange).toHaveBeenCalledWith('failed');
+    expect(onFilterChange).toHaveBeenCalledWith('failed');
   });
 
   it('should mark the active filter tab as selected', () => {

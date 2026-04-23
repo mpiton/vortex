@@ -23,7 +23,7 @@ const mockToastSuccess = vi.mocked(toast.success);
 function sampleEntries(): HistoryEntry[] {
   return [
     {
-      entryId: 1,
+      entryId: '1',
       downloadId: '10',
       fileName: 'alpha.zip',
       url: 'https://a.example.com/alpha.zip',
@@ -34,7 +34,7 @@ function sampleEntries(): HistoryEntry[] {
       destinationPath: '/tmp/alpha.zip',
     },
     {
-      entryId: 2,
+      entryId: '2',
       downloadId: '11',
       fileName: 'beta.mkv',
       url: 'https://b.example.com/beta.mkv',

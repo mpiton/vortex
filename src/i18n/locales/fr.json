@@ -308,6 +308,18 @@
     "empty": "Aucune entrée dans l'historique",
     "filterEmpty": "Aucune entrée ne correspond au filtre actif",
     "dayGroupAriaLabel": "Téléchargements terminés le {{date}}",
+    "columns": {
+      "name": "Nom",
+      "host": "Hôte",
+      "size": "Taille",
+      "duration": "Durée",
+      "completedAt": "Terminé",
+      "status": "Statut",
+      "avgSpeed": "Vitesse moyenne",
+      "module": "Module",
+      "account": "Compte",
+      "actions": "Actions"
+    },
     "filters": {
       "ariaLabel": "Filtres d'historique",
       "all": "Tous",
@@ -325,7 +337,9 @@
       "copyUrl": "Copier l'URL",
       "delete": "Supprimer l'entrée",
       "openFolder": "Ouvrir le dossier",
-      "moreActions": "Autres actions"
+      "moreActions": "Autres actions",
+      "moduleEmpty": "Module indisponible",
+      "accountEmpty": "Compte indisponible"
     },
     "export": {
       "trigger": "Exporter",
@@ -339,9 +353,10 @@
       "copyError": "Échec de la copie de l'URL",
       "deleteSuccess": "Entrée supprimée",
       "deleteError": "Échec de la suppression",
-      "exportSuccess": "{{count}} entrées exportées au format {{format}}",
+      "exportSuccess_one": "{{count}} entrée exportée au format {{format}}",
+      "exportSuccess_other": "{{count}} entrées exportées au format {{format}}",
       "exportError": "Échec de l'export",
-      "openFolderPending": "Ouvrir le dossier arrive dans une prochaine mise à jour"
+      "openFolderError": "Échec de l'ouverture du dossier"
     }
   }
 }

@@ -1,12 +1,19 @@
 //! Serializable history entry DTO for the frontend.
 
-use serde::Serialize;
+use serde::{Serialize, Serializer};
 
 use crate::domain::model::views::HistoryEntry;
+
+// Emit u64 as a JSON string so 64-bit IDs survive JavaScript's
+// 53-bit number precision.
+fn serialize_u64_as_string<S: Serializer>(value: &u64, serializer: S) -> Result<S::Ok, S::Error> {
+    serializer.collect_str(value)
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HistoryViewDto {
+    #[serde(serialize_with = "serialize_u64_as_string")]
     pub entry_id: u64,
     pub download_id: String,
     pub file_name: String,
@@ -74,7 +81,7 @@ mod tests {
             destination_path: "/tmp/file.zip".to_string(),
         };
         let value = serde_json::to_value(&dto).unwrap();
-        assert!(value.get("entryId").is_some());
+        assert_eq!(value.get("entryId"), Some(&serde_json::json!("1")));
         assert!(value.get("downloadId").is_some());
         assert!(value.get("fileName").is_some());
         assert!(value.get("totalBytes").is_some());

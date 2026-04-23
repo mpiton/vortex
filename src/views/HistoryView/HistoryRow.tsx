@@ -37,6 +37,11 @@ export function HistoryRow({ entry, actions }: HistoryRowProps) {
   const handleOpenFolder = useCallback(() => actions.openFolder(entry), [actions, entry]);
 
   const status = deriveHistoryStatus(entry);
+  // Module and account are not yet carried by HistoryView — the download
+  // engine stores them only while a download is active. When the history DTO
+  // grows those fields, replace the dash placeholders below.
+  const modulePlaceholder = '—';
+  const accountPlaceholder = '—';
 
   return (
     <tr
@@ -61,8 +66,18 @@ export function HistoryRow({ entry, actions }: HistoryRowProps) {
         <StatusBadge status={status} />
       </td>
       <td className="px-3 py-2 text-xs">{formatSpeed(entry.avgSpeed)}</td>
-      <td className="px-3 py-2 text-xs text-muted-foreground">—</td>
-      <td className="px-3 py-2 text-xs text-muted-foreground">—</td>
+      <td
+        className="px-3 py-2 text-xs text-muted-foreground"
+        aria-label={t('history.row.moduleEmpty')}
+      >
+        {modulePlaceholder}
+      </td>
+      <td
+        className="px-3 py-2 text-xs text-muted-foreground"
+        aria-label={t('history.row.accountEmpty')}
+      >
+        {accountPlaceholder}
+      </td>
       <td className="px-3 py-2">
         <div className="flex items-center justify-end gap-1">
           <Button

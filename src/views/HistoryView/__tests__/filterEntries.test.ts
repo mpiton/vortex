@@ -8,7 +8,7 @@ import {
 
 function entry(overrides: Partial<HistoryView>): HistoryView {
   return {
-    entryId: 1,
+    entryId: '1',
     downloadId: '1',
     fileName: 'movie.mkv',
     url: 'https://www.example.com/a/b/movie.mkv',
@@ -39,9 +39,9 @@ describe('deriveHistoryStatus', () => {
 
 describe('filterHistoryEntries', () => {
   const entries: HistoryView[] = [
-    entry({ entryId: 1, fileName: 'alpha.zip', url: 'https://a.example.com/alpha.zip' }),
-    entry({ entryId: 2, fileName: 'beta.mkv', url: 'https://b.example.com/beta.mkv' }),
-    entry({ entryId: 3, fileName: 'gamma.pdf', url: 'https://c.example.com/gamma.pdf' }),
+    entry({ entryId: '1', fileName: 'alpha.zip', url: 'https://a.example.com/alpha.zip' }),
+    entry({ entryId: '2', fileName: 'beta.mkv', url: 'https://b.example.com/beta.mkv' }),
+    entry({ entryId: '3', fileName: 'gamma.pdf', url: 'https://c.example.com/gamma.pdf' }),
   ];
 
   it('should return all entries on filter=all with empty search', () => {
@@ -66,7 +66,7 @@ describe('filterHistoryEntries', () => {
 
   it('should match search by file name case-insensitive', () => {
     const result = filterHistoryEntries(entries, { filter: 'all', searchQuery: 'BETA' });
-    expect(result.map((e) => e.entryId)).toEqual([2]);
+    expect(result.map((e) => e.entryId)).toEqual(['2']);
   });
 
   it('should match search by URL', () => {
@@ -74,12 +74,12 @@ describe('filterHistoryEntries', () => {
       filter: 'all',
       searchQuery: 'c.example.com',
     });
-    expect(result.map((e) => e.entryId)).toEqual([3]);
+    expect(result.map((e) => e.entryId)).toEqual(['3']);
   });
 
   it('should match search by hostname', () => {
     const result = filterHistoryEntries(entries, { filter: 'all', searchQuery: 'b.example' });
-    expect(result.map((e) => e.entryId)).toEqual([2]);
+    expect(result.map((e) => e.entryId)).toEqual(['2']);
   });
 
   it('should return all entries for whitespace-only search', () => {
