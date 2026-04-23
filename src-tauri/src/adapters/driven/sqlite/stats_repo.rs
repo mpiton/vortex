@@ -6,8 +6,6 @@ use crate::domain::ports::driven::stats_repository::StatsRepository;
 
 use super::util::{block_on, map_db_err, safe_u64};
 
-const SECONDS_PER_DAY: u64 = 86_400;
-
 pub struct SqliteStatsRepo {
     db: DatabaseConnection,
 }
@@ -18,54 +16,29 @@ impl SqliteStatsRepo {
     }
 }
 
-/// Cutoff boundaries for a given period.
+/// Relative offset passed to SQLite's `date('now','localtime', ?)` modifier.
 ///
-/// Two parallel representations are needed because the `statistics.date`
-/// column is written with SQLite `date('now', 'localtime')`, while the
-/// `downloads.created_at` column stores a Unix epoch. Mixing the two
-/// (e.g. comparing `statistics.date` to a UTC-derived string) drifts by a
-/// day near midnight on timezones east of UTC.
+/// A single offset drives both sides of the filter — the `statistics.date`
+/// string comparison and the `downloads.created_at` epoch comparison (via
+/// `strftime('%s', date('now','localtime', ?))`). Using one boundary keeps
+/// the two tables reporting over the same inclusive window.
 ///
-/// `date_offset` is fed to SQLite's `date('now', 'localtime', ?)` modifier
-/// so the comparison stays in the same timezone as the stored value.
-/// `cutoff_ts` is used against `downloads.created_at` (Unix seconds,
-/// timezone-agnostic).
-///
-/// For `AllTime` both fields are `None` so the SQL queries degrade to
-/// `WHERE 1 = 1` equivalents.
+/// The window is inclusive of today: "last 7 days" covers today plus the
+/// six prior dates, hence `-6 days` (and `-29 days` for 30-day). `AllTime`
+/// yields `None` so the queries drop the `WHERE` clause entirely.
 struct PeriodCutoff {
-    /// `created_at >= cutoff_ts` on the `downloads` / history tables.
-    cutoff_ts: Option<i64>,
-    /// Relative offset passed to `date('now','localtime', ?)` (e.g. `"-7 days"`).
     date_offset: Option<&'static str>,
 }
 
-fn period_cutoff(period: StatsPeriod, now_ts: u64) -> PeriodCutoff {
-    let Some(days) = period.window_days() else {
-        return PeriodCutoff {
-            cutoff_ts: None,
-            date_offset: None,
-        };
-    };
-    let window = u64::from(days).saturating_mul(SECONDS_PER_DAY);
-    let ts = now_ts.saturating_sub(window);
+fn period_cutoff(period: StatsPeriod) -> PeriodCutoff {
     let offset = match period {
-        StatsPeriod::Last7Days => "-7 days",
-        StatsPeriod::Last30Days => "-30 days",
-        // Unreachable: AllTime returned early via `window_days() -> None`.
-        StatsPeriod::AllTime => "-0 days",
+        StatsPeriod::Last7Days => Some("-6 days"),
+        StatsPeriod::Last30Days => Some("-29 days"),
+        StatsPeriod::AllTime => None,
     };
     PeriodCutoff {
-        cutoff_ts: Some(ts as i64),
-        date_offset: Some(offset),
+        date_offset: offset,
     }
-}
-
-fn current_unix_seconds() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
 }
 
 impl StatsRepository for SqliteStatsRepo {
@@ -99,7 +72,7 @@ impl StatsRepository for SqliteStatsRepo {
     }
 
     fn get_stats(&self, period: StatsPeriod) -> Result<StatsView, DomainError> {
-        let cutoff = period_cutoff(period, current_unix_seconds());
+        let cutoff = period_cutoff(period);
 
         block_on(async {
             // 1. Totals from the `statistics` daily rollup (bounded by date).
@@ -203,11 +176,17 @@ impl StatsRepository for SqliteStatsRepo {
             }
 
             // 3. Success rate computed from downloads.created_at within period.
-            let (success_sql, success_values) = match cutoff.cutoff_ts {
-                Some(ts) => (
+            // Boundary derived via `strftime('%s', date('now','localtime', ?))`
+            // so this filter and the `statistics.date` filter above close over
+            // the same inclusive day window — without this, a 168h trailing
+            // cutoff could include/exclude events on the boundary day that the
+            // date-based rollup does not, producing inconsistent totals.
+            let (success_sql, success_values) = match cutoff.date_offset {
+                Some(offset) => (
                     "SELECT COUNT(*), COALESCE(SUM(CASE WHEN state='Completed' THEN 1 ELSE 0 END),0) \
-                     FROM downloads WHERE state IN ('Completed','Error') AND created_at >= ?1",
-                    vec![sea_orm::Value::BigInt(Some(ts))],
+                     FROM downloads WHERE state IN ('Completed','Error') \
+                       AND created_at >= CAST(strftime('%s', date('now','localtime',?1)) AS INTEGER)",
+                    vec![sea_orm::Value::String(Some(Box::new(offset.to_string())))],
                 ),
                 None => (
                     "SELECT COUNT(*), COALESCE(SUM(CASE WHEN state='Completed' THEN 1 ELSE 0 END),0) \
@@ -242,17 +221,17 @@ impl StatsRepository for SqliteStatsRepo {
                 None => 0.0,
             };
 
-            // 4. Top hosts bounded by created_at.
-            let (hosts_sql, hosts_values) = match cutoff.cutoff_ts {
-                Some(ts) => (
+            // 4. Top hosts bounded by created_at (same inclusive day boundary).
+            let (hosts_sql, hosts_values) = match cutoff.date_offset {
+                Some(offset) => (
                     "SELECT source_hostname, SUM(downloaded_bytes), COUNT(*) \
                      FROM downloads \
                      WHERE state = 'Completed' \
                        AND source_hostname IS NOT NULL AND source_hostname != '' \
-                       AND created_at >= ?1 \
+                       AND created_at >= CAST(strftime('%s', date('now','localtime',?1)) AS INTEGER) \
                      GROUP BY source_hostname \
                      ORDER BY 2 DESC LIMIT 10",
-                    vec![sea_orm::Value::BigInt(Some(ts))],
+                    vec![sea_orm::Value::String(Some(Box::new(offset.to_string())))],
                 ),
                 None => (
                     "SELECT source_hostname, SUM(downloaded_bytes), COUNT(*) \
@@ -353,25 +332,21 @@ mod tests {
 
     #[test]
     fn test_period_cutoff_all_time_has_no_bound() {
-        let cutoff = period_cutoff(StatsPeriod::AllTime, 1_768_435_200);
-        assert!(cutoff.cutoff_ts.is_none());
+        let cutoff = period_cutoff(StatsPeriod::AllTime);
         assert!(cutoff.date_offset.is_none());
     }
 
     #[test]
-    fn test_period_cutoff_7d_shifts_by_7_days() {
-        let now: u64 = 1_768_435_200; // 2026-01-15
-        let cutoff = period_cutoff(StatsPeriod::Last7Days, now);
-        assert_eq!(cutoff.cutoff_ts, Some((now - 7 * SECONDS_PER_DAY) as i64));
-        assert_eq!(cutoff.date_offset, Some("-7 days"));
+    fn test_period_cutoff_7d_uses_inclusive_minus_6_days() {
+        let cutoff = period_cutoff(StatsPeriod::Last7Days);
+        // Inclusive: today + 6 prior = 7 calendar days.
+        assert_eq!(cutoff.date_offset, Some("-6 days"));
     }
 
     #[test]
-    fn test_period_cutoff_30d_shifts_by_30_days() {
-        let now: u64 = 1_768_435_200;
-        let cutoff = period_cutoff(StatsPeriod::Last30Days, now);
-        assert_eq!(cutoff.cutoff_ts, Some((now - 30 * SECONDS_PER_DAY) as i64));
-        assert_eq!(cutoff.date_offset, Some("-30 days"));
+    fn test_period_cutoff_30d_uses_inclusive_minus_29_days() {
+        let cutoff = period_cutoff(StatsPeriod::Last30Days);
+        assert_eq!(cutoff.date_offset, Some("-29 days"));
     }
 
     #[tokio::test(flavor = "multi_thread")]
