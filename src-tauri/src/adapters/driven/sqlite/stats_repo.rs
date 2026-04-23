@@ -18,54 +18,47 @@ impl SqliteStatsRepo {
     }
 }
 
-/// Cutoff timestamps (Unix seconds) and ISO dates for a given period.
+/// Cutoff boundaries for a given period.
+///
+/// Two parallel representations are needed because the `statistics.date`
+/// column is written with SQLite `date('now', 'localtime')`, while the
+/// `downloads.created_at` column stores a Unix epoch. Mixing the two
+/// (e.g. comparing `statistics.date` to a UTC-derived string) drifts by a
+/// day near midnight on timezones east of UTC.
+///
+/// `date_offset` is fed to SQLite's `date('now', 'localtime', ?)` modifier
+/// so the comparison stays in the same timezone as the stored value.
+/// `cutoff_ts` is used against `downloads.created_at` (Unix seconds,
+/// timezone-agnostic).
 ///
 /// For `AllTime` both fields are `None` so the SQL queries degrade to
 /// `WHERE 1 = 1` equivalents.
 struct PeriodCutoff {
     /// `created_at >= cutoff_ts` on the `downloads` / history tables.
     cutoff_ts: Option<i64>,
-    /// `date >= cutoff_date` on the daily `statistics` table (YYYY-MM-DD).
-    cutoff_date: Option<String>,
+    /// Relative offset passed to `date('now','localtime', ?)` (e.g. `"-7 days"`).
+    date_offset: Option<&'static str>,
 }
 
 fn period_cutoff(period: StatsPeriod, now_ts: u64) -> PeriodCutoff {
     let Some(days) = period.window_days() else {
         return PeriodCutoff {
             cutoff_ts: None,
-            cutoff_date: None,
+            date_offset: None,
         };
     };
     let window = u64::from(days).saturating_mul(SECONDS_PER_DAY);
     let ts = now_ts.saturating_sub(window);
-    // Converting seconds to ISO date without pulling chrono: reuse SQLite's
-    // `date()` in the query. Here we just keep the raw ts and let callers
-    // materialise the date via `date(?, 'unixepoch')`.
+    let offset = match period {
+        StatsPeriod::Last7Days => "-7 days",
+        StatsPeriod::Last30Days => "-30 days",
+        // Unreachable: AllTime returned early via `window_days() -> None`.
+        StatsPeriod::AllTime => "-0 days",
+    };
     PeriodCutoff {
         cutoff_ts: Some(ts as i64),
-        cutoff_date: Some(unix_to_iso_date(ts)),
+        date_offset: Some(offset),
     }
-}
-
-/// Convert a Unix timestamp (seconds) to an ISO `YYYY-MM-DD` string in UTC.
-///
-/// Std-only conversion avoids pulling chrono into a driven adapter. Precise
-/// to the day which is what the `statistics.date` column stores.
-fn unix_to_iso_date(ts: u64) -> String {
-    // Days since 1970-01-01.
-    let days = ts / SECONDS_PER_DAY;
-    // Howard Hinnant's date algorithm (civil_from_days).
-    let z = days as i64 + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = (z - era * 146_097) as u64;
-    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe as i64 + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = if m <= 2 { y + 1 } else { y };
-    format!("{year:04}-{m:02}-{d:02}")
 }
 
 fn current_unix_seconds() -> u64 {
@@ -110,8 +103,12 @@ impl StatsRepository for SqliteStatsRepo {
 
         block_on(async {
             // 1. Totals from the `statistics` daily rollup (bounded by date).
-            let (totals_sql, totals_values) = match &cutoff.cutoff_date {
-                Some(d) => (
+            // `statistics.date` is written with SQLite `date('now','localtime')`
+            // so the filter must evaluate the cutoff in the same timezone —
+            // a UTC-derived string would drift a day near midnight on
+            // timezones east of UTC.
+            let (totals_sql, totals_values) = match cutoff.date_offset {
+                Some(offset) => (
                     "SELECT \
                       COALESCE(SUM(bytes_downloaded),0), \
                       COALESCE(SUM(files_completed),0), \
@@ -119,8 +116,8 @@ impl StatsRepository for SqliteStatsRepo {
                         THEN CAST(SUM(CAST(avg_speed AS REAL)*files_completed)/SUM(files_completed) AS INTEGER) \
                         ELSE 0 END, \
                       COALESCE(MAX(peak_speed),0) \
-                    FROM statistics WHERE date >= ?1",
-                    vec![sea_orm::Value::String(Some(Box::new(d.clone())))],
+                    FROM statistics WHERE date >= date('now','localtime',?1)",
+                    vec![sea_orm::Value::String(Some(Box::new(offset.to_string())))],
                 ),
                 None => (
                     "SELECT \
@@ -165,11 +162,11 @@ impl StatsRepository for SqliteStatsRepo {
             };
 
             // 2. Daily volumes (cap result set to 30 most recent rows within period).
-            let (daily_sql, daily_values) = match &cutoff.cutoff_date {
-                Some(d) => (
+            let (daily_sql, daily_values) = match cutoff.date_offset {
+                Some(offset) => (
                     "SELECT date, bytes_downloaded, files_completed FROM statistics \
-                     WHERE date >= ?1 ORDER BY date DESC LIMIT 30",
-                    vec![sea_orm::Value::String(Some(Box::new(d.clone())))],
+                     WHERE date >= date('now','localtime',?1) ORDER BY date DESC LIMIT 30",
+                    vec![sea_orm::Value::String(Some(Box::new(offset.to_string())))],
                 ),
                 None => (
                     "SELECT date, bytes_downloaded, files_completed FROM statistics \
@@ -355,21 +352,10 @@ mod tests {
     use sea_orm::{ConnectionTrait, Statement};
 
     #[test]
-    fn test_unix_to_iso_date_epoch() {
-        assert_eq!(unix_to_iso_date(0), "1970-01-01");
-    }
-
-    #[test]
-    fn test_unix_to_iso_date_known_ts() {
-        // 2026-01-15 00:00:00 UTC = 1768435200
-        assert_eq!(unix_to_iso_date(1_768_435_200), "2026-01-15");
-    }
-
-    #[test]
     fn test_period_cutoff_all_time_has_no_bound() {
         let cutoff = period_cutoff(StatsPeriod::AllTime, 1_768_435_200);
         assert!(cutoff.cutoff_ts.is_none());
-        assert!(cutoff.cutoff_date.is_none());
+        assert!(cutoff.date_offset.is_none());
     }
 
     #[test]
@@ -377,7 +363,15 @@ mod tests {
         let now: u64 = 1_768_435_200; // 2026-01-15
         let cutoff = period_cutoff(StatsPeriod::Last7Days, now);
         assert_eq!(cutoff.cutoff_ts, Some((now - 7 * SECONDS_PER_DAY) as i64));
-        assert_eq!(cutoff.cutoff_date.as_deref(), Some("2026-01-08"));
+        assert_eq!(cutoff.date_offset, Some("-7 days"));
+    }
+
+    #[test]
+    fn test_period_cutoff_30d_shifts_by_30_days() {
+        let now: u64 = 1_768_435_200;
+        let cutoff = period_cutoff(StatsPeriod::Last30Days, now);
+        assert_eq!(cutoff.cutoff_ts, Some((now - 30 * SECONDS_PER_DAY) as i64));
+        assert_eq!(cutoff.date_offset, Some("-30 days"));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -483,11 +477,13 @@ mod tests {
         let db = setup_test_db().await.expect("failed to setup test db");
 
         // Compute today's date string inside SQLite so the filter boundary
-        // matches the implementation's clock.
+        // matches the implementation's clock. `localtime` mirrors the
+        // modifier used by both `record_completed` and the period filter,
+        // so the test is stable across timezones.
         let today_row = db
             .query_one(Statement::from_string(
                 DatabaseBackend::Sqlite,
-                "SELECT date('now'), date('now', '-10 days')".to_string(),
+                "SELECT date('now','localtime'), date('now','localtime','-10 days')".to_string(),
             ))
             .await
             .unwrap()
