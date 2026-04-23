@@ -359,5 +359,63 @@
       "exportError": "Échec de l'export",
       "openFolderError": "Échec de l'ouverture du dossier"
     }
+  },
+  "statistics": {
+    "title": "Statistiques",
+    "description": "Métriques locales de téléchargement sur la période sélectionnée",
+    "loading": "Chargement des statistiques…",
+    "period": {
+      "ariaLabel": "Période des statistiques",
+      "7d": "7 derniers jours",
+      "30d": "30 derniers jours",
+      "all": "Tout"
+    },
+    "kpi": {
+      "ariaLabel": "Indicateurs clés",
+      "totalVolume": "Volume total",
+      "totalFiles": "Fichiers",
+      "avgSpeed": "Vitesse moyenne",
+      "peakSpeed": "Vitesse max",
+      "successRate": "Taux de succès",
+      "timeSaved": "Temps de téléchargement",
+      "timeSavedHint": "Durée cumulée",
+      "captchasSolved": "CAPTCHAs résolus",
+      "captchasSolvedHint": "Disponible avec le module CAPTCHA"
+    },
+    "charts": {
+      "empty": "Pas assez de données pour le graphique",
+      "dailyVolume": {
+        "title": "Volume quotidien",
+        "description": "Octets téléchargés par jour",
+        "ariaLabel": "Histogramme du volume quotidien",
+        "xAxis": "Date",
+        "yAxis": "Volume"
+      },
+      "topHosts": {
+        "title": "Top hébergeurs",
+        "description": "Répartition par hébergeur source (top 10)",
+        "ariaLabel": "Donut des principaux hébergeurs",
+        "bytesLabel": "Volume"
+      },
+      "typeBreakdown": {
+        "title": "Répartition par type",
+        "description": "Octets par extension de fichier (top 10)",
+        "ariaLabel": "Histogramme horizontal de la répartition par type",
+        "bytesLabel": "Volume"
+      },
+      "speedCurve": {
+        "title": "Vitesse moyenne",
+        "description": "Vitesse moyenne quotidienne sur les téléchargements terminés",
+        "ariaLabel": "Courbe de la vitesse moyenne",
+        "xAxis": "Date",
+        "yAxis": "Vitesse"
+      }
+    },
+    "topModules": {
+      "title": "Modules les plus utilisés",
+      "empty": "Aucune activité de module pour le moment",
+      "countLabel": "téléchargements",
+      "hint": "Top 5 modules par nombre d'utilisations"
+    }
   }
 }

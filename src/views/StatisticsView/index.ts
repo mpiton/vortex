@@ -1,0 +1,1 @@
+export { StatisticsView } from './StatisticsView';
