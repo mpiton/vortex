@@ -358,6 +358,7 @@ mod tests {
             Arc::new(MockCredentialStore),
             Arc::new(MockClipboardObserver),
             Arc::new(FakeArchiveExtractor),
+            Arc::new(crate::application::test_support::NoopHistoryRepo),
             None,
         );
 

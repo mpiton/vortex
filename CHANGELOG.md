@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- History IPC surface: queries `history_list(dateFrom, dateTo, hostname, sortField, sortDirection, limit, offset)`, `history_search(q)`, `history_get_by_id(id)` and commands `history_export(format, path)` (CSV RFC 4180 with spreadsheet-formula guard, or JSON pretty-printed), `history_delete_entry(id)`, `history_clear`, `history_purge_older_than(days)` — `days == 0` is rejected to avoid a full-table wipe. Results are capped at 500 rows per request; `list` supports `offset` for pagination. `HistoryViewDto` exposes the primary key as `entryId` so the frontend can target individual rows. The `HistoryRepository` port gained `list` (with date range + exact hostname match against the URL host), `search` (case-insensitive over file name / URL / destination), `find_by_id`, `delete_by_id` and `delete_all`, implemented by `SqliteHistoryRepo`. (task 01)
 - `useTauriMutation` now accepts `silentError` (opt-out of the default toast) and `errorMessage` (remap the error message before toasting) options. (#74)
 
 ### Changed

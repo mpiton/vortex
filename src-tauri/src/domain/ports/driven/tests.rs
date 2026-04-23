@@ -16,8 +16,8 @@ use crate::domain::model::http::HttpResponse;
 use crate::domain::model::meta::DownloadMeta;
 use crate::domain::model::plugin::{PluginCategory, PluginInfo, PluginManifest};
 use crate::domain::model::views::{
-    DownloadDetailView, DownloadFilter, DownloadView, HistoryEntry, SortOrder, StateCountMap,
-    StatsView,
+    DownloadDetailView, DownloadFilter, DownloadView, HistoryEntry, HistoryFilter, HistorySort,
+    SortOrder, StateCountMap, StatsView,
 };
 use crate::domain::ports::driven::*;
 
@@ -269,19 +269,25 @@ impl ConfigStore for InMemoryConfigStore {
 
 struct InMemoryHistoryRepository {
     entries: Mutex<Vec<HistoryEntry>>,
+    next_id: Mutex<u64>,
 }
 
 impl InMemoryHistoryRepository {
     fn new() -> Self {
         Self {
             entries: Mutex::new(Vec::new()),
+            next_id: Mutex::new(1),
         }
     }
 }
 
 impl HistoryRepository for InMemoryHistoryRepository {
     fn record(&self, entry: &HistoryEntry) -> Result<(), DomainError> {
-        self.entries.lock().unwrap().push(entry.clone());
+        let mut stored = entry.clone();
+        let mut next = self.next_id.lock().unwrap();
+        stored.id = *next;
+        *next += 1;
+        self.entries.lock().unwrap().push(stored);
         Ok(())
     }
 
@@ -297,6 +303,86 @@ impl HistoryRepository for InMemoryHistoryRepository {
             .filter(|e| e.download_id == id)
             .cloned()
             .collect())
+    }
+
+    fn list(
+        &self,
+        filter: Option<HistoryFilter>,
+        _sort: Option<HistorySort>,
+        limit: Option<usize>,
+        offset: Option<usize>,
+    ) -> Result<Vec<HistoryEntry>, DomainError> {
+        let entries = self.entries.lock().unwrap();
+        let hostname = filter.as_ref().and_then(|f| {
+            f.hostname
+                .as_ref()
+                .map(|h| h.trim().to_ascii_lowercase())
+                .filter(|h| !h.is_empty())
+        });
+        let mut result: Vec<HistoryEntry> = entries
+            .iter()
+            .filter(|e| match &filter {
+                None => true,
+                Some(f) => {
+                    f.date_from.is_none_or(|from| e.completed_at >= from)
+                        && f.date_to.is_none_or(|to| e.completed_at <= to)
+                }
+            })
+            .filter(|e| match &hostname {
+                None => true,
+                Some(host) => e
+                    .url
+                    .split_once("://")
+                    .and_then(|(_, rest)| {
+                        let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+                        rest.get(..end)
+                    })
+                    .map(|authority| {
+                        let trimmed = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+                        let no_port = trimmed.split_once(':').map_or(trimmed, |(h, _)| h);
+                        no_port.eq_ignore_ascii_case(host)
+                    })
+                    .unwrap_or(false),
+            })
+            .cloned()
+            .collect();
+        result.sort_by_key(|e| std::cmp::Reverse(e.completed_at));
+        let start = offset.unwrap_or(0);
+        let take = limit.unwrap_or(usize::MAX);
+        Ok(result.into_iter().skip(start).take(take).collect())
+    }
+
+    fn search(&self, query: &str) -> Result<Vec<HistoryEntry>, DomainError> {
+        let needle = query.to_lowercase();
+        let entries = self.entries.lock().unwrap();
+        Ok(entries
+            .iter()
+            .filter(|e| {
+                e.file_name.to_lowercase().contains(&needle)
+                    || e.url.to_lowercase().contains(&needle)
+                    || e.destination_path.to_lowercase().contains(&needle)
+            })
+            .cloned()
+            .collect())
+    }
+
+    fn find_by_id(&self, id: u64) -> Result<Option<HistoryEntry>, DomainError> {
+        let entries = self.entries.lock().unwrap();
+        Ok(entries.iter().find(|e| e.id == id).cloned())
+    }
+
+    fn delete_by_id(&self, id: u64) -> Result<bool, DomainError> {
+        let mut entries = self.entries.lock().unwrap();
+        let before = entries.len();
+        entries.retain(|e| e.id != id);
+        Ok(before != entries.len())
+    }
+
+    fn delete_all(&self) -> Result<u64, DomainError> {
+        let mut entries = self.entries.lock().unwrap();
+        let count = entries.len() as u64;
+        entries.clear();
+        Ok(count)
     }
 
     fn delete_older_than(&self, before_timestamp: u64) -> Result<u64, DomainError> {
@@ -681,30 +767,102 @@ fn config_store_get_and_update() {
     assert_eq!(updated.download_dir, Some("/downloads".to_string()));
 }
 
+fn make_history_entry(download_id: u64, completed_at: u64, name: &str) -> HistoryEntry {
+    HistoryEntry {
+        id: 0,
+        download_id: DownloadId(download_id),
+        file_name: name.to_string(),
+        url: format!("https://example.com/{name}"),
+        total_bytes: 1024,
+        completed_at,
+        duration_seconds: 60,
+        avg_speed: 17,
+        destination_path: format!("/tmp/{name}"),
+    }
+}
+
 #[test]
 fn history_repository_record_and_find() {
     let repo = InMemoryHistoryRepository::new();
-    let entry = HistoryEntry {
-        download_id: DownloadId(1),
-        file_name: "file.zip".to_string(),
-        url: "https://example.com/file.zip".to_string(),
-        total_bytes: 1024,
-        completed_at: 1000,
-        duration_seconds: 60,
-        avg_speed: 17,
-        destination_path: "/tmp/file.zip".to_string(),
-    };
-
-    repo.record(&entry).unwrap();
+    repo.record(&make_history_entry(1, 1000, "file.zip"))
+        .unwrap();
     let recent = repo.find_recent(10).unwrap();
     assert_eq!(recent.len(), 1);
     assert_eq!(recent[0].file_name, "file.zip");
+    assert_ne!(recent[0].id, 0, "record assigns a primary key");
 
     let by_dl = repo.find_by_download(DownloadId(1)).unwrap();
     assert_eq!(by_dl.len(), 1);
 
     let deleted = repo.delete_older_than(2000).unwrap();
     assert_eq!(deleted, 1);
+    assert!(repo.find_recent(10).unwrap().is_empty());
+}
+
+#[test]
+fn history_repository_list_filters_and_paginates() {
+    let repo = InMemoryHistoryRepository::new();
+    repo.record(&make_history_entry(1, 1000, "a.zip")).unwrap();
+    repo.record(&make_history_entry(2, 2000, "b.zip")).unwrap();
+    repo.record(&make_history_entry(3, 3000, "c.zip")).unwrap();
+
+    let page = repo.list(None, None, Some(2), Some(0)).unwrap();
+    assert_eq!(page.len(), 2);
+    assert_eq!(page[0].completed_at, 3000);
+
+    let second_page = repo.list(None, None, Some(2), Some(2)).unwrap();
+    assert_eq!(second_page.len(), 1);
+    assert_eq!(second_page[0].completed_at, 1000);
+
+    let filtered = repo
+        .list(
+            Some(HistoryFilter {
+                date_from: Some(1500),
+                date_to: Some(2500),
+                hostname: None,
+            }),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+    assert_eq!(filtered.len(), 1);
+    assert_eq!(filtered[0].completed_at, 2000);
+}
+
+#[test]
+fn history_repository_search_matches_filename_and_url() {
+    let repo = InMemoryHistoryRepository::new();
+    repo.record(&make_history_entry(1, 1000, "alpha.zip"))
+        .unwrap();
+    repo.record(&make_history_entry(2, 2000, "beta.txt"))
+        .unwrap();
+
+    let hits = repo.search("alpha").unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].file_name, "alpha.zip");
+
+    let url_hits = repo.search("example.com").unwrap();
+    assert_eq!(url_hits.len(), 2);
+}
+
+#[test]
+fn history_repository_delete_by_id_and_clear() {
+    let repo = InMemoryHistoryRepository::new();
+    repo.record(&make_history_entry(1, 1000, "one.zip"))
+        .unwrap();
+    repo.record(&make_history_entry(2, 2000, "two.zip"))
+        .unwrap();
+    let all = repo.find_recent(10).unwrap();
+    let victim = all.first().expect("entry exists");
+
+    let removed = repo.delete_by_id(victim.id).unwrap();
+    assert!(removed);
+    let missing = repo.delete_by_id(9999).unwrap();
+    assert!(!missing);
+
+    let cleared = repo.delete_all().unwrap();
+    assert_eq!(cleared, 1);
     assert!(repo.find_recent(10).unwrap().is_empty());
 }
 

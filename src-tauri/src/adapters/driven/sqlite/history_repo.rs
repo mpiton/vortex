@@ -1,18 +1,66 @@
 use sea_orm::{
-    ActiveModelTrait, ActiveValue::Set, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter,
-    QueryOrder, QuerySelect,
+    ActiveModelTrait, ActiveValue::Set, ColumnTrait, Condition, DatabaseConnection, EntityTrait,
+    Order, QueryFilter, QueryOrder, QuerySelect,
 };
 
 use crate::domain::error::DomainError;
 use crate::domain::model::download::DownloadId;
-use crate::domain::model::views::HistoryEntry;
-use crate::domain::ports::driven::history_repository::HistoryRepository;
+use crate::domain::model::views::{
+    HistoryEntry, HistoryFilter, HistorySort, HistorySortField, SortDirection,
+};
+use crate::domain::ports::driven::history_repository::{
+    HistoryRepository, MAX_HISTORY_PAGE_SIZE, MAX_HISTORY_SEARCH_RESULTS,
+};
 
 use super::entities::history;
 use super::util::{block_on, map_db_err, safe_u64};
 
+/// Extract the host component (without userinfo, port, path, query or fragment)
+/// from an absolute URL. Returns `None` when the input does not contain a
+/// scheme separator.
+///
+/// Keeps IPv6 literals (bracketed `[::1]`) intact instead of truncating at
+/// the first colon. Uses a small state machine rather than pulling the `url`
+/// crate — history entries already store the URL the download engine handed
+/// us, guaranteed to start with `scheme://`.
+fn extract_host(url: &str) -> Option<&str> {
+    let (_, after_scheme) = url.split_once("://")?;
+    let authority_end = after_scheme
+        .find(['/', '?', '#'])
+        .unwrap_or(after_scheme.len());
+    let authority = &after_scheme[..authority_end];
+    let host_with_port = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+    let host = if host_with_port.starts_with('[') {
+        // IPv6 literal: keep everything through the closing ']', strip any
+        // trailing :port that follows.
+        host_with_port
+            .find(']')
+            .map_or(host_with_port, |end| &host_with_port[..=end])
+    } else {
+        host_with_port
+            .split_once(':')
+            .map_or(host_with_port, |(h, _)| h)
+    };
+    if host.is_empty() { None } else { Some(host) }
+}
+
+fn matches_hostname_filter(entry_url: &str, wanted: &str) -> bool {
+    let wanted = wanted.to_ascii_lowercase();
+    match extract_host(entry_url) {
+        Some(host) => host.to_ascii_lowercase() == wanted,
+        None => false,
+    }
+}
+
+fn matches_search(entry: &HistoryEntry, needle_lower: &str) -> bool {
+    entry.file_name.to_lowercase().contains(needle_lower)
+        || entry.url.to_lowercase().contains(needle_lower)
+        || entry.destination_path.to_lowercase().contains(needle_lower)
+}
+
 fn model_to_entry(m: history::Model) -> HistoryEntry {
     HistoryEntry {
+        id: safe_u64(m.id),
         download_id: DownloadId(safe_u64(m.download_id)),
         file_name: m.file_name,
         url: m.url,
@@ -22,6 +70,20 @@ fn model_to_entry(m: history::Model) -> HistoryEntry {
         avg_speed: safe_u64(m.avg_speed),
         destination_path: m.destination_path,
     }
+}
+
+fn sort_to_order(sort: HistorySort) -> (history::Column, Order) {
+    let column = match sort.field {
+        HistorySortField::CompletedAt => history::Column::CompletedAt,
+        HistorySortField::FileName => history::Column::FileName,
+        HistorySortField::TotalBytes => history::Column::TotalBytes,
+        HistorySortField::DurationSeconds => history::Column::DurationSeconds,
+    };
+    let order = match sort.direction {
+        SortDirection::Ascending => Order::Asc,
+        SortDirection::Descending => Order::Desc,
+    };
+    (column, order)
 }
 
 pub struct SqliteHistoryRepo {
@@ -73,6 +135,146 @@ impl HistoryRepository for SqliteHistoryRepo {
         Ok(models.into_iter().map(model_to_entry).collect())
     }
 
+    fn list(
+        &self,
+        filter: Option<HistoryFilter>,
+        sort: Option<HistorySort>,
+        limit: Option<usize>,
+        offset: Option<usize>,
+    ) -> Result<Vec<HistoryEntry>, DomainError> {
+        // Only date bounds go through SQL — hostname matching has to compare
+        // against the parsed URL host, which sqlite cannot do without a
+        // per-entry helper. Doing it in Rust also sidesteps LIKE wildcard
+        // escaping for user-supplied input.
+        let mut condition = Condition::all();
+        let mut hostname_filter: Option<String> = None;
+        if let Some(f) = filter {
+            if let Some(from) = f.date_from {
+                condition = condition.add(history::Column::CompletedAt.gte(from as i64));
+            }
+            if let Some(to) = f.date_to {
+                condition = condition.add(history::Column::CompletedAt.lte(to as i64));
+            }
+            hostname_filter = f.hostname.filter(|h| !h.trim().is_empty());
+        }
+
+        let (column, order) = sort
+            .map(sort_to_order)
+            .unwrap_or((history::Column::CompletedAt, Order::Desc));
+
+        let effective_limit = limit
+            .unwrap_or(MAX_HISTORY_PAGE_SIZE)
+            .min(MAX_HISTORY_PAGE_SIZE);
+        let effective_offset = offset.unwrap_or(0);
+
+        // The primary sort column can have ties (e.g. thousands of rows
+        // sharing a completed_at second), so pagination alone is not stable —
+        // OFFSET would skip or duplicate rows across successive pages.
+        // `id` is the primary key and therefore unique, which makes it a safe
+        // deterministic tie-breaker.
+        let base_query = history::Entity::find()
+            .filter(condition)
+            .order_by(column, order)
+            .order_by(history::Column::Id, Order::Desc);
+
+        let Some(host) = hostname_filter else {
+            let models = block_on(
+                base_query
+                    .limit(effective_limit as u64)
+                    .offset(effective_offset as u64)
+                    .all(&self.db),
+            )
+            .map_err(map_db_err)?;
+            return Ok(models.into_iter().map(model_to_entry).collect());
+        };
+
+        // With a hostname filter we can't delegate offset/limit to SQL — rows
+        // are dropped *after* the fetch. Page through the sorted date range
+        // MAX_HISTORY_PAGE_SIZE rows at a time, matching in Rust, until we
+        // have `limit` entries past the caller's offset or the table is
+        // exhausted. Tracking a `skipped` counter keeps memory at O(limit)
+        // instead of O(offset + limit) when callers page deep.
+        let mut matches: Vec<HistoryEntry> = Vec::with_capacity(effective_limit);
+        let mut skipped = 0usize;
+        let mut sql_offset: u64 = 0;
+        let page_size = MAX_HISTORY_PAGE_SIZE as u64;
+        'outer: loop {
+            let page = block_on(
+                base_query
+                    .clone()
+                    .limit(page_size)
+                    .offset(sql_offset)
+                    .all(&self.db),
+            )
+            .map_err(map_db_err)?;
+            let fetched = page.len();
+            if fetched == 0 {
+                break;
+            }
+            for model in page {
+                let entry = model_to_entry(model);
+                if !matches_hostname_filter(&entry.url, &host) {
+                    continue;
+                }
+                if skipped < effective_offset {
+                    skipped += 1;
+                    continue;
+                }
+                matches.push(entry);
+                if matches.len() >= effective_limit {
+                    break 'outer;
+                }
+            }
+            if (fetched as u64) < page_size {
+                break;
+            }
+            sql_offset = sql_offset.saturating_add(page_size);
+        }
+        Ok(matches)
+    }
+
+    fn search(&self, query: &str) -> Result<Vec<HistoryEntry>, DomainError> {
+        // Short-circuit on a blank query before touching sqlite. An empty
+        // needle would match everything, so the only useful answer is an
+        // empty result — no need to pull up to 500 rows first.
+        let needle = query.to_lowercase();
+        if needle.is_empty() {
+            return Ok(Vec::new());
+        }
+        // Full-text search needs to be case-insensitive across arbitrary user
+        // input, so we fetch the most recent rows up to a server cap and
+        // filter in Rust. Avoids every LIKE-wildcard/ESCAPE edge case.
+        let models = block_on(
+            history::Entity::find()
+                .order_by_desc(history::Column::CompletedAt)
+                .limit(MAX_HISTORY_SEARCH_RESULTS as u64)
+                .all(&self.db),
+        )
+        .map_err(map_db_err)?;
+        Ok(models
+            .into_iter()
+            .map(model_to_entry)
+            .filter(|entry| matches_search(entry, &needle))
+            .collect())
+    }
+
+    fn find_by_id(&self, id: u64) -> Result<Option<HistoryEntry>, DomainError> {
+        let model =
+            block_on(history::Entity::find_by_id(id as i64).one(&self.db)).map_err(map_db_err)?;
+        Ok(model.map(model_to_entry))
+    }
+
+    fn delete_by_id(&self, id: u64) -> Result<bool, DomainError> {
+        let result = block_on(history::Entity::delete_by_id(id as i64).exec(&self.db))
+            .map_err(map_db_err)?;
+        Ok(result.rows_affected > 0)
+    }
+
+    fn delete_all(&self) -> Result<u64, DomainError> {
+        let result = block_on(history::Entity::delete_many().exec(&self.db)).map_err(map_db_err)?;
+        Ok(result.rows_affected)
+    }
+
     fn delete_older_than(&self, before_timestamp: u64) -> Result<u64, DomainError> {
         let result = block_on(
             history::Entity::delete_many()
@@ -88,9 +290,11 @@ impl HistoryRepository for SqliteHistoryRepo {
 mod tests {
     use super::super::connection::setup_test_db;
     use super::*;
+    use crate::domain::model::views::HistorySortField;
 
     fn make_entry(download_id: u64, completed_at: u64) -> HistoryEntry {
         HistoryEntry {
+            id: 0,
             download_id: DownloadId(download_id),
             file_name: format!("file_{download_id}.zip"),
             url: format!("https://example.com/file_{download_id}.zip"),
@@ -115,6 +319,7 @@ mod tests {
         assert_eq!(recent.len(), 2);
         assert_eq!(recent[0].download_id, DownloadId(3));
         assert_eq!(recent[1].download_id, DownloadId(2));
+        assert!(recent[0].id > 0, "record assigns a primary key");
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -159,5 +364,274 @@ mod tests {
 
         let recent = repo.find_recent(10).expect("find_recent");
         assert!(recent.is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_list_filters_date_range() {
+        let db = setup_test_db().await.expect("failed to setup test db");
+        let repo = SqliteHistoryRepo::new(db);
+        repo.record(&make_entry(1, 1000)).unwrap();
+        repo.record(&make_entry(2, 2000)).unwrap();
+        repo.record(&make_entry(3, 3000)).unwrap();
+
+        let filter = HistoryFilter {
+            date_from: Some(1500),
+            date_to: Some(2500),
+            hostname: None,
+        };
+        let results = repo.list(Some(filter), None, None, None).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].completed_at, 2000);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_list_paginates() {
+        let db = setup_test_db().await.expect("failed to setup test db");
+        let repo = SqliteHistoryRepo::new(db);
+        for i in 1..=5 {
+            repo.record(&make_entry(i, i * 1000)).unwrap();
+        }
+
+        let page1 = repo.list(None, None, Some(2), Some(0)).unwrap();
+        assert_eq!(page1.len(), 2);
+        assert_eq!(page1[0].completed_at, 5000);
+
+        let page2 = repo.list(None, None, Some(2), Some(2)).unwrap();
+        assert_eq!(page2.len(), 2);
+        assert_eq!(page2[0].completed_at, 3000);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_list_sorts_by_file_name_ascending() {
+        let db = setup_test_db().await.expect("failed to setup test db");
+        let repo = SqliteHistoryRepo::new(db);
+        repo.record(&make_entry(3, 1000)).unwrap();
+        repo.record(&make_entry(1, 2000)).unwrap();
+        repo.record(&make_entry(2, 3000)).unwrap();
+
+        let sort = HistorySort {
+            field: HistorySortField::FileName,
+            direction: SortDirection::Ascending,
+        };
+        let results = repo.list(None, Some(sort), None, None).unwrap();
+        assert_eq!(results[0].file_name, "file_1.zip");
+        assert_eq!(results[1].file_name, "file_2.zip");
+        assert_eq!(results[2].file_name, "file_3.zip");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_search_matches_filename_and_url() {
+        let db = setup_test_db().await.expect("failed to setup test db");
+        let repo = SqliteHistoryRepo::new(db);
+        repo.record(&make_entry(1, 1000)).unwrap();
+        let mut custom = make_entry(2, 2000);
+        custom.file_name = "alpha-movie.mkv".into();
+        custom.url = "https://custom.test/alpha-movie.mkv".into();
+        custom.destination_path = "/data/alpha-movie.mkv".into();
+        repo.record(&custom).unwrap();
+
+        let hits = repo.search("alpha").unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].file_name, "alpha-movie.mkv");
+
+        let url_hits = repo.search("example.com").unwrap();
+        assert_eq!(url_hits.len(), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_find_by_id_and_delete_by_id() {
+        let db = setup_test_db().await.expect("failed to setup test db");
+        let repo = SqliteHistoryRepo::new(db);
+        repo.record(&make_entry(1, 1000)).unwrap();
+        let recent = repo.find_recent(10).unwrap();
+        let id = recent[0].id;
+
+        let found = repo.find_by_id(id).unwrap();
+        assert!(found.is_some());
+        let missing = repo.find_by_id(9999).unwrap();
+        assert!(missing.is_none());
+
+        let removed = repo.delete_by_id(id).unwrap();
+        assert!(removed);
+        let again = repo.delete_by_id(id).unwrap();
+        assert!(!again);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_list_filters_by_exact_host_case_insensitive() {
+        let db = setup_test_db().await.expect("failed to setup test db");
+        let repo = SqliteHistoryRepo::new(db);
+        let mut a = make_entry(1, 1000);
+        a.url = "https://Example.COM/one.zip".into();
+        repo.record(&a).unwrap();
+        let mut b = make_entry(2, 2000);
+        b.url = "https://other.test/two.zip".into();
+        repo.record(&b).unwrap();
+        let mut c = make_entry(3, 3000);
+        // Path mentions "example.com" but the real host is other.test —
+        // the hostname filter must NOT match this row.
+        c.url = "https://other.test/?next=https://example.com/x".into();
+        repo.record(&c).unwrap();
+
+        let results = repo
+            .list(
+                Some(HistoryFilter {
+                    date_from: None,
+                    date_to: None,
+                    hostname: Some("example.com".into()),
+                }),
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].download_id, DownloadId(1));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_list_ignores_blank_hostname() {
+        let db = setup_test_db().await.expect("failed to setup test db");
+        let repo = SqliteHistoryRepo::new(db);
+        repo.record(&make_entry(1, 1000)).unwrap();
+        repo.record(&make_entry(2, 2000)).unwrap();
+
+        let results = repo
+            .list(
+                Some(HistoryFilter {
+                    date_from: None,
+                    date_to: None,
+                    hostname: Some("   ".into()),
+                }),
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        assert_eq!(results.len(), 2);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_search_treats_wildcards_as_literal() {
+        let db = setup_test_db().await.expect("failed to setup test db");
+        let repo = SqliteHistoryRepo::new(db);
+        let mut literal = make_entry(1, 1000);
+        literal.file_name = "snapshot_v2.tar.gz".into();
+        repo.record(&literal).unwrap();
+        let mut unrelated = make_entry(2, 2000);
+        unrelated.file_name = "snapshotAv2.tar.gz".into();
+        repo.record(&unrelated).unwrap();
+
+        // `_` is a LIKE wildcard in SQLite; a naive implementation would
+        // match both rows. Post-filtering in Rust treats it as a literal.
+        let hits = repo.search("snapshot_v2").unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].file_name, "snapshot_v2.tar.gz");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_search_is_case_insensitive() {
+        let db = setup_test_db().await.expect("failed to setup test db");
+        let repo = SqliteHistoryRepo::new(db);
+        let mut entry = make_entry(1, 1000);
+        entry.file_name = "MixedCase.Bin".into();
+        repo.record(&entry).unwrap();
+
+        let hits = repo.search("mixedcase").unwrap();
+        assert_eq!(hits.len(), 1);
+    }
+
+    #[test]
+    fn test_extract_host_keeps_ipv6_brackets() {
+        assert_eq!(extract_host("https://[::1]:8080/p"), Some("[::1]"));
+        assert_eq!(
+            extract_host("https://user:pwd@[2001:db8::1]/x"),
+            Some("[2001:db8::1]")
+        );
+    }
+
+    #[test]
+    fn test_extract_host_strips_port_and_userinfo() {
+        assert_eq!(extract_host("https://u:p@ex.com:443/path"), Some("ex.com"));
+        assert_eq!(extract_host("http://ex.com?q=1"), Some("ex.com"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_list_pagination_is_stable_when_sort_has_ties() {
+        let db = setup_test_db().await.expect("failed to setup test db");
+        let repo = SqliteHistoryRepo::new(db);
+        // All entries share the same completed_at so the primary sort key
+        // produces ties — pagination must still return each row exactly once.
+        for i in 1..=10u64 {
+            repo.record(&make_entry(i, 1_700_000_000)).unwrap();
+        }
+
+        let mut seen: Vec<String> = Vec::new();
+        for offset in (0..10).step_by(3) {
+            let page = repo.list(None, None, Some(3), Some(offset)).unwrap();
+            seen.extend(page.into_iter().map(|e| e.file_name));
+        }
+        seen.sort();
+        seen.dedup();
+        assert_eq!(seen.len(), 10, "every row must appear exactly once");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_list_hostname_filter_paginates_past_server_cap() {
+        let db = setup_test_db().await.expect("failed to setup test db");
+        let repo = SqliteHistoryRepo::new(db);
+        // Interleave target vs noise so that the target matches live past
+        // the first MAX_HISTORY_PAGE_SIZE SQL rows.
+        for i in 1..=600u64 {
+            let mut e = make_entry(i, i * 1000);
+            e.url = if i.is_multiple_of(4) {
+                format!("https://target.test/{i}")
+            } else {
+                format!("https://noise.test/{i}")
+            };
+            repo.record(&e).unwrap();
+        }
+
+        let page = repo
+            .list(
+                Some(HistoryFilter {
+                    date_from: None,
+                    date_to: None,
+                    hostname: Some("target.test".into()),
+                }),
+                None,
+                Some(10),
+                Some(0),
+            )
+            .unwrap();
+        assert_eq!(page.len(), 10);
+        assert!(page.iter().all(|e| e.url.contains("target.test")));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_list_clamps_limit_to_server_cap() {
+        let db = setup_test_db().await.expect("failed to setup test db");
+        let repo = SqliteHistoryRepo::new(db);
+        for i in 1..=3 {
+            repo.record(&make_entry(i, i * 1000)).unwrap();
+        }
+
+        let results = repo.list(None, None, Some(usize::MAX), Some(0)).unwrap();
+        // We only seeded 3 rows so the cap doesn't reject them, but the
+        // adapter must not panic or refuse unbounded `limit` values.
+        assert_eq!(results.len(), 3);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_delete_all() {
+        let db = setup_test_db().await.expect("failed to setup test db");
+        let repo = SqliteHistoryRepo::new(db);
+        for i in 1..=4 {
+            repo.record(&make_entry(i, i * 1000)).unwrap();
+        }
+
+        let cleared = repo.delete_all().unwrap();
+        assert_eq!(cleared, 4);
+        assert!(repo.find_recent(10).unwrap().is_empty());
     }
 }

@@ -4,7 +4,19 @@
 
 use crate::domain::error::DomainError;
 use crate::domain::model::download::DownloadId;
-use crate::domain::model::views::HistoryEntry;
+use crate::domain::model::views::{HistoryEntry, HistoryFilter, HistorySort};
+
+/// Upper bound enforced by adapters when `limit` is unset or exceeds it.
+///
+/// Keeps a single IPC response from serialising an unbounded history table.
+/// Frontends that need more rows should paginate via `offset`.
+pub const MAX_HISTORY_PAGE_SIZE: usize = 500;
+
+/// Upper bound on the number of rows inspected by a single `search` call.
+///
+/// Searches scan the most recent entries up to this cap, so very old rows
+/// may be excluded from matches — acceptable for a user-facing history view.
+pub const MAX_HISTORY_SEARCH_RESULTS: usize = 500;
 
 /// Persists and queries download history.
 ///
@@ -20,6 +32,42 @@ pub trait HistoryRepository: Send + Sync {
 
     /// Find history entries for a specific download.
     fn find_by_download(&self, id: DownloadId) -> Result<Vec<HistoryEntry>, DomainError>;
+
+    /// List history entries with optional filter, sort and pagination.
+    ///
+    /// Implementations must clamp `limit` to [`MAX_HISTORY_PAGE_SIZE`] and
+    /// treat `None` as the same cap. Sorting defaults to `completed_at DESC`.
+    /// `HistoryFilter::hostname` matches the URL's host component exactly
+    /// (case-insensitive), not an arbitrary substring of the URL.
+    ///
+    /// Because a single call is bounded, callers that need the full table
+    /// (e.g. the export command) must paginate by advancing `offset` until
+    /// a short page is returned.
+    fn list(
+        &self,
+        filter: Option<HistoryFilter>,
+        sort: Option<HistorySort>,
+        limit: Option<usize>,
+        offset: Option<usize>,
+    ) -> Result<Vec<HistoryEntry>, DomainError>;
+
+    /// Full-text search across file name, URL and destination path.
+    ///
+    /// Returns entries where any of those columns contain `query`
+    /// (case-insensitive). Implementations must cap the number of scanned
+    /// rows at [`MAX_HISTORY_SEARCH_RESULTS`] to keep IPC payloads bounded.
+    fn search(&self, query: &str) -> Result<Vec<HistoryEntry>, DomainError>;
+
+    /// Find a single history entry by its primary key.
+    fn find_by_id(&self, id: u64) -> Result<Option<HistoryEntry>, DomainError>;
+
+    /// Delete a single history entry by its primary key.
+    ///
+    /// Returns `true` if an entry was removed.
+    fn delete_by_id(&self, id: u64) -> Result<bool, DomainError>;
+
+    /// Delete every history entry. Returns the number of rows removed.
+    fn delete_all(&self) -> Result<u64, DomainError>;
 
     /// Delete history entries older than the given Unix timestamp in seconds.
     ///

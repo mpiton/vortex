@@ -77,6 +77,9 @@ pub struct SegmentView {
 /// A record in the download history (completed or failed downloads).
 #[derive(Debug, Clone, PartialEq)]
 pub struct HistoryEntry {
+    /// Primary key assigned by the history store. `0` when the entry has
+    /// not yet been persisted (constructed in-memory before `record`).
+    pub id: u64,
     pub download_id: DownloadId,
     pub file_name: String,
     pub url: String,
@@ -85,6 +88,36 @@ pub struct HistoryEntry {
     pub duration_seconds: u64,
     pub avg_speed: u64,
     pub destination_path: String,
+}
+
+/// Filter criteria for history list queries.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct HistoryFilter {
+    /// Include entries with `completed_at >= date_from` (Unix seconds).
+    pub date_from: Option<u64>,
+    /// Include entries with `completed_at <= date_to` (Unix seconds).
+    pub date_to: Option<u64>,
+    /// Case-insensitive exact match against the URL's host component (the
+    /// authority between `://` and the next `/`, stripped of userinfo and
+    /// port). Blank or whitespace-only values are treated as "no filter".
+    pub hostname: Option<String>,
+}
+
+/// Sort field for history list queries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum HistorySortField {
+    #[default]
+    CompletedAt,
+    FileName,
+    TotalBytes,
+    DurationSeconds,
+}
+
+/// Combined sort specification for history queries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HistorySort {
+    pub field: HistorySortField,
+    pub direction: SortDirection,
 }
 
 /// Aggregated download statistics.

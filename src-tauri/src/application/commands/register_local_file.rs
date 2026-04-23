@@ -291,6 +291,7 @@ mod tests {
             Arc::new(MockCred),
             Arc::new(MockClip),
             Arc::new(FakeArchive),
+            Arc::new(crate::application::test_support::NoopHistoryRepo),
             None,
         );
         (bus, repo, events)
@@ -345,13 +346,11 @@ mod tests {
         let id = bus.handle_register_local_file(cmd).await.unwrap();
         let evs = events.0.lock().unwrap();
         assert!(
-            evs.iter()
-                .any(|e| *e == DomainEvent::DownloadCreated { id }),
+            evs.contains(&DomainEvent::DownloadCreated { id }),
             "must emit DownloadCreated"
         );
         assert!(
-            evs.iter()
-                .any(|e| *e == DomainEvent::DownloadCompleted { id }),
+            evs.contains(&DomainEvent::DownloadCompleted { id }),
             "must emit DownloadCompleted"
         );
     }

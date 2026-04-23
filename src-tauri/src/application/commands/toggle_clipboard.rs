@@ -400,6 +400,7 @@ mod tests {
             Arc::new(MockCredentialStore::new()),
             Arc::new(MockClipboardObserver::new()),
             Arc::new(FakeArchiveExtractor),
+            Arc::new(crate::application::test_support::NoopHistoryRepo),
             None,
         )
     }
@@ -409,7 +410,7 @@ mod tests {
         let bus = make_command_bus();
         let result = bus.handle_toggle_clipboard(true);
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), true);
+        assert!(result.unwrap());
     }
 
     #[test]
@@ -417,7 +418,7 @@ mod tests {
         let bus = make_command_bus();
         let result = bus.handle_toggle_clipboard(false);
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), false);
+        assert!(!result.unwrap());
     }
 
     #[test]

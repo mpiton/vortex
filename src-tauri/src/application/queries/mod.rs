@@ -6,12 +6,15 @@
 mod count_by_state;
 mod get_download_detail;
 mod get_downloads;
+mod get_history_entry;
 mod get_plugin_store;
 mod list_archive_contents;
+mod list_history;
 mod list_plugins;
+mod search_history;
 
 use crate::domain::model::download::DownloadId;
-use crate::domain::model::views::{DownloadFilter, SortOrder};
+use crate::domain::model::views::{DownloadFilter, HistoryFilter, HistorySort, SortOrder};
 use crate::domain::ports::driving::Query;
 
 #[derive(Debug)]
@@ -29,14 +32,29 @@ pub struct GetDownloadDetailQuery {
 }
 impl Query for GetDownloadDetailQuery {}
 
-// Handler: task 23 (history view)
+/// List history entries with filter, sort, pagination.
 #[derive(Debug)]
-#[expect(dead_code)]
-pub struct GetHistoryQuery {
-    pub limit: usize,
+pub struct ListHistoryQuery {
+    pub filter: Option<HistoryFilter>,
+    pub sort: Option<HistorySort>,
+    pub limit: Option<usize>,
     pub offset: Option<usize>,
 }
-impl Query for GetHistoryQuery {}
+impl Query for ListHistoryQuery {}
+
+/// Full-text history search (file name, URL, destination).
+#[derive(Debug)]
+pub struct SearchHistoryQuery {
+    pub query: String,
+}
+impl Query for SearchHistoryQuery {}
+
+/// Fetch a single history entry by its primary key.
+#[derive(Debug)]
+pub struct GetHistoryEntryQuery {
+    pub id: u64,
+}
+impl Query for GetHistoryEntryQuery {}
 
 // Handler: task 23 (statistics view)
 #[derive(Debug)]
