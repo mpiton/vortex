@@ -306,6 +306,7 @@
     "searchAriaLabel": "Rechercher dans l'historique",
     "loading": "Chargement de l'historique…",
     "empty": "Aucune entrée dans l'historique",
+    "searchEmpty": "Aucune entrée ne correspond à « {{query}} »",
     "filterEmpty": "Aucune entrée ne correspond au filtre actif",
     "dayGroupAriaLabel": "Téléchargements terminés le {{date}}",
     "columns": {

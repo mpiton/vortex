@@ -306,6 +306,7 @@
     "searchAriaLabel": "Search history",
     "loading": "Loading history…",
     "empty": "No history entries yet",
+    "searchEmpty": "No entries match \"{{query}}\"",
     "filterEmpty": "No entries match the current filter",
     "dayGroupAriaLabel": "Downloads completed on {{date}}",
     "columns": {

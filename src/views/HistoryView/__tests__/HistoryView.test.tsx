@@ -90,6 +90,25 @@ describe('HistoryView integration', () => {
     );
   });
 
+  it('should show the search-empty state when a search returns no results', async () => {
+    mockInvoke.mockImplementation(async (command: string) => {
+      if (command === 'history_list') return sampleEntries();
+      if (command === 'history_search') return [];
+      return null;
+    });
+
+    renderView();
+    const user = userEvent.setup();
+    await waitFor(() => expect(screen.getByText('alpha.zip')).toBeInTheDocument());
+    await user.type(screen.getByLabelText('Search history'), 'zeta');
+
+    await waitFor(
+      () => expect(screen.getByTestId('history-search-empty')).toBeInTheDocument(),
+      { timeout: 2000 },
+    );
+    expect(screen.queryByTestId('history-empty')).not.toBeInTheDocument();
+  }, 10_000);
+
   it('should filter to a single status tab and show 0 entries on cancelled', async () => {
     mockInvoke.mockImplementation(async (command: string) => {
       if (command === 'history_list') return sampleEntries();

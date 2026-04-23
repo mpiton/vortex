@@ -148,7 +148,9 @@ export function HistoryView() {
     [exportMut, t],
   );
 
-  const isEmpty = !isLoading && entries.length === 0;
+  const hasActiveSearch = debouncedSearch.trim().length > 0;
+  const isSearchEmpty = !isLoading && hasActiveSearch && entries.length === 0;
+  const isEmpty = !isLoading && !hasActiveSearch && entries.length === 0;
   const isFilterEmpty = !isLoading && entries.length > 0 && filteredEntries.length === 0;
 
   return (
@@ -179,6 +181,14 @@ export function HistoryView() {
             className="flex h-full items-center justify-center text-sm text-muted-foreground"
           >
             {t('history.empty')}
+          </div>
+        )}
+        {!error && isSearchEmpty && (
+          <div
+            data-testid="history-search-empty"
+            className="flex h-full items-center justify-center text-sm text-muted-foreground"
+          >
+            {t('history.searchEmpty', { query: debouncedSearch.trim() })}
           </div>
         )}
         {!error && isFilterEmpty && (
