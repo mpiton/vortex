@@ -18,6 +18,7 @@ export function PeriodSelector({ value, onChange, ariaLabel, labels }: PeriodSel
           key={period}
           role="tab"
           aria-selected={value === period}
+          tabIndex={value === period ? 0 : -1}
           variant={value === period ? 'default' : 'ghost'}
           size="sm"
           onClick={() => onChange(period)}

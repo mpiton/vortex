@@ -66,7 +66,7 @@ export function StatisticsView() {
   const speedSeries = useMemo(() => deriveSpeedSeries(filteredHistory), [filteredHistory]);
   const timeSavedSeconds = useMemo(() => sumDurations(filteredHistory), [filteredHistory]);
 
-  if (error) {
+  if (error && !stats) {
     return (
       <div className="flex h-full items-center justify-center p-6 text-sm text-destructive">
         {error.message}
@@ -91,6 +91,15 @@ export function StatisticsView() {
           labels={periodLabels}
         />
       </header>
+
+      {error ? (
+        <div
+          role="alert"
+          className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive"
+        >
+          {error.message}
+        </div>
+      ) : null}
 
       {isLoading && !stats ? (
         <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">

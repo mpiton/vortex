@@ -50,6 +50,62 @@ describe('useStatsQuery', () => {
     expect(result.current.stats?.totalFiles).toBe(2);
   });
 
+  it('passes dateFrom cutoff to history_list for bounded periods', async () => {
+    mockInvoke.mockImplementation(async (cmd: string) => {
+      if (cmd === 'stats_get') {
+        return {
+          totalDownloadedBytes: 0,
+          totalFiles: 0,
+          avgSpeed: 0,
+          peakSpeed: 0,
+          successRate: 1,
+          dailyVolumes: [],
+          topHosts: [],
+        };
+      }
+      if (cmd === 'stats_top_modules') return [];
+      if (cmd === 'history_list') return [];
+      return null;
+    });
+
+    const { result } = renderHook(() => useStatsQuery('7d'), { wrapper: wrapper() });
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+
+    const historyCall = mockInvoke.mock.calls.find(([cmd]) => cmd === 'history_list');
+    expect(historyCall).toBeDefined();
+    const args = historyCall?.[1] as { dateFrom?: number; limit?: number };
+    expect(args?.limit).toBe(500);
+    expect(args?.dateFrom).toBeDefined();
+    expect(typeof args?.dateFrom).toBe('number');
+  });
+
+  it('omits dateFrom for all-time period', async () => {
+    mockInvoke.mockImplementation(async (cmd: string) => {
+      if (cmd === 'stats_get') {
+        return {
+          totalDownloadedBytes: 0,
+          totalFiles: 0,
+          avgSpeed: 0,
+          peakSpeed: 0,
+          successRate: 1,
+          dailyVolumes: [],
+          topHosts: [],
+        };
+      }
+      if (cmd === 'stats_top_modules') return [];
+      if (cmd === 'history_list') return [];
+      return null;
+    });
+
+    const { result } = renderHook(() => useStatsQuery('all'), { wrapper: wrapper() });
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+
+    const historyCall = mockInvoke.mock.calls.find(([cmd]) => cmd === 'history_list');
+    const args = historyCall?.[1] as { dateFrom?: number; limit?: number };
+    expect(args?.limit).toBe(500);
+    expect(args?.dateFrom).toBeUndefined();
+  });
+
   it('refetches all queries when period changes', async () => {
     mockInvoke.mockImplementation(async (cmd: string) => {
       if (cmd === 'stats_get') {

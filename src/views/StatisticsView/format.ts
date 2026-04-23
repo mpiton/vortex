@@ -32,6 +32,7 @@ export function formatDurationFromSeconds(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds <= 0) return '0h';
   const hours = Math.floor(seconds / SECONDS_PER_HOUR);
   const minutes = Math.floor((seconds % SECONDS_PER_HOUR) / 60);
+  if (hours === 0 && minutes === 0) return '< 1min';
   if (hours === 0) return `${minutes}min`;
   return minutes === 0 ? `${hours}h` : `${hours}h${String(minutes).padStart(2, '0')}`;
 }

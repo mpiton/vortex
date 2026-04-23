@@ -2,9 +2,10 @@ import { useQueries } from '@tanstack/react-query';
 import { tauriInvoke } from '@/api/client';
 import { historyQueries, statsQueries } from '@/api/queries';
 import type { HistoryView, ModuleStats, StatsView } from '@/types/download';
-import type { StatsPeriod } from '@/views/StatisticsView/derive';
+import { periodToCutoffSeconds, type StatsPeriod } from '@/views/StatisticsView/derive';
 
 const TOP_MODULES_LIMIT = 5;
+const HISTORY_PAGE_SIZE = 500;
 
 export interface UseStatsQueryResult {
   stats: StatsView | undefined;
@@ -15,7 +16,15 @@ export interface UseStatsQueryResult {
   refetch: () => Promise<void>;
 }
 
+function nowSeconds(): number {
+  return Math.floor(Date.now() / 1000);
+}
+
 export function useStatsQuery(period: StatsPeriod): UseStatsQueryResult {
+  const dateFrom = periodToCutoffSeconds(period, nowSeconds());
+  const historyArgs: Record<string, unknown> = { limit: HISTORY_PAGE_SIZE };
+  if (dateFrom !== null) historyArgs.dateFrom = dateFrom;
+
   const results = useQueries({
     queries: [
       {
@@ -24,14 +33,14 @@ export function useStatsQuery(period: StatsPeriod): UseStatsQueryResult {
         staleTime: 30_000,
       },
       {
-        queryKey: [...statsQueries.all(), 'topModules', TOP_MODULES_LIMIT] as const,
+        queryKey: [...statsQueries.overview(), 'topModules', TOP_MODULES_LIMIT] as const,
         queryFn: () =>
           tauriInvoke<ModuleStats[]>('stats_top_modules', { limit: TOP_MODULES_LIMIT }),
         staleTime: 60_000,
       },
       {
-        queryKey: historyQueries.lists(),
-        queryFn: () => tauriInvoke<HistoryView[]>('history_list'),
+        queryKey: [...historyQueries.lists(), 'period', period] as const,
+        queryFn: () => tauriInvoke<HistoryView[]>('history_list', historyArgs),
         staleTime: 30_000,
       },
     ],
@@ -52,7 +61,9 @@ export function useStatsQuery(period: StatsPeriod): UseStatsQueryResult {
     isLoading,
     error,
     refetch: async () => {
-      await Promise.all(results.map((r) => r.refetch()));
+      const outcomes = await Promise.all(results.map((r) => r.refetch()));
+      const firstError = outcomes.find((o) => o.error)?.error;
+      if (firstError) throw firstError;
     },
   };
 }

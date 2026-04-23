@@ -1,4 +1,3 @@
-import { useMemo } from 'react';
 import {
   Bar,
   BarChart,
@@ -38,15 +37,10 @@ export function DailyVolumeChart({
   yAxisLabel,
   xAxisLabel,
 }: DailyVolumeChartProps) {
-  const formatted = useMemo(
-    () => data.map((d) => ({ date: d.date, bytes: d.bytes, count: d.count })),
-    [data],
-  );
-
   return (
     <div role="img" aria-label={ariaLabel} className="h-64 w-full">
       <ResponsiveContainer width="100%" height="100%">
-        <BarChart data={formatted} margin={{ top: 8, right: 12, bottom: 8, left: 4 }}>
+        <BarChart data={data} margin={{ top: 8, right: 12, bottom: 8, left: 4 }}>
           <CartesianGrid stroke={CHART_GRID_COLOR} strokeDasharray="3 3" vertical={false} />
           <XAxis
             dataKey="date"

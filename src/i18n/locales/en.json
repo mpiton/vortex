@@ -412,10 +412,10 @@
       }
     },
     "topModules": {
-      "title": "Top modules",
+      "title": "Top modules (all time)",
       "empty": "No module activity yet",
       "countLabel": "downloads",
-      "hint": "Top 5 modules ranked by download count"
+      "hint": "Top 5 modules ranked by download count, independent of the selected period"
     }
   }
 }

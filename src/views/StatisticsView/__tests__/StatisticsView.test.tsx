@@ -166,7 +166,7 @@ describe('StatisticsView', () => {
     expect(screen.getByTestId('top-modules-empty')).toBeInTheDocument();
   });
 
-  it('renders error state when query fails', async () => {
+  it('renders error state when core stats query fails', async () => {
     mockInvoke.mockImplementation(async (cmd: string) => {
       if (cmd === 'stats_get') throw new Error('boom');
       if (cmd === 'stats_top_modules') return [];
@@ -175,5 +175,28 @@ describe('StatisticsView', () => {
     });
     renderView();
     await waitFor(() => expect(screen.getByText('boom')).toBeInTheDocument());
+    expect(screen.queryByTestId('statistics-view')).not.toBeInTheDocument();
+  });
+
+  it('renders dashboard with inline error when only secondary query fails', async () => {
+    mockInvoke.mockImplementation(async (cmd: string) => {
+      if (cmd === 'stats_get') {
+        return {
+          totalDownloadedBytes: 1_024,
+          totalFiles: 1,
+          avgSpeed: 0,
+          peakSpeed: 0,
+          successRate: 1,
+          dailyVolumes: [],
+          topHosts: [],
+        };
+      }
+      if (cmd === 'stats_top_modules') return [];
+      if (cmd === 'history_list') throw new Error('history offline');
+      return null;
+    });
+    renderView();
+    await waitFor(() => expect(screen.getByTestId('statistics-view')).toBeInTheDocument());
+    expect(await screen.findByRole('alert')).toHaveTextContent('history offline');
   });
 });

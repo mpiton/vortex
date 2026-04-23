@@ -412,10 +412,10 @@
       }
     },
     "topModules": {
-      "title": "Modules les plus utilisés",
+      "title": "Modules les plus utilisés (tout)",
       "empty": "Aucune activité de module pour le moment",
       "countLabel": "téléchargements",
-      "hint": "Top 5 modules par nombre d'utilisations"
+      "hint": "Top 5 modules par nombre d'utilisations, indépendant de la période sélectionnée"
     }
   }
 }
