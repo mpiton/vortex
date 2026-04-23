@@ -1893,6 +1893,12 @@ fn build_history_filter(
     date_to: Option<u64>,
     hostname: Option<String>,
 ) -> Option<HistoryFilter> {
+    // Blank strings from the UI (e.g. cleared input fields) must collapse to
+    // "no filter" — otherwise `history_list` would try to match an empty host
+    // and return an empty view instead of every row.
+    let hostname = hostname
+        .map(|h| h.trim().to_string())
+        .filter(|h| !h.is_empty());
     if date_from.is_none() && date_to.is_none() && hostname.is_none() {
         None
     } else {
@@ -2011,6 +2017,12 @@ pub async fn history_purge_older_than(
     state: State<'_, AppState>,
     days: u32,
 ) -> Result<u64, String> {
+    // days == 0 would resolve to cutoff = now and wipe the whole table. Guard
+    // against a bad UI default or a malformed IPC payload before we even
+    // build the command.
+    if days == 0 {
+        return Err("days must be >= 1".to_string());
+    }
     let now = current_unix_seconds();
     let cutoff = now.saturating_sub(u64::from(days) * 86_400);
     state

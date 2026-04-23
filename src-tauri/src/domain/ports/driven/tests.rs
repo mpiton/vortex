@@ -313,6 +313,12 @@ impl HistoryRepository for InMemoryHistoryRepository {
         offset: Option<usize>,
     ) -> Result<Vec<HistoryEntry>, DomainError> {
         let entries = self.entries.lock().unwrap();
+        let hostname = filter.as_ref().and_then(|f| {
+            f.hostname
+                .as_ref()
+                .map(|h| h.trim().to_ascii_lowercase())
+                .filter(|h| !h.is_empty())
+        });
         let mut result: Vec<HistoryEntry> = entries
             .iter()
             .filter(|e| match &filter {
@@ -320,8 +326,23 @@ impl HistoryRepository for InMemoryHistoryRepository {
                 Some(f) => {
                     f.date_from.is_none_or(|from| e.completed_at >= from)
                         && f.date_to.is_none_or(|to| e.completed_at <= to)
-                        && f.hostname.as_ref().is_none_or(|h| e.url.contains(h))
                 }
+            })
+            .filter(|e| match &hostname {
+                None => true,
+                Some(host) => e
+                    .url
+                    .split_once("://")
+                    .and_then(|(_, rest)| {
+                        let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+                        rest.get(..end)
+                    })
+                    .map(|authority| {
+                        let trimmed = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+                        let no_port = trimmed.split_once(':').map_or(trimmed, |(h, _)| h);
+                        no_port.eq_ignore_ascii_case(host)
+                    })
+                    .unwrap_or(false),
             })
             .cloned()
             .collect();

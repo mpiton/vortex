@@ -7,20 +7,42 @@
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
+use std::collections::HashMap;
+
 use crate::application::command_bus::CommandBus;
+use crate::application::query_bus::QueryBus;
 use crate::domain::error::DomainError;
 use crate::domain::event::DomainEvent;
+use crate::domain::model::archive::{ArchiveEntry, ArchiveFormat, ExtractSummary};
 use crate::domain::model::config::{AppConfig, ConfigPatch};
 use crate::domain::model::credential::Credential;
 use crate::domain::model::download::{Download, DownloadId, DownloadState};
 use crate::domain::model::http::HttpResponse;
 use crate::domain::model::meta::DownloadMeta;
 use crate::domain::model::plugin::{PluginInfo, PluginManifest};
-use crate::domain::model::views::{HistoryEntry, HistoryFilter, HistorySort};
+use crate::domain::model::views::{
+    DownloadDetailView, DownloadFilter, DownloadView, HistoryEntry, HistoryFilter, HistorySort,
+    HistorySortField, SortDirection, SortOrder, StateCountMap, StatsView,
+};
+use crate::domain::ports::driven::history_repository::MAX_HISTORY_PAGE_SIZE;
 use crate::domain::ports::driven::{
     ArchiveExtractor, ClipboardObserver, ConfigStore, CredentialStore, DownloadEngine,
-    DownloadRepository, EventBus, FileStorage, HistoryRepository, HttpClient, PluginLoader,
+    DownloadReadRepository, DownloadRepository, EventBus, FileStorage, HistoryRepository,
+    HttpClient, PluginLoader, PluginReadRepository, StatsRepository,
 };
+
+fn host_component(url: &str) -> Option<&str> {
+    let (_, after_scheme) = url.split_once("://")?;
+    let authority_end = after_scheme
+        .find(['/', '?', '#'])
+        .unwrap_or(after_scheme.len());
+    let authority = &after_scheme[..authority_end];
+    let host_with_port = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+    let host = host_with_port
+        .split_once(':')
+        .map_or(host_with_port, |(h, _)| h);
+    if host.is_empty() { None } else { Some(host) }
+}
 
 /// Minimal [`HistoryRepository`] impl that records nothing and returns defaults.
 ///
@@ -122,11 +144,18 @@ impl HistoryRepository for InMemoryHistoryRepo {
     fn list(
         &self,
         filter: Option<HistoryFilter>,
-        _sort: Option<HistorySort>,
+        sort: Option<HistorySort>,
         limit: Option<usize>,
         offset: Option<usize>,
     ) -> Result<Vec<HistoryEntry>, DomainError> {
         let entries = self.entries.lock().unwrap();
+        let hostname_filter = filter.as_ref().and_then(|f| {
+            f.hostname
+                .as_ref()
+                .map(|h| h.trim())
+                .filter(|h| !h.is_empty())
+                .map(|h| h.to_ascii_lowercase())
+        });
         let mut filtered: Vec<HistoryEntry> = entries
             .iter()
             .filter(|e| match &filter {
@@ -134,14 +163,34 @@ impl HistoryRepository for InMemoryHistoryRepo {
                 Some(f) => {
                     f.date_from.is_none_or(|from| e.completed_at >= from)
                         && f.date_to.is_none_or(|to| e.completed_at <= to)
-                        && f.hostname.as_ref().is_none_or(|h| e.url.contains(h))
                 }
+            })
+            .filter(|e| match &hostname_filter {
+                None => true,
+                Some(wanted) => host_component(&e.url)
+                    .map(|h| h.to_ascii_lowercase() == *wanted)
+                    .unwrap_or(false),
             })
             .cloned()
             .collect();
-        filtered.sort_by_key(|e| std::cmp::Reverse(e.completed_at));
+
+        let (field, direction) = sort
+            .map(|s| (s.field, s.direction))
+            .unwrap_or((HistorySortField::CompletedAt, SortDirection::Descending));
+        filtered.sort_by(|a, b| match field {
+            HistorySortField::CompletedAt => a.completed_at.cmp(&b.completed_at),
+            HistorySortField::FileName => a.file_name.cmp(&b.file_name),
+            HistorySortField::TotalBytes => a.total_bytes.cmp(&b.total_bytes),
+            HistorySortField::DurationSeconds => a.duration_seconds.cmp(&b.duration_seconds),
+        });
+        if matches!(direction, SortDirection::Descending) {
+            filtered.reverse();
+        }
+
         let start = offset.unwrap_or(0);
-        let take = limit.unwrap_or(usize::MAX);
+        let take = limit
+            .unwrap_or(MAX_HISTORY_PAGE_SIZE)
+            .min(MAX_HISTORY_PAGE_SIZE);
         Ok(filtered.into_iter().skip(start).take(take).collect())
     }
 
@@ -387,5 +436,92 @@ pub(crate) fn make_history_command_bus(history: Arc<dyn HistoryRepository>) -> C
         Arc::new(StubArchiveExtractor),
         history,
         None,
+    )
+}
+
+// ── Stub read-side adapters for `QueryBus` construction ──────────────
+
+struct StubDownloadReadRepo;
+impl DownloadReadRepository for StubDownloadReadRepo {
+    fn find_downloads(
+        &self,
+        _: Option<DownloadFilter>,
+        _: Option<SortOrder>,
+        _: Option<usize>,
+        _: Option<usize>,
+    ) -> Result<Vec<DownloadView>, DomainError> {
+        Ok(vec![])
+    }
+    fn find_download_detail(
+        &self,
+        _: DownloadId,
+    ) -> Result<Option<DownloadDetailView>, DomainError> {
+        Ok(None)
+    }
+    fn count_by_state(&self) -> Result<StateCountMap, DomainError> {
+        Ok(HashMap::new())
+    }
+}
+
+struct StubStatsRepo;
+impl StatsRepository for StubStatsRepo {
+    fn record_completed(&self, _: u64, _: u64) -> Result<(), DomainError> {
+        Ok(())
+    }
+    fn get_stats(&self) -> Result<StatsView, DomainError> {
+        Ok(StatsView {
+            total_downloaded_bytes: 0,
+            total_files: 0,
+            avg_speed: 0,
+            peak_speed: 0,
+            success_rate: 0.0,
+            daily_volumes: vec![],
+            top_hosts: vec![],
+        })
+    }
+}
+
+struct StubPluginReadRepo;
+impl PluginReadRepository for StubPluginReadRepo {
+    fn list_loaded(&self) -> Result<Vec<PluginInfo>, DomainError> {
+        Ok(vec![])
+    }
+}
+
+struct StubQueryArchiveExtractor;
+impl ArchiveExtractor for StubQueryArchiveExtractor {
+    fn detect_format(&self, _: &Path) -> Result<Option<ArchiveFormat>, DomainError> {
+        Ok(None)
+    }
+    fn can_extract(&self, _: &Path) -> Result<bool, DomainError> {
+        Ok(false)
+    }
+    fn extract(&self, _: &Path, _: &Path, _: Option<&str>) -> Result<ExtractSummary, DomainError> {
+        Ok(ExtractSummary {
+            extracted_files: 0,
+            extracted_bytes: 0,
+            duration_ms: 0,
+            warnings: vec![],
+        })
+    }
+    fn list_contents(&self, _: &Path, _: Option<&str>) -> Result<Vec<ArchiveEntry>, DomainError> {
+        Ok(vec![])
+    }
+    fn detect_segments(&self, _: &Path) -> Result<Option<Vec<std::path::PathBuf>>, DomainError> {
+        Ok(None)
+    }
+}
+
+/// Build a [`QueryBus`] wired with the given history repository.
+///
+/// Other read ports return empty/default data — suitable for tests that
+/// only exercise history queries.
+pub(crate) fn make_history_query_bus(history: Arc<dyn HistoryRepository>) -> QueryBus {
+    QueryBus::new(
+        Arc::new(StubDownloadReadRepo),
+        history,
+        Arc::new(StubStatsRepo),
+        Arc::new(StubPluginReadRepo),
+        Arc::new(StubQueryArchiveExtractor),
     )
 }

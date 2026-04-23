@@ -30,17 +30,33 @@ impl CommandBus {
     }
 }
 
-/// Escape a single CSV field per RFC 4180.
+/// Escape a single CSV field per RFC 4180 and neutralise spreadsheet
+/// formulas.
 ///
-/// Fields containing a comma, double quote or newline are enclosed in
-/// double quotes, and embedded double quotes are doubled.
+/// Fields containing a comma, double quote or newline are enclosed in double
+/// quotes with embedded quotes doubled. On top of that, a value starting with
+/// `=`, `+`, `-`, `@`, TAB or CR is prefixed with a single apostrophe so that
+/// Excel / Google Sheets open the CSV as data instead of evaluating untrusted
+/// input as a formula (the OWASP "CSV injection" mitigation).
 fn escape_csv_field(value: &str) -> String {
-    let needs_quote = value.contains([',', '"', '\n', '\r']);
-    if needs_quote {
-        let escaped = value.replace('"', "\"\"");
-        format!("\"{escaped}\"")
+    let needs_formula_guard = value
+        .chars()
+        .next()
+        .is_some_and(|c| matches!(c, '=' | '+' | '-' | '@' | '\t' | '\r'));
+    let guarded = if needs_formula_guard {
+        let mut owned = String::with_capacity(value.len() + 1);
+        owned.push('\'');
+        owned.push_str(value);
+        owned
     } else {
         value.to_string()
+    };
+    let needs_quote = guarded.contains([',', '"', '\n', '\r']);
+    if needs_quote {
+        let escaped = guarded.replace('"', "\"\"");
+        format!("\"{escaped}\"")
+    } else {
+        guarded
     }
 }
 
@@ -149,6 +165,33 @@ mod tests {
         e.destination_path = "/tmp/multi\nline.txt".to_string();
         let encoded = encode_csv(&[e]);
         assert!(encoded.contains("\"multi\nline.txt\""));
+    }
+
+    #[test]
+    fn test_csv_guards_formula_prefixes_from_injection() {
+        for dangerous in [
+            "=cmd|'/c calc'!A0",
+            "+1+2",
+            "-HYPERLINK(\"evil\")",
+            "@SUM(1+1)",
+        ] {
+            let escaped = escape_csv_field(dangerous);
+            assert!(
+                escaped.starts_with('\'') || escaped.starts_with("\"'"),
+                "formula-prefix value {dangerous:?} must be guarded, got {escaped:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_csv_leaves_safe_prefixes_untouched() {
+        for safe in ["plain.bin", "https://ex.com/x", "123abc"] {
+            let escaped = escape_csv_field(safe);
+            assert!(
+                !escaped.starts_with('\''),
+                "safe value {safe:?} should not be guarded, got {escaped:?}"
+            );
+        }
     }
 
     #[test]

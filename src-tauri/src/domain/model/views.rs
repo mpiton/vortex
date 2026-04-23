@@ -97,7 +97,9 @@ pub struct HistoryFilter {
     pub date_from: Option<u64>,
     /// Include entries with `completed_at <= date_to` (Unix seconds).
     pub date_to: Option<u64>,
-    /// Case-insensitive match on the origin hostname (`https://host/path`).
+    /// Case-insensitive exact match against the URL's host component (the
+    /// authority between `://` and the next `/`, stripped of userinfo and
+    /// port). Blank or whitespace-only values are treated as "no filter".
     pub hostname: Option<String>,
 }
 

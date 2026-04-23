@@ -21,118 +21,14 @@ mod tests {
     use std::sync::Arc;
 
     use crate::application::queries::ListHistoryQuery;
-    use crate::application::query_bus::QueryBus;
-    use crate::application::test_support::InMemoryHistoryRepo;
-    use crate::domain::error::DomainError;
-    use crate::domain::model::archive::ArchiveFormat;
-    use crate::domain::model::download::{DownloadId, DownloadState};
-    use crate::domain::model::plugin::PluginInfo;
-    use crate::domain::model::views::{
-        DownloadDetailView, DownloadFilter, DownloadView, HistoryFilter, SortOrder, StateCountMap,
-        StatsView,
-    };
-    use crate::domain::ports::driven::{
-        ArchiveExtractor, DownloadReadRepository, HistoryRepository, PluginReadRepository,
-        StatsRepository,
-    };
-    use std::collections::HashMap;
-
-    struct NoopExtractor;
-    impl ArchiveExtractor for NoopExtractor {
-        fn detect_format(&self, _: &std::path::Path) -> Result<Option<ArchiveFormat>, DomainError> {
-            Ok(None)
-        }
-        fn can_extract(&self, _: &std::path::Path) -> Result<bool, DomainError> {
-            Ok(false)
-        }
-        fn extract(
-            &self,
-            _: &std::path::Path,
-            _: &std::path::Path,
-            _: Option<&str>,
-        ) -> Result<crate::domain::model::archive::ExtractSummary, DomainError> {
-            Ok(crate::domain::model::archive::ExtractSummary {
-                extracted_files: 0,
-                extracted_bytes: 0,
-                duration_ms: 0,
-                warnings: vec![],
-            })
-        }
-        fn list_contents(
-            &self,
-            _: &std::path::Path,
-            _: Option<&str>,
-        ) -> Result<Vec<crate::domain::model::archive::ArchiveEntry>, DomainError> {
-            Ok(vec![])
-        }
-        fn detect_segments(
-            &self,
-            _: &std::path::Path,
-        ) -> Result<Option<Vec<std::path::PathBuf>>, DomainError> {
-            Ok(None)
-        }
-    }
-
-    struct NoopDownloadRead;
-    impl DownloadReadRepository for NoopDownloadRead {
-        fn find_downloads(
-            &self,
-            _: Option<DownloadFilter>,
-            _: Option<SortOrder>,
-            _: Option<usize>,
-            _: Option<usize>,
-        ) -> Result<Vec<DownloadView>, DomainError> {
-            Ok(vec![])
-        }
-        fn find_download_detail(
-            &self,
-            _: DownloadId,
-        ) -> Result<Option<DownloadDetailView>, DomainError> {
-            Ok(None)
-        }
-        fn count_by_state(&self) -> Result<StateCountMap, DomainError> {
-            Ok(HashMap::new())
-        }
-    }
-
-    struct NoopStats;
-    impl StatsRepository for NoopStats {
-        fn record_completed(&self, _: u64, _: u64) -> Result<(), DomainError> {
-            Ok(())
-        }
-        fn get_stats(&self) -> Result<StatsView, DomainError> {
-            Ok(StatsView {
-                total_downloaded_bytes: 0,
-                total_files: 0,
-                avg_speed: 0,
-                peak_speed: 0,
-                success_rate: 0.0,
-                daily_volumes: vec![],
-                top_hosts: vec![],
-            })
-        }
-    }
-
-    struct NoopPluginRead;
-    impl PluginReadRepository for NoopPluginRead {
-        fn list_loaded(&self) -> Result<Vec<PluginInfo>, DomainError> {
-            Ok(vec![])
-        }
-    }
-
-    fn make_bus(history: Arc<dyn HistoryRepository>) -> QueryBus {
-        QueryBus::new(
-            Arc::new(NoopDownloadRead),
-            history,
-            Arc::new(NoopStats),
-            Arc::new(NoopPluginRead),
-            Arc::new(NoopExtractor),
-        )
-    }
+    use crate::application::test_support::{InMemoryHistoryRepo, make_history_query_bus};
+    use crate::domain::model::download::DownloadId;
+    use crate::domain::model::views::{HistoryEntry, HistoryFilter};
+    use crate::domain::ports::driven::HistoryRepository;
 
     fn seed(repo: &InMemoryHistoryRepo) {
         for i in 1..=5u64 {
-            repo.record(&crate::domain::model::views::HistoryEntry {
+            repo.record(&HistoryEntry {
                 id: 0,
                 download_id: DownloadId(i),
                 file_name: format!("f{i}.bin"),
@@ -145,15 +41,13 @@ mod tests {
             })
             .unwrap();
         }
-        // Avoid unused DownloadState warning in older toolchains
-        let _ = DownloadState::Completed;
     }
 
     #[tokio::test]
     async fn list_history_returns_all_sorted_desc_by_completed_at() {
         let repo = Arc::new(InMemoryHistoryRepo::new());
         seed(&repo);
-        let bus = make_bus(repo);
+        let bus = make_history_query_bus(repo);
         let result = bus
             .handle_list_history(ListHistoryQuery {
                 filter: None,
@@ -172,7 +66,7 @@ mod tests {
     async fn list_history_paginates() {
         let repo = Arc::new(InMemoryHistoryRepo::new());
         seed(&repo);
-        let bus = make_bus(repo);
+        let bus = make_history_query_bus(repo);
         let page = bus
             .handle_list_history(ListHistoryQuery {
                 filter: None,
@@ -190,7 +84,7 @@ mod tests {
     async fn list_history_applies_date_filter() {
         let repo = Arc::new(InMemoryHistoryRepo::new());
         seed(&repo);
-        let bus = make_bus(repo);
+        let bus = make_history_query_bus(repo);
         let result = bus
             .handle_list_history(ListHistoryQuery {
                 filter: Some(HistoryFilter {
