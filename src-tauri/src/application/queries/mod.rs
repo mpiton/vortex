@@ -8,13 +8,17 @@ mod get_download_detail;
 mod get_downloads;
 mod get_history_entry;
 mod get_plugin_store;
+mod get_stats;
 mod list_archive_contents;
 mod list_history;
 mod list_plugins;
 mod search_history;
+mod top_modules;
 
 use crate::domain::model::download::DownloadId;
-use crate::domain::model::views::{DownloadFilter, HistoryFilter, HistorySort, SortOrder};
+use crate::domain::model::views::{
+    DownloadFilter, HistoryFilter, HistorySort, SortOrder, StatsPeriod,
+};
 use crate::domain::ports::driving::Query;
 
 #[derive(Debug)]
@@ -56,11 +60,19 @@ pub struct GetHistoryEntryQuery {
 }
 impl Query for GetHistoryEntryQuery {}
 
-// Handler: task 23 (statistics view)
+/// Fetch aggregated statistics for a given period.
 #[derive(Debug)]
-#[expect(dead_code)]
-pub struct GetStatsQuery;
+pub struct GetStatsQuery {
+    pub period: StatsPeriod,
+}
 impl Query for GetStatsQuery {}
+
+/// Return the top N resolving modules by completed download count.
+#[derive(Debug)]
+pub struct TopModulesQuery {
+    pub limit: u32,
+}
+impl Query for TopModulesQuery {}
 
 #[derive(Debug)]
 pub struct ListPluginsQuery;

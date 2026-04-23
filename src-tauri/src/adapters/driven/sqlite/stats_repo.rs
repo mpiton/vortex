@@ -1,10 +1,12 @@
 use sea_orm::{ConnectionTrait, DatabaseBackend, DatabaseConnection, Statement};
 
 use crate::domain::error::DomainError;
-use crate::domain::model::views::{DailyVolume, HostStats, StatsView};
+use crate::domain::model::views::{DailyVolume, HostStats, ModuleStats, StatsPeriod, StatsView};
 use crate::domain::ports::driven::stats_repository::StatsRepository;
 
 use super::util::{block_on, map_db_err, safe_u64};
+
+const SECONDS_PER_DAY: u64 = 86_400;
 
 pub struct SqliteStatsRepo {
     db: DatabaseConnection,
@@ -14,6 +16,63 @@ impl SqliteStatsRepo {
     pub fn new(db: DatabaseConnection) -> Self {
         Self { db }
     }
+}
+
+/// Cutoff timestamps (Unix seconds) and ISO dates for a given period.
+///
+/// For `AllTime` both fields are `None` so the SQL queries degrade to
+/// `WHERE 1 = 1` equivalents.
+struct PeriodCutoff {
+    /// `created_at >= cutoff_ts` on the `downloads` / history tables.
+    cutoff_ts: Option<i64>,
+    /// `date >= cutoff_date` on the daily `statistics` table (YYYY-MM-DD).
+    cutoff_date: Option<String>,
+}
+
+fn period_cutoff(period: StatsPeriod, now_ts: u64) -> PeriodCutoff {
+    let Some(days) = period.window_days() else {
+        return PeriodCutoff {
+            cutoff_ts: None,
+            cutoff_date: None,
+        };
+    };
+    let window = u64::from(days).saturating_mul(SECONDS_PER_DAY);
+    let ts = now_ts.saturating_sub(window);
+    // Converting seconds to ISO date without pulling chrono: reuse SQLite's
+    // `date()` in the query. Here we just keep the raw ts and let callers
+    // materialise the date via `date(?, 'unixepoch')`.
+    PeriodCutoff {
+        cutoff_ts: Some(ts as i64),
+        cutoff_date: Some(unix_to_iso_date(ts)),
+    }
+}
+
+/// Convert a Unix timestamp (seconds) to an ISO `YYYY-MM-DD` string in UTC.
+///
+/// Std-only conversion avoids pulling chrono into a driven adapter. Precise
+/// to the day which is what the `statistics.date` column stores.
+fn unix_to_iso_date(ts: u64) -> String {
+    // Days since 1970-01-01.
+    let days = ts / SECONDS_PER_DAY;
+    // Howard Hinnant's date algorithm (civil_from_days).
+    let z = days as i64 + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u64;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if m <= 2 { y + 1 } else { y };
+    format!("{year:04}-{m:02}-{d:02}")
+}
+
+fn current_unix_seconds() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 impl StatsRepository for SqliteStatsRepo {
@@ -46,23 +105,42 @@ impl StatsRepository for SqliteStatsRepo {
         })
     }
 
-    fn get_stats(&self) -> Result<StatsView, DomainError> {
+    fn get_stats(&self, period: StatsPeriod) -> Result<StatsView, DomainError> {
+        let cutoff = period_cutoff(period, current_unix_seconds());
+
         block_on(async {
-            // 1. Totals
-            let totals_row = self
-                .db
-                .query_one(Statement::from_string(
-                    DatabaseBackend::Sqlite,
-                    "\
-                    SELECT \
+            // 1. Totals from the `statistics` daily rollup (bounded by date).
+            let (totals_sql, totals_values) = match &cutoff.cutoff_date {
+                Some(d) => (
+                    "SELECT \
                       COALESCE(SUM(bytes_downloaded),0), \
                       COALESCE(SUM(files_completed),0), \
                       CASE WHEN SUM(files_completed)>0 \
                         THEN CAST(SUM(CAST(avg_speed AS REAL)*files_completed)/SUM(files_completed) AS INTEGER) \
                         ELSE 0 END, \
                       COALESCE(MAX(peak_speed),0) \
-                    FROM statistics"
-                        .to_string(),
+                    FROM statistics WHERE date >= ?1",
+                    vec![sea_orm::Value::String(Some(Box::new(d.clone())))],
+                ),
+                None => (
+                    "SELECT \
+                      COALESCE(SUM(bytes_downloaded),0), \
+                      COALESCE(SUM(files_completed),0), \
+                      CASE WHEN SUM(files_completed)>0 \
+                        THEN CAST(SUM(CAST(avg_speed AS REAL)*files_completed)/SUM(files_completed) AS INTEGER) \
+                        ELSE 0 END, \
+                      COALESCE(MAX(peak_speed),0) \
+                    FROM statistics",
+                    vec![],
+                ),
+            };
+
+            let totals_row = self
+                .db
+                .query_one(Statement::from_sql_and_values(
+                    DatabaseBackend::Sqlite,
+                    totals_sql,
+                    totals_values,
                 ))
                 .await
                 .map_err(map_db_err)?;
@@ -86,13 +164,25 @@ impl StatsRepository for SqliteStatsRepo {
                 None => (0u64, 0u64, 0u64, 0u64),
             };
 
-            // 2. Daily volumes
+            // 2. Daily volumes (cap result set to 30 most recent rows within period).
+            let (daily_sql, daily_values) = match &cutoff.cutoff_date {
+                Some(d) => (
+                    "SELECT date, bytes_downloaded, files_completed FROM statistics \
+                     WHERE date >= ?1 ORDER BY date DESC LIMIT 30",
+                    vec![sea_orm::Value::String(Some(Box::new(d.clone())))],
+                ),
+                None => (
+                    "SELECT date, bytes_downloaded, files_completed FROM statistics \
+                     ORDER BY date DESC LIMIT 30",
+                    vec![],
+                ),
+            };
             let daily_rows = self
                 .db
-                .query_all(Statement::from_string(
+                .query_all(Statement::from_sql_and_values(
                     DatabaseBackend::Sqlite,
-                    "SELECT date, bytes_downloaded, files_completed FROM statistics ORDER BY date DESC LIMIT 30"
-                        .to_string(),
+                    daily_sql,
+                    daily_values,
                 ))
                 .await
                 .map_err(map_db_err)?;
@@ -115,14 +205,25 @@ impl StatsRepository for SqliteStatsRepo {
                 });
             }
 
-            // 3. Success rate
+            // 3. Success rate computed from downloads.created_at within period.
+            let (success_sql, success_values) = match cutoff.cutoff_ts {
+                Some(ts) => (
+                    "SELECT COUNT(*), COALESCE(SUM(CASE WHEN state='Completed' THEN 1 ELSE 0 END),0) \
+                     FROM downloads WHERE state IN ('Completed','Error') AND created_at >= ?1",
+                    vec![sea_orm::Value::BigInt(Some(ts))],
+                ),
+                None => (
+                    "SELECT COUNT(*), COALESCE(SUM(CASE WHEN state='Completed' THEN 1 ELSE 0 END),0) \
+                     FROM downloads WHERE state IN ('Completed','Error')",
+                    vec![],
+                ),
+            };
             let success_row = self
                 .db
-                .query_one(Statement::from_string(
+                .query_one(Statement::from_sql_and_values(
                     DatabaseBackend::Sqlite,
-                    "SELECT COUNT(*), COALESCE(SUM(CASE WHEN state='Completed' THEN 1 ELSE 0 END),0) \
-                     FROM downloads WHERE state IN ('Completed','Error')"
-                        .to_string(),
+                    success_sql,
+                    success_values,
                 ))
                 .await
                 .map_err(map_db_err)?;
@@ -144,18 +245,34 @@ impl StatsRepository for SqliteStatsRepo {
                 None => 0.0,
             };
 
-            // 4. Top hosts
-            let host_rows = self
-                .db
-                .query_all(Statement::from_string(
-                    DatabaseBackend::Sqlite,
+            // 4. Top hosts bounded by created_at.
+            let (hosts_sql, hosts_values) = match cutoff.cutoff_ts {
+                Some(ts) => (
+                    "SELECT source_hostname, SUM(downloaded_bytes), COUNT(*) \
+                     FROM downloads \
+                     WHERE state = 'Completed' \
+                       AND source_hostname IS NOT NULL AND source_hostname != '' \
+                       AND created_at >= ?1 \
+                     GROUP BY source_hostname \
+                     ORDER BY 2 DESC LIMIT 10",
+                    vec![sea_orm::Value::BigInt(Some(ts))],
+                ),
+                None => (
                     "SELECT source_hostname, SUM(downloaded_bytes), COUNT(*) \
                      FROM downloads \
                      WHERE state = 'Completed' \
                        AND source_hostname IS NOT NULL AND source_hostname != '' \
                      GROUP BY source_hostname \
-                     ORDER BY 2 DESC LIMIT 10"
-                        .to_string(),
+                     ORDER BY 2 DESC LIMIT 10",
+                    vec![],
+                ),
+            };
+            let host_rows = self
+                .db
+                .query_all(Statement::from_sql_and_values(
+                    DatabaseBackend::Sqlite,
+                    hosts_sql,
+                    hosts_values,
                 ))
                 .await
                 .map_err(map_db_err)?;
@@ -189,6 +306,46 @@ impl StatsRepository for SqliteStatsRepo {
             })
         })
     }
+
+    fn top_modules(&self, limit: u32) -> Result<Vec<ModuleStats>, DomainError> {
+        let limit = limit.max(1) as i64;
+        block_on(async {
+            let rows = self
+                .db
+                .query_all(Statement::from_sql_and_values(
+                    DatabaseBackend::Sqlite,
+                    "SELECT module_name, COUNT(*), COALESCE(SUM(downloaded_bytes),0) \
+                     FROM downloads \
+                     WHERE state = 'Completed' \
+                       AND module_name IS NOT NULL AND module_name != '' \
+                     GROUP BY module_name \
+                     ORDER BY 2 DESC, 3 DESC \
+                     LIMIT ?1",
+                    [sea_orm::Value::BigInt(Some(limit))],
+                ))
+                .await
+                .map_err(map_db_err)?;
+
+            let mut modules = Vec::with_capacity(rows.len());
+            for row in rows {
+                let name: String = row
+                    .try_get_by_index(0)
+                    .map_err(|e| DomainError::StorageError(e.to_string()))?;
+                let count: i64 = row
+                    .try_get_by_index(1)
+                    .map_err(|e| DomainError::StorageError(e.to_string()))?;
+                let bytes: i64 = row
+                    .try_get_by_index(2)
+                    .map_err(|e| DomainError::StorageError(e.to_string()))?;
+                modules.push(ModuleStats {
+                    module_name: name,
+                    download_count: safe_u64(count),
+                    total_bytes: safe_u64(bytes),
+                });
+            }
+            Ok(modules)
+        })
+    }
 }
 
 #[cfg(test)]
@@ -196,6 +353,32 @@ mod tests {
     use super::super::connection::setup_test_db;
     use super::*;
     use sea_orm::{ConnectionTrait, Statement};
+
+    #[test]
+    fn test_unix_to_iso_date_epoch() {
+        assert_eq!(unix_to_iso_date(0), "1970-01-01");
+    }
+
+    #[test]
+    fn test_unix_to_iso_date_known_ts() {
+        // 2026-01-15 00:00:00 UTC = 1768435200
+        assert_eq!(unix_to_iso_date(1_768_435_200), "2026-01-15");
+    }
+
+    #[test]
+    fn test_period_cutoff_all_time_has_no_bound() {
+        let cutoff = period_cutoff(StatsPeriod::AllTime, 1_768_435_200);
+        assert!(cutoff.cutoff_ts.is_none());
+        assert!(cutoff.cutoff_date.is_none());
+    }
+
+    #[test]
+    fn test_period_cutoff_7d_shifts_by_7_days() {
+        let now: u64 = 1_768_435_200; // 2026-01-15
+        let cutoff = period_cutoff(StatsPeriod::Last7Days, now);
+        assert_eq!(cutoff.cutoff_ts, Some((now - 7 * SECONDS_PER_DAY) as i64));
+        assert_eq!(cutoff.cutoff_date.as_deref(), Some("2026-01-08"));
+    }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_record_completed_inserts_new_day() {
@@ -253,7 +436,7 @@ mod tests {
         let db = setup_test_db().await.expect("failed to setup test db");
         let repo = SqliteStatsRepo::new(db);
 
-        let stats = repo.get_stats().expect("get_stats");
+        let stats = repo.get_stats(StatsPeriod::AllTime).expect("get_stats");
         assert_eq!(stats.total_downloaded_bytes, 0);
         assert_eq!(stats.total_files, 0);
         assert_eq!(stats.avg_speed, 0);
@@ -285,7 +468,7 @@ mod tests {
         .expect("insert day 2");
 
         let repo = SqliteStatsRepo::new(db);
-        let stats = repo.get_stats().expect("get_stats");
+        let stats = repo.get_stats(StatsPeriod::AllTime).expect("get_stats");
 
         assert_eq!(stats.daily_volumes.len(), 2);
         // DESC order: most recent first
@@ -293,6 +476,54 @@ mod tests {
         assert_eq!(stats.daily_volumes[0].bytes, 3000);
         assert_eq!(stats.daily_volumes[1].date, "2026-01-01");
         assert_eq!(stats.daily_volumes[1].bytes, 2000);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_get_stats_7d_excludes_older_statistics_rows() {
+        let db = setup_test_db().await.expect("failed to setup test db");
+
+        // Compute today's date string inside SQLite so the filter boundary
+        // matches the implementation's clock.
+        let today_row = db
+            .query_one(Statement::from_string(
+                DatabaseBackend::Sqlite,
+                "SELECT date('now'), date('now', '-10 days')".to_string(),
+            ))
+            .await
+            .unwrap()
+            .expect("row");
+        let today: String = today_row.try_get_by_index(0).unwrap();
+        let ten_days_ago: String = today_row.try_get_by_index(1).unwrap();
+
+        db.execute(Statement::from_sql_and_values(
+            DatabaseBackend::Sqlite,
+            "INSERT INTO statistics (id, date, bytes_downloaded, files_completed, avg_speed, peak_speed) \
+             VALUES (1, ?1, 1000, 1, 100, 200)",
+            [sea_orm::Value::String(Some(Box::new(ten_days_ago.clone())))],
+        ))
+        .await
+        .expect("insert old row");
+
+        db.execute(Statement::from_sql_and_values(
+            DatabaseBackend::Sqlite,
+            "INSERT INTO statistics (id, date, bytes_downloaded, files_completed, avg_speed, peak_speed) \
+             VALUES (2, ?1, 3000, 3, 300, 400)",
+            [sea_orm::Value::String(Some(Box::new(today.clone())))],
+        ))
+        .await
+        .expect("insert today row");
+
+        let repo = SqliteStatsRepo::new(db);
+
+        let stats7 = repo.get_stats(StatsPeriod::Last7Days).expect("7d");
+        assert_eq!(stats7.total_files, 3);
+        assert_eq!(stats7.total_downloaded_bytes, 3000);
+        assert_eq!(stats7.daily_volumes.len(), 1);
+        assert_eq!(stats7.daily_volumes[0].date, today);
+
+        let stats_all = repo.get_stats(StatsPeriod::AllTime).expect("all");
+        assert_eq!(stats_all.total_files, 4);
+        assert_eq!(stats_all.total_downloaded_bytes, 4000);
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -317,7 +548,7 @@ mod tests {
         }
 
         let repo = SqliteStatsRepo::new(db);
-        let stats = repo.get_stats().expect("get_stats");
+        let stats = repo.get_stats(StatsPeriod::AllTime).expect("get_stats");
 
         let expected_rate = 2.0 / 3.0;
         assert!((stats.success_rate - expected_rate).abs() < 1e-9);
@@ -350,7 +581,7 @@ mod tests {
         }
 
         let repo = SqliteStatsRepo::new(db);
-        let stats = repo.get_stats().expect("get_stats");
+        let stats = repo.get_stats(StatsPeriod::AllTime).expect("get_stats");
 
         assert_eq!(stats.top_hosts.len(), 2);
         // host-a has more total bytes, should be first
@@ -358,5 +589,93 @@ mod tests {
         assert_eq!(stats.top_hosts[0].total_bytes, 10000);
         assert_eq!(stats.top_hosts[0].download_count, 3);
         assert_eq!(stats.top_hosts[1].hostname, "host-b.com");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_top_modules_empty_db() {
+        let db = setup_test_db().await.expect("failed to setup test db");
+        let repo = SqliteStatsRepo::new(db);
+
+        let modules = repo.top_modules(10).expect("top_modules");
+        assert!(modules.is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_top_modules_groups_and_orders_by_count() {
+        let db = setup_test_db().await.expect("failed to setup test db");
+
+        // 3 YouTube (big bytes), 2 SoundCloud, 1 Null module (ignored).
+        let rows = [
+            (1i64, Some("vortex-mod-youtube"), 5000i64),
+            (2, Some("vortex-mod-youtube"), 3000),
+            (3, Some("vortex-mod-youtube"), 2000),
+            (4, Some("vortex-mod-soundcloud"), 1000),
+            (5, Some("vortex-mod-soundcloud"), 500),
+            (6, None, 100),
+        ];
+        for (id, module, bytes) in rows {
+            let module_expr = match module {
+                Some(name) => format!("'{name}'"),
+                None => "NULL".to_string(),
+            };
+            db.execute(Statement::from_string(
+                DatabaseBackend::Sqlite,
+                format!(
+                    "INSERT INTO downloads \
+                     (id, url, file_name, state, priority, downloaded_bytes, speed_bytes_per_sec, \
+                      retry_count, max_retries, segments_count, resume_supported, \
+                      source_hostname, protocol, module_name, destination_path, created_at, updated_at) \
+                     VALUES ({id}, 'https://example.com/{id}', 'file{id}.zip', 'Completed', 5, \
+                             {bytes}, 0, 0, 5, 1, 0, 'example.com', 'https', {module_expr}, '/tmp', 1000, 2000)"
+                ),
+            ))
+            .await
+            .expect("insert download");
+        }
+
+        let repo = SqliteStatsRepo::new(db);
+        let modules = repo.top_modules(5).expect("top_modules");
+
+        assert_eq!(modules.len(), 2);
+        assert_eq!(modules[0].module_name, "vortex-mod-youtube");
+        assert_eq!(modules[0].download_count, 3);
+        assert_eq!(modules[0].total_bytes, 10_000);
+        assert_eq!(modules[1].module_name, "vortex-mod-soundcloud");
+        assert_eq!(modules[1].download_count, 2);
+        assert_eq!(modules[1].total_bytes, 1_500);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_top_modules_respects_limit() {
+        let db = setup_test_db().await.expect("failed to setup test db");
+
+        for (id, module) in [
+            (1i64, "alpha"),
+            (2, "alpha"),
+            (3, "alpha"),
+            (4, "beta"),
+            (5, "beta"),
+            (6, "gamma"),
+        ] {
+            db.execute(Statement::from_string(
+                DatabaseBackend::Sqlite,
+                format!(
+                    "INSERT INTO downloads \
+                     (id, url, file_name, state, priority, downloaded_bytes, speed_bytes_per_sec, \
+                      retry_count, max_retries, segments_count, resume_supported, \
+                      source_hostname, protocol, module_name, destination_path, created_at, updated_at) \
+                     VALUES ({id}, 'https://example.com/{id}', 'file{id}.zip', 'Completed', 5, \
+                             100, 0, 0, 5, 1, 0, 'example.com', 'https', '{module}', '/tmp', 1000, 2000)"
+                ),
+            ))
+            .await
+            .expect("insert download");
+        }
+
+        let repo = SqliteStatsRepo::new(db);
+        let modules = repo.top_modules(2).expect("top_modules");
+        assert_eq!(modules.len(), 2);
+        assert_eq!(modules[0].module_name, "alpha");
+        assert_eq!(modules[1].module_name, "beta");
     }
 }

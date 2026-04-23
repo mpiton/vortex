@@ -47,7 +47,7 @@ pub use application::read_models::{
     download_view::DownloadViewDto,
     history_view::HistoryViewDto,
     plugin_view::PluginViewDto,
-    stats_view::{DailyVolumeDto, HostStatsDto, StatsViewDto},
+    stats_view::{DailyVolumeDto, HostStatsDto, ModuleStatsDto, StatsViewDto},
 };
 pub use application::services::QueueManager;
 pub use domain::model::ExtractionConfig;
@@ -61,7 +61,7 @@ pub use adapters::driving::tauri_ipc::{
     history_list, history_purge_older_than, history_search, link_resolve, plugin_disable,
     plugin_enable, plugin_install, plugin_list, plugin_store_install, plugin_store_list,
     plugin_store_refresh, plugin_store_update, plugin_uninstall, settings_get, settings_update,
-    status_bar_get,
+    stats_get, stats_top_modules, status_bar_get,
 };
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -334,6 +334,8 @@ pub fn run() {
             history_delete_entry,
             history_clear,
             history_purge_older_than,
+            stats_get,
+            stats_top_modules,
         ])
         .run(tauri::generate_context!())
         // Tauri's run() has no meaningful recovery path — panic is intentional here

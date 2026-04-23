@@ -2,7 +2,7 @@
 
 use serde::Serialize;
 
-use crate::domain::model::views::{DailyVolume, HostStats, StatsView};
+use crate::domain::model::views::{DailyVolume, HostStats, ModuleStats, StatsView};
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -70,6 +70,24 @@ impl From<StatsView> for StatsViewDto {
     }
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModuleStatsDto {
+    pub module_name: String,
+    pub download_count: u64,
+    pub total_bytes: u64,
+}
+
+impl From<ModuleStats> for ModuleStatsDto {
+    fn from(m: ModuleStats) -> Self {
+        Self {
+            module_name: m.module_name,
+            download_count: m.download_count,
+            total_bytes: m.total_bytes,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -122,5 +140,31 @@ mod tests {
         assert!(value.get("successRate").is_some());
         assert!(value.get("dailyVolumes").is_some());
         assert!(value.get("topHosts").is_some());
+    }
+
+    #[test]
+    fn test_module_stats_dto_from_domain() {
+        let domain = ModuleStats {
+            module_name: "vortex-mod-youtube".to_string(),
+            download_count: 42,
+            total_bytes: 123_456,
+        };
+        let dto = ModuleStatsDto::from(domain);
+        assert_eq!(dto.module_name, "vortex-mod-youtube");
+        assert_eq!(dto.download_count, 42);
+        assert_eq!(dto.total_bytes, 123_456);
+    }
+
+    #[test]
+    fn test_module_stats_dto_serializes_to_camel_case() {
+        let dto = ModuleStatsDto {
+            module_name: "vortex-mod-youtube".to_string(),
+            download_count: 1,
+            total_bytes: 1,
+        };
+        let value = serde_json::to_value(&dto).unwrap();
+        assert!(value.get("moduleName").is_some());
+        assert!(value.get("downloadCount").is_some());
+        assert!(value.get("totalBytes").is_some());
     }
 }

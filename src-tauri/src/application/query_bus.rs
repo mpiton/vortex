@@ -72,7 +72,7 @@ mod tests {
     use crate::domain::model::plugin::PluginInfo;
     use crate::domain::model::views::{
         DownloadDetailView, DownloadFilter, DownloadView, HistoryEntry, HistoryFilter, HistorySort,
-        SortOrder, StateCountMap, StatsView,
+        ModuleStats, SortOrder, StateCountMap, StatsPeriod, StatsView,
     };
     use crate::domain::ports::driven::{
         ArchiveExtractor, DownloadReadRepository, HistoryRepository, PluginReadRepository,
@@ -194,7 +194,7 @@ mod tests {
             Ok(())
         }
 
-        fn get_stats(&self) -> Result<StatsView, DomainError> {
+        fn get_stats(&self, _: StatsPeriod) -> Result<StatsView, DomainError> {
             Ok(StatsView {
                 total_downloaded_bytes: 0,
                 total_files: 0,
@@ -204,6 +204,10 @@ mod tests {
                 daily_volumes: vec![],
                 top_hosts: vec![],
             })
+        }
+
+        fn top_modules(&self, _: u32) -> Result<Vec<ModuleStats>, DomainError> {
+            Ok(vec![])
         }
     }
 
