@@ -2066,13 +2066,16 @@ pub async fn stats_top_modules(
 #[tauri::command]
 pub async fn reveal_in_folder(path: String) -> Result<(), String> {
     let target = Path::new(&path);
-    let folder = if target.is_file() {
-        target.parent().unwrap_or(target)
-    } else {
+    // Prefer the target itself only when it is a directory. Otherwise fall
+    // back to the parent — this still works when the download file was
+    // deleted or moved, as long as its containing directory still exists.
+    let folder = if target.is_dir() {
         target
+    } else {
+        target.parent().unwrap_or(target)
     };
-    if !folder.exists() {
-        return Err(format!("path does not exist: {}", folder.display()));
+    if !folder.is_dir() {
+        return Err(format!("folder does not exist: {}", folder.display()));
     }
 
     #[cfg(target_os = "linux")]
@@ -2082,11 +2085,16 @@ pub async fn reveal_in_folder(path: String) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     let program = "explorer";
 
-    std::process::Command::new(program)
+    let status = tokio::process::Command::new(program)
         .arg(folder)
-        .spawn()
-        .map(|_| ())
-        .map_err(|e| format!("failed to open folder: {e}"))
+        .status()
+        .await
+        .map_err(|e| format!("failed to launch {program}: {e}"))?;
+
+    if !status.success() {
+        return Err(format!("{program} exited with status {status}"));
+    }
+    Ok(())
 }
 
 #[tauri::command]
