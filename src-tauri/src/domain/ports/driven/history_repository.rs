@@ -39,6 +39,10 @@ pub trait HistoryRepository: Send + Sync {
     /// treat `None` as the same cap. Sorting defaults to `completed_at DESC`.
     /// `HistoryFilter::hostname` matches the URL's host component exactly
     /// (case-insensitive), not an arbitrary substring of the URL.
+    ///
+    /// Because a single call is bounded, callers that need the full table
+    /// (e.g. the export command) must paginate by advancing `offset` until
+    /// a short page is returned.
     fn list(
         &self,
         filter: Option<HistoryFilter>,

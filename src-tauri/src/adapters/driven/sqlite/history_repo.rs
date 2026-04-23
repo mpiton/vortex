@@ -19,9 +19,10 @@ use super::util::{block_on, map_db_err, safe_u64};
 /// from an absolute URL. Returns `None` when the input does not contain a
 /// scheme separator.
 ///
-/// Uses a small state machine rather than pulling the `url` crate: history
-/// entries already store the URL the download engine handed us, which is
-/// guaranteed to start with `scheme://`.
+/// Keeps IPv6 literals (bracketed `[::1]`) intact instead of truncating at
+/// the first colon. Uses a small state machine rather than pulling the `url`
+/// crate — history entries already store the URL the download engine handed
+/// us, guaranteed to start with `scheme://`.
 fn extract_host(url: &str) -> Option<&str> {
     let (_, after_scheme) = url.split_once("://")?;
     let authority_end = after_scheme
@@ -29,9 +30,17 @@ fn extract_host(url: &str) -> Option<&str> {
         .unwrap_or(after_scheme.len());
     let authority = &after_scheme[..authority_end];
     let host_with_port = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
-    let host = host_with_port
-        .split_once(':')
-        .map_or(host_with_port, |(h, _)| h);
+    let host = if host_with_port.starts_with('[') {
+        // IPv6 literal: keep everything through the closing ']', strip any
+        // trailing :port that follows.
+        host_with_port
+            .find(']')
+            .map_or(host_with_port, |end| &host_with_port[..=end])
+    } else {
+        host_with_port
+            .split_once(':')
+            .map_or(host_with_port, |(h, _)| h)
+    };
     if host.is_empty() { None } else { Some(host) }
 }
 
@@ -158,33 +167,61 @@ impl HistoryRepository for SqliteHistoryRepo {
             .min(MAX_HISTORY_PAGE_SIZE);
         let effective_offset = offset.unwrap_or(0);
 
-        let mut query = history::Entity::find()
+        let base_query = history::Entity::find()
             .filter(condition)
             .order_by(column, order);
 
-        // When a hostname filter is active we have to post-filter in Rust, so
-        // push offset/limit into that step and fetch up to the server cap.
-        if hostname_filter.is_some() {
-            query = query.limit(MAX_HISTORY_PAGE_SIZE as u64);
-        } else {
-            query = query.limit(effective_limit as u64);
-            if effective_offset > 0 {
-                query = query.offset(effective_offset as u64);
-            }
-        }
-
-        let models = block_on(query.all(&self.db)).map_err(map_db_err)?;
-        let entries = models.into_iter().map(model_to_entry);
-
-        let filtered: Vec<HistoryEntry> = match hostname_filter {
-            Some(host) => entries
-                .filter(|e| matches_hostname_filter(&e.url, &host))
-                .skip(effective_offset)
-                .take(effective_limit)
-                .collect(),
-            None => entries.collect(),
+        let Some(host) = hostname_filter else {
+            let models = block_on(
+                base_query
+                    .limit(effective_limit as u64)
+                    .offset(effective_offset as u64)
+                    .all(&self.db),
+            )
+            .map_err(map_db_err)?;
+            return Ok(models.into_iter().map(model_to_entry).collect());
         };
-        Ok(filtered)
+
+        // With a hostname filter we can't delegate offset/limit to SQL — rows
+        // are dropped *after* the fetch. Page through the sorted date range
+        // MAX_HISTORY_PAGE_SIZE rows at a time, matching in Rust, until we
+        // have enough to satisfy (offset + limit) or the table is exhausted.
+        let want_total = effective_offset.saturating_add(effective_limit);
+        let mut matches: Vec<HistoryEntry> = Vec::new();
+        let mut sql_offset: u64 = 0;
+        let page_size = MAX_HISTORY_PAGE_SIZE as u64;
+        loop {
+            let page = block_on(
+                base_query
+                    .clone()
+                    .limit(page_size)
+                    .offset(sql_offset)
+                    .all(&self.db),
+            )
+            .map_err(map_db_err)?;
+            let fetched = page.len();
+            if fetched == 0 {
+                break;
+            }
+            for model in page {
+                let entry = model_to_entry(model);
+                if matches_hostname_filter(&entry.url, &host) {
+                    matches.push(entry);
+                    if matches.len() >= want_total {
+                        break;
+                    }
+                }
+            }
+            if matches.len() >= want_total || (fetched as u64) < page_size {
+                break;
+            }
+            sql_offset = sql_offset.saturating_add(page_size);
+        }
+        Ok(matches
+            .into_iter()
+            .skip(effective_offset)
+            .take(effective_limit)
+            .collect())
     }
 
     fn search(&self, query: &str) -> Result<Vec<HistoryEntry>, DomainError> {
@@ -490,6 +527,53 @@ mod tests {
 
         let hits = repo.search("mixedcase").unwrap();
         assert_eq!(hits.len(), 1);
+    }
+
+    #[test]
+    fn test_extract_host_keeps_ipv6_brackets() {
+        assert_eq!(extract_host("https://[::1]:8080/p"), Some("[::1]"));
+        assert_eq!(
+            extract_host("https://user:pwd@[2001:db8::1]/x"),
+            Some("[2001:db8::1]")
+        );
+    }
+
+    #[test]
+    fn test_extract_host_strips_port_and_userinfo() {
+        assert_eq!(extract_host("https://u:p@ex.com:443/path"), Some("ex.com"));
+        assert_eq!(extract_host("http://ex.com?q=1"), Some("ex.com"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_list_hostname_filter_paginates_past_server_cap() {
+        let db = setup_test_db().await.expect("failed to setup test db");
+        let repo = SqliteHistoryRepo::new(db);
+        // Interleave target vs noise so that the target matches live past
+        // the first MAX_HISTORY_PAGE_SIZE SQL rows.
+        for i in 1..=600u64 {
+            let mut e = make_entry(i, i * 1000);
+            e.url = if i.is_multiple_of(4) {
+                format!("https://target.test/{i}")
+            } else {
+                format!("https://noise.test/{i}")
+            };
+            repo.record(&e).unwrap();
+        }
+
+        let page = repo
+            .list(
+                Some(HistoryFilter {
+                    date_from: None,
+                    date_to: None,
+                    hostname: Some("target.test".into()),
+                }),
+                None,
+                Some(10),
+                Some(0),
+            )
+            .unwrap();
+        assert_eq!(page.len(), 10);
+        assert!(page.iter().all(|e| e.url.contains("target.test")));
     }
 
     #[tokio::test(flavor = "multi_thread")]

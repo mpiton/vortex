@@ -24,7 +24,9 @@ use crate::domain::model::views::{
     DownloadDetailView, DownloadFilter, DownloadView, HistoryEntry, HistoryFilter, HistorySort,
     HistorySortField, SortDirection, SortOrder, StateCountMap, StatsView,
 };
-use crate::domain::ports::driven::history_repository::MAX_HISTORY_PAGE_SIZE;
+use crate::domain::ports::driven::history_repository::{
+    MAX_HISTORY_PAGE_SIZE, MAX_HISTORY_SEARCH_RESULTS,
+};
 use crate::domain::ports::driven::{
     ArchiveExtractor, ClipboardObserver, ConfigStore, CredentialStore, DownloadEngine,
     DownloadReadRepository, DownloadRepository, EventBus, FileStorage, HistoryRepository,
@@ -38,9 +40,15 @@ fn host_component(url: &str) -> Option<&str> {
         .unwrap_or(after_scheme.len());
     let authority = &after_scheme[..authority_end];
     let host_with_port = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
-    let host = host_with_port
-        .split_once(':')
-        .map_or(host_with_port, |(h, _)| h);
+    let host = if host_with_port.starts_with('[') {
+        host_with_port
+            .find(']')
+            .map_or(host_with_port, |end| &host_with_port[..=end])
+    } else {
+        host_with_port
+            .split_once(':')
+            .map_or(host_with_port, |(h, _)| h)
+    };
     if host.is_empty() { None } else { Some(host) }
 }
 
@@ -196,17 +204,21 @@ impl HistoryRepository for InMemoryHistoryRepo {
 
     fn search(&self, query: &str) -> Result<Vec<HistoryEntry>, DomainError> {
         let needle = query.to_lowercase();
-        Ok(self
-            .entries
-            .lock()
-            .unwrap()
-            .iter()
+        if needle.is_empty() {
+            return Ok(Vec::new());
+        }
+        // Match the SQLite adapter: inspect the most recent
+        // MAX_HISTORY_SEARCH_RESULTS rows, newest first, then filter.
+        let mut recent: Vec<HistoryEntry> = self.entries.lock().unwrap().clone();
+        recent.sort_by_key(|e| std::cmp::Reverse(e.completed_at));
+        Ok(recent
+            .into_iter()
+            .take(MAX_HISTORY_SEARCH_RESULTS)
             .filter(|e| {
                 e.file_name.to_lowercase().contains(&needle)
                     || e.url.to_lowercase().contains(&needle)
                     || e.destination_path.to_lowercase().contains(&needle)
             })
-            .cloned()
             .collect())
     }
 

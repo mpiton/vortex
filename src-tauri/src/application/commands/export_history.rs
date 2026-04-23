@@ -8,13 +8,30 @@ use crate::application::command_bus::CommandBus;
 use crate::application::commands::{ExportHistoryCommand, ExportHistoryFormat};
 use crate::application::error::AppError;
 use crate::domain::model::views::HistoryEntry;
+use crate::domain::ports::driven::history_repository::MAX_HISTORY_PAGE_SIZE;
 
 impl CommandBus {
     pub async fn handle_export_history(
         &self,
         cmd: ExportHistoryCommand,
     ) -> Result<usize, AppError> {
-        let entries = self.history_repo().list(None, None, None, None)?;
+        // `list` is capped at MAX_HISTORY_PAGE_SIZE per the port contract, so
+        // we page through it to produce a full export instead of silently
+        // truncating the file at 500 rows.
+        let mut entries: Vec<HistoryEntry> = Vec::new();
+        let mut offset = 0usize;
+        loop {
+            let page =
+                self.history_repo()
+                    .list(None, None, Some(MAX_HISTORY_PAGE_SIZE), Some(offset))?;
+            let len = page.len();
+            entries.extend(page);
+            if len < MAX_HISTORY_PAGE_SIZE {
+                break;
+            }
+            offset += MAX_HISTORY_PAGE_SIZE;
+        }
+
         let bytes = match cmd.format {
             ExportHistoryFormat::Csv => encode_csv(&entries).into_bytes(),
             ExportHistoryFormat::Json => encode_json(&entries)?.into_bytes(),
@@ -237,6 +254,42 @@ mod tests {
         let contents = std::fs::read_to_string(&out).unwrap();
         assert!(contents.contains("\"movie, one.mkv\""));
         assert!(contents.contains("two.zip"));
+    }
+
+    #[tokio::test]
+    async fn handle_export_history_pages_past_server_cap() {
+        use std::sync::Arc;
+
+        use crate::application::test_support::{InMemoryHistoryRepo, make_history_command_bus};
+        use crate::domain::ports::driven::HistoryRepository;
+
+        // Exceed MAX_HISTORY_PAGE_SIZE (500) so the handler has to paginate
+        // through multiple list() calls instead of silently truncating.
+        let repo = Arc::new(InMemoryHistoryRepo::new());
+        for i in 1..=620u64 {
+            repo.record(&entry(
+                i,
+                &format!("f{i}.bin"),
+                &format!("https://ex.com/{i}"),
+            ))
+            .unwrap();
+        }
+        let bus = make_history_command_bus(repo);
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let out = tmp.path().join("history.json");
+        let count = bus
+            .handle_export_history(ExportHistoryCommand {
+                format: ExportHistoryFormat::Json,
+                path: out.clone(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(count, 620);
+
+        let contents = std::fs::read_to_string(&out).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&contents).unwrap();
+        assert_eq!(value.as_array().unwrap().len(), 620);
     }
 
     #[tokio::test]
