@@ -8,6 +8,7 @@ export interface TopModulesCardProps {
   emptyHint: string;
   countLabel: string;
   loadingHint?: string;
+  isLoading?: boolean;
 }
 
 export function TopModulesCard({
@@ -16,8 +17,8 @@ export function TopModulesCard({
   emptyHint,
   countLabel,
   loadingHint,
+  isLoading = false,
 }: TopModulesCardProps) {
-  const isLoading = data === undefined;
   const entries = data ?? [];
   return (
     <Card className="gap-3 py-4">

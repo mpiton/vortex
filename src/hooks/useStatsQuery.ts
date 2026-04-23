@@ -7,12 +7,20 @@ import { periodToCutoffSeconds, type StatsPeriod } from '@/views/StatisticsView/
 const TOP_MODULES_LIMIT = 5;
 const HISTORY_PAGE_SIZE = 500;
 
+export interface QueryStatusFlags {
+  isLoading: boolean;
+  isError: boolean;
+}
+
 export interface UseStatsQueryResult {
   stats: StatsView | undefined;
   topModules: ModuleStats[] | undefined;
   history: HistoryView[] | undefined;
   isLoading: boolean;
   error: Error | null;
+  statsStatus: QueryStatusFlags;
+  topModulesStatus: QueryStatusFlags;
+  historyStatus: QueryStatusFlags;
   refetch: () => Promise<void>;
 }
 
@@ -60,6 +68,9 @@ export function useStatsQuery(period: StatsPeriod): UseStatsQueryResult {
     history: historyResult.data,
     isLoading,
     error,
+    statsStatus: { isLoading: statsResult.isLoading, isError: statsResult.isError },
+    topModulesStatus: { isLoading: modulesResult.isLoading, isError: modulesResult.isError },
+    historyStatus: { isLoading: historyResult.isLoading, isError: historyResult.isError },
     refetch: async () => {
       const outcomes = await Promise.all(results.map((r) => r.refetch()));
       const firstError = outcomes.find((o) => o.error)?.error;

@@ -46,7 +46,15 @@ function sumDurations(entries: { durationSeconds: number }[]): number {
 export function StatisticsView() {
   const { t } = useTranslation();
   const [period, setPeriod] = useState<StatsPeriod>(DEFAULT_PERIOD);
-  const { stats, topModules, history, isLoading, error } = useStatsQuery(period);
+  const {
+    stats,
+    topModules,
+    history,
+    isLoading,
+    error,
+    historyStatus,
+    topModulesStatus,
+  } = useStatsQuery(period);
 
   const periodLabels = useMemo<Record<StatsPeriod, string>>(
     () => ({
@@ -152,7 +160,13 @@ export function StatisticsView() {
         />
         <KpiCard
           label={t('statistics.kpi.timeSaved')}
-          value={timeSavedSeconds === undefined ? '—' : formatDurationFromSeconds(timeSavedSeconds)}
+          value={
+            historyStatus.isLoading
+              ? '…'
+              : timeSavedSeconds === undefined
+                ? '—'
+                : formatDurationFromSeconds(timeSavedSeconds)
+          }
           hint={t('statistics.kpi.timeSavedHint')}
           icon={Clock}
         />
@@ -195,12 +209,12 @@ export function StatisticsView() {
         <ChartCard
           title={t('statistics.charts.typeBreakdown.title')}
           description={t('statistics.charts.typeBreakdown.description')}
-          isLoading={typeBreakdown === undefined}
-          isEmpty={typeBreakdown?.length === 0}
+          isLoading={historyStatus.isLoading}
+          isEmpty={!typeBreakdown || typeBreakdown.length === 0}
           emptyHint={t('statistics.charts.empty')}
           loadingHint={t('statistics.loading')}
         >
-          {typeBreakdown ? (
+          {typeBreakdown && typeBreakdown.length > 0 ? (
             <TypeBreakdownChart
               data={typeBreakdown}
               ariaLabel={t('statistics.charts.typeBreakdown.ariaLabel')}
@@ -212,12 +226,12 @@ export function StatisticsView() {
         <ChartCard
           title={t('statistics.charts.speedCurve.title')}
           description={t('statistics.charts.speedCurve.description')}
-          isLoading={speedSeries === undefined}
-          isEmpty={speedSeries?.length === 0}
+          isLoading={historyStatus.isLoading}
+          isEmpty={!speedSeries || speedSeries.length === 0}
           emptyHint={t('statistics.charts.empty')}
           loadingHint={t('statistics.loading')}
         >
-          {speedSeries ? (
+          {speedSeries && speedSeries.length > 0 ? (
             <SpeedCurveChart
               data={speedSeries}
               ariaLabel={t('statistics.charts.speedCurve.ariaLabel')}
@@ -231,6 +245,7 @@ export function StatisticsView() {
       <section>
         <TopModulesCard
           data={topModules}
+          isLoading={topModulesStatus.isLoading}
           title={t('statistics.topModules.title')}
           emptyHint={t('statistics.topModules.empty')}
           countLabel={t('statistics.topModules.countLabel')}

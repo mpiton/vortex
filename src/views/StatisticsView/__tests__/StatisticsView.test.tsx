@@ -192,7 +192,7 @@ describe('StatisticsView', () => {
     });
     renderView();
     await waitFor(() => expect(screen.getByTestId('statistics-view')).toBeInTheDocument());
-    expect(screen.getByText('—')).toBeInTheDocument();
+    expect(screen.getByText('…')).toBeInTheDocument();
     expect(
       screen.getByTestId('chart-loading-type-breakdown'),
     ).toBeInTheDocument();
@@ -202,6 +202,58 @@ describe('StatisticsView', () => {
     await waitFor(() =>
       expect(screen.queryByTestId('chart-loading-type-breakdown')).not.toBeInTheDocument(),
     );
+  });
+
+  it('falls back to empty state when history query fails', async () => {
+    mockInvoke.mockImplementation(async (cmd: string) => {
+      if (cmd === 'stats_get') {
+        return {
+          totalDownloadedBytes: 0,
+          totalFiles: 0,
+          avgSpeed: 0,
+          peakSpeed: 0,
+          successRate: 1,
+          dailyVolumes: [],
+          topHosts: [],
+        };
+      }
+      if (cmd === 'stats_top_modules') return [];
+      if (cmd === 'history_list') throw new Error('history offline');
+      return null;
+    });
+    renderView();
+    await waitFor(() => expect(screen.getByTestId('statistics-view')).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.queryByTestId('chart-loading-type-breakdown')).not.toBeInTheDocument(),
+    );
+    expect(screen.getByTestId('chart-empty-type-breakdown')).toBeInTheDocument();
+    expect(screen.getByTestId('chart-empty-average-speed')).toBeInTheDocument();
+    expect(screen.getByText('—')).toBeInTheDocument();
+  });
+
+  it('falls back to empty state when top modules query fails', async () => {
+    mockInvoke.mockImplementation(async (cmd: string) => {
+      if (cmd === 'stats_get') {
+        return {
+          totalDownloadedBytes: 0,
+          totalFiles: 0,
+          avgSpeed: 0,
+          peakSpeed: 0,
+          successRate: 1,
+          dailyVolumes: [],
+          topHosts: [],
+        };
+      }
+      if (cmd === 'stats_top_modules') throw new Error('modules offline');
+      if (cmd === 'history_list') return [];
+      return null;
+    });
+    renderView();
+    await waitFor(() => expect(screen.getByTestId('statistics-view')).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.queryByTestId('top-modules-loading')).not.toBeInTheDocument(),
+    );
+    expect(screen.getByTestId('top-modules-empty')).toBeInTheDocument();
   });
 
   it('renders error state when core stats query fails', async () => {
