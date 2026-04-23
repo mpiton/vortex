@@ -116,7 +116,10 @@ fn test_appstate_wiring_with_in_memory_db() {
     assert!(downloads.is_empty());
 
     // Verify stats repo returns zero-state
-    let stats = query_bus.stats_repo().get_stats().expect("stats query");
+    let stats = query_bus
+        .stats_repo()
+        .get_stats(vortex_lib::domain::model::views::StatsPeriod::AllTime)
+        .expect("stats query");
     assert_eq!(stats.total_files, 0);
     assert_eq!(stats.total_downloaded_bytes, 0);
 }

@@ -480,7 +480,10 @@ impl StatsRepository for StubStatsRepo {
     fn record_completed(&self, _: u64, _: u64) -> Result<(), DomainError> {
         Ok(())
     }
-    fn get_stats(&self) -> Result<StatsView, DomainError> {
+    fn get_stats(
+        &self,
+        _: crate::domain::model::views::StatsPeriod,
+    ) -> Result<StatsView, DomainError> {
         Ok(StatsView {
             total_downloaded_bytes: 0,
             total_files: 0,
@@ -490,6 +493,12 @@ impl StatsRepository for StubStatsRepo {
             daily_volumes: vec![],
             top_hosts: vec![],
         })
+    }
+    fn top_modules(
+        &self,
+        _: u32,
+    ) -> Result<Vec<crate::domain::model::views::ModuleStats>, DomainError> {
+        Ok(vec![])
     }
 }
 
@@ -533,6 +542,20 @@ pub(crate) fn make_history_query_bus(history: Arc<dyn HistoryRepository>) -> Que
         Arc::new(StubDownloadReadRepo),
         history,
         Arc::new(StubStatsRepo),
+        Arc::new(StubPluginReadRepo),
+        Arc::new(StubQueryArchiveExtractor),
+    )
+}
+
+/// Build a [`QueryBus`] wired with the given stats repository.
+///
+/// Other read ports return empty/default data — suitable for tests that
+/// only exercise stats queries.
+pub(crate) fn query_bus_with_stats(stats: Arc<dyn StatsRepository>) -> QueryBus {
+    QueryBus::new(
+        Arc::new(StubDownloadReadRepo),
+        Arc::new(NoopHistoryRepo),
+        stats,
         Arc::new(StubPluginReadRepo),
         Arc::new(StubQueryArchiveExtractor),
     )

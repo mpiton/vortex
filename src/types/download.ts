@@ -112,3 +112,11 @@ export interface StatsView {
   dailyVolumes: DailyVolume[];
   topHosts: HostStats[];
 }
+
+export type StatsPeriod = '7d' | '30d' | 'all';
+
+export interface ModuleStats {
+  moduleName: string;
+  downloadCount: number;
+  totalBytes: number;
+}

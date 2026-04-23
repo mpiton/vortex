@@ -416,7 +416,10 @@ impl StatsRepository for InMemoryStatsRepository {
         Ok(())
     }
 
-    fn get_stats(&self) -> Result<StatsView, DomainError> {
+    fn get_stats(
+        &self,
+        _: crate::domain::model::views::StatsPeriod,
+    ) -> Result<StatsView, DomainError> {
         Ok(StatsView {
             total_downloaded_bytes: *self.total_bytes.lock().unwrap(),
             total_files: *self.total_files.lock().unwrap(),
@@ -426,6 +429,13 @@ impl StatsRepository for InMemoryStatsRepository {
             daily_volumes: vec![],
             top_hosts: vec![],
         })
+    }
+
+    fn top_modules(
+        &self,
+        _: u32,
+    ) -> Result<Vec<crate::domain::model::views::ModuleStats>, DomainError> {
+        Ok(vec![])
     }
 }
 
@@ -872,7 +882,9 @@ fn stats_repository_record_and_get() {
     repo.record_completed(1024, 512).unwrap();
     repo.record_completed(2048, 1024).unwrap();
 
-    let stats = repo.get_stats().unwrap();
+    let stats = repo
+        .get_stats(crate::domain::model::views::StatsPeriod::AllTime)
+        .unwrap();
     assert_eq!(stats.total_downloaded_bytes, 3072);
     assert_eq!(stats.total_files, 2);
 }

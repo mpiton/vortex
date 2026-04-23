@@ -23,7 +23,7 @@ use crate::application::commands::{
 use crate::application::error::AppError;
 use crate::application::queries::{
     CountDownloadsByStateQuery, GetDownloadDetailQuery, GetDownloadsQuery, GetHistoryEntryQuery,
-    ListHistoryQuery, ListPluginsQuery, SearchHistoryQuery,
+    GetStatsQuery, ListHistoryQuery, ListPluginsQuery, SearchHistoryQuery, TopModulesQuery,
 };
 use crate::application::query_bus::QueryBus;
 use crate::application::read_models::download_detail_view::DownloadDetailViewDto;
@@ -31,11 +31,12 @@ use crate::application::read_models::download_view::DownloadViewDto;
 use crate::application::read_models::history_view::HistoryViewDto;
 use crate::application::read_models::plugin_store_view::PluginStoreEntryDto;
 use crate::application::read_models::plugin_view::PluginViewDto;
+use crate::application::read_models::stats_view::{ModuleStatsDto, StatsViewDto};
 use crate::domain::model::config::{AppConfig, ConfigPatch};
 use crate::domain::model::download::{DownloadId, DownloadState};
 use crate::domain::model::views::{
     DownloadFilter, HistoryFilter, HistorySort, HistorySortField, SortDirection, SortField,
-    SortOrder,
+    SortOrder, StatsPeriod,
 };
 use crate::domain::ports::driven::PluginLoader;
 
@@ -2012,6 +2013,44 @@ pub async fn history_clear(state: State<'_, AppState>) -> Result<u64, String> {
         .map_err(|e| e.to_string())
 }
 
+fn parse_stats_period(raw: &str) -> Result<StatsPeriod, String> {
+    match raw {
+        "7d" => Ok(StatsPeriod::Last7Days),
+        "30d" => Ok(StatsPeriod::Last30Days),
+        "all" => Ok(StatsPeriod::AllTime),
+        other => Err(format!("invalid period: {other}")),
+    }
+}
+
+/// Maximum rows returned by `stats_top_modules` — guards against callers
+/// asking for the entire table.
+const TOP_MODULES_MAX_LIMIT: u32 = 50;
+
+#[tauri::command]
+pub async fn stats_get(state: State<'_, AppState>, period: String) -> Result<StatsViewDto, String> {
+    let period = parse_stats_period(&period)?;
+    state
+        .query_bus
+        .handle_get_stats(GetStatsQuery { period })
+        .await
+        .map(StatsViewDto::from)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn stats_top_modules(
+    state: State<'_, AppState>,
+    limit: Option<u32>,
+) -> Result<Vec<ModuleStatsDto>, String> {
+    let limit = limit.unwrap_or(5).clamp(1, TOP_MODULES_MAX_LIMIT);
+    state
+        .query_bus
+        .handle_top_modules(TopModulesQuery { limit })
+        .await
+        .map(|m| m.into_iter().map(ModuleStatsDto::from).collect())
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub async fn history_purge_older_than(
     state: State<'_, AppState>,
@@ -2039,12 +2078,13 @@ mod tests {
     use super::{
         StreamResolution, configured_download_destination, configured_status_bar_path,
         extract_hostname_from_url, load_plugin_media_metadata, parse_plugin_video_metadata,
-        parse_soundcloud_metadata, parse_soundcloud_playlist_targets, read_available_space,
-        resolve_existing_disk_path, resolve_media_stream, sanitize_extension, sanitize_filename,
-        soundcloud_track_download_title, unique_destination,
+        parse_soundcloud_metadata, parse_soundcloud_playlist_targets, parse_stats_period,
+        read_available_space, resolve_existing_disk_path, resolve_media_stream, sanitize_extension,
+        sanitize_filename, soundcloud_track_download_title, unique_destination,
     };
     use crate::domain::error::DomainError;
     use crate::domain::model::plugin::{PluginCategory, PluginInfo, PluginManifest};
+    use crate::domain::model::views::StatsPeriod;
     use crate::domain::ports::driven::PluginLoader;
     use crate::domain::ports::driven::plugin_loader::DownloadedFileInfo;
     use std::path::PathBuf;
@@ -3058,5 +3098,18 @@ mod tests {
         assert!(codes.contains(&"en"));
         assert!(codes.contains(&"fr"));
         assert!(!codes.contains(&"live_chat"));
+    }
+
+    #[test]
+    fn test_parse_stats_period_known_values() {
+        assert_eq!(parse_stats_period("7d").unwrap(), StatsPeriod::Last7Days);
+        assert_eq!(parse_stats_period("30d").unwrap(), StatsPeriod::Last30Days);
+        assert_eq!(parse_stats_period("all").unwrap(), StatsPeriod::AllTime);
+    }
+
+    #[test]
+    fn test_parse_stats_period_rejects_unknown() {
+        let err = parse_stats_period("1y").unwrap_err();
+        assert!(err.contains("invalid period"));
     }
 }

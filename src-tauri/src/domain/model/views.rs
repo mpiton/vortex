@@ -148,6 +148,34 @@ pub struct HostStats {
     pub download_count: u64,
 }
 
+/// Time window for statistics queries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum StatsPeriod {
+    Last7Days,
+    Last30Days,
+    #[default]
+    AllTime,
+}
+
+impl StatsPeriod {
+    /// Number of days covered by this period, or `None` for all-time.
+    pub fn window_days(self) -> Option<u32> {
+        match self {
+            StatsPeriod::Last7Days => Some(7),
+            StatsPeriod::Last30Days => Some(30),
+            StatsPeriod::AllTime => None,
+        }
+    }
+}
+
+/// Download usage per resolving module (plugin).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ModuleStats {
+    pub module_name: String,
+    pub download_count: u64,
+    pub total_bytes: u64,
+}
+
 /// Filter criteria for download list queries.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct DownloadFilter {
