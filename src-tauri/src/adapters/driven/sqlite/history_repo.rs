@@ -234,6 +234,13 @@ impl HistoryRepository for SqliteHistoryRepo {
     }
 
     fn search(&self, query: &str) -> Result<Vec<HistoryEntry>, DomainError> {
+        // Short-circuit on a blank query before touching sqlite. An empty
+        // needle would match everything, so the only useful answer is an
+        // empty result — no need to pull up to 500 rows first.
+        let needle = query.to_lowercase();
+        if needle.is_empty() {
+            return Ok(Vec::new());
+        }
         // Full-text search needs to be case-insensitive across arbitrary user
         // input, so we fetch the most recent rows up to a server cap and
         // filter in Rust. Avoids every LIKE-wildcard/ESCAPE edge case.
@@ -244,10 +251,6 @@ impl HistoryRepository for SqliteHistoryRepo {
                 .all(&self.db),
         )
         .map_err(map_db_err)?;
-        let needle = query.to_lowercase();
-        if needle.is_empty() {
-            return Ok(Vec::new());
-        }
         Ok(models
             .into_iter()
             .map(model_to_entry)
