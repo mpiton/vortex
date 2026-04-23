@@ -132,7 +132,6 @@ describe("issue #30 — French UI translations", () => {
       { component: <AccountsView />, title: "Comptes" },
       { component: <CaptchaView />, title: "Captcha" },
       { component: <SchedulerView />, title: "Planificateur" },
-      { component: <StatisticsView />, title: "Statistiques" },
     ];
 
     for (const view of views) {
@@ -149,5 +148,43 @@ describe("issue #30 — French UI translations", () => {
 
     expect(screen.getByPlaceholderText("Rechercher un plugin…")).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Toutes" })).toBeInTheDocument();
+  });
+
+  it("renders statistics view strings in French", async () => {
+    mockInvoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case "stats_get":
+          return {
+            totalDownloadedBytes: 0,
+            totalFiles: 0,
+            avgSpeed: 0,
+            peakSpeed: 0,
+            successRate: 1,
+            dailyVolumes: [],
+            topHosts: [],
+          };
+        case "stats_top_modules":
+          return [];
+        case "history_list":
+          return [];
+        default:
+          return undefined;
+      }
+    });
+    renderWithProviders(<StatisticsView />);
+
+    expect(await screen.findByText("Statistiques")).toBeInTheDocument();
+    expect(
+      screen.getByText("Métriques locales de téléchargement sur la période sélectionnée"),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "7 derniers jours" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "30 derniers jours" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Tout" })).toBeInTheDocument();
+    expect(screen.getByText("Volume total")).toBeInTheDocument();
+    expect(screen.getByText("Fichiers")).toBeInTheDocument();
+    expect(screen.getAllByText("Vitesse moyenne").length).toBeGreaterThan(0);
+    expect(screen.getByText("Vitesse max")).toBeInTheDocument();
+    expect(screen.getByText("Taux de succès")).toBeInTheDocument();
+    expect(screen.getByText("Modules les plus utilisés (tout)")).toBeInTheDocument();
   });
 });

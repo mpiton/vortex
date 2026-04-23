@@ -359,5 +359,63 @@
       "exportError": "Export failed",
       "openFolderError": "Failed to open folder"
     }
+  },
+  "statistics": {
+    "title": "Statistics",
+    "description": "Local download metrics across the selected period",
+    "loading": "Loading statistics…",
+    "period": {
+      "ariaLabel": "Statistics period",
+      "7d": "Last 7 days",
+      "30d": "Last 30 days",
+      "all": "All time"
+    },
+    "kpi": {
+      "ariaLabel": "Key indicators",
+      "totalVolume": "Total volume",
+      "totalFiles": "Total files",
+      "avgSpeed": "Avg speed",
+      "peakSpeed": "Peak speed",
+      "successRate": "Success rate",
+      "timeSaved": "Time downloading",
+      "timeSavedHint": "Cumulative duration",
+      "captchasSolved": "CAPTCHAs solved",
+      "captchasSolvedHint": "Coming with CAPTCHA module"
+    },
+    "charts": {
+      "empty": "Not enough data to plot",
+      "dailyVolume": {
+        "title": "Daily volume",
+        "description": "Bytes downloaded per day",
+        "ariaLabel": "Daily download volume bar chart",
+        "xAxis": "Date",
+        "yAxis": "Volume"
+      },
+      "topHosts": {
+        "title": "Top hosts",
+        "description": "Volume share per source host (top 10)",
+        "ariaLabel": "Top hosts donut chart",
+        "bytesLabel": "Volume"
+      },
+      "typeBreakdown": {
+        "title": "Type breakdown",
+        "description": "Bytes per file extension (top 10)",
+        "ariaLabel": "Type breakdown horizontal bar chart",
+        "bytesLabel": "Volume"
+      },
+      "speedCurve": {
+        "title": "Average speed",
+        "description": "Daily average speed across completed downloads",
+        "ariaLabel": "Average speed line chart",
+        "xAxis": "Date",
+        "yAxis": "Speed"
+      }
+    },
+    "topModules": {
+      "title": "Top modules (all time)",
+      "empty": "No module activity yet",
+      "countLabel": "downloads",
+      "hint": "Top 5 modules ranked by download count, independent of the selected period"
+    }
   }
 }
