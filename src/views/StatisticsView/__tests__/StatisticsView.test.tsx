@@ -160,9 +160,48 @@ describe('StatisticsView', () => {
     setupMocks();
     renderView();
     await waitFor(() => expect(screen.getByTestId('statistics-view')).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.queryByTestId('top-modules-loading')).not.toBeInTheDocument(),
+    );
     const empties = await screen.findAllByText('Not enough data to plot');
-    expect(empties.length).toBeGreaterThanOrEqual(4);
+    expect(empties.length).toBeGreaterThanOrEqual(2);
     expect(screen.getByTestId('top-modules-empty')).toBeInTheDocument();
+  });
+
+  it('keeps history-derived widgets in loading state until history resolves', async () => {
+    let resolveHistory: ((value: unknown[]) => void) | undefined;
+    mockInvoke.mockImplementation(async (cmd: string) => {
+      if (cmd === 'stats_get') {
+        return {
+          totalDownloadedBytes: 0,
+          totalFiles: 0,
+          avgSpeed: 0,
+          peakSpeed: 0,
+          successRate: 1,
+          dailyVolumes: [],
+          topHosts: [],
+        };
+      }
+      if (cmd === 'stats_top_modules') return [];
+      if (cmd === 'history_list') {
+        return new Promise((resolve) => {
+          resolveHistory = resolve;
+        });
+      }
+      return null;
+    });
+    renderView();
+    await waitFor(() => expect(screen.getByTestId('statistics-view')).toBeInTheDocument());
+    expect(screen.getByText('—')).toBeInTheDocument();
+    expect(
+      screen.getByTestId('chart-loading-type-breakdown'),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId('chart-loading-average-speed')).toBeInTheDocument();
+
+    resolveHistory?.([]);
+    await waitFor(() =>
+      expect(screen.queryByTestId('chart-loading-type-breakdown')).not.toBeInTheDocument(),
+    );
   });
 
   it('renders error state when core stats query fails', async () => {

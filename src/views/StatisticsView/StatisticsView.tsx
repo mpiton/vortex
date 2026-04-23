@@ -58,13 +58,22 @@ export function StatisticsView() {
   );
 
   const filteredHistory = useMemo(
-    () => filterEntriesByPeriod(history ?? [], period, nowSeconds()),
+    () => (history ? filterEntriesByPeriod(history, period, nowSeconds()) : undefined),
     [history, period],
   );
 
-  const typeBreakdown = useMemo(() => deriveTypeBreakdown(filteredHistory), [filteredHistory]);
-  const speedSeries = useMemo(() => deriveSpeedSeries(filteredHistory), [filteredHistory]);
-  const timeSavedSeconds = useMemo(() => sumDurations(filteredHistory), [filteredHistory]);
+  const typeBreakdown = useMemo(
+    () => (filteredHistory ? deriveTypeBreakdown(filteredHistory) : undefined),
+    [filteredHistory],
+  );
+  const speedSeries = useMemo(
+    () => (filteredHistory ? deriveSpeedSeries(filteredHistory) : undefined),
+    [filteredHistory],
+  );
+  const timeSavedSeconds = useMemo(
+    () => (filteredHistory ? sumDurations(filteredHistory) : undefined),
+    [filteredHistory],
+  );
 
   if (!stats && isLoading) {
     return (
@@ -143,7 +152,7 @@ export function StatisticsView() {
         />
         <KpiCard
           label={t('statistics.kpi.timeSaved')}
-          value={formatDurationFromSeconds(timeSavedSeconds)}
+          value={timeSavedSeconds === undefined ? '—' : formatDurationFromSeconds(timeSavedSeconds)}
           hint={t('statistics.kpi.timeSavedHint')}
           icon={Clock}
         />
@@ -186,37 +195,46 @@ export function StatisticsView() {
         <ChartCard
           title={t('statistics.charts.typeBreakdown.title')}
           description={t('statistics.charts.typeBreakdown.description')}
-          isEmpty={typeBreakdown.length === 0}
+          isLoading={typeBreakdown === undefined}
+          isEmpty={typeBreakdown?.length === 0}
           emptyHint={t('statistics.charts.empty')}
+          loadingHint={t('statistics.loading')}
         >
-          <TypeBreakdownChart
-            data={typeBreakdown}
-            ariaLabel={t('statistics.charts.typeBreakdown.ariaLabel')}
-            bytesLabel={t('statistics.charts.typeBreakdown.bytesLabel')}
-          />
+          {typeBreakdown ? (
+            <TypeBreakdownChart
+              data={typeBreakdown}
+              ariaLabel={t('statistics.charts.typeBreakdown.ariaLabel')}
+              bytesLabel={t('statistics.charts.typeBreakdown.bytesLabel')}
+            />
+          ) : null}
         </ChartCard>
 
         <ChartCard
           title={t('statistics.charts.speedCurve.title')}
           description={t('statistics.charts.speedCurve.description')}
-          isEmpty={speedSeries.length === 0}
+          isLoading={speedSeries === undefined}
+          isEmpty={speedSeries?.length === 0}
           emptyHint={t('statistics.charts.empty')}
+          loadingHint={t('statistics.loading')}
         >
-          <SpeedCurveChart
-            data={speedSeries}
-            ariaLabel={t('statistics.charts.speedCurve.ariaLabel')}
-            xAxisLabel={t('statistics.charts.speedCurve.xAxis')}
-            yAxisLabel={t('statistics.charts.speedCurve.yAxis')}
-          />
+          {speedSeries ? (
+            <SpeedCurveChart
+              data={speedSeries}
+              ariaLabel={t('statistics.charts.speedCurve.ariaLabel')}
+              xAxisLabel={t('statistics.charts.speedCurve.xAxis')}
+              yAxisLabel={t('statistics.charts.speedCurve.yAxis')}
+            />
+          ) : null}
         </ChartCard>
       </section>
 
       <section>
         <TopModulesCard
-          data={topModules ?? []}
+          data={topModules}
           title={t('statistics.topModules.title')}
           emptyHint={t('statistics.topModules.empty')}
           countLabel={t('statistics.topModules.countLabel')}
+          loadingHint={t('statistics.loading')}
         />
         <div className="mt-2 flex items-center gap-2 text-xs text-muted-foreground">
           <Award className="size-3.5" />

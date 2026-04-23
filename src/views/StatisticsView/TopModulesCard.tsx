@@ -3,20 +3,36 @@ import type { ModuleStats } from '@/types/download';
 import { formatBytes, formatCount } from './format';
 
 export interface TopModulesCardProps {
-  data: ModuleStats[];
+  data: ModuleStats[] | undefined;
   title: string;
   emptyHint: string;
   countLabel: string;
+  loadingHint?: string;
 }
 
-export function TopModulesCard({ data, title, emptyHint, countLabel }: TopModulesCardProps) {
+export function TopModulesCard({
+  data,
+  title,
+  emptyHint,
+  countLabel,
+  loadingHint,
+}: TopModulesCardProps) {
+  const isLoading = data === undefined;
+  const entries = data ?? [];
   return (
     <Card className="gap-3 py-4">
       <CardHeader className="px-4">
         <CardTitle className="text-sm font-semibold">{title}</CardTitle>
       </CardHeader>
       <CardContent className="px-4">
-        {data.length === 0 ? (
+        {isLoading ? (
+          <div
+            data-testid="top-modules-loading"
+            className="flex h-32 items-center justify-center text-xs text-muted-foreground"
+          >
+            {loadingHint ?? '…'}
+          </div>
+        ) : entries.length === 0 ? (
           <div
             data-testid="top-modules-empty"
             className="flex h-32 items-center justify-center text-xs text-muted-foreground"
@@ -25,7 +41,7 @@ export function TopModulesCard({ data, title, emptyHint, countLabel }: TopModule
           </div>
         ) : (
           <ul className="flex flex-col divide-y divide-border">
-            {data.map((module, index) => (
+            {entries.map((module, index) => (
               <li
                 key={module.moduleName}
                 className="flex items-center justify-between gap-3 py-2 text-sm"

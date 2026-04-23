@@ -8,7 +8,9 @@ export interface ChartCardProps {
   children: ReactNode;
   className?: string;
   emptyHint?: string;
+  loadingHint?: string;
   isEmpty?: boolean;
+  isLoading?: boolean;
 }
 
 export function ChartCard({
@@ -17,8 +19,26 @@ export function ChartCard({
   children,
   className,
   emptyHint,
+  loadingHint,
   isEmpty = false,
+  isLoading = false,
 }: ChartCardProps) {
+  const placeholder = isLoading ? (
+    <div
+      data-testid={`chart-loading-${title.toLowerCase().replace(/\s+/g, '-')}`}
+      className="flex h-48 items-center justify-center text-xs text-muted-foreground"
+    >
+      {loadingHint ?? '…'}
+    </div>
+  ) : isEmpty ? (
+    <div
+      data-testid={`chart-empty-${title.toLowerCase().replace(/\s+/g, '-')}`}
+      className="flex h-48 items-center justify-center text-xs text-muted-foreground"
+    >
+      {emptyHint ?? '—'}
+    </div>
+  ) : null;
+
   return (
     <Card className={cn('gap-3 py-4', className)}>
       <CardHeader className="px-4">
@@ -27,18 +47,7 @@ export function ChartCard({
           <p className="text-xs text-muted-foreground">{description}</p>
         ) : null}
       </CardHeader>
-      <CardContent className="px-4">
-        {isEmpty ? (
-          <div
-            data-testid={`chart-empty-${title.toLowerCase().replace(/\s+/g, '-')}`}
-            className="flex h-48 items-center justify-center text-xs text-muted-foreground"
-          >
-            {emptyHint ?? '—'}
-          </div>
-        ) : (
-          children
-        )}
-      </CardContent>
+      <CardContent className="px-4">{placeholder ?? children}</CardContent>
     </Card>
   );
 }
