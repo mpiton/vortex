@@ -15,7 +15,6 @@ import { AccountsView } from "@/views/AccountsView";
 import { CaptchaView } from "@/views/CaptchaView";
 import { PluginsView } from "@/views/PluginsView";
 import { SchedulerView } from "@/views/SchedulerView";
-import { HistoryView } from "@/views/HistoryView";
 import { StatisticsView } from "@/views/StatisticsView";
 
 const { mockInvoke } = vi.hoisted(() => ({
@@ -133,7 +132,6 @@ describe("issue #30 — French UI translations", () => {
       { component: <AccountsView />, title: "Comptes" },
       { component: <CaptchaView />, title: "Captcha" },
       { component: <SchedulerView />, title: "Planificateur" },
-      { component: <HistoryView />, title: "Historique" },
       { component: <StatisticsView />, title: "Statistiques" },
     ];
 

@@ -300,5 +300,48 @@
       "enabled": "Surveillance du presse-papiers activée",
       "disabled": "Surveillance du presse-papiers désactivée"
     }
+  },
+  "history": {
+    "searchPlaceholder": "Rechercher dans l'historique…",
+    "searchAriaLabel": "Rechercher dans l'historique",
+    "loading": "Chargement de l'historique…",
+    "empty": "Aucune entrée dans l'historique",
+    "filterEmpty": "Aucune entrée ne correspond au filtre actif",
+    "dayGroupAriaLabel": "Téléchargements terminés le {{date}}",
+    "filters": {
+      "ariaLabel": "Filtres d'historique",
+      "all": "Tous",
+      "completed": "Terminés",
+      "failed": "Échoués",
+      "cancelled": "Annulés"
+    },
+    "status": {
+      "completed": "Terminé",
+      "failed": "Échoué",
+      "cancelled": "Annulé"
+    },
+    "row": {
+      "redownload": "Re-télécharger",
+      "copyUrl": "Copier l'URL",
+      "delete": "Supprimer l'entrée",
+      "openFolder": "Ouvrir le dossier",
+      "moreActions": "Autres actions"
+    },
+    "export": {
+      "trigger": "Exporter",
+      "csv": "Exporter en CSV",
+      "json": "Exporter en JSON"
+    },
+    "toast": {
+      "redownloadSuccess": "Téléchargement relancé",
+      "redownloadError": "Échec de la relance du téléchargement",
+      "copySuccess": "URL copiée dans le presse-papiers",
+      "copyError": "Échec de la copie de l'URL",
+      "deleteSuccess": "Entrée supprimée",
+      "deleteError": "Échec de la suppression",
+      "exportSuccess": "{{count}} entrées exportées au format {{format}}",
+      "exportError": "Échec de l'export",
+      "openFolderPending": "Ouvrir le dossier arrive dans une prochaine mise à jour"
+    }
   }
 }

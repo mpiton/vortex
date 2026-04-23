@@ -300,5 +300,48 @@
       "enabled": "Clipboard monitoring enabled",
       "disabled": "Clipboard monitoring disabled"
     }
+  },
+  "history": {
+    "searchPlaceholder": "Search history…",
+    "searchAriaLabel": "Search history",
+    "loading": "Loading history…",
+    "empty": "No history entries yet",
+    "filterEmpty": "No entries match the current filter",
+    "dayGroupAriaLabel": "Downloads completed on {{date}}",
+    "filters": {
+      "ariaLabel": "History filters",
+      "all": "All",
+      "completed": "Completed",
+      "failed": "Failed",
+      "cancelled": "Cancelled"
+    },
+    "status": {
+      "completed": "Completed",
+      "failed": "Failed",
+      "cancelled": "Cancelled"
+    },
+    "row": {
+      "redownload": "Re-download",
+      "copyUrl": "Copy URL",
+      "delete": "Delete entry",
+      "openFolder": "Open folder",
+      "moreActions": "More actions"
+    },
+    "export": {
+      "trigger": "Export",
+      "csv": "Export as CSV",
+      "json": "Export as JSON"
+    },
+    "toast": {
+      "redownloadSuccess": "Download re-added",
+      "redownloadError": "Failed to re-add download",
+      "copySuccess": "URL copied to clipboard",
+      "copyError": "Failed to copy URL",
+      "deleteSuccess": "Entry deleted",
+      "deleteError": "Failed to delete entry",
+      "exportSuccess": "{{count}} entries exported as {{format}}",
+      "exportError": "Export failed",
+      "openFolderPending": "Open folder will be available in a future update"
+    }
   }
 }

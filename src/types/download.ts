@@ -81,6 +81,7 @@ export interface PluginView {
 }
 
 export interface HistoryView {
+  entryId: number;
   downloadId: string;
   fileName: string;
   url: string;
