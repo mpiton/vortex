@@ -68,6 +68,10 @@ impl QueueManager {
         self.active_count.load(Ordering::SeqCst)
     }
 
+    pub fn max_concurrent(&self) -> usize {
+        self.max_concurrent.load(Ordering::SeqCst)
+    }
+
     // F1: safe decrement — never wraps below 0
     fn safe_decrement(&self) {
         self.active_count

@@ -192,12 +192,33 @@ pub fn run() {
 
             // ── Queue manager ──────────────────────────────────────
             // Listens to domain events and auto-schedules queued downloads.
+            // `max_concurrent` is seeded from the persisted config and then
+            // kept in sync via the queue_config_bridge subscriber below.
+            let initial_max_concurrent = match config_store.get_config() {
+                Ok(cfg) => cfg.max_concurrent_downloads as usize,
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "failed to read max_concurrent_downloads from config, falling back to default"
+                    );
+                    crate::domain::model::config::AppConfig::default().max_concurrent_downloads
+                        as usize
+                }
+            };
             let queue_manager = Arc::new(QueueManager::new(
                 download_repo.clone(),
                 download_engine.clone(),
                 event_bus.clone(),
-                4, // TODO: read max_concurrent from config
+                initial_max_concurrent,
             ));
+
+            // Propagate future settings updates (UI → command bus) to the
+            // running queue manager without requiring a restart.
+            application::services::subscribe_queue_to_config(
+                event_bus.as_ref(),
+                config_store.clone(),
+                queue_manager.clone(),
+            );
 
             // ── Plugin store client ─────────────────────────────────
             let registry_url =
