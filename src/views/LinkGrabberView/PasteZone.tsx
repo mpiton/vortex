@@ -1,26 +1,40 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 
 interface PasteZoneProps {
   onPasteUrls: (urls: string[]) => void;
   isLoading?: boolean;
+  initialValue?: string;
 }
 
 export function extractUrls(text: string): string[] {
-  const matches = text.match(
-    /(https?:\/\/[^\s]+|ftp:\/\/[^\s]+|magnet:\?[^\s]+)/gi,
-  );
+  const matches = text.match(/(https?:\/\/[^\s]+|ftp:\/\/[^\s]+|magnet:\?[^\s]+)/gi);
   return (matches ?? []).map((url) => url.replace(/[),.;:>}"'!?]+$/, ""));
 }
 
-export function PasteZone({
-  onPasteUrls,
-  isLoading,
-}: PasteZoneProps) {
+export function PasteZone({ onPasteUrls, isLoading, initialValue }: PasteZoneProps) {
   const { t } = useTranslation();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const onPasteUrlsRef = useRef(onPasteUrls);
+  const handledInitialRef = useRef<string | undefined>(undefined);
   const [isDragging, setIsDragging] = useState(false);
+
+  useEffect(() => {
+    onPasteUrlsRef.current = onPasteUrls;
+  }, [onPasteUrls]);
+
+  useEffect(() => {
+    if (!initialValue || initialValue === handledInitialRef.current) return;
+    if (!textareaRef.current) return;
+
+    handledInitialRef.current = initialValue;
+    textareaRef.current.value = initialValue;
+    const urls = extractUrls(initialValue);
+    if (urls.length > 0) {
+      onPasteUrlsRef.current(urls);
+    }
+  }, [initialValue]);
 
   function handleAnalyze() {
     const text = textareaRef.current?.value ?? "";
@@ -73,9 +87,7 @@ export function PasteZone({
     <div
       data-testid="paste-drop-zone"
       className={`rounded-lg border-2 border-dashed p-6 transition-colors ${
-        isDragging
-          ? "border-accent bg-accent/10"
-          : "border-muted-foreground/30"
+        isDragging ? "border-accent bg-accent/10" : "border-muted-foreground/30"
       }`}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}

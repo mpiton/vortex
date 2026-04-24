@@ -62,7 +62,9 @@ vi.mock("@/lib/toast", () => ({
 
 const mockInvoke = vi.mocked(invoke);
 
-function renderWithProviders(initialEntry: string | { pathname: string; state?: unknown } = "/link-grabber") {
+function renderWithProviders(
+  initialEntry: string | { pathname: string; state?: unknown } = "/link-grabber",
+) {
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false },
@@ -131,9 +133,7 @@ describe("LinkGrabberView", () => {
       config: { ...baseConfig, clipboardMonitoring: true },
     });
     renderWithProviders();
-    expect(
-      screen.getByTitle("Clipboard monitoring active"),
-    ).toBeInTheDocument();
+    expect(screen.getByTitle("Clipboard monitoring active")).toBeInTheDocument();
     expect(
       document.querySelector('[data-testid="clipboard-status-dot"].bg-success'),
     ).not.toBeNull();
@@ -144,33 +144,21 @@ describe("LinkGrabberView", () => {
       config: { ...baseConfig, clipboardMonitoring: false },
     });
     renderWithProviders();
-    expect(
-      screen.getByTitle("Clipboard monitoring paused"),
-    ).toBeInTheDocument();
-    expect(
-      document.querySelector('[data-testid="clipboard-status-dot"].bg-border'),
-    ).not.toBeNull();
+    expect(screen.getByTitle("Clipboard monitoring paused")).toBeInTheDocument();
+    expect(document.querySelector('[data-testid="clipboard-status-dot"].bg-border')).not.toBeNull();
   });
 
   it("should render PasteZone with Analyze Links button", () => {
     renderWithProviders();
-    expect(
-      screen.getByRole("button", { name: "Analyze Links" }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Analyze Links" })).toBeInTheDocument();
     expect(screen.getByRole("textbox")).toBeInTheDocument();
   });
 
   it("should not show filter/grouping/actions sections when no links resolved", () => {
     renderWithProviders();
-    expect(
-      screen.queryByRole("button", { name: "All" }),
-    ).not.toBeInTheDocument();
-    expect(
-      screen.queryByText("Group Into Packages:"),
-    ).not.toBeInTheDocument();
-    expect(
-      screen.queryByRole("button", { name: /Select All/ }),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "All" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Group Into Packages:")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Select All/ })).not.toBeInTheDocument();
   });
 
   it("should call link_resolve when Analyze Links is clicked", async () => {
@@ -192,20 +180,18 @@ describe("LinkGrabberView", () => {
   });
 
   it("should surface error toast on failure and success toast on retry", async () => {
-    mockInvoke
-      .mockRejectedValueOnce(new Error("AppState not registered"))
-      .mockResolvedValueOnce([
-        {
-          id: "1",
-          originalUrl: "https://example.com/file.zip",
-          resolvedUrl: "https://example.com/file.zip",
-          filename: "file.zip",
-          sizeBytes: 1024,
-          status: "online",
-          moduleName: "http",
-          isMedia: false,
-        },
-      ]);
+    mockInvoke.mockRejectedValueOnce(new Error("AppState not registered")).mockResolvedValueOnce([
+      {
+        id: "1",
+        originalUrl: "https://example.com/file.zip",
+        resolvedUrl: "https://example.com/file.zip",
+        filename: "file.zip",
+        sizeBytes: 1024,
+        status: "online",
+        moduleName: "http",
+        isMedia: false,
+      },
+    ]);
 
     const user = userEvent.setup();
     renderWithProviders();
@@ -225,9 +211,7 @@ describe("LinkGrabberView", () => {
 
     await waitFor(() => {
       expect(toast.success).toHaveBeenCalled();
-      expect(
-        screen.getByRole("button", { name: "Select All (1)" }),
-      ).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Select All (1)" })).toBeInTheDocument();
     });
   });
 
@@ -257,9 +241,7 @@ describe("LinkGrabberView", () => {
     });
 
     expect(screen.getByText("Group Into Packages:")).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: "Select All (1)" }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Select All (1)" })).toBeInTheDocument();
   });
 
   it("should clear resolved links when Clear is clicked", async () => {
@@ -292,9 +274,7 @@ describe("LinkGrabberView", () => {
     await user.click(clearButtons[clearButtons.length - 1]);
 
     await waitFor(() => {
-      expect(
-        screen.queryByRole("button", { name: "All" }),
-      ).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "All" })).not.toBeInTheDocument();
     });
   });
 
@@ -306,6 +286,32 @@ describe("LinkGrabberView", () => {
 
     await waitFor(() => {
       expect(screen.getByRole("textbox")).toHaveFocus();
+    });
+  });
+
+  it("should pre-fill the textarea and resolve links when opened with pasteContent", async () => {
+    mockInvoke.mockResolvedValue([]);
+    renderWithProviders({
+      pathname: "/link-grabber",
+      state: {
+        focusPaste: true,
+        pasteContent: "https://example.com/a.zip\nhttps://example.com/b.zip",
+      },
+    });
+
+    await waitFor(() => {
+      const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
+      expect(textarea.value).toContain("https://example.com/a.zip");
+      expect(textarea.value).toContain("https://example.com/b.zip");
+    });
+
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith(
+        "link_resolve",
+        expect.objectContaining({
+          urls: ["https://example.com/a.zip", "https://example.com/b.zip"],
+        }),
+      );
     });
   });
 });

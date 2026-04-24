@@ -13,10 +13,7 @@ import { downloadQueries } from "@/api/queries";
 import { useDownloadStore } from "@/stores/downloadStore";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useUiStore } from "@/stores/uiStore";
-import {
-  SHORTCUT_ACTIONS,
-  dispatchShortcutAction,
-} from "@/lib/keyboardShortcuts";
+import { SHORTCUT_ACTIONS, dispatchShortcutAction } from "@/lib/keyboardShortcuts";
 import type { AppConfig } from "@/types/settings";
 
 export function AppLayout() {
@@ -29,14 +26,13 @@ export function AppLayout() {
   useDownloadEvents();
   useAppEffects();
 
-  const { data: config } = useTauriQuery<AppConfig>(
-    'settings_get',
-    undefined,
-    { queryKey: ['settings_get'], staleTime: 30_000 },
-  );
+  const { data: config } = useTauriQuery<AppConfig>("settings_get", undefined, {
+    queryKey: ["settings_get"],
+    staleTime: 30_000,
+  });
 
   const { data: countByState } = useTauriQuery<Record<string, number>>(
-    'download_count_by_state',
+    "download_count_by_state",
     undefined,
     { queryKey: downloadQueries.countByState(), staleTime: 5_000 },
   );
@@ -57,12 +53,13 @@ export function AppLayout() {
     if (!config?.locale) return;
 
     const baseLocale = config.locale.split("-")[0];
-    const supportedLocales = Object.keys(
-      i18n.store?.data ?? i18n.options?.resources ?? {},
-    );
-    const nextLocale = supportedLocales.length > 0
-      ? (supportedLocales.includes(baseLocale) ? baseLocale : "en")
-      : baseLocale;
+    const supportedLocales = Object.keys(i18n.store?.data ?? i18n.options?.resources ?? {});
+    const nextLocale =
+      supportedLocales.length > 0
+        ? supportedLocales.includes(baseLocale)
+          ? baseLocale
+          : "en"
+        : baseLocale;
 
     if (i18n.resolvedLanguage === nextLocale || i18n.language === nextLocale) {
       return;
@@ -75,17 +72,12 @@ export function AppLayout() {
     function isEditableTarget(target: EventTarget | null) {
       return (
         target instanceof HTMLElement &&
-        (target.tagName === "INPUT" ||
-          target.tagName === "TEXTAREA" ||
-          target.isContentEditable)
+        (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)
       );
     }
 
     function handleKeydown(event: KeyboardEvent) {
-      if (
-        event.key === "Escape" &&
-        useUiStore.getState().detailsPanelOpen
-      ) {
+      if (event.key === "Escape" && useUiStore.getState().detailsPanelOpen) {
         event.preventDefault();
         useUiStore.getState().setDetailsPanelOpen(false);
         return;
@@ -95,10 +87,7 @@ export function AppLayout() {
       if (!modifier) {
         if (isEditableTarget(event.target)) return;
 
-        if (
-          location.pathname === "/downloads" &&
-          (event.key === " " || event.code === "Space")
-        ) {
+        if (location.pathname === "/downloads" && (event.key === " " || event.code === "Space")) {
           event.preventDefault();
           dispatchShortcutAction(SHORTCUT_ACTIONS.downloadsToggleSelected);
           return;
@@ -130,6 +119,18 @@ export function AppLayout() {
             }
           },
         );
+        return;
+      }
+
+      if (lowerKey === "v" && !event.shiftKey && !event.altKey) {
+        event.preventDefault();
+        void navigator.clipboard.readText().then((text) => {
+          if (!text) return;
+          void navigate("/link-grabber", {
+            replace: location.pathname === "/link-grabber",
+            state: { focusPaste: true, pasteContent: text },
+          });
+        });
         return;
       }
 

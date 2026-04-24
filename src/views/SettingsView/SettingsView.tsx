@@ -1,61 +1,76 @@
-import { useState, useEffect } from 'react';
-import { Settings2, Download, Globe, Link, MonitorSmartphone, Palette } from 'lucide-react';
-import { useQueryClient } from '@tanstack/react-query';
-import { useTranslation } from 'react-i18next';
-import { listen } from '@tauri-apps/api/event';
-import { useTauriQuery } from '@/api/hooks';
-import type { AppConfig, SettingTab } from '@/types/settings';
-import { Button } from '@/components/ui/button';
-import { ScrollArea } from '@/components/ui/scroll-area';
-import { Skeleton } from '@/components/ui/skeleton';
-import { GeneralSection } from './GeneralSection';
-import { DownloadsSection } from './DownloadsSection';
-import { NetworkSection } from './NetworkSection';
-import { RemoteAccessSection } from './RemoteAccessSection';
-import { BrowserSection } from './BrowserSection';
-import { AppearanceSection } from './AppearanceSection';
+import { useState, useEffect } from "react";
+import {
+  Settings2,
+  Download,
+  Globe,
+  Link,
+  MonitorSmartphone,
+  Palette,
+  Keyboard,
+} from "lucide-react";
+import { useQueryClient } from "@tanstack/react-query";
+import { useTranslation } from "react-i18next";
+import { listen } from "@tauri-apps/api/event";
+import { useTauriQuery } from "@/api/hooks";
+import type { AppConfig, SettingTab } from "@/types/settings";
+import { Button } from "@/components/ui/button";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { Skeleton } from "@/components/ui/skeleton";
+import { GeneralSection } from "./GeneralSection";
+import { DownloadsSection } from "./DownloadsSection";
+import { NetworkSection } from "./NetworkSection";
+import { RemoteAccessSection } from "./RemoteAccessSection";
+import { BrowserSection } from "./BrowserSection";
+import { AppearanceSection } from "./AppearanceSection";
+import { ShortcutsSection } from "./ShortcutsSection";
 
 const TABS: { id: SettingTab; labelKey: string; icon: typeof Settings2 }[] = [
-  { id: 'general', labelKey: 'settings.tabs.general', icon: Settings2 },
-  { id: 'downloads', labelKey: 'settings.tabs.downloads', icon: Download },
-  { id: 'network', labelKey: 'settings.tabs.network', icon: Globe },
-  { id: 'remote', labelKey: 'settings.tabs.remote', icon: Link },
-  { id: 'browser', labelKey: 'settings.tabs.browser', icon: MonitorSmartphone },
-  { id: 'appearance', labelKey: 'settings.tabs.appearance', icon: Palette },
+  { id: "general", labelKey: "settings.tabs.general", icon: Settings2 },
+  { id: "downloads", labelKey: "settings.tabs.downloads", icon: Download },
+  { id: "network", labelKey: "settings.tabs.network", icon: Globe },
+  { id: "remote", labelKey: "settings.tabs.remote", icon: Link },
+  { id: "browser", labelKey: "settings.tabs.browser", icon: MonitorSmartphone },
+  { id: "appearance", labelKey: "settings.tabs.appearance", icon: Palette },
+  { id: "shortcuts", labelKey: "settings.tabs.shortcuts", icon: Keyboard },
 ];
 
 function SectionContent({ tab, config }: { tab: SettingTab; config: AppConfig }) {
   switch (tab) {
-    case 'general':
+    case "general":
       return <GeneralSection config={config} />;
-    case 'downloads':
+    case "downloads":
       return <DownloadsSection config={config} />;
-    case 'network':
+    case "network":
       return <NetworkSection config={config} />;
-    case 'remote':
+    case "remote":
       return <RemoteAccessSection config={config} />;
-    case 'browser':
+    case "browser":
       return <BrowserSection config={config} />;
-    case 'appearance':
+    case "appearance":
       return <AppearanceSection config={config} />;
+    case "shortcuts":
+      return <ShortcutsSection />;
   }
 }
 
 export function SettingsView() {
-  const [activeTab, setActiveTab] = useState<SettingTab>('general');
+  const [activeTab, setActiveTab] = useState<SettingTab>("general");
   const queryClient = useQueryClient();
   const { t } = useTranslation();
 
-  const { data: config, isLoading, error } = useTauriQuery<AppConfig>(
-    'settings_get',
-    undefined,
-    { queryKey: ['settings_get'], staleTime: 30_000 },
-  );
+  const {
+    data: config,
+    isLoading,
+    error,
+  } = useTauriQuery<AppConfig>("settings_get", undefined, {
+    queryKey: ["settings_get"],
+    staleTime: 30_000,
+  });
 
   // Invalidate cache when settings change from another source (e.g. clipboard toggle)
   useEffect(() => {
-    const unlisten = listen('settings-updated', () => {
-      queryClient.invalidateQueries({ queryKey: ['settings_get'] });
+    const unlisten = listen("settings-updated", () => {
+      queryClient.invalidateQueries({ queryKey: ["settings_get"] });
     });
     return () => {
       unlisten.then((fn) => fn());
@@ -81,12 +96,15 @@ export function SettingsView() {
   if (!config) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-4 p-4">
-        <p className="text-sm text-destructive">{t('common.failedToLoadSettings')}</p>
+        <p className="text-sm text-destructive">{t("common.failedToLoadSettings")}</p>
         {error && (
           <p className="max-w-md text-center text-xs text-muted-foreground">{error.message}</p>
         )}
-        <Button variant="outline" onClick={() => queryClient.invalidateQueries({ queryKey: ['settings_get'] })}>
-          {t('common.retry')}
+        <Button
+          variant="outline"
+          onClick={() => queryClient.invalidateQueries({ queryKey: ["settings_get"] })}
+        >
+          {t("common.retry")}
         </Button>
       </div>
     );
@@ -98,7 +116,7 @@ export function SettingsView() {
         {TABS.map(({ id, labelKey, icon: Icon }) => (
           <Button
             key={id}
-            variant={activeTab === id ? 'default' : 'ghost'}
+            variant={activeTab === id ? "default" : "ghost"}
             className="justify-start gap-2"
             onClick={() => setActiveTab(id)}
           >

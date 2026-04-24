@@ -23,13 +23,10 @@ export function LinkGrabberView() {
   const [filter, setFilter] = useState<FilterType>("all");
   const [selectedLinkIds, setSelectedLinkIds] = useState<string[]>([]);
   const [groupingMode, setGroupingMode] = useState<GroupingMode>("hostname");
-  const [selectedMediaLink, setSelectedMediaLink] =
-    useState<ResolvedLink | null>(null);
+  const [selectedMediaLink, setSelectedMediaLink] = useState<ResolvedLink | null>(null);
   const [mediaGrabberOpen, setMediaGrabberOpen] = useState(false);
 
-  const initialClipboardEnabled = useSettingsStore(
-    (s) => s.config?.clipboardMonitoring ?? false,
-  );
+  const initialClipboardEnabled = useSettingsStore((s) => s.config?.clipboardMonitoring ?? false);
   const { isEnabled: clipboardMonitoringEnabled, toggle: toggleClipboard } =
     useClipboardMonitoring(initialClipboardEnabled);
 
@@ -44,9 +41,7 @@ export function LinkGrabberView() {
     },
   });
 
-  const { mutate: startDownload } = useTauriMutation<unknown, { url: string }>(
-    "download_start",
-  );
+  const { mutate: startDownload } = useTauriMutation<unknown, { url: string }>("download_start");
 
   const { mutate: startMediaDownload } = useTauriMutation<
     MediaDownloadResult,
@@ -114,6 +109,14 @@ export function LinkGrabberView() {
     }
   };
 
+  const pasteContent =
+    location.state &&
+    typeof location.state === "object" &&
+    "pasteContent" in location.state &&
+    typeof (location.state as { pasteContent?: unknown }).pasteContent === "string"
+      ? (location.state as { pasteContent: string }).pasteContent
+      : undefined;
+
   useEffect(() => {
     const shouldFocusPaste =
       !!location.state &&
@@ -163,6 +166,7 @@ export function LinkGrabberView() {
       <PasteZone
         onPasteUrls={handlePasteUrls}
         isLoading={isResolving}
+        initialValue={pasteContent}
       />
 
       {resolvedLinks.length > 0 && (
@@ -178,9 +182,7 @@ export function LinkGrabberView() {
               setResolvedLinks([]);
               setSelectedLinkIds([]);
             }}
-            onSelectAll={() =>
-              setSelectedLinkIds(resolvedLinks.map((l) => l.id))
-            }
+            onSelectAll={() => setSelectedLinkIds(resolvedLinks.map((l) => l.id))}
           />
           <ResolvedLinksSection
             links={resolvedLinks}
