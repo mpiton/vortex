@@ -3,9 +3,9 @@ import { useTranslation } from "react-i18next";
 import { useLocation, useNavigate } from "react-router";
 import { Switch } from "@/components/ui/switch";
 import { useTauriMutation } from "@/api/hooks";
-import { tauriInvoke } from "@/api/client";
 import { toast } from "@/lib/toast";
 import { useSettingsStore } from "@/stores/settingsStore";
+import { useClipboardMonitoring } from "@/hooks/useClipboardMonitoring";
 import { PasteZone } from "./PasteZone";
 import { FilterBar } from "./FilterBar";
 import { PackageGrouping } from "./PackageGrouping";
@@ -27,9 +27,11 @@ export function LinkGrabberView() {
     useState<ResolvedLink | null>(null);
   const [mediaGrabberOpen, setMediaGrabberOpen] = useState(false);
 
-  const clipboardMonitoringEnabled = useSettingsStore(
+  const initialClipboardEnabled = useSettingsStore(
     (s) => s.config?.clipboardMonitoring ?? false,
   );
+  const { isEnabled: clipboardMonitoringEnabled, toggle: toggleClipboard } =
+    useClipboardMonitoring(initialClipboardEnabled);
 
   const { mutate: resolveLinks, isPending: isResolving } = useTauriMutation<
     ResolvedLink[],
@@ -132,19 +134,28 @@ export function LinkGrabberView() {
     <div className="flex h-full flex-col gap-4 p-4">
       <div className="flex items-center justify-between">
         <h1 className="text-lg font-bold">{t("nav.linkGrabber")}</h1>
-        <div className="flex items-center gap-2" title={t("linkGrabber.clipboardComingSoon")}>
+        <div
+          className="flex items-center gap-2"
+          title={
+            clipboardMonitoringEnabled
+              ? t("statusBar.clipboardActive")
+              : t("statusBar.clipboardPaused")
+          }
+        >
           <label className="text-sm" htmlFor="clipboard-toggle">
             {t("linkGrabber.clipboardMonitoringLabel")}
           </label>
+          <span
+            aria-hidden="true"
+            data-testid="clipboard-status-dot"
+            className={`h-[7px] w-[7px] rounded-full transition-colors ${
+              clipboardMonitoringEnabled ? "bg-success" : "bg-border"
+            }`}
+          />
           <Switch
             id="clipboard-toggle"
             checked={clipboardMonitoringEnabled}
-            disabled
-            onCheckedChange={async (enabled) => {
-              await tauriInvoke("command_toggle_clipboard_monitoring", {
-                enabled,
-              });
-            }}
+            onCheckedChange={toggleClipboard}
           />
         </div>
       </div>

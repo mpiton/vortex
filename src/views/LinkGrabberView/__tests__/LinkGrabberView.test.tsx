@@ -7,6 +7,43 @@ import { invoke } from "@tauri-apps/api/core";
 import { toast } from "@/lib/toast";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { LinkGrabberView } from "../LinkGrabberView";
+import { useSettingsStore } from "@/stores/settingsStore";
+import type { AppConfig } from "@/types/settings";
+
+const baseConfig: AppConfig = {
+  downloadDir: null,
+  maxConcurrentDownloads: 4,
+  maxSegmentsPerDownload: 8,
+  speedLimitBytesPerSec: null,
+  autoExtract: true,
+  theme: "dark",
+  locale: "en",
+  clipboardMonitoring: false,
+  startMinimized: false,
+  notificationsEnabled: true,
+  soundEnabled: false,
+  confirmDelete: true,
+  subfolderPerPackage: false,
+  maxRetries: 5,
+  retryDelaySeconds: 10,
+  verifyChecksums: true,
+  preAllocateSpace: false,
+  proxyType: "none",
+  proxyUrl: null,
+  userAgent: "Vortex/1.0",
+  dnsOverHttps: false,
+  connectionTimeoutSeconds: 30,
+  webInterfaceEnabled: false,
+  webInterfacePort: 9876,
+  restApiEnabled: true,
+  apiKey: "",
+  websocketEnabled: true,
+  minFileSizeMb: 1,
+  excludedDomains: [],
+  excludedExtensions: [],
+  accentColor: "#4F46E5",
+  compactMode: false,
+};
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn().mockResolvedValue([]),
@@ -48,6 +85,7 @@ describe("LinkGrabberView", () => {
     mockInvoke.mockReset();
     mockInvoke.mockResolvedValue([]);
     vi.clearAllMocks();
+    useSettingsStore.setState({ config: null });
   });
 
   it("should render the header title", () => {
@@ -59,6 +97,59 @@ describe("LinkGrabberView", () => {
     renderWithProviders();
     expect(screen.getByText("Clipboard Monitoring")).toBeInTheDocument();
     expect(screen.getByRole("switch")).toBeInTheDocument();
+  });
+
+  it("should not disable the clipboard switch", () => {
+    renderWithProviders();
+    expect(screen.getByRole("switch")).not.toBeDisabled();
+  });
+
+  it("should invoke clipboard_toggle when switch is clicked", async () => {
+    mockInvoke.mockResolvedValue(true);
+    const user = userEvent.setup();
+    renderWithProviders();
+
+    await user.click(screen.getByRole("switch"));
+
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith("clipboard_toggle", {
+        enabled: true,
+      });
+    });
+  });
+
+  it("should reflect initial enabled state from settings store", () => {
+    useSettingsStore.setState({
+      config: { ...baseConfig, clipboardMonitoring: true },
+    });
+    renderWithProviders();
+    expect(screen.getByRole("switch")).toBeChecked();
+  });
+
+  it("should show active tooltip and green dot when monitoring is enabled", () => {
+    useSettingsStore.setState({
+      config: { ...baseConfig, clipboardMonitoring: true },
+    });
+    renderWithProviders();
+    expect(
+      screen.getByTitle("Clipboard monitoring active"),
+    ).toBeInTheDocument();
+    expect(
+      document.querySelector('[data-testid="clipboard-status-dot"].bg-success'),
+    ).not.toBeNull();
+  });
+
+  it("should show paused tooltip when monitoring is disabled", () => {
+    useSettingsStore.setState({
+      config: { ...baseConfig, clipboardMonitoring: false },
+    });
+    renderWithProviders();
+    expect(
+      screen.getByTitle("Clipboard monitoring paused"),
+    ).toBeInTheDocument();
+    expect(
+      document.querySelector('[data-testid="clipboard-status-dot"].bg-border'),
+    ).not.toBeNull();
   });
 
   it("should render PasteZone with Analyze Links button", () => {
