@@ -174,6 +174,23 @@ pub struct ConfigPatch {
     pub locale: Option<String>,
 }
 
+/// Lower bound for `max_concurrent_downloads` accepted by the scheduler.
+pub const MIN_MAX_CONCURRENT_DOWNLOADS: u32 = 1;
+
+/// Upper bound for `max_concurrent_downloads` accepted by the scheduler.
+pub const MAX_MAX_CONCURRENT_DOWNLOADS: u32 = 20;
+
+/// Clamp a persisted `max_concurrent_downloads` to the queue scheduler's
+/// valid range and convert to `usize`.
+///
+/// Guards against corrupt/manually-edited config values (e.g. `0`, which
+/// would stall the queue) or out-of-range values. Used on both the
+/// startup path and the runtime `SettingsUpdated` bridge so both honour
+/// the same policy.
+pub fn normalize_max_concurrent(raw: u32) -> usize {
+    raw.clamp(MIN_MAX_CONCURRENT_DOWNLOADS, MAX_MAX_CONCURRENT_DOWNLOADS) as usize
+}
+
 /// Apply a `ConfigPatch` to an `AppConfig`, updating only fields
 /// that are `Some(...)`. Pure function — no I/O.
 pub fn apply_patch(config: &mut AppConfig, patch: &ConfigPatch) {
@@ -322,5 +339,32 @@ mod tests {
         assert!(config.rest_api_enabled);
         assert!(config.websocket_enabled);
         assert!(config.api_key.is_empty());
+    }
+
+    #[test]
+    fn test_normalize_max_concurrent_clamps_zero_to_min() {
+        assert_eq!(
+            normalize_max_concurrent(0),
+            MIN_MAX_CONCURRENT_DOWNLOADS as usize
+        );
+    }
+
+    #[test]
+    fn test_normalize_max_concurrent_preserves_in_range_values() {
+        assert_eq!(normalize_max_concurrent(1), 1);
+        assert_eq!(normalize_max_concurrent(4), 4);
+        assert_eq!(normalize_max_concurrent(20), 20);
+    }
+
+    #[test]
+    fn test_normalize_max_concurrent_clamps_above_range_to_max() {
+        assert_eq!(
+            normalize_max_concurrent(21),
+            MAX_MAX_CONCURRENT_DOWNLOADS as usize
+        );
+        assert_eq!(
+            normalize_max_concurrent(u32::MAX),
+            MAX_MAX_CONCURRENT_DOWNLOADS as usize
+        );
     }
 }
