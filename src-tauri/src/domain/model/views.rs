@@ -54,6 +54,8 @@ pub struct DownloadDetailView {
     pub eta_seconds: Option<u64>,
     pub segments: Vec<SegmentView>,
     pub checksum_expected: Option<String>,
+    pub checksum_computed: Option<String>,
+    pub checksum_algorithm: Option<String>,
     pub destination_path: String,
     pub module_name: Option<String>,
     pub account_name: Option<String>,

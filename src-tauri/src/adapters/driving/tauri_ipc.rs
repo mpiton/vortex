@@ -18,7 +18,8 @@ use crate::application::commands::{
     ExportHistoryFormat, InstallPluginCommand, PauseAllDownloadsCommand, PauseDownloadCommand,
     PurgeHistoryCommand, RemoveDownloadCommand, ResolveLinksCommand, ResolvedLinkDto,
     ResumeAllDownloadsCommand, ResumeDownloadCommand, RetryDownloadCommand, SetPriorityCommand,
-    StartDownloadCommand, UninstallPluginCommand, UpdateConfigCommand,
+    StartDownloadCommand, UninstallPluginCommand, UpdateConfigCommand, VerifyChecksumCommand,
+    VerifyChecksumOutcome,
 };
 use crate::application::error::AppError;
 use crate::application::queries::{
@@ -104,6 +105,19 @@ pub async fn download_retry(state: State<'_, AppState>, id: u64) -> Result<(), S
     state
         .command_bus
         .handle_retry_download(cmd)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn download_verify_checksum(
+    state: State<'_, AppState>,
+    id: u64,
+) -> Result<VerifyChecksumOutcome, String> {
+    let cmd = VerifyChecksumCommand { id: DownloadId(id) };
+    state
+        .command_bus
+        .handle_verify_checksum(cmd)
         .await
         .map_err(|e| e.to_string())
 }

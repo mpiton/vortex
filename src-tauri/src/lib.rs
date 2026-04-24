@@ -57,11 +57,11 @@ pub use adapters::driving::tauri_ipc::{
     download_clear_completed, download_clear_failed, download_count_by_state, download_detail,
     download_list, download_logs, download_media_start, download_pause, download_pause_all,
     download_remove, download_resume, download_resume_all, download_retry, download_set_priority,
-    download_start, history_clear, history_delete_entry, history_export, history_get_by_id,
-    history_list, history_purge_older_than, history_search, link_resolve, plugin_disable,
-    plugin_enable, plugin_install, plugin_list, plugin_store_install, plugin_store_list,
-    plugin_store_refresh, plugin_store_update, plugin_uninstall, reveal_in_folder, settings_get,
-    settings_update, stats_get, stats_top_modules, status_bar_get,
+    download_start, download_verify_checksum, history_clear, history_delete_entry, history_export,
+    history_get_by_id, history_list, history_purge_older_than, history_search, link_resolve,
+    plugin_disable, plugin_enable, plugin_install, plugin_list, plugin_store_install,
+    plugin_store_list, plugin_store_refresh, plugin_store_update, plugin_uninstall,
+    reveal_in_folder, settings_get, settings_update, stats_get, stats_top_modules, status_bar_get,
 };
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -208,12 +208,17 @@ pub fn run() {
                     )
                 }
             };
-            let queue_manager = Arc::new(QueueManager::new(
-                download_repo.clone(),
-                download_engine.clone(),
-                event_bus.clone(),
-                initial_max_concurrent,
-            ));
+            let checksum_computer_for_queue: Arc<dyn crate::domain::ports::driven::ChecksumComputer> =
+                Arc::new(crate::adapters::driven::network::StreamingChecksumComputer::new());
+            let queue_manager = Arc::new(
+                QueueManager::new(
+                    download_repo.clone(),
+                    download_engine.clone(),
+                    event_bus.clone(),
+                    initial_max_concurrent,
+                )
+                .with_checksum_pipeline(config_store.clone(), checksum_computer_for_queue),
+            );
 
             // Propagate future settings updates (UI → command bus) to the
             // running queue manager without requiring a restart.
@@ -249,20 +254,25 @@ pub fn run() {
                 Arc::new(GithubStoreClient::new(registry_url, store_staging_dir));
 
             // ── CQRS buses ──────────────────────────────────────────
-            let command_bus = Arc::new(CommandBus::new(
-                download_repo,
-                download_engine,
-                event_bus.clone(),
-                file_storage,
-                http_client,
-                plugin_loader,
-                config_store,
-                credential_store,
-                clipboard_observer,
-                archive_extractor.clone(),
-                history_repo.clone(),
-                Some(store_client),
-            ));
+            let checksum_computer: Arc<dyn crate::domain::ports::driven::ChecksumComputer> =
+                Arc::new(crate::adapters::driven::network::StreamingChecksumComputer::new());
+            let command_bus = Arc::new(
+                CommandBus::new(
+                    download_repo,
+                    download_engine,
+                    event_bus.clone(),
+                    file_storage,
+                    http_client,
+                    plugin_loader,
+                    config_store,
+                    credential_store,
+                    clipboard_observer,
+                    archive_extractor.clone(),
+                    history_repo.clone(),
+                    Some(store_client),
+                )
+                .with_checksum_computer(checksum_computer),
+            );
 
             let query_bus = Arc::new(QueryBus::new(
                 download_read_repo,
@@ -325,6 +335,7 @@ pub fn run() {
             download_resume,
             download_cancel,
             download_retry,
+            download_verify_checksum,
             download_pause_all,
             download_resume_all,
             download_set_priority,

@@ -6,9 +6,9 @@
 use std::sync::Arc;
 
 use crate::domain::ports::driven::{
-    ArchiveExtractor, ClipboardObserver, ConfigStore, CredentialStore, DownloadEngine,
-    DownloadRepository, EventBus, FileStorage, HistoryRepository, HttpClient, PluginLoader,
-    PluginStoreClient,
+    ArchiveExtractor, ChecksumComputer, ClipboardObserver, ConfigStore, CredentialStore,
+    DownloadEngine, DownloadRepository, EventBus, FileStorage, HistoryRepository, HttpClient,
+    PluginLoader, PluginStoreClient,
 };
 
 /// Central dispatcher for CQRS commands.
@@ -28,6 +28,7 @@ pub struct CommandBus {
     archive_extractor: Arc<dyn ArchiveExtractor>,
     history_repo: Arc<dyn HistoryRepository>,
     plugin_store_client: Option<Arc<dyn PluginStoreClient>>,
+    checksum_computer: Option<Arc<dyn ChecksumComputer>>,
 }
 
 impl CommandBus {
@@ -59,7 +60,16 @@ impl CommandBus {
             archive_extractor,
             history_repo,
             plugin_store_client,
+            checksum_computer: None,
         }
+    }
+
+    /// Builder-style setter for the checksum computer port. Kept optional so
+    /// existing test fixtures don't have to construct one when they don't
+    /// exercise the verify-checksum path.
+    pub fn with_checksum_computer(mut self, computer: Arc<dyn ChecksumComputer>) -> Self {
+        self.checksum_computer = Some(computer);
+        self
     }
 
     pub fn download_repo(&self) -> &dyn DownloadRepository {
@@ -120,6 +130,18 @@ impl CommandBus {
 
     pub fn history_repo(&self) -> &dyn HistoryRepository {
         self.history_repo.as_ref()
+    }
+
+    pub(crate) fn download_repo_arc(&self) -> Arc<dyn DownloadRepository> {
+        Arc::clone(&self.download_repo)
+    }
+
+    pub(crate) fn event_bus_arc(&self) -> Arc<dyn EventBus> {
+        Arc::clone(&self.event_bus)
+    }
+
+    pub(crate) fn checksum_computer_arc(&self) -> Option<Arc<dyn ChecksumComputer>> {
+        self.checksum_computer.clone()
     }
 }
 

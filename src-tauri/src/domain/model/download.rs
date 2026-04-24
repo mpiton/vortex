@@ -1,5 +1,6 @@
 use crate::domain::error::DomainError;
 use crate::domain::event::DomainEvent;
+use crate::domain::model::checksum::ChecksumAlgorithm;
 use crate::domain::model::queue::Priority;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -157,6 +158,8 @@ pub struct Download {
     max_retries: u32,
     segments_count: u32,
     checksum_expected: Option<String>,
+    checksum_computed: Option<String>,
+    checksum_algorithm: Option<ChecksumAlgorithm>,
     source_hostname: String,
     protocol: String,
     resume_supported: bool,
@@ -184,6 +187,8 @@ impl Download {
             max_retries: 5,
             segments_count: 1,
             checksum_expected: None,
+            checksum_computed: None,
+            checksum_algorithm: None,
             source_hostname,
             protocol,
             resume_supported: false,
@@ -212,6 +217,8 @@ impl Download {
         max_retries: u32,
         segments_count: u32,
         checksum_expected: Option<String>,
+        checksum_computed: Option<String>,
+        checksum_algorithm: Option<ChecksumAlgorithm>,
         source_hostname: String,
         protocol: String,
         resume_supported: bool,
@@ -233,6 +240,8 @@ impl Download {
             max_retries,
             segments_count,
             checksum_expected,
+            checksum_computed,
+            checksum_algorithm,
             source_hostname,
             protocol,
             resume_supported,
@@ -323,6 +332,26 @@ impl Download {
 
     pub fn checksum_expected(&self) -> Option<&str> {
         self.checksum_expected.as_deref()
+    }
+
+    pub fn checksum_computed(&self) -> Option<&str> {
+        self.checksum_computed.as_deref()
+    }
+
+    pub fn checksum_algorithm(&self) -> Option<ChecksumAlgorithm> {
+        self.checksum_algorithm
+    }
+
+    /// Set the expected checksum (used when the upstream resolver knows it).
+    /// The algorithm is detected from the hash format and stored alongside.
+    /// Returns `Err(UnsupportedChecksumFormat)` when the format cannot be
+    /// recognised so callers can either skip validation or surface the error.
+    pub fn with_expected_checksum(mut self, value: String) -> Result<Self, DomainError> {
+        let algo = ChecksumAlgorithm::detect_from_hex(&value)
+            .ok_or_else(|| DomainError::UnsupportedChecksumFormat(value.clone()))?;
+        self.checksum_expected = Some(value);
+        self.checksum_algorithm = Some(algo);
+        Ok(self)
     }
 
     pub fn source_hostname(&self) -> &str {
@@ -508,6 +537,71 @@ impl Download {
         }
         self.state = DownloadState::Checking;
         Ok(DomainEvent::DownloadChecking { id: self.id })
+    }
+
+    /// Re-enter `Checking` from `Completed` for a manual verify-checksum
+    /// request. Distinct from `start_checking` (which only walks
+    /// `Downloading → Checking`) so the post-download flow stays disciplined
+    /// while still allowing on-demand re-verification.
+    pub fn start_checking_from_completed(&mut self) -> Result<DomainEvent, DomainError> {
+        if self.state != DownloadState::Completed {
+            return Err(DomainError::InvalidTransition {
+                from: self.state,
+                to: DownloadState::Checking,
+            });
+        }
+        self.state = DownloadState::Checking;
+        Ok(DomainEvent::DownloadChecking { id: self.id })
+    }
+
+    /// Record a successful checksum verification and transition to `Completed`.
+    ///
+    /// Stores the computed value + algorithm so the detail panel can compare
+    /// against `checksum_expected`. Caller must already be in `Checking`.
+    pub fn record_checksum_match(
+        &mut self,
+        algorithm: ChecksumAlgorithm,
+        computed: String,
+    ) -> Result<DomainEvent, DomainError> {
+        if self.state != DownloadState::Checking {
+            return Err(DomainError::InvalidTransition {
+                from: self.state,
+                to: DownloadState::Completed,
+            });
+        }
+        self.checksum_algorithm = Some(algorithm);
+        self.checksum_computed = Some(computed.clone());
+        self.state = DownloadState::Completed;
+        Ok(DomainEvent::ChecksumVerified {
+            id: self.id,
+            algorithm: algorithm.to_string(),
+            checksum: computed,
+        })
+    }
+
+    /// Record a checksum mismatch and transition to `Error`. Persists the
+    /// computed value alongside the expected one for forensic display.
+    pub fn record_checksum_mismatch(
+        &mut self,
+        algorithm: ChecksumAlgorithm,
+        expected: String,
+        computed: String,
+    ) -> Result<DomainEvent, DomainError> {
+        if self.state != DownloadState::Checking {
+            return Err(DomainError::InvalidTransition {
+                from: self.state,
+                to: DownloadState::Error,
+            });
+        }
+        self.checksum_algorithm = Some(algorithm);
+        self.checksum_computed = Some(computed.clone());
+        self.state = DownloadState::Error;
+        Ok(DomainEvent::ChecksumMismatch {
+            id: self.id,
+            algorithm: algorithm.to_string(),
+            expected,
+            computed,
+        })
     }
 
     pub fn start_extracting(&mut self) -> Result<DomainEvent, DomainError> {
@@ -776,6 +870,100 @@ mod tests {
         let event = d.start_extracting().unwrap();
         assert_eq!(d.state(), DownloadState::Extracting);
         assert_eq!(event, DomainEvent::DownloadExtracting { id: DownloadId(1) });
+    }
+
+    #[test]
+    fn test_with_expected_checksum_detects_sha256() {
+        let d = make_download()
+            .with_expected_checksum(
+                "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".to_string(),
+            )
+            .unwrap();
+        assert_eq!(d.checksum_algorithm(), Some(ChecksumAlgorithm::Sha256));
+        assert!(d.checksum_expected().is_some());
+    }
+
+    #[test]
+    fn test_with_expected_checksum_detects_md5() {
+        let d = make_download()
+            .with_expected_checksum("d41d8cd98f00b204e9800998ecf8427e".to_string())
+            .unwrap();
+        assert_eq!(d.checksum_algorithm(), Some(ChecksumAlgorithm::Md5));
+    }
+
+    #[test]
+    fn test_with_expected_checksum_rejects_unsupported() {
+        let result = make_download().with_expected_checksum("abc".to_string());
+        assert!(matches!(
+            result,
+            Err(DomainError::UnsupportedChecksumFormat(_))
+        ));
+    }
+
+    #[test]
+    fn test_record_checksum_match_transitions_checking_to_completed() {
+        let mut d = make_download();
+        d.start().unwrap();
+        d.start_checking().unwrap();
+
+        let event = d
+            .record_checksum_match(
+                ChecksumAlgorithm::Sha256,
+                "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".to_string(),
+            )
+            .unwrap();
+
+        assert_eq!(d.state(), DownloadState::Completed);
+        assert_eq!(d.checksum_algorithm(), Some(ChecksumAlgorithm::Sha256));
+        assert_eq!(
+            d.checksum_computed(),
+            Some("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
+        );
+        assert!(matches!(event, DomainEvent::ChecksumVerified { .. }));
+    }
+
+    #[test]
+    fn test_record_checksum_match_outside_checking_fails() {
+        let mut d = make_download();
+        d.start().unwrap();
+        let result = d.record_checksum_match(ChecksumAlgorithm::Sha256, "deadbeef".to_string());
+        assert!(matches!(result, Err(DomainError::InvalidTransition { .. })));
+    }
+
+    #[test]
+    fn test_record_checksum_mismatch_transitions_to_error_with_event() {
+        let mut d = make_download()
+            .with_expected_checksum("d41d8cd98f00b204e9800998ecf8427e".to_string())
+            .unwrap();
+        d.start().unwrap();
+        d.start_checking().unwrap();
+
+        let event = d
+            .record_checksum_mismatch(
+                ChecksumAlgorithm::Md5,
+                "d41d8cd98f00b204e9800998ecf8427e".to_string(),
+                "00000000000000000000000000000000".to_string(),
+            )
+            .unwrap();
+
+        assert_eq!(d.state(), DownloadState::Error);
+        assert_eq!(
+            d.checksum_computed(),
+            Some("00000000000000000000000000000000")
+        );
+        match event {
+            DomainEvent::ChecksumMismatch {
+                expected,
+                computed,
+                algorithm,
+                ..
+            } => {
+                assert_eq!(expected, "d41d8cd98f00b204e9800998ecf8427e");
+                assert_eq!(computed, "00000000000000000000000000000000");
+                assert_eq!(algorithm, "MD5");
+            }
+            other => panic!("expected ChecksumMismatch, got {other:?}"),
+        }
     }
 
     #[test]

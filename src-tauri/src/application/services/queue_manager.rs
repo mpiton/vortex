@@ -11,9 +11,12 @@ use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
 use crate::application::error::AppError;
+use crate::application::services::checksum_validator::{ChecksumOutcome, ChecksumValidatorService};
 use crate::domain::error::DomainError;
 use crate::domain::event::DomainEvent;
 use crate::domain::model::download::{DownloadId, DownloadState};
+use crate::domain::ports::driven::checksum_computer::ChecksumComputer;
+use crate::domain::ports::driven::config_store::ConfigStore;
 use crate::domain::ports::driven::download_engine::DownloadEngine;
 use crate::domain::ports::driven::download_repository::DownloadRepository;
 use crate::domain::ports::driven::event_bus::EventBus;
@@ -26,6 +29,17 @@ pub struct QueueManager {
     active_count: Arc<AtomicUsize>,
     schedule_lock: Arc<tokio::sync::Mutex<()>>,
     retry_cancellations: Arc<Mutex<HashMap<u64, CancellationToken>>>,
+    /// Optional checksum validation pipeline.
+    /// `None` = legacy behaviour (pre-task-06): completed downloads transition
+    /// straight to `Completed`. Production wires both via
+    /// `with_checksum_pipeline` so the post-download flow validates integrity.
+    checksum_pipeline: Option<ChecksumPipeline>,
+}
+
+#[derive(Clone)]
+struct ChecksumPipeline {
+    config_store: Arc<dyn ConfigStore>,
+    computer: Arc<dyn ChecksumComputer>,
 }
 
 fn lock_map(
@@ -61,7 +75,23 @@ impl QueueManager {
             active_count: Arc::new(AtomicUsize::new(0)),
             schedule_lock: Arc::new(tokio::sync::Mutex::new(())),
             retry_cancellations: Arc::new(Mutex::new(HashMap::new())),
+            checksum_pipeline: None,
         }
+    }
+
+    /// Wire in the checksum-validation pipeline. Production builds call this
+    /// after `new` so the post-download flow runs SHA-256 / MD5 verification
+    /// when the download has an expected checksum and `verify_checksums` is on.
+    pub fn with_checksum_pipeline(
+        mut self,
+        config_store: Arc<dyn ConfigStore>,
+        computer: Arc<dyn ChecksumComputer>,
+    ) -> Self {
+        self.checksum_pipeline = Some(ChecksumPipeline {
+            config_store,
+            computer,
+        });
+        self
     }
 
     pub fn active_count(&self) -> usize {
@@ -185,18 +215,19 @@ impl QueueManager {
                         | DownloadState::Extracting
                 );
                 if was_active {
-                    match download.complete() {
-                        Ok(_) => {
-                            self.download_repo.save(&download)?;
-                        }
+                    match self.finalise_with_optional_checksum(&mut download).await {
+                        Ok(()) => {}
                         Err(e) => {
                             tracing::error!(
                                 download_id = id.0,
                                 error = %e,
-                                "handle_download_completed: complete() transition failed"
+                                "handle_download_completed: finalise transition failed"
                             );
                         }
                     }
+                    // Reload after finalisation so we observe the post-checksum
+                    // state (the validator wrote it through the same repo).
+                    download = self.download_repo.find_by_id(id)?.unwrap_or(download);
                 }
                 // Notify the frontend *after* the state is durable in SQLite.
                 // The Tauri bridge swallows DownloadCompleted on purpose to
@@ -227,6 +258,75 @@ impl QueueManager {
             // items are waiting for an unrelated slot release.
             self.on_slot_freed().await
         }
+    }
+
+    /// Drive the post-engine completion path. Either jumps straight to
+    /// `Completed` (no checksum / pipeline disabled / setting off) or runs the
+    /// `Checking → Completed | Error` validation step.
+    async fn finalise_with_optional_checksum(
+        &self,
+        download: &mut crate::domain::model::download::Download,
+    ) -> Result<(), AppError> {
+        let id = download.id();
+        let pipeline = match self.checksum_pipeline.clone() {
+            Some(p) => p,
+            None => return self.complete_without_checksum(download).await,
+        };
+
+        let verify_setting = match pipeline.config_store.get_config() {
+            Ok(cfg) => cfg.verify_checksums,
+            Err(e) => {
+                tracing::warn!(
+                    download_id = id.0,
+                    error = %e,
+                    "checksum pipeline: failed to read config, skipping verification"
+                );
+                return self.complete_without_checksum(download).await;
+            }
+        };
+
+        if !ChecksumValidatorService::should_validate(download, verify_setting) {
+            return self.complete_without_checksum(download).await;
+        }
+
+        // Only Downloading → Checking is a valid transition here. If the
+        // event arrives while the download is already Checking (e.g. retried
+        // path), the validator will refuse to proceed which is correct.
+        if download.state() == DownloadState::Downloading {
+            let event = download.start_checking()?;
+            self.download_repo.save(download)?;
+            self.event_bus.publish(event);
+        }
+
+        let validator = ChecksumValidatorService::new(
+            self.download_repo.clone(),
+            pipeline.computer,
+            self.event_bus.clone(),
+        );
+        let outcome = validator.validate(id);
+        match outcome {
+            Ok(ChecksumOutcome::Verified | ChecksumOutcome::Mismatch) => Ok(()),
+            Ok(ChecksumOutcome::NoExpectedChecksum | ChecksumOutcome::Skipped) => {
+                // Validator detected no checksum after we transitioned — fall
+                // back to the legacy completion path so we don't leave the
+                // download stranded in Checking.
+                let mut fresh = self
+                    .download_repo
+                    .find_by_id(id)?
+                    .unwrap_or_else(|| download.clone());
+                self.complete_without_checksum(&mut fresh).await
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    async fn complete_without_checksum(
+        &self,
+        download: &mut crate::domain::model::download::Download,
+    ) -> Result<(), AppError> {
+        download.complete()?;
+        self.download_repo.save(download)?;
+        Ok(())
     }
 
     pub async fn handle_download_failed(
@@ -1095,6 +1195,193 @@ mod tests {
                 .iter()
                 .any(|e| matches!(e, DomainEvent::DownloadCompletedPersisted { .. })),
             "must not publish DownloadCompletedPersisted when repo state is not Completed"
+        );
+    }
+
+    // --- Task 06: checksum-pipeline integration tests ---
+
+    use crate::domain::model::checksum::ChecksumAlgorithm;
+    use crate::domain::model::config::{AppConfig, ConfigPatch};
+    use crate::domain::ports::driven::{ChecksumComputer, ConfigStore};
+    use std::path::Path;
+
+    struct StubConfigStore {
+        verify_on: bool,
+    }
+
+    impl ConfigStore for StubConfigStore {
+        fn get_config(&self) -> Result<AppConfig, DomainError> {
+            Ok(AppConfig {
+                verify_checksums: self.verify_on,
+                ..AppConfig::default()
+            })
+        }
+        fn update_config(&self, _patch: ConfigPatch) -> Result<AppConfig, DomainError> {
+            self.get_config()
+        }
+    }
+
+    struct StubChecksum {
+        value: String,
+    }
+
+    impl ChecksumComputer for StubChecksum {
+        fn compute(
+            &self,
+            _path: &Path,
+            _algorithm: ChecksumAlgorithm,
+        ) -> Result<String, DomainError> {
+            Ok(self.value.clone())
+        }
+    }
+
+    fn make_qm_with_pipeline(
+        repo: Arc<MockDownloadRepo>,
+        engine: Arc<MockEngine>,
+        bus: Arc<MockEventBus>,
+        max: usize,
+        active: usize,
+        verify_on: bool,
+        compute_value: &str,
+    ) -> Arc<QueueManager> {
+        let qm = QueueManager::new(repo, engine, bus, max).with_checksum_pipeline(
+            Arc::new(StubConfigStore { verify_on }),
+            Arc::new(StubChecksum {
+                value: compute_value.to_string(),
+            }),
+        );
+        qm.active_count.store(active, Ordering::SeqCst);
+        Arc::new(qm)
+    }
+
+    #[tokio::test]
+    async fn test_checksum_match_transitions_to_completed_via_checking() {
+        let expected = "d41d8cd98f00b204e9800998ecf8427e".to_string();
+        let mut d = make_download(1, 5, DownloadState::Queued);
+        d = d.with_expected_checksum(expected.clone()).unwrap();
+        d.start().unwrap();
+        let repo = Arc::new(MockDownloadRepo::new(vec![d]));
+        let engine = Arc::new(MockEngine::new());
+        let bus = Arc::new(MockEventBus::new());
+        let qm = make_qm_with_pipeline(repo.clone(), engine, bus.clone(), 3, 1, true, &expected);
+
+        qm.handle_download_completed(DownloadId(1)).await.unwrap();
+
+        let saved = repo.find_by_id(DownloadId(1)).unwrap().unwrap();
+        assert_eq!(saved.state(), DownloadState::Completed);
+        assert_eq!(saved.checksum_computed(), Some(expected.as_str()));
+        assert_eq!(saved.checksum_algorithm(), Some(ChecksumAlgorithm::Md5));
+        let events = bus.events.lock().unwrap();
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, DomainEvent::DownloadChecking { .. }))
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, DomainEvent::ChecksumVerified { .. }))
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, DomainEvent::DownloadCompletedPersisted { .. }))
+        );
+    }
+
+    #[tokio::test]
+    async fn test_checksum_mismatch_transitions_to_error_with_event() {
+        let expected = "d41d8cd98f00b204e9800998ecf8427e".to_string();
+        let computed = "00000000000000000000000000000000".to_string();
+        let mut d = make_download(1, 5, DownloadState::Queued);
+        d = d.with_expected_checksum(expected.clone()).unwrap();
+        d.start().unwrap();
+        let repo = Arc::new(MockDownloadRepo::new(vec![d]));
+        let engine = Arc::new(MockEngine::new());
+        let bus = Arc::new(MockEventBus::new());
+        let qm = make_qm_with_pipeline(repo.clone(), engine, bus.clone(), 3, 1, true, &computed);
+
+        qm.handle_download_completed(DownloadId(1)).await.unwrap();
+
+        let saved = repo.find_by_id(DownloadId(1)).unwrap().unwrap();
+        assert_eq!(saved.state(), DownloadState::Error);
+        assert_eq!(saved.checksum_computed(), Some(computed.as_str()));
+        let events = bus.events.lock().unwrap();
+        assert!(events.iter().any(|e| matches!(
+            e,
+            DomainEvent::ChecksumMismatch { expected: e, computed: c, .. }
+                if e == &expected && c == &computed
+        )));
+        // Mismatch leaves the download in Error — the post-persist event
+        // must NOT fire (UI relies on it as the success signal).
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, DomainEvent::DownloadCompletedPersisted { .. }))
+        );
+    }
+
+    #[tokio::test]
+    async fn test_verify_checksums_off_skips_validation_and_completes_directly() {
+        let mut d = make_download(1, 5, DownloadState::Queued);
+        d = d
+            .with_expected_checksum("d41d8cd98f00b204e9800998ecf8427e".into())
+            .unwrap();
+        d.start().unwrap();
+        let repo = Arc::new(MockDownloadRepo::new(vec![d]));
+        let engine = Arc::new(MockEngine::new());
+        let bus = Arc::new(MockEventBus::new());
+        let qm = make_qm_with_pipeline(
+            repo.clone(),
+            engine,
+            bus.clone(),
+            3,
+            1,
+            false, // verify_checksums OFF
+            "ignored",
+        );
+
+        qm.handle_download_completed(DownloadId(1)).await.unwrap();
+
+        let saved = repo.find_by_id(DownloadId(1)).unwrap().unwrap();
+        assert_eq!(saved.state(), DownloadState::Completed);
+        // Skipped validation: no Checking transition, no checksum events
+        let events = bus.events.lock().unwrap();
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, DomainEvent::DownloadChecking { .. }))
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, DomainEvent::ChecksumVerified { .. }))
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, DomainEvent::ChecksumMismatch { .. }))
+        );
+    }
+
+    #[tokio::test]
+    async fn test_no_expected_checksum_skips_validation() {
+        let mut d = make_download(1, 5, DownloadState::Queued);
+        d.start().unwrap();
+        let repo = Arc::new(MockDownloadRepo::new(vec![d]));
+        let engine = Arc::new(MockEngine::new());
+        let bus = Arc::new(MockEventBus::new());
+        let qm = make_qm_with_pipeline(repo.clone(), engine, bus.clone(), 3, 1, true, "ignored");
+
+        qm.handle_download_completed(DownloadId(1)).await.unwrap();
+
+        let saved = repo.find_by_id(DownloadId(1)).unwrap().unwrap();
+        assert_eq!(saved.state(), DownloadState::Completed);
+        let events = bus.events.lock().unwrap();
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, DomainEvent::DownloadChecking { .. }))
         );
     }
 }

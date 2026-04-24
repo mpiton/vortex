@@ -55,6 +55,8 @@ fn event_name(event: &DomainEvent) -> &'static str {
         DomainEvent::PackageCreated { .. } => "package-created",
         DomainEvent::ClipboardUrlDetected { .. } => "clipboard-url-detected",
         DomainEvent::SettingsUpdated => "settings-updated",
+        DomainEvent::ChecksumVerified { .. } => "checksum-verified",
+        DomainEvent::ChecksumMismatch { .. } => "checksum-mismatch",
     }
 }
 
@@ -119,6 +121,19 @@ fn event_payload(event: &DomainEvent) -> serde_json::Value {
         DomainEvent::PackageCreated { id, name } => json!({ "id": id.to_string(), "name": name }),
         DomainEvent::ClipboardUrlDetected { urls } => json!({ "urls": urls }),
         DomainEvent::SettingsUpdated => json!({}),
+        DomainEvent::ChecksumVerified {
+            id,
+            algorithm,
+            checksum,
+        } => json!({ "id": id.0, "algorithm": algorithm, "checksum": checksum }),
+        DomainEvent::ChecksumMismatch {
+            id,
+            algorithm,
+            expected,
+            computed,
+        } => {
+            json!({ "id": id.0, "algorithm": algorithm, "expected": expected, "computed": computed })
+        }
     }
 }
 

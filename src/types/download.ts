@@ -61,6 +61,8 @@ export interface DownloadDetailView {
   etaSeconds: number | null;
   segments: SegmentView[];
   checksumExpected: string | null;
+  checksumComputed: string | null;
+  checksumAlgorithm: string | null;
   destinationPath: string;
   moduleName: string | null;
   accountName: string | null;
@@ -70,6 +72,8 @@ export interface DownloadDetailView {
   createdAt: number;
   updatedAt: number;
 }
+
+export type VerifyChecksumOutcome = 'verified' | 'mismatch' | 'noExpectedChecksum';
 
 export interface PluginView {
   name: string;
