@@ -53,15 +53,16 @@ pub use application::services::QueueManager;
 pub use domain::model::ExtractionConfig;
 
 pub use adapters::driving::tauri_ipc::{
-    self, AppState, clipboard_state, clipboard_toggle, command_get_media_metadata, download_cancel,
-    download_clear_completed, download_clear_failed, download_count_by_state, download_detail,
-    download_list, download_logs, download_media_start, download_pause, download_pause_all,
-    download_remove, download_resume, download_resume_all, download_retry, download_set_priority,
-    download_start, download_verify_checksum, history_clear, history_delete_entry, history_export,
-    history_get_by_id, history_list, history_purge_older_than, history_search, link_resolve,
-    plugin_disable, plugin_enable, plugin_install, plugin_list, plugin_store_install,
-    plugin_store_list, plugin_store_refresh, plugin_store_update, plugin_uninstall,
-    reveal_in_folder, settings_get, settings_update, stats_get, stats_top_modules, status_bar_get,
+    self, AppState, browse_file, browse_folder, clipboard_state, clipboard_toggle,
+    command_get_media_metadata, download_cancel, download_clear_completed, download_clear_failed,
+    download_count_by_state, download_detail, download_list, download_logs, download_media_start,
+    download_pause, download_pause_all, download_remove, download_resume, download_resume_all,
+    download_retry, download_set_priority, download_start, download_verify_checksum, history_clear,
+    history_delete_entry, history_export, history_get_by_id, history_list,
+    history_purge_older_than, history_search, link_resolve, plugin_disable, plugin_enable,
+    plugin_install, plugin_list, plugin_store_install, plugin_store_list, plugin_store_refresh,
+    plugin_store_update, plugin_uninstall, reveal_in_folder, settings_get, settings_update,
+    stats_get, stats_top_modules, status_bar_get,
 };
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -373,6 +374,8 @@ pub fn run() {
             reveal_in_folder,
             stats_get,
             stats_top_modules,
+            browse_folder,
+            browse_file,
         ])
         .run(tauri::generate_context!())
         // Tauri's run() has no meaningful recovery path — panic is intentional here
