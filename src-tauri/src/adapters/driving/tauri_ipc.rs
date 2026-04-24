@@ -16,10 +16,11 @@ use crate::application::commands::{
     CancelDownloadCommand, ClearDownloadsByStateCommand, ClearHistoryCommand,
     DeleteHistoryEntryCommand, DisablePluginCommand, EnablePluginCommand, ExportHistoryCommand,
     ExportHistoryFormat, InstallPluginCommand, OpenDownloadFileCommand, OpenDownloadFolderCommand,
-    PauseAllDownloadsCommand, PauseDownloadCommand, PurgeHistoryCommand, RemoveDownloadCommand,
-    ResolveLinksCommand, ResolvedLinkDto, ResumeAllDownloadsCommand, ResumeDownloadCommand,
-    RetryDownloadCommand, SetPriorityCommand, StartDownloadCommand, UninstallPluginCommand,
-    UpdateConfigCommand, VerifyChecksumCommand, VerifyChecksumOutcome,
+    PauseAllDownloadsCommand, PauseDownloadCommand, PurgeHistoryCommand, RedownloadCommand,
+    RedownloadSource, RemoveDownloadCommand, ResolveLinksCommand, ResolvedLinkDto,
+    ResumeAllDownloadsCommand, ResumeDownloadCommand, RetryDownloadCommand, SetPriorityCommand,
+    StartDownloadCommand, UninstallPluginCommand, UpdateConfigCommand, VerifyChecksumCommand,
+    VerifyChecksumOutcome,
 };
 use crate::application::error::AppError;
 use crate::application::queries::{
@@ -107,6 +108,127 @@ pub async fn download_retry(state: State<'_, AppState>, id: u64) -> Result<(), S
         .handle_retry_download(cmd)
         .await
         .map_err(|e| e.to_string())
+}
+
+/// Source kind for the [`download_redownload`] IPC, mirrored on the frontend.
+#[derive(Debug, Clone, Copy, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RedownloadSourceKind {
+    Download,
+    History,
+}
+
+/// Caller choice when the destination file already exists.
+#[derive(Debug, Clone, Copy, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum OverwriteMode {
+    /// Reuse the original path — caller confirmed overwrite.
+    Overwrite,
+    /// Write to a non-colliding "name (N).ext" path picked by the backend.
+    Rename,
+}
+
+/// Result of a `download_redownload` call.
+///
+/// When `fileExists` is returned, the frontend is expected to show an
+/// overwrite/rename/cancel dialog and call the IPC a second time with the
+/// chosen `overwriteMode`.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase", tag = "kind")]
+pub enum RedownloadOutcome {
+    /// A new download was created with id `id`.
+    Created { id: u64 },
+    /// The destination already exists — suggest a renamed path and wait for
+    /// user input.
+    FileExists {
+        original_path: String,
+        suggested_path: String,
+    },
+}
+
+/// Create a new download using the URL and options of a completed download
+/// or history entry. Handles destination collisions by returning
+/// [`RedownloadOutcome::FileExists`]; the frontend must then re-invoke with
+/// an `overwrite_mode`.
+#[tauri::command]
+pub async fn download_redownload(
+    state: State<'_, AppState>,
+    source_kind: RedownloadSourceKind,
+    source_id: u64,
+    overwrite_mode: Option<OverwriteMode>,
+) -> Result<RedownloadOutcome, String> {
+    let (source, template_dest) =
+        resolve_redownload_source(&state.query_bus, source_kind, source_id).await?;
+
+    let dest_path = PathBuf::from(&template_dest);
+    let file_exists = dest_path.exists();
+
+    let destination_override: Option<PathBuf> = match (file_exists, overwrite_mode) {
+        (false, _) => None,
+        (true, None) => {
+            let dir = dest_path
+                .parent()
+                .ok_or_else(|| "destination has no parent directory".to_string())?;
+            let file_name = dest_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .ok_or_else(|| "destination path is not valid UTF-8".to_string())?;
+            let (suggested_path, _) = unique_destination(dir, file_name)?;
+            return Ok(RedownloadOutcome::FileExists {
+                original_path: template_dest,
+                suggested_path: suggested_path.to_string_lossy().into_owned(),
+            });
+        }
+        (true, Some(OverwriteMode::Overwrite)) => None,
+        (true, Some(OverwriteMode::Rename)) => {
+            let dir = dest_path
+                .parent()
+                .ok_or_else(|| "destination has no parent directory".to_string())?;
+            let file_name = dest_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .ok_or_else(|| "destination path is not valid UTF-8".to_string())?;
+            let (renamed, _) = unique_destination(dir, file_name)?;
+            Some(renamed)
+        }
+    };
+
+    let id = state
+        .command_bus
+        .handle_redownload(RedownloadCommand {
+            source,
+            destination_override,
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(RedownloadOutcome::Created { id: id.0 })
+}
+
+async fn resolve_redownload_source(
+    query_bus: &QueryBus,
+    kind: RedownloadSourceKind,
+    id: u64,
+) -> Result<(RedownloadSource, String), String> {
+    match kind {
+        RedownloadSourceKind::Download => {
+            let detail = query_bus
+                .handle_get_download_detail(GetDownloadDetailQuery { id: DownloadId(id) })
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok((
+                RedownloadSource::Download(DownloadId(id)),
+                detail.destination_path,
+            ))
+        }
+        RedownloadSourceKind::History => {
+            let entry = query_bus
+                .handle_get_history_entry(GetHistoryEntryQuery { id })
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok((RedownloadSource::History(id), entry.destination_path))
+        }
+    }
 }
 
 #[tauri::command]

@@ -184,12 +184,15 @@
         "setPriority": "Définir la priorité",
         "remove": "Supprimer",
         "openFile": "Ouvrir le fichier",
-        "openFolder": "Ouvrir le dossier"
+        "openFolder": "Ouvrir le dossier",
+        "redownload": "Re-télécharger"
       },
       "toast": {
         "openFileError": "Échec de l'ouverture du fichier",
         "openFileMissing": "Fichier introuvable",
-        "openFolderError": "Échec de l'ouverture du dossier"
+        "openFolderError": "Échec de l'ouverture du dossier",
+        "redownloadSuccess": "Téléchargement relancé",
+        "redownloadError": "Échec du re-téléchargement"
       },
       "priority": {
         "high": "Haute",
@@ -250,7 +253,15 @@
     "failedToLoadSettings": "Échec du chargement des paramètres",
     "comingSoon": "Bientôt disponible",
     "clear": "Effacer",
-    "unlimited": "illimitée"
+    "unlimited": "illimitée",
+    "overwriteDialog": {
+      "title": "Le fichier existe déjà",
+      "description": "{{path}} existe déjà. Écraser le fichier existant ou enregistrer sous un nouveau nom ?",
+      "suggestedPathLabel": "Nouveau chemin",
+      "overwrite": "Écraser",
+      "rename": "Conserver les deux",
+      "cancel": "Annuler"
+    }
   },
   "plugins": {
     "title": "Plugins",

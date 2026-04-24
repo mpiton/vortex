@@ -268,6 +268,21 @@ impl Download {
         self
     }
 
+    pub fn with_segments_count(mut self, n: u32) -> Self {
+        self.segments_count = n;
+        self
+    }
+
+    pub fn with_module_name(mut self, name: String) -> Self {
+        self.module_name = Some(name);
+        self
+    }
+
+    pub fn with_account_id(mut self, id: u64) -> Self {
+        self.account_id = Some(id);
+        self
+    }
+
     pub fn with_created_at(mut self, ts: u64) -> Self {
         self.created_at = ts;
         self.updated_at = ts;
@@ -975,5 +990,29 @@ mod tests {
         assert_eq!(d.source_hostname(), "example.com");
         let d = d.with_source_hostname("youtube.com".to_string());
         assert_eq!(d.source_hostname(), "youtube.com");
+    }
+
+    #[test]
+    fn test_with_segments_count_overrides_default() {
+        let d = make_download();
+        assert_eq!(d.segments_count(), 1);
+        let d = d.with_segments_count(8);
+        assert_eq!(d.segments_count(), 8);
+    }
+
+    #[test]
+    fn test_with_module_name_stores_plugin_owner() {
+        let d = make_download();
+        assert_eq!(d.module_name(), None);
+        let d = d.with_module_name("vortex-mod-youtube".to_string());
+        assert_eq!(d.module_name(), Some("vortex-mod-youtube"));
+    }
+
+    #[test]
+    fn test_with_account_id_stores_account_link() {
+        let d = make_download();
+        assert_eq!(d.account_id(), None);
+        let d = d.with_account_id(42);
+        assert_eq!(d.account_id(), Some(42));
     }
 }
