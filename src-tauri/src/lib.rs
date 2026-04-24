@@ -195,14 +195,17 @@ pub fn run() {
             // `max_concurrent` is seeded from the persisted config and then
             // kept in sync via the queue_config_bridge subscriber below.
             let initial_max_concurrent = match config_store.get_config() {
-                Ok(cfg) => cfg.max_concurrent_downloads as usize,
+                Ok(cfg) => crate::domain::model::config::normalize_max_concurrent(
+                    cfg.max_concurrent_downloads,
+                ),
                 Err(e) => {
                     tracing::warn!(
                         error = %e,
                         "failed to read max_concurrent_downloads from config, falling back to default"
                     );
-                    crate::domain::model::config::AppConfig::default().max_concurrent_downloads
-                        as usize
+                    crate::domain::model::config::normalize_max_concurrent(
+                        crate::domain::model::config::AppConfig::default().max_concurrent_downloads,
+                    )
                 }
             };
             let queue_manager = Arc::new(QueueManager::new(

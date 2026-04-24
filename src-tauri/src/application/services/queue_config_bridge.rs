@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use crate::application::services::QueueManager;
 use crate::domain::event::DomainEvent;
+use crate::domain::model::config::normalize_max_concurrent;
 use crate::domain::ports::driven::{ConfigStore, EventBus};
 
 /// Subscribe the queue manager to configuration updates.
@@ -27,7 +28,9 @@ pub fn subscribe_queue_to_config(
         }
         match config_store.get_config() {
             Ok(config) => {
-                queue_manager.set_max_concurrent(config.max_concurrent_downloads as usize);
+                queue_manager.set_max_concurrent(normalize_max_concurrent(
+                    config.max_concurrent_downloads,
+                ));
             }
             Err(err) => {
                 tracing::error!(%err, "queue_config_bridge: failed to read config");
@@ -202,5 +205,46 @@ mod tests {
             .unwrap();
         bus.publish(DomainEvent::SettingsUpdated);
         assert_eq!(qm.max_concurrent(), 12);
+    }
+
+    #[tokio::test]
+    async fn test_settings_updated_clamps_zero_to_minimum() {
+        // A corrupted config (e.g. hand-edited `config.toml`) with
+        // `max_concurrent_downloads = 0` would stall the scheduler if
+        // forwarded verbatim. The bridge must clamp to the domain minimum.
+        let cfg = AppConfig {
+            max_concurrent_downloads: 0,
+            ..AppConfig::default()
+        };
+        let config_store: Arc<dyn ConfigStore> = Arc::new(StubConfigStore {
+            config: Mutex::new(cfg),
+        });
+        let bus = SyncEventBus::new();
+        let qm = make_manager(4);
+
+        subscribe_queue_to_config(&bus, Arc::clone(&config_store), Arc::clone(&qm));
+
+        bus.publish(DomainEvent::SettingsUpdated);
+
+        assert_eq!(qm.max_concurrent(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_settings_updated_clamps_above_range_to_maximum() {
+        let cfg = AppConfig {
+            max_concurrent_downloads: 9999,
+            ..AppConfig::default()
+        };
+        let config_store: Arc<dyn ConfigStore> = Arc::new(StubConfigStore {
+            config: Mutex::new(cfg),
+        });
+        let bus = SyncEventBus::new();
+        let qm = make_manager(4);
+
+        subscribe_queue_to_config(&bus, Arc::clone(&config_store), Arc::clone(&qm));
+
+        bus.publish(DomainEvent::SettingsUpdated);
+
+        assert_eq!(qm.max_concurrent(), 20);
     }
 }
