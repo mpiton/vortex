@@ -116,13 +116,13 @@
     },
     "shortcuts": {
       "title": "Raccourcis clavier",
-      "description": "Raccourcis globaux disponibles dans toute l'application. Désactivés lors de la saisie dans un champ texte (sauf navigation).",
+      "description": "Raccourcis globaux disponibles dans toute l'application. Désactivés lors de la saisie dans un champ texte.",
       "columns": {
         "shortcut": "Raccourci",
         "action": "Action"
       },
       "rows": {
-        "pasteUrls": "Coller des URLs dans le link grabber",
+        "pasteUrls": "Coller des URLs dans l'extracteur de liens",
         "selectAll": "Sélectionner tous les téléchargements",
         "pauseResume": "Mettre en pause / reprendre la sélection",
         "deleteSelection": "Supprimer la sélection",
@@ -248,7 +248,8 @@
     "toast": {
       "resolveSuccess_one": "{{count}} lien analysé",
       "resolveSuccess_other": "{{count}} liens analysés",
-      "downloadStarted": "Téléchargement démarré"
+      "downloadStarted": "Téléchargement démarré",
+      "clipboardReadFailed": "Impossible de lire le presse-papiers"
     }
   },
   "statusBar": {

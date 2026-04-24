@@ -296,6 +296,7 @@ describe("LinkGrabberView", () => {
       state: {
         focusPaste: true,
         pasteContent: "https://example.com/a.zip\nhttps://example.com/b.zip",
+        pasteToken: "token-abc-123",
       },
     });
 

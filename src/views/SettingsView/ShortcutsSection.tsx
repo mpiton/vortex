@@ -1,25 +1,26 @@
 import { useTranslation } from "react-i18next";
+import { getPrimaryModifierLabel } from "@/lib/platform";
 
 interface ShortcutDefinition {
   keyCombo: string;
   descriptionKey: string;
 }
 
-const SHORTCUT_ROWS: ShortcutDefinition[] = [
-  { keyCombo: "Ctrl+V", descriptionKey: "settings.shortcuts.rows.pasteUrls" },
-  { keyCombo: "Ctrl+A", descriptionKey: "settings.shortcuts.rows.selectAll" },
-  { keyCombo: "Space", descriptionKey: "settings.shortcuts.rows.pauseResume" },
-  { keyCombo: "Delete", descriptionKey: "settings.shortcuts.rows.deleteSelection" },
-  { keyCombo: "Ctrl+Shift+P", descriptionKey: "settings.shortcuts.rows.toggleClipboard" },
-  { keyCombo: "Ctrl+1…9", descriptionKey: "settings.shortcuts.rows.navigateViews" },
-  { keyCombo: "Ctrl+F", descriptionKey: "settings.shortcuts.rows.focusSearch" },
-  { keyCombo: "Ctrl+N", descriptionKey: "settings.shortcuts.rows.addUrlsDialog" },
-  { keyCombo: "Ctrl+,", descriptionKey: "settings.shortcuts.rows.openSettings" },
-  { keyCombo: "Escape", descriptionKey: "settings.shortcuts.rows.closePanel" },
-];
-
 export function ShortcutsSection() {
   const { t } = useTranslation();
+  const mod = getPrimaryModifierLabel();
+  const rows: ShortcutDefinition[] = [
+    { keyCombo: `${mod}+V`, descriptionKey: "settings.shortcuts.rows.pasteUrls" },
+    { keyCombo: `${mod}+A`, descriptionKey: "settings.shortcuts.rows.selectAll" },
+    { keyCombo: "Space", descriptionKey: "settings.shortcuts.rows.pauseResume" },
+    { keyCombo: "Delete", descriptionKey: "settings.shortcuts.rows.deleteSelection" },
+    { keyCombo: `${mod}+Shift+P`, descriptionKey: "settings.shortcuts.rows.toggleClipboard" },
+    { keyCombo: `${mod}+1…9`, descriptionKey: "settings.shortcuts.rows.navigateViews" },
+    { keyCombo: `${mod}+F`, descriptionKey: "settings.shortcuts.rows.focusSearch" },
+    { keyCombo: `${mod}+N`, descriptionKey: "settings.shortcuts.rows.addUrlsDialog" },
+    { keyCombo: `${mod}+,`, descriptionKey: "settings.shortcuts.rows.openSettings" },
+    { keyCombo: "Escape", descriptionKey: "settings.shortcuts.rows.closePanel" },
+  ];
 
   return (
     <section className="space-y-4">
@@ -37,7 +38,7 @@ export function ShortcutsSection() {
           </tr>
         </thead>
         <tbody>
-          {SHORTCUT_ROWS.map(({ keyCombo, descriptionKey }) => (
+          {rows.map(({ keyCombo, descriptionKey }) => (
             <tr key={keyCombo} className="border-b last:border-b-0">
               <td className="py-2 pr-4">
                 <kbd className="rounded border bg-muted px-2 py-0.5 font-mono text-xs">

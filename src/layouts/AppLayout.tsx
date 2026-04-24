@@ -14,12 +14,14 @@ import { useDownloadStore } from "@/stores/downloadStore";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useUiStore } from "@/stores/uiStore";
 import { SHORTCUT_ACTIONS, dispatchShortcutAction } from "@/lib/keyboardShortcuts";
+import { isMacPlatform } from "@/lib/platform";
+import { toast } from "@/lib/toast";
 import type { AppConfig } from "@/types/settings";
 
 export function AppLayout() {
   const navigate = useNavigate();
   const location = useLocation();
-  const { i18n } = useTranslation();
+  const { t, i18n } = useTranslation();
   const setConfig = useSettingsStore((s) => s.setConfig);
   const updateCountByState = useDownloadStore((s) => s.updateCountByState);
   useDownloadProgress();
@@ -83,7 +85,7 @@ export function AppLayout() {
         return;
       }
 
-      const modifier = navigator.platform.includes("Mac") ? event.metaKey : event.ctrlKey;
+      const modifier = isMacPlatform() ? event.metaKey : event.ctrlKey;
       if (!modifier) {
         if (isEditableTarget(event.target)) return;
 
@@ -124,13 +126,22 @@ export function AppLayout() {
 
       if (lowerKey === "v" && !event.shiftKey && !event.altKey) {
         event.preventDefault();
-        void navigator.clipboard.readText().then((text) => {
-          if (!text) return;
-          void navigate("/link-grabber", {
-            replace: location.pathname === "/link-grabber",
-            state: { focusPaste: true, pasteContent: text },
+        navigator.clipboard
+          .readText()
+          .then((text) => {
+            if (!text) return;
+            void navigate("/link-grabber", {
+              replace: location.pathname === "/link-grabber",
+              state: {
+                focusPaste: true,
+                pasteContent: text,
+                pasteToken: `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+              },
+            });
+          })
+          .catch(() => {
+            toast.error(t("linkGrabber.toast.clipboardReadFailed"));
           });
-        });
         return;
       }
 
@@ -170,7 +181,7 @@ export function AppLayout() {
 
     window.addEventListener("keydown", handleKeydown);
     return () => window.removeEventListener("keydown", handleKeydown);
-  }, [location.pathname, navigate, setConfig]);
+  }, [location.pathname, navigate, setConfig, t]);
 
   return (
     <div className="flex h-screen w-screen overflow-hidden font-mono text-[13px] leading-normal text-text">

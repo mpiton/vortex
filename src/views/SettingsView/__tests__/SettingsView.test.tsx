@@ -89,6 +89,10 @@ describe("SettingsView", () => {
     expect(screen.getByRole("button", { name: /Browser/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Appearance/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Keyboard shortcuts/ })).toBeInTheDocument();
+
+    const nav = screen.getByRole("navigation");
+    expect(nav.querySelectorAll("button")).toHaveLength(7);
+
     expect(mockListen).toHaveBeenCalledWith("settings-updated", expect.any(Function));
   });
 

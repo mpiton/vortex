@@ -117,6 +117,14 @@ export function LinkGrabberView() {
       ? (location.state as { pasteContent: string }).pasteContent
       : undefined;
 
+  const pasteToken =
+    location.state &&
+    typeof location.state === "object" &&
+    "pasteToken" in location.state &&
+    typeof (location.state as { pasteToken?: unknown }).pasteToken === "string"
+      ? (location.state as { pasteToken: string }).pasteToken
+      : undefined;
+
   useEffect(() => {
     const shouldFocusPaste =
       !!location.state &&
@@ -167,6 +175,7 @@ export function LinkGrabberView() {
         onPasteUrls={handlePasteUrls}
         isLoading={isResolving}
         initialValue={pasteContent}
+        initialValueToken={pasteToken}
       />
 
       {resolvedLinks.length > 0 && (

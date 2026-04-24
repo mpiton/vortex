@@ -116,7 +116,7 @@
     },
     "shortcuts": {
       "title": "Keyboard shortcuts",
-      "description": "Global shortcuts available throughout the app. Disabled while typing in text fields (except navigation).",
+      "description": "Global shortcuts available throughout the app. Disabled while typing in text fields.",
       "columns": {
         "shortcut": "Shortcut",
         "action": "Action"
@@ -248,7 +248,8 @@
     "toast": {
       "resolveSuccess_one": "{{count}} link resolved",
       "resolveSuccess_other": "{{count}} links resolved",
-      "downloadStarted": "Download started"
+      "downloadStarted": "Download started",
+      "clipboardReadFailed": "Could not read clipboard"
     }
   },
   "statusBar": {

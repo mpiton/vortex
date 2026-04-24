@@ -266,9 +266,36 @@ describe("AppLayout", () => {
         state: expect.objectContaining({
           focusPaste: true,
           pasteContent: "https://example.com/file.zip\nhttps://example.com/other.zip",
+          pasteToken: expect.any(String),
         }),
       });
     });
+
+    const state = mockNavigate.mock.calls[0][1].state;
+    expect(state.pasteToken).toMatch(/^\d+-[a-z0-9]+$/);
+  });
+
+  it("should surface a toast when the clipboard read rejects on Ctrl+V", async () => {
+    const readText = vi.fn().mockRejectedValue(new DOMException("denied", "NotAllowedError"));
+    Object.defineProperty(navigator, "clipboard", {
+      value: { readText },
+      configurable: true,
+    });
+    const { toast } = await import("@/lib/toast");
+    const errorSpy = vi.spyOn(toast, "error").mockImplementation(() => "mock-toast-id");
+
+    try {
+      renderAppLayout();
+      fireEvent.keyDown(window, { key: "v", ctrlKey: true });
+
+      await waitFor(() => {
+        expect(readText).toHaveBeenCalled();
+        expect(errorSpy).toHaveBeenCalledWith("Could not read clipboard");
+      });
+      expect(mockNavigate).not.toHaveBeenCalled();
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 
   it("should not intercept Ctrl+V when focus is on a textarea", () => {

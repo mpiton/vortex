@@ -6,6 +6,7 @@ interface PasteZoneProps {
   onPasteUrls: (urls: string[]) => void;
   isLoading?: boolean;
   initialValue?: string;
+  initialValueToken?: string;
 }
 
 export function extractUrls(text: string): string[] {
@@ -13,11 +14,16 @@ export function extractUrls(text: string): string[] {
   return (matches ?? []).map((url) => url.replace(/[),.;:>}"'!?]+$/, ""));
 }
 
-export function PasteZone({ onPasteUrls, isLoading, initialValue }: PasteZoneProps) {
+export function PasteZone({
+  onPasteUrls,
+  isLoading,
+  initialValue,
+  initialValueToken,
+}: PasteZoneProps) {
   const { t } = useTranslation();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const onPasteUrlsRef = useRef(onPasteUrls);
-  const handledInitialRef = useRef<string | undefined>(undefined);
+  const handledTokenRef = useRef<string | undefined>(undefined);
   const [isDragging, setIsDragging] = useState(false);
 
   useEffect(() => {
@@ -25,16 +31,17 @@ export function PasteZone({ onPasteUrls, isLoading, initialValue }: PasteZonePro
   }, [onPasteUrls]);
 
   useEffect(() => {
-    if (!initialValue || initialValue === handledInitialRef.current) return;
+    if (!initialValue || !initialValueToken) return;
+    if (initialValueToken === handledTokenRef.current) return;
     if (!textareaRef.current) return;
 
-    handledInitialRef.current = initialValue;
+    handledTokenRef.current = initialValueToken;
     textareaRef.current.value = initialValue;
     const urls = extractUrls(initialValue);
     if (urls.length > 0) {
       onPasteUrlsRef.current(urls);
     }
-  }, [initialValue]);
+  }, [initialValue, initialValueToken]);
 
   function handleAnalyze() {
     const text = textareaRef.current?.value ?? "";
@@ -46,6 +53,7 @@ export function PasteZone({ onPasteUrls, isLoading, initialValue }: PasteZonePro
     if (textareaRef.current) {
       textareaRef.current.value = "";
     }
+    handledTokenRef.current = undefined;
   }
 
   function handleDragOver(e: React.DragEvent<HTMLDivElement>) {
