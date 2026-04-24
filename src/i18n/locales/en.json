@@ -18,7 +18,8 @@
       "network": "Network",
       "remote": "Remote Access",
       "browser": "Browser",
-      "appearance": "Appearance"
+      "appearance": "Appearance",
+      "shortcuts": "Keyboard shortcuts"
     },
     "general": {
       "title": "General",
@@ -112,6 +113,26 @@
       "compactMode": "Compact mode",
       "compactModeDesc": "Reduce spacing and font sizes",
       "language": "Language"
+    },
+    "shortcuts": {
+      "title": "Keyboard shortcuts",
+      "description": "Global shortcuts available throughout the app. Disabled while typing in text fields.",
+      "columns": {
+        "shortcut": "Shortcut",
+        "action": "Action"
+      },
+      "rows": {
+        "pasteUrls": "Paste URLs into the link grabber",
+        "selectAll": "Select all downloads",
+        "pauseResume": "Pause / resume selected downloads",
+        "deleteSelection": "Delete selected downloads",
+        "toggleClipboard": "Toggle clipboard monitoring",
+        "navigateViews": "Navigate between views",
+        "focusSearch": "Focus the search field",
+        "addUrlsDialog": "Open the Add URLs dialog",
+        "openSettings": "Open settings",
+        "closePanel": "Close open panel / cancel"
+      }
     },
     "toast": {
       "updateSuccess": "Settings saved"
@@ -227,7 +248,8 @@
     "toast": {
       "resolveSuccess_one": "{{count}} link resolved",
       "resolveSuccess_other": "{{count}} links resolved",
-      "downloadStarted": "Download started"
+      "downloadStarted": "Download started",
+      "clipboardReadFailed": "Could not read clipboard"
     }
   },
   "statusBar": {

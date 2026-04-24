@@ -1,26 +1,47 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 
 interface PasteZoneProps {
   onPasteUrls: (urls: string[]) => void;
   isLoading?: boolean;
+  initialValue?: string;
+  initialValueToken?: string;
 }
 
 export function extractUrls(text: string): string[] {
-  const matches = text.match(
-    /(https?:\/\/[^\s]+|ftp:\/\/[^\s]+|magnet:\?[^\s]+)/gi,
-  );
+  const matches = text.match(/(https?:\/\/[^\s]+|ftp:\/\/[^\s]+|magnet:\?[^\s]+)/gi);
   return (matches ?? []).map((url) => url.replace(/[),.;:>}"'!?]+$/, ""));
 }
 
 export function PasteZone({
   onPasteUrls,
   isLoading,
+  initialValue,
+  initialValueToken,
 }: PasteZoneProps) {
   const { t } = useTranslation();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const onPasteUrlsRef = useRef(onPasteUrls);
+  const handledTokenRef = useRef<string | undefined>(undefined);
   const [isDragging, setIsDragging] = useState(false);
+
+  useEffect(() => {
+    onPasteUrlsRef.current = onPasteUrls;
+  }, [onPasteUrls]);
+
+  useEffect(() => {
+    if (!initialValue || !initialValueToken) return;
+    if (initialValueToken === handledTokenRef.current) return;
+    if (!textareaRef.current) return;
+
+    handledTokenRef.current = initialValueToken;
+    textareaRef.current.value = initialValue;
+    const urls = extractUrls(initialValue);
+    if (urls.length > 0) {
+      onPasteUrlsRef.current(urls);
+    }
+  }, [initialValue, initialValueToken]);
 
   function handleAnalyze() {
     const text = textareaRef.current?.value ?? "";
@@ -32,6 +53,7 @@ export function PasteZone({
     if (textareaRef.current) {
       textareaRef.current.value = "";
     }
+    handledTokenRef.current = undefined;
   }
 
   function handleDragOver(e: React.DragEvent<HTMLDivElement>) {
@@ -73,9 +95,7 @@ export function PasteZone({
     <div
       data-testid="paste-drop-zone"
       className={`rounded-lg border-2 border-dashed p-6 transition-colors ${
-        isDragging
-          ? "border-accent bg-accent/10"
-          : "border-muted-foreground/30"
+        isDragging ? "border-accent bg-accent/10" : "border-muted-foreground/30"
       }`}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}

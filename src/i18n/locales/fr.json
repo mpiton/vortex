@@ -18,7 +18,8 @@
       "network": "Réseau",
       "remote": "Accès distant",
       "browser": "Navigateur",
-      "appearance": "Apparence"
+      "appearance": "Apparence",
+      "shortcuts": "Raccourcis clavier"
     },
     "general": {
       "title": "Général",
@@ -112,6 +113,26 @@
       "compactMode": "Mode compact",
       "compactModeDesc": "Réduire les espacements et les tailles de police",
       "language": "Langue"
+    },
+    "shortcuts": {
+      "title": "Raccourcis clavier",
+      "description": "Raccourcis globaux disponibles dans toute l'application. Désactivés lors de la saisie dans un champ texte.",
+      "columns": {
+        "shortcut": "Raccourci",
+        "action": "Action"
+      },
+      "rows": {
+        "pasteUrls": "Coller des URLs dans l'extracteur de liens",
+        "selectAll": "Sélectionner tous les téléchargements",
+        "pauseResume": "Mettre en pause / reprendre la sélection",
+        "deleteSelection": "Supprimer la sélection",
+        "toggleClipboard": "Activer / désactiver la surveillance du presse-papier",
+        "navigateViews": "Naviguer entre les vues",
+        "focusSearch": "Focus sur le champ de recherche",
+        "addUrlsDialog": "Ouvrir la boîte « Ajouter des URLs »",
+        "openSettings": "Ouvrir les paramètres",
+        "closePanel": "Fermer le panneau ouvert / annuler"
+      }
     },
     "toast": {
       "updateSuccess": "Paramètres enregistrés"
@@ -227,7 +248,8 @@
     "toast": {
       "resolveSuccess_one": "{{count}} lien analysé",
       "resolveSuccess_other": "{{count}} liens analysés",
-      "downloadStarted": "Téléchargement démarré"
+      "downloadStarted": "Téléchargement démarré",
+      "clipboardReadFailed": "Impossible de lire le presse-papiers"
     }
   },
   "statusBar": {

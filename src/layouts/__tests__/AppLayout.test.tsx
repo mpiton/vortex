@@ -222,4 +222,98 @@ describe("AppLayout", () => {
 
     expect(useUiStore.getState().detailsPanelOpen).toBe(false);
   });
+
+  it.each([
+    { key: "2", path: "/link-grabber" },
+    { key: "3", path: "/packages" },
+    { key: "4", path: "/accounts" },
+    { key: "5", path: "/captcha" },
+    { key: "6", path: "/plugins" },
+  ])("should navigate to $path on Ctrl+$key", ({ key, path }) => {
+    renderAppLayout();
+    fireEvent.keyDown(window, { key, ctrlKey: true });
+    expect(mockNavigate).toHaveBeenCalledWith(path);
+  });
+
+  it("should ignore Ctrl+1 when focus is on a textarea", () => {
+    renderAppLayout();
+    const textarea = document.createElement("textarea");
+    document.body.appendChild(textarea);
+    textarea.focus();
+
+    fireEvent.keyDown(textarea, { key: "1", ctrlKey: true });
+
+    expect(mockNavigate).not.toHaveBeenCalled();
+    document.body.removeChild(textarea);
+  });
+
+  it("should paste clipboard into link grabber on Ctrl+V", async () => {
+    const readText = vi
+      .fn()
+      .mockResolvedValue("https://example.com/file.zip\nhttps://example.com/other.zip");
+    Object.defineProperty(navigator, "clipboard", {
+      value: { readText },
+      configurable: true,
+    });
+
+    renderAppLayout();
+    fireEvent.keyDown(window, { key: "v", ctrlKey: true });
+
+    await waitFor(() => {
+      expect(readText).toHaveBeenCalled();
+      expect(mockNavigate).toHaveBeenCalledWith("/link-grabber", {
+        replace: false,
+        state: expect.objectContaining({
+          focusPaste: true,
+          pasteContent: "https://example.com/file.zip\nhttps://example.com/other.zip",
+          pasteToken: expect.any(String),
+        }),
+      });
+    });
+
+    const state = mockNavigate.mock.calls[0][1].state;
+    expect(state.pasteToken).toMatch(/^\d+-[a-z0-9]+$/);
+  });
+
+  it("should surface a toast when the clipboard read rejects on Ctrl+V", async () => {
+    const readText = vi.fn().mockRejectedValue(new DOMException("denied", "NotAllowedError"));
+    Object.defineProperty(navigator, "clipboard", {
+      value: { readText },
+      configurable: true,
+    });
+    const { toast } = await import("@/lib/toast");
+    const errorSpy = vi.spyOn(toast, "error").mockImplementation(() => "mock-toast-id");
+
+    try {
+      renderAppLayout();
+      fireEvent.keyDown(window, { key: "v", ctrlKey: true });
+
+      await waitFor(() => {
+        expect(readText).toHaveBeenCalled();
+        expect(errorSpy).toHaveBeenCalledWith("Could not read clipboard");
+      });
+      expect(mockNavigate).not.toHaveBeenCalled();
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it("should not intercept Ctrl+V when focus is on a textarea", () => {
+    const readText = vi.fn();
+    Object.defineProperty(navigator, "clipboard", {
+      value: { readText },
+      configurable: true,
+    });
+
+    renderAppLayout();
+    const textarea = document.createElement("textarea");
+    document.body.appendChild(textarea);
+    textarea.focus();
+
+    fireEvent.keyDown(textarea, { key: "v", ctrlKey: true });
+
+    expect(readText).not.toHaveBeenCalled();
+    expect(mockNavigate).not.toHaveBeenCalled();
+    document.body.removeChild(textarea);
+  });
 });

@@ -1,6 +1,13 @@
-export type ProxyType = 'none' | 'http' | 'socks5';
-export type ThemeMode = 'light' | 'dark' | 'auto';
-export type SettingTab = 'general' | 'downloads' | 'network' | 'remote' | 'browser' | 'appearance';
+export type ProxyType = "none" | "http" | "socks5";
+export type ThemeMode = "light" | "dark" | "auto";
+export type SettingTab =
+  | "general"
+  | "downloads"
+  | "network"
+  | "remote"
+  | "browser"
+  | "appearance"
+  | "shortcuts";
 
 export interface AppConfig {
   // General
@@ -51,10 +58,10 @@ export interface AppConfig {
 export type AppConfigPatch = Partial<AppConfig>;
 
 export const ACCENT_PRESETS = [
-  { name: 'Indigo', value: '#4F46E5' },
-  { name: 'Blue', value: '#0EA5E9' },
-  { name: 'Purple', value: '#A855F7' },
-  { name: 'Pink', value: '#EC4899' },
-  { name: 'Red', value: '#EF4444' },
-  { name: 'Green', value: '#10B981' },
+  { name: "Indigo", value: "#4F46E5" },
+  { name: "Blue", value: "#0EA5E9" },
+  { name: "Purple", value: "#A855F7" },
+  { name: "Pink", value: "#EC4899" },
+  { name: "Red", value: "#EF4444" },
+  { name: "Green", value: "#10B981" },
 ] as const;
