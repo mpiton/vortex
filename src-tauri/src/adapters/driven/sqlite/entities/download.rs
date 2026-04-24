@@ -61,10 +61,16 @@ impl Model {
         let priority = Priority::new(priority_val)?;
         let file_size = self.total_bytes.map(|b| FileSize(b as u64));
         let checksum_algorithm = match self.checksum_algorithm.as_deref() {
-            None => None,
             Some(s) => Some(s.parse::<ChecksumAlgorithm>().map_err(|e| {
                 DomainError::StorageError(format!("invalid checksum algorithm in DB: {e}"))
             })?),
+            // Migrated rows may have checksum_expected without an algorithm
+            // column. Detect from the hex length so verification stays
+            // functional after the migration runs.
+            None => self
+                .checksum_expected
+                .as_deref()
+                .and_then(ChecksumAlgorithm::detect_from_hex),
         };
 
         Ok(Download::reconstruct(

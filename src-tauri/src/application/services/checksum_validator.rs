@@ -12,6 +12,7 @@ use std::sync::Arc;
 use crate::application::error::AppError;
 use crate::domain::error::DomainError;
 use crate::domain::event::DomainEvent;
+use crate::domain::model::checksum::ChecksumAlgorithm;
 use crate::domain::model::download::{Download, DownloadId, DownloadState};
 use crate::domain::ports::driven::{ChecksumComputer, DownloadRepository, EventBus};
 
@@ -65,9 +66,15 @@ impl ChecksumValidatorService {
         let Some(expected) = download.checksum_expected().map(str::to_string) else {
             return Ok(ChecksumOutcome::NoExpectedChecksum);
         };
-        let algorithm = download.checksum_algorithm().ok_or_else(|| {
-            AppError::Domain(DomainError::UnsupportedChecksumFormat(expected.clone()))
-        })?;
+        // Persisted algorithm wins; fall back to detection from the expected
+        // hash so rows migrated from earlier schemas (no checksum_algorithm
+        // column) still validate correctly.
+        let algorithm = download
+            .checksum_algorithm()
+            .or_else(|| ChecksumAlgorithm::detect_from_hex(&expected))
+            .ok_or_else(|| {
+                AppError::Domain(DomainError::UnsupportedChecksumFormat(expected.clone()))
+            })?;
         let path = Path::new(download.destination_path()).to_path_buf();
         let computed = self.computer.compute(&path, algorithm)?;
 

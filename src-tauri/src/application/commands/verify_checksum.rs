@@ -55,17 +55,8 @@ impl CommandBus {
         // Move into Checking so the validator pre-condition holds.
         match download.state() {
             DownloadState::Completed => {
-                // Allow re-verification of completed downloads by reverting to
-                // Downloading first, then transitioning to Checking. The state
-                // machine forbids Completed → Checking directly.
-                // We use the existing internal transitions instead of adding
-                // a Completed→Checking edge to keep the public surface minimal.
-                let _ = download; // discard the cloned aggregate
-                let mut fresh = self.download_repo().find_by_id(cmd.id)?.ok_or_else(|| {
-                    AppError::NotFound(format!("Download {} not found", cmd.id.0))
-                })?;
-                let event = fresh.start_checking_from_completed()?;
-                self.download_repo().save(&fresh)?;
+                let event = download.start_checking_from_completed()?;
+                self.download_repo().save(&download)?;
                 self.event_bus().publish(event);
             }
             DownloadState::Downloading => {
@@ -90,7 +81,26 @@ impl CommandBus {
             self.event_bus_arc(),
         );
 
-        svc.validate(cmd.id).map(VerifyChecksumOutcome::from)
+        match svc.validate(cmd.id) {
+            Ok(o) => Ok(o.into()),
+            Err(e) => {
+                // Validation failed mid-flight. Recover the persisted state
+                // so the download isn't stranded in Checking forever: load
+                // the latest copy, transition to Error, and persist with the
+                // backend message.
+                if let Ok(Some(mut current)) = self.download_repo().find_by_id(cmd.id)
+                    && current.state() == DownloadState::Checking
+                {
+                    let msg = format!("checksum verification failed: {e}");
+                    if let Ok(event) = current.fail(msg.clone())
+                        && self.download_repo().save_failed(&current, &msg).is_ok()
+                    {
+                        self.event_bus().publish(event);
+                    }
+                }
+                Err(e)
+            }
+        }
     }
 }
 
@@ -314,6 +324,13 @@ mod tests {
         }
     }
 
+    struct FailingComputer;
+    impl ChecksumComputer for FailingComputer {
+        fn compute(&self, _: &Path, _: ChecksumAlgorithm) -> Result<String, DomainError> {
+            Err(DomainError::StorageError("disk on fire".into()))
+        }
+    }
+
     fn make_bus(repo: Arc<Repo>, bus: Arc<Bus>, computer: Arc<dyn ChecksumComputer>) -> CommandBus {
         CommandBus::new(
             repo,
@@ -474,7 +491,7 @@ mod tests {
     #[tokio::test]
     async fn test_handle_verify_checksum_rejects_invalid_state() {
         // A Queued download is not eligible for verification.
-        let mut d = Download::new(
+        let d = Download::new(
             DownloadId(8),
             Url::new("https://example.com/x").unwrap(),
             "x".into(),
@@ -486,13 +503,7 @@ mod tests {
         let bus = Arc::new(Bus {
             events: Mutex::new(vec![]),
         });
-        let cmd_bus = make_bus(
-            repo.clone(),
-            bus,
-            Arc::new(Computer {
-                result: "x".into(),
-            }),
-        );
+        let cmd_bus = make_bus(repo.clone(), bus, Arc::new(Computer { result: "x".into() }));
 
         let err = cmd_bus
             .handle_verify_checksum(VerifyChecksumCommand { id: DownloadId(8) })
@@ -502,8 +513,6 @@ mod tests {
             err,
             AppError::Domain(DomainError::InvalidTransition { .. })
         ));
-        // Mute unused-mut on `d`
-        let _ = d.checksum_expected();
     }
 
     #[tokio::test]
@@ -521,5 +530,42 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, AppError::NotFound(_)));
+    }
+
+    #[tokio::test]
+    async fn test_handle_verify_checksum_recovers_from_validate_error() {
+        // When the validator returns Err, the download must not be left in
+        // Checking — recover by transitioning to Error and persisting the
+        // backend message via save_failed.
+        let expected = "d41d8cd98f00b204e9800998ecf8427e".to_string();
+        let download = make_download_in_completed(42, &expected);
+        let repo = Arc::new(Repo::new(vec![download]));
+        let bus = Arc::new(Bus {
+            events: Mutex::new(vec![]),
+        });
+        let cmd_bus = make_bus(repo.clone(), bus.clone(), Arc::new(FailingComputer));
+
+        let err = cmd_bus
+            .handle_verify_checksum(VerifyChecksumCommand { id: DownloadId(42) })
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            AppError::Domain(DomainError::StorageError(_))
+        ));
+
+        let saved = repo.find_by_id(DownloadId(42)).unwrap().unwrap();
+        assert_eq!(
+            saved.state(),
+            crate::domain::model::download::DownloadState::Error,
+            "download must be transitioned to Error after validate Err",
+        );
+        let events = bus.events.lock().unwrap();
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, DomainEvent::DownloadFailed { .. })),
+            "DownloadFailed must be emitted on validate Err recovery",
+        );
     }
 }

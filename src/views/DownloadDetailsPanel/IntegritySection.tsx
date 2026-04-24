@@ -5,6 +5,7 @@ import { CheckCircle2, XCircle, Loader2 } from 'lucide-react';
 import type { DownloadDetailView, VerifyChecksumOutcome } from '@/types/download';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { downloadQueries } from '@/api/queries';
 
 interface IntegritySectionProps {
   download: DownloadDetailView;
@@ -19,6 +20,17 @@ function deriveStatus(download: DownloadDetailView): LocalStatus {
     === download.checksumComputed.trim().toLowerCase()
     ? 'verified'
     : 'mismatch';
+}
+
+// Detect MD5 vs SHA-256 from the hex length so migrated rows without an
+// explicit `checksumAlgorithm` field still display the correct label.
+function detectAlgorithm(hash: string | null): string | null {
+  if (!hash) return null;
+  const trimmed = hash.trim();
+  if (!/^[0-9a-fA-F]+$/.test(trimmed)) return null;
+  if (trimmed.length === 64) return 'SHA-256';
+  if (trimmed.length === 32) return 'MD5';
+  return null;
 }
 
 function statusLabel(status: LocalStatus): string {
@@ -44,7 +56,10 @@ export function IntegritySection({ download }: IntegritySectionProps) {
 
   const status: LocalStatus = localStatus ?? deriveStatus(download);
   const hasChecksum = download.checksumExpected !== null;
-  const algorithm = download.checksumAlgorithm ?? (hasChecksum ? 'SHA-256' : '—');
+  const algorithm =
+    download.checksumAlgorithm
+    ?? detectAlgorithm(download.checksumExpected)
+    ?? (hasChecksum ? 'Unknown' : '—');
 
   async function handleVerify() {
     setError(null);
@@ -57,10 +72,13 @@ export function IntegritySection({ download }: IntegritySectionProps) {
       else if (outcome === 'mismatch') setLocalStatus('mismatch');
       else setLocalStatus('no-checksum');
       // Refresh the detail so checksumComputed propagates from SQLite.
-      await queryClient.invalidateQueries({ queryKey: ['download-detail', download.id] });
+      await queryClient.invalidateQueries({ queryKey: downloadQueries.detail(download.id) });
     } catch (err) {
       setError(String(err));
-      setLocalStatus('idle');
+      // Drop the local override so the rendered status falls back to the
+      // value derived from the latest detail (don't masquerade as 'idle'
+      // when the prior checksum was already verified or mismatched).
+      setLocalStatus(null);
     }
   }
 

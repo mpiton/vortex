@@ -223,6 +223,34 @@ impl QueueManager {
                                 error = %e,
                                 "handle_download_completed: finalise transition failed"
                             );
+                            // Don't strand the download in Checking — recover
+                            // by transitioning to Error and persisting the
+                            // backend message. Reload first so we mutate the
+                            // post-transition state (validator may have
+                            // already moved it forward before failing).
+                            let mut current = self
+                                .download_repo
+                                .find_by_id(id)?
+                                .unwrap_or_else(|| download.clone());
+                            if matches!(
+                                current.state(),
+                                DownloadState::Checking
+                                    | DownloadState::Downloading
+                                    | DownloadState::Waiting
+                                    | DownloadState::Extracting
+                            ) {
+                                let msg = format!("checksum finalisation failed: {e}");
+                                if let Ok(event) = current.fail(msg.clone()) {
+                                    match self.download_repo.save_failed(&current, &msg) {
+                                        Ok(()) => self.event_bus.publish(event),
+                                        Err(save_err) => tracing::error!(
+                                            download_id = id.0,
+                                            error = %save_err,
+                                            "handle_download_completed: save_failed after finalise error failed"
+                                        ),
+                                    }
+                                }
+                            }
                         }
                     }
                     // Reload after finalisation so we observe the post-checksum
@@ -303,7 +331,16 @@ impl QueueManager {
             pipeline.computer,
             self.event_bus.clone(),
         );
-        let outcome = validator.validate(id);
+        // The validator does blocking file I/O (streaming hash on potentially
+        // multi-GB files). Run it on the blocking pool so we don't park a
+        // Tokio worker thread for the whole computation.
+        let outcome = tokio::task::spawn_blocking(move || validator.validate(id))
+            .await
+            .map_err(|e| {
+                AppError::Domain(DomainError::StorageError(format!(
+                    "checksum validator task panicked: {e}"
+                )))
+            })?;
         match outcome {
             Ok(ChecksumOutcome::Verified | ChecksumOutcome::Mismatch) => Ok(()),
             Ok(ChecksumOutcome::NoExpectedChecksum | ChecksumOutcome::Skipped) => {

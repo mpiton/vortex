@@ -78,6 +78,30 @@ describe('IntegritySection', () => {
     expect(screen.getByTestId('checksum-status')).toHaveTextContent(/Match/);
   });
 
+  it('should derive MD5 label from hex length when checksumAlgorithm is null', () => {
+    // Migrated rows (created before checksum_algorithm column) only have
+    // checksumExpected. Display must still show MD5 instead of guessing
+    // SHA-256.
+    renderSection(
+      makeDetail({
+        checksumExpected: 'd41d8cd98f00b204e9800998ecf8427e',
+        checksumAlgorithm: null,
+      }),
+    );
+    expect(screen.getByText('MD5')).toBeInTheDocument();
+  });
+
+  it('should derive SHA-256 label from 64-char hex when checksumAlgorithm is null', () => {
+    renderSection(
+      makeDetail({
+        checksumExpected:
+          'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+        checksumAlgorithm: null,
+      }),
+    );
+    expect(screen.getByText('SHA-256')).toBeInTheDocument();
+  });
+
   it('should mark mismatch when computed differs from expected', () => {
     renderSection(
       makeDetail({

@@ -62,7 +62,7 @@ export interface DownloadDetailView {
   segments: SegmentView[];
   checksumExpected: string | null;
   checksumComputed: string | null;
-  checksumAlgorithm: string | null;
+  checksumAlgorithm: ChecksumAlgorithmLabel | null;
   destinationPath: string;
   moduleName: string | null;
   accountName: string | null;
@@ -74,6 +74,8 @@ export interface DownloadDetailView {
 }
 
 export type VerifyChecksumOutcome = 'verified' | 'mismatch' | 'noExpectedChecksum';
+
+export type ChecksumAlgorithmLabel = 'SHA-256' | 'MD5';
 
 export interface PluginView {
   name: string;
