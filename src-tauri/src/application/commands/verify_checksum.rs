@@ -87,15 +87,22 @@ impl CommandBus {
                 // Validation failed mid-flight. Recover the persisted state
                 // so the download isn't stranded in Checking forever: load
                 // the latest copy, transition to Error, and persist with the
-                // backend message.
+                // backend message. Log persistence errors loudly — losing
+                // them would re-create the very stranding bug we're fixing.
                 if let Ok(Some(mut current)) = self.download_repo().find_by_id(cmd.id)
                     && current.state() == DownloadState::Checking
                 {
                     let msg = format!("checksum verification failed: {e}");
-                    if let Ok(event) = current.fail(msg.clone())
-                        && self.download_repo().save_failed(&current, &msg).is_ok()
-                    {
-                        self.event_bus().publish(event);
+                    if let Ok(event) = current.fail(msg.clone()) {
+                        match self.download_repo().save_failed(&current, &msg) {
+                            Ok(()) => self.event_bus().publish(event),
+                            Err(save_err) => tracing::error!(
+                                download_id = cmd.id.0,
+                                error = %save_err,
+                                "verify_checksum: save_failed after validate error failed; \
+                                download remains in Checking",
+                            ),
+                        }
                     }
                 }
                 Err(e)
