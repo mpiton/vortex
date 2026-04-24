@@ -122,6 +122,10 @@ function renderTable(
 }
 
 beforeEach(() => {
+  // Some specs switch to `fr` to assert localized labels; reset to `en`
+  // up-front so later specs asserting English strings don't depend on the
+  // test execution order.
+  window.localStorage.setItem('i18nextLng', 'en');
   useUiStore.setState({
     selectedDownloadId: null,
     selectedDownloadIds: [],

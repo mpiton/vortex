@@ -157,6 +157,10 @@ impl CommandBus {
     pub fn file_opener(&self) -> Option<&dyn FileOpener> {
         self.file_opener.as_deref()
     }
+
+    pub(crate) fn file_opener_arc(&self) -> Option<Arc<dyn FileOpener>> {
+        self.file_opener.clone()
+    }
 }
 
 #[cfg(test)]

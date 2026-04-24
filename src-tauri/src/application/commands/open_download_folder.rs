@@ -5,10 +5,11 @@
 //! this tolerates the file being gone — users expect "Open folder" to still
 //! jump to the destination directory after a manual move or delete.
 
-use std::path::Path;
+use std::path::PathBuf;
 
 use crate::application::command_bus::CommandBus;
 use crate::application::error::AppError;
+use crate::domain::error::DomainError;
 use crate::domain::model::download::DownloadState;
 
 impl CommandBus {
@@ -29,12 +30,20 @@ impl CommandBus {
         }
 
         let opener = self
-            .file_opener()
+            .file_opener_arc()
             .ok_or_else(|| AppError::Plugin("file opener port not configured".to_string()))?;
 
-        opener
-            .reveal_file(Path::new(download.destination_path()))
-            .map_err(AppError::Domain)
+        // `reveal_file` spawns a child process (explorer/open/xdg-open) and
+        // blocks until it exits, so we move the call onto the blocking pool
+        // to keep the async runtime healthy.
+        let path = PathBuf::from(download.destination_path());
+        tokio::task::spawn_blocking(move || opener.reveal_file(&path))
+            .await
+            .map_err(|e| AppError::Plugin(format!("reveal_file join error: {e}")))?
+            .map_err(|err| match err {
+                DomainError::NotFound(msg) => AppError::NotFound(msg),
+                other => AppError::Domain(other),
+            })
     }
 }
 
@@ -370,6 +379,22 @@ mod tests {
             matches!(err, AppError::Domain(DomainError::StorageError(_))),
             "{err:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn handle_open_download_folder_maps_domain_not_found_to_app_not_found() {
+        let download = make_completed(5, "/tmp/vortex-reveal-gone.bin");
+        let repo = Arc::new(Repo::new(vec![download]));
+        let opener = RecordingOpener::failing(DomainError::NotFound(
+            "file and parent folder both missing".into(),
+        ));
+        let bus = build_bus(repo, Some(opener.clone() as Arc<dyn FileOpener>));
+
+        let err = bus
+            .handle_open_download_folder(OpenDownloadFolderCommand { id: DownloadId(5) })
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AppError::NotFound(_)), "{err:?}");
     }
 
     #[tokio::test]

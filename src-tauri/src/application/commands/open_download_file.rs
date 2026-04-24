@@ -4,10 +4,11 @@
 //! Only permitted for downloads in `Completed` state — the file path on disk
 //! is considered authoritative only after completion.
 
-use std::path::Path;
+use std::path::PathBuf;
 
 use crate::application::command_bus::CommandBus;
 use crate::application::error::AppError;
+use crate::domain::error::DomainError;
 use crate::domain::model::download::DownloadState;
 
 impl CommandBus {
@@ -28,12 +29,20 @@ impl CommandBus {
         }
 
         let opener = self
-            .file_opener()
+            .file_opener_arc()
             .ok_or_else(|| AppError::Plugin("file opener port not configured".to_string()))?;
 
-        opener
-            .open_file(Path::new(download.destination_path()))
-            .map_err(AppError::Domain)
+        // `open_file` spawns a child process and blocks until it exits, so we
+        // move the call onto the blocking pool to avoid stalling the async
+        // runtime on slow launchers or network-mounted destinations.
+        let path = PathBuf::from(download.destination_path());
+        tokio::task::spawn_blocking(move || opener.open_file(&path))
+            .await
+            .map_err(|e| AppError::Plugin(format!("open_file join error: {e}")))?
+            .map_err(|err| match err {
+                DomainError::NotFound(msg) => AppError::NotFound(msg),
+                other => AppError::Domain(other),
+            })
     }
 }
 
@@ -361,7 +370,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn handle_open_download_file_propagates_domain_error_from_opener() {
+    async fn handle_open_download_file_maps_domain_not_found_to_app_not_found() {
         let download = make_completed(3, "/tmp/vortex-missing.bin");
         let repo = Arc::new(Repo::new(vec![download]));
         let opener = RecordingOpener::failing(DomainError::NotFound("file not found".into()));
@@ -371,8 +380,23 @@ mod tests {
             .handle_open_download_file(OpenDownloadFileCommand { id: DownloadId(3) })
             .await
             .unwrap_err();
+        assert!(matches!(err, AppError::NotFound(_)), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn handle_open_download_file_propagates_other_domain_errors_as_domain() {
+        let download = make_completed(5, "/tmp/vortex-boom.bin");
+        let repo = Arc::new(Repo::new(vec![download]));
+        let opener =
+            RecordingOpener::failing(DomainError::StorageError("launcher exploded".into()));
+        let bus = build_bus(repo, Some(opener.clone() as Arc<dyn FileOpener>));
+
+        let err = bus
+            .handle_open_download_file(OpenDownloadFileCommand { id: DownloadId(5) })
+            .await
+            .unwrap_err();
         assert!(
-            matches!(err, AppError::Domain(DomainError::NotFound(_))),
+            matches!(err, AppError::Domain(DomainError::StorageError(_))),
             "{err:?}"
         );
     }

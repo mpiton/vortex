@@ -65,7 +65,16 @@ impl FileOpener for SystemFileOpener {
         // that way the UI can still jump to the containing directory after a
         // manual move/delete. We only error when both the file and its parent
         // are missing (path is a bare filename with no anchor on disk).
-        let parent = path.parent().filter(|p| p.is_dir());
+        //
+        // `Path::parent` returns `Some("")` for single-component relative paths
+        // (e.g. `Path::new("file.bin").parent() == Some("")`). Treat that
+        // empty path as the current working directory so we don't mistakenly
+        // declare the folder missing and don't hand an empty arg to xdg-open.
+        let parent = match path.parent() {
+            Some(p) if p.as_os_str().is_empty() => Some(Path::new(".")),
+            Some(p) if p.is_dir() => Some(p),
+            _ => None,
+        };
         if !path.exists() && parent.is_none() {
             return Err(DomainError::NotFound(format!(
                 "file and parent folder both missing: {}",
@@ -78,7 +87,7 @@ impl FileOpener for SystemFileOpener {
             // xdg-open does not support selecting a file, so we hand it the
             // parent directory. When the file is gone too we fall back to the
             // parent (already guarded above).
-            let target = parent.unwrap_or_else(|| path.parent().unwrap_or(path));
+            let target = parent.unwrap_or_else(|| Path::new("."));
             run_launcher("xdg-open", &[target.as_os_str().to_os_string()])
         }
 
@@ -108,11 +117,17 @@ impl FileOpener for SystemFileOpener {
         {
             // explorer.exe returns non-zero even on success, so we do not
             // check the exit code here. The behaviour mirrors `reveal_in_folder`.
+            //
+            // Pass "/select," and the path as two separate OsStrings so the
+            // Rust Command quoting rules can protect the path boundary when
+            // the path contains spaces (e.g. `C:\My Downloads\file.mp4`).
+            // Embedding the path in `format!("/select,{path}")` would leave
+            // Explorer's own parser stripping everything after the first space.
             let args: Vec<std::ffi::OsString> = if path.exists() {
-                vec![std::ffi::OsString::from(format!(
-                    "/select,{}",
-                    path.display()
-                ))]
+                vec![
+                    std::ffi::OsString::from("/select,"),
+                    path.as_os_str().to_os_string(),
+                ]
             } else {
                 vec![
                     parent
