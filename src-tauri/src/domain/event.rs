@@ -109,6 +109,20 @@ pub enum DomainEvent {
         urls: Vec<String>,
     },
 
+    // Queue management
+    /// Priority of a download changed. The QueueManager listens and re-evaluates
+    /// scheduling so a high-priority item starts as soon as a slot is free.
+    DownloadPrioritySet {
+        id: DownloadId,
+        priority: u8,
+    },
+    /// One or more downloads had their `queue_position` updated (move to top /
+    /// bottom or drag-reorder). The QueueManager re-runs scheduling so the new
+    /// ordering takes effect on the next free slot.
+    QueueReordered {
+        affected_ids: Vec<DownloadId>,
+    },
+
     // Settings
     SettingsUpdated,
 }

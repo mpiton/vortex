@@ -149,11 +149,12 @@ impl QueueManager {
                 return Ok(());
             }
 
-            // Sort: priority desc, then created_at asc (FIFO)
+            // Sort: priority desc, queue_position asc, created_at asc (FIFO)
             candidates.sort_by(|a, b| {
                 b.priority()
                     .value()
                     .cmp(&a.priority().value())
+                    .then_with(|| a.queue_position().cmp(&b.queue_position()))
                     .then_with(|| a.created_at().cmp(&b.created_at()))
             });
 
@@ -493,6 +494,8 @@ impl QueueManager {
                     | DomainEvent::DownloadCreated { .. }
                     | DomainEvent::DownloadResumed { .. }
                     | DomainEvent::DownloadRetrying { .. }
+                    | DomainEvent::DownloadPrioritySet { .. }
+                    | DomainEvent::QueueReordered { .. }
             );
             if dominated && tx.try_send(event.clone()).is_err() {
                 tracing::error!("QueueManager event channel full, dropping lifecycle event");
@@ -511,9 +514,10 @@ impl QueueManager {
                     DomainEvent::DownloadFailed { id, error } => {
                         self.handle_download_failed(*id, error.clone()).await
                     }
-                    DomainEvent::DownloadCreated { .. } | DomainEvent::DownloadRetrying { .. } => {
-                        self.on_slot_freed().await
-                    }
+                    DomainEvent::DownloadCreated { .. }
+                    | DomainEvent::DownloadRetrying { .. }
+                    | DomainEvent::DownloadPrioritySet { .. }
+                    | DomainEvent::QueueReordered { .. } => self.on_slot_freed().await,
                     DomainEvent::DownloadResumed { .. } => {
                         // Re-occupy the slot freed on pause. Only the command
                         // handler emits DownloadResumed (the engine does not),
@@ -737,6 +741,57 @@ mod tests {
 
         let started = engine.started.lock().unwrap().clone();
         assert_eq!(started, vec![2]);
+    }
+
+    #[tokio::test]
+    async fn test_on_slot_freed_breaks_priority_tie_with_queue_position() {
+        // Regression for task 12: when two downloads share the same priority,
+        // the one with the smaller queue_position must be scheduled first.
+        let d1 = make_download(1, 5, DownloadState::Queued).with_queue_position(10);
+        let d2 = make_download(2, 5, DownloadState::Queued).with_queue_position(1);
+        let d3 = make_download(3, 5, DownloadState::Queued).with_queue_position(5);
+        let repo = Arc::new(MockDownloadRepo::new(vec![d1, d2, d3]));
+        let engine = Arc::new(MockEngine::new());
+        let bus = Arc::new(MockEventBus::new());
+        let qm = make_manager(
+            Arc::clone(&repo),
+            Arc::clone(&engine),
+            Arc::clone(&bus),
+            1,
+            0,
+        );
+
+        qm.on_slot_freed().await.unwrap();
+
+        let started = engine.started.lock().unwrap().clone();
+        assert_eq!(started, vec![2], "smallest queue_position wins");
+    }
+
+    #[tokio::test]
+    async fn test_on_slot_freed_priority_overrides_queue_position() {
+        // queue_position only breaks ties — a strictly higher priority still
+        // wins regardless of ordering.
+        let d1 = make_download(1, 1, DownloadState::Queued).with_queue_position(-100);
+        let d2 = make_download(2, 10, DownloadState::Queued).with_queue_position(999);
+        let repo = Arc::new(MockDownloadRepo::new(vec![d1, d2]));
+        let engine = Arc::new(MockEngine::new());
+        let bus = Arc::new(MockEventBus::new());
+        let qm = make_manager(
+            Arc::clone(&repo),
+            Arc::clone(&engine),
+            Arc::clone(&bus),
+            1,
+            0,
+        );
+
+        qm.on_slot_freed().await.unwrap();
+
+        let started = engine.started.lock().unwrap().clone();
+        assert_eq!(
+            started,
+            vec![2],
+            "highest priority wins over queue_position"
+        );
     }
 
     #[tokio::test]

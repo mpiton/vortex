@@ -102,6 +102,8 @@ fn record_download_event(store: &DownloadLogStore, event: &DomainEvent) {
         }
         DomainEvent::DownloadProgress { .. }
         | DomainEvent::DownloadCompletedPersisted { .. }
+        | DomainEvent::DownloadPrioritySet { .. }
+        | DomainEvent::QueueReordered { .. }
         | DomainEvent::PluginLoaded { .. }
         | DomainEvent::PluginUnloaded { .. }
         | DomainEvent::PackageCreated { .. }

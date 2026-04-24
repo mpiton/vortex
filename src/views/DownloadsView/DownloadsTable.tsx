@@ -7,6 +7,21 @@ import {
 } from "@tanstack/react-table";
 import type { ColumnDef, SortingState } from "@tanstack/react-table";
 import { useVirtualizer } from "@tanstack/react-virtual";
+import {
+  DndContext,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  closestCenter,
+} from "@dnd-kit/core";
+import type { DragEndEvent } from "@dnd-kit/core";
+import {
+  SortableContext,
+  verticalListSortingStrategy,
+  useSortable,
+  arrayMove,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import { useTranslation } from "react-i18next";
 import {
   Pause,
@@ -16,9 +31,12 @@ import {
   Trash2,
   ArrowUp,
   ArrowDown,
+  ArrowUpToLine,
+  ArrowDownToLine,
   ExternalLink,
   FolderOpen,
   RefreshCw,
+  GripVertical,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -117,9 +135,39 @@ interface RowActions {
   start: (id: string) => void;
   remove: (id: string) => void;
   setPriority: (id: string, priority: number) => void;
+  moveToTop: (id: string) => void;
+  moveToBottom: (id: string) => void;
   openFile: (id: string) => void;
   openFolder: (id: string) => void;
   redownload: (id: string) => void;
+}
+
+const REORDERABLE_STATES: DownloadState[] = ["Queued", "Retry", "Waiting"];
+
+export function isReorderable(state: DownloadState): boolean {
+  return REORDERABLE_STATES.includes(state);
+}
+
+/// Returns the new ordered list of reorderable IDs after a drag-and-drop move.
+/// Pure helper extracted so drag handler logic is exercisable in isolation.
+export function computeReorderedIds(
+  downloads: DownloadView[],
+  activeId: string,
+  overId: string,
+): number[] | null {
+  if (activeId === overId) return null;
+  const ids = downloads.map((d) => d.id);
+  const oldIndex = ids.indexOf(activeId);
+  const newIndex = ids.indexOf(overId);
+  if (oldIndex < 0 || newIndex < 0) return null;
+  const nextOrder = arrayMove(ids, oldIndex, newIndex);
+  const byId = new Map(downloads.map((d) => [d.id, d]));
+  return nextOrder
+    .filter((id) => {
+      const dl = byId.get(id);
+      return dl ? isReorderable(dl.state) : false;
+    })
+    .map((id) => Number(id));
 }
 
 const RowActionsContext = createContext<RowActions | null>(null);
@@ -249,6 +297,28 @@ function ActionCell({ download, t }: ActionCellProps) {
               ))}
             </DropdownMenuSubContent>
           </DropdownMenuSub>
+          {isReorderable(download.state) && (
+            <>
+              <DropdownMenuItem
+                onClick={(e) => {
+                  e.stopPropagation();
+                  actions.moveToTop(download.id);
+                }}
+              >
+                <ArrowUpToLine className="size-3.5" />
+                {t("downloads.table.actions.moveToTop")}
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={(e) => {
+                  e.stopPropagation();
+                  actions.moveToBottom(download.id);
+                }}
+              >
+                <ArrowDownToLine className="size-3.5" />
+                {t("downloads.table.actions.moveToBottom")}
+              </DropdownMenuItem>
+            </>
+          )}
           <DropdownMenuSeparator />
           <DropdownMenuItem
             variant="destructive"
@@ -266,8 +336,104 @@ function ActionCell({ download, t }: ActionCellProps) {
   );
 }
 
+type DragHandleProps = {
+  listeners: ReturnType<typeof useSortable>["listeners"];
+  attributes: ReturnType<typeof useSortable>["attributes"];
+  setActivatorNodeRef: ReturnType<typeof useSortable>["setActivatorNodeRef"];
+  enabled: boolean;
+};
+
+const DragHandleContext = createContext<DragHandleProps | null>(null);
+
+function DragHandleCell() {
+  const ctx = useContext(DragHandleContext);
+  if (!ctx || !ctx.enabled) {
+    return <div className="w-4" aria-hidden="true" />;
+  }
+  return (
+    <button
+      type="button"
+      aria-label="Drag to reorder"
+      className="flex size-4 cursor-grab items-center justify-center text-muted-foreground hover:text-foreground"
+      ref={ctx.setActivatorNodeRef}
+      {...ctx.attributes}
+      {...ctx.listeners}
+      onClick={(e) => e.stopPropagation()}
+    >
+      <GripVertical className="size-3.5" />
+    </button>
+  );
+}
+
+interface SortableRowProps {
+  id: string;
+  state: DownloadState;
+  children: React.ReactNode;
+  onClick?: (e: React.MouseEvent) => void;
+  className?: string;
+  dataIndex: number;
+  measureRef: (node: HTMLElement | null) => void;
+}
+
+function SortableRow({
+  id,
+  state,
+  children,
+  onClick,
+  className,
+  dataIndex,
+  measureRef,
+}: SortableRowProps) {
+  const enabled = isReorderable(state);
+  const sortable = useSortable({ id, disabled: !enabled });
+
+  const setRef = useCallback(
+    (node: HTMLTableRowElement | null) => {
+      sortable.setNodeRef(node);
+      measureRef(node);
+    },
+    [sortable, measureRef],
+  );
+
+  const style: React.CSSProperties = {
+    transform: CSS.Transform.toString(sortable.transform),
+    transition: sortable.transition,
+    opacity: sortable.isDragging ? 0.6 : undefined,
+  };
+
+  const ctxValue = useMemo<DragHandleProps>(
+    () => ({
+      listeners: sortable.listeners,
+      attributes: sortable.attributes,
+      setActivatorNodeRef: sortable.setActivatorNodeRef,
+      enabled,
+    }),
+    [sortable.listeners, sortable.attributes, sortable.setActivatorNodeRef, enabled],
+  );
+
+  return (
+    <DragHandleContext value={ctxValue}>
+      <tr
+        ref={setRef}
+        data-index={dataIndex}
+        style={style}
+        className={className}
+        onClick={onClick}
+      >
+        {children}
+      </tr>
+    </DragHandleContext>
+  );
+}
+
 function getColumns(t: Translate): ColumnDef<DownloadView>[] {
   return [
+    {
+      id: "drag",
+      header: "",
+      cell: () => <DragHandleCell />,
+      enableSorting: false,
+    },
     {
       id: "select",
       header: ({ table }) => (
@@ -380,6 +546,16 @@ export function DownloadsTable({
     "download_set_priority",
     { invalidateKeys },
   );
+  const moveToTopMut = useTauriMutation<unknown, { id: number }>("download_move_to_top", {
+    invalidateKeys,
+  });
+  const moveToBottomMut = useTauriMutation<unknown, { id: number }>("download_move_to_bottom", {
+    invalidateKeys,
+  });
+  const reorderMut = useTauriMutation<unknown, { orderedIds: number[] }>(
+    "download_reorder_queue",
+    { invalidateKeys },
+  );
   const openFileMut = useTauriMutation<unknown, { id: number }>("download_open_file", {
     errorMessage: (err) =>
       err.message.toLowerCase().includes("not found")
@@ -401,11 +577,24 @@ export function DownloadsTable({
       start: (id) => retryMut.mutate({ id: Number(id) }),
       remove: (id) => removeMut.mutate({ id: Number(id), deleteFiles: false }),
       setPriority: (id, priority) => priorityMut.mutate({ id: Number(id), priority }),
+      moveToTop: (id) => moveToTopMut.mutate({ id: Number(id) }),
+      moveToBottom: (id) => moveToBottomMut.mutate({ id: Number(id) }),
       openFile: (id) => openFileMut.mutate({ id: Number(id) }),
       openFolder: (id) => openFolderMut.mutate({ id: Number(id) }),
       redownload: (id) => redownload.trigger("download", id),
     }),
-    [pauseMut, resumeMut, retryMut, removeMut, priorityMut, openFileMut, openFolderMut, redownload],
+    [
+      pauseMut,
+      resumeMut,
+      retryMut,
+      removeMut,
+      priorityMut,
+      moveToTopMut,
+      moveToBottomMut,
+      openFileMut,
+      openFolderMut,
+      redownload,
+    ],
   );
 
   const selectedDownloadIds = useUiStore((s) => s.selectedDownloadIds);
@@ -491,9 +680,38 @@ export function DownloadsTable({
   const virtualRows = rowVirtualizer.getVirtualItems();
   const totalSize = rowVirtualizer.getTotalSize();
 
+  const sortableIds = useMemo(
+    () => filteredDownloads.map((d) => d.id),
+    [filteredDownloads],
+  );
+
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
+  );
+
+  const handleDragEnd = useCallback(
+    (event: DragEndEvent) => {
+      const { active, over } = event;
+      if (!over) return;
+      const orderedIds = computeReorderedIds(
+        filteredDownloads,
+        String(active.id),
+        String(over.id),
+      );
+      if (!orderedIds || orderedIds.length === 0) return;
+      reorderMut.mutate({ orderedIds });
+    },
+    [filteredDownloads, reorderMut],
+  );
+
   return (
     <RowActionsContext value={rowActions}>
       {redownload.dialog}
+      <DndContext
+        sensors={sensors}
+        collisionDetection={closestCenter}
+        onDragEnd={handleDragEnd}
+      >
       <div ref={tableContainerRef} className="flex-1 overflow-auto rounded-md border">
         <table className="w-full text-sm">
           <thead className="sticky top-0 z-10 border-b bg-background">
@@ -527,15 +745,18 @@ export function DownloadsTable({
                 <td colSpan={columns.length} style={{ height: virtualRows[0].start }} />
               </tr>
             )}
+            <SortableContext items={sortableIds} strategy={verticalListSortingStrategy}>
             {virtualRows.map((virtualRow) => {
               const row = rows[virtualRow.index];
               const isSelected = rowSelection[row.original.id] === true;
 
               return (
-                <tr
+                <SortableRow
                   key={row.id}
-                  data-index={virtualRow.index}
-                  ref={(node) => rowVirtualizer.measureElement(node)}
+                  id={row.original.id}
+                  state={row.original.state}
+                  dataIndex={virtualRow.index}
+                  measureRef={(node) => rowVirtualizer.measureElement(node)}
                   className={`border-b transition-colors hover:bg-muted/50 ${
                     isSelected ? "bg-accent/50" : ""
                   }`}
@@ -546,9 +767,10 @@ export function DownloadsTable({
                       {flexRender(cell.column.columnDef.cell, cell.getContext())}
                     </td>
                   ))}
-                </tr>
+                </SortableRow>
               );
             })}
+            </SortableContext>
             {virtualRows.length > 0 && (
               <tr>
                 <td
@@ -562,6 +784,7 @@ export function DownloadsTable({
           </tbody>
         </table>
       </div>
+      </DndContext>
     </RowActionsContext>
   );
 }

@@ -154,6 +154,7 @@ pub struct Download {
     downloaded_bytes: u64,
     state: DownloadState,
     priority: Priority,
+    queue_position: i64,
     retry_count: u32,
     max_retries: u32,
     segments_count: u32,
@@ -183,6 +184,7 @@ impl Download {
             downloaded_bytes: 0,
             state: DownloadState::Queued,
             priority: Priority::default(),
+            queue_position: 0,
             retry_count: 0,
             max_retries: 5,
             segments_count: 1,
@@ -213,6 +215,7 @@ impl Download {
         downloaded_bytes: u64,
         state: DownloadState,
         priority: Priority,
+        queue_position: i64,
         retry_count: u32,
         max_retries: u32,
         segments_count: u32,
@@ -236,6 +239,7 @@ impl Download {
             downloaded_bytes,
             state,
             priority,
+            queue_position,
             retry_count,
             max_retries,
             segments_count,
@@ -261,6 +265,15 @@ impl Download {
     pub fn with_priority(mut self, p: Priority) -> Self {
         self.priority = p;
         self
+    }
+
+    pub fn with_queue_position(mut self, position: i64) -> Self {
+        self.queue_position = position;
+        self
+    }
+
+    pub fn set_queue_position(&mut self, position: i64) {
+        self.queue_position = position;
     }
 
     pub fn with_source_hostname(mut self, hostname: String) -> Self {
@@ -331,6 +344,10 @@ impl Download {
 
     pub fn priority(&self) -> &Priority {
         &self.priority
+    }
+
+    pub fn queue_position(&self) -> i64 {
+        self.queue_position
     }
 
     pub fn retry_count(&self) -> u32 {
@@ -851,6 +868,25 @@ mod tests {
         let p = Priority::new(9).unwrap();
         let d = make_download().with_priority(p);
         assert_eq!(d.priority(), &Priority::new(9).unwrap());
+    }
+
+    #[test]
+    fn test_queue_position_default_is_zero() {
+        let d = make_download();
+        assert_eq!(d.queue_position(), 0);
+    }
+
+    #[test]
+    fn test_with_queue_position_builder() {
+        let d = make_download().with_queue_position(42);
+        assert_eq!(d.queue_position(), 42);
+    }
+
+    #[test]
+    fn test_set_queue_position_mutator() {
+        let mut d = make_download();
+        d.set_queue_position(-3);
+        assert_eq!(d.queue_position(), -3);
     }
 
     #[test]

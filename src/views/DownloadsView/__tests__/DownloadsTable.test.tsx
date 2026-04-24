@@ -6,7 +6,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { useUiStore } from "@/stores/uiStore";
 import { useDownloadStore } from "@/stores/downloadStore";
 import type { DownloadView } from "@/types/download";
-import { DownloadsTable } from "../DownloadsTable";
+import { DownloadsTable, computeReorderedIds } from "../DownloadsTable";
 
 const invokeMock = vi.fn().mockResolvedValue(undefined);
 const toastErrorMock = vi.fn();
@@ -55,6 +55,8 @@ const MOCK_DOWNLOADS: DownloadView[] = [
     segmentsTotal: 4,
     moduleName: null,
     accountName: null,
+    priority: 5,
+    queuePosition: 0,
     createdAt: Date.now(),
   },
   {
@@ -72,6 +74,8 @@ const MOCK_DOWNLOADS: DownloadView[] = [
     segmentsTotal: 1,
     moduleName: null,
     accountName: null,
+    priority: 5,
+    queuePosition: 0,
     createdAt: Date.now(),
   },
   {
@@ -90,6 +94,8 @@ const MOCK_DOWNLOADS: DownloadView[] = [
     segmentsTotal: 4,
     moduleName: null,
     accountName: null,
+    priority: 5,
+    queuePosition: 0,
     createdAt: Date.now(),
   },
 ];
@@ -271,7 +277,9 @@ describe("DownloadsTable", () => {
         segmentsTotal: 2,
         moduleName: null,
         accountName: null,
-        createdAt: Date.now(),
+        priority: 5,
+    queuePosition: 0,
+    createdAt: Date.now(),
         ...overrides,
       };
     }
@@ -412,6 +420,129 @@ describe("DownloadsTable", () => {
           }),
         ),
       );
+    });
+  });
+
+  describe("queue reorder", () => {
+    const QUEUE_DOWNLOADS: DownloadView[] = [
+      {
+        id: "10",
+        fileName: "first.zip",
+        url: "https://example.com/first.zip",
+        sourceHostname: "example.com",
+        state: "Queued",
+        progressPercent: 0,
+        speedBytesPerSec: 0,
+        downloadedBytes: 0,
+        totalBytes: 1000,
+        etaSeconds: null,
+        segmentsActive: 0,
+        segmentsTotal: 1,
+        moduleName: null,
+        accountName: null,
+        priority: 5,
+        queuePosition: 1,
+        createdAt: Date.now(),
+      },
+      {
+        id: "11",
+        fileName: "second.zip",
+        url: "https://example.com/second.zip",
+        sourceHostname: "example.com",
+        state: "Queued",
+        progressPercent: 0,
+        speedBytesPerSec: 0,
+        downloadedBytes: 0,
+        totalBytes: 2000,
+        etaSeconds: null,
+        segmentsActive: 0,
+        segmentsTotal: 1,
+        moduleName: null,
+        accountName: null,
+        priority: 5,
+        queuePosition: 2,
+        createdAt: Date.now(),
+      },
+      {
+        id: "12",
+        fileName: "third.zip",
+        url: "https://example.com/third.zip",
+        sourceHostname: "example.com",
+        state: "Queued",
+        progressPercent: 0,
+        speedBytesPerSec: 0,
+        downloadedBytes: 0,
+        totalBytes: 3000,
+        etaSeconds: null,
+        segmentsActive: 0,
+        segmentsTotal: 1,
+        moduleName: null,
+        accountName: null,
+        priority: 5,
+        queuePosition: 3,
+        createdAt: Date.now(),
+      },
+    ];
+
+    it("computes the new order when dragging second row onto first", () => {
+      const result = computeReorderedIds(QUEUE_DOWNLOADS, "11", "10");
+      expect(result).toEqual([11, 10, 12]);
+    });
+
+    it("returns null when dragging onto itself", () => {
+      const result = computeReorderedIds(QUEUE_DOWNLOADS, "10", "10");
+      expect(result).toBeNull();
+    });
+
+    it("filters non-reorderable downloads from the result", () => {
+      const mixed: DownloadView[] = [
+        ...QUEUE_DOWNLOADS,
+        {
+          ...QUEUE_DOWNLOADS[0],
+          id: "13",
+          fileName: "done.zip",
+          state: "Completed",
+        },
+      ];
+      const result = computeReorderedIds(mixed, "12", "10");
+      expect(result).toEqual([12, 10, 11]);
+      expect(result).not.toContain(13);
+    });
+
+    it("renders a drag handle for each reorderable row", () => {
+      renderTable({ downloads: QUEUE_DOWNLOADS, filter: "queued" });
+      const handles = screen.getAllByLabelText("Drag to reorder");
+      expect(handles.length).toBe(QUEUE_DOWNLOADS.length);
+    });
+
+    it("invokes download_move_to_top when Move to top is clicked", async () => {
+      const user = userEvent.setup();
+      renderTable({ downloads: QUEUE_DOWNLOADS, filter: "queued" });
+
+      await user.click(screen.getAllByLabelText("More actions")[0]);
+      await user.click(screen.getByText("Move to top"));
+
+      await waitFor(() => {
+        expect(invokeMock).toHaveBeenCalledWith(
+          "download_move_to_top",
+          expect.objectContaining({ id: 10 }),
+        );
+      });
+    });
+
+    it("invokes download_move_to_bottom when Move to bottom is clicked", async () => {
+      const user = userEvent.setup();
+      renderTable({ downloads: QUEUE_DOWNLOADS, filter: "queued" });
+
+      await user.click(screen.getAllByLabelText("More actions")[1]);
+      await user.click(screen.getByText("Move to bottom"));
+
+      await waitFor(() => {
+        expect(invokeMock).toHaveBeenCalledWith(
+          "download_move_to_bottom",
+          expect.objectContaining({ id: 11 }),
+        );
+      });
     });
   });
 });

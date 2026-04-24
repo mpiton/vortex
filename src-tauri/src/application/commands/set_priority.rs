@@ -1,5 +1,6 @@
 use crate::application::command_bus::CommandBus;
 use crate::application::error::AppError;
+use crate::domain::event::DomainEvent;
 use crate::domain::model::queue::Priority;
 
 impl CommandBus {
@@ -15,6 +16,10 @@ impl CommandBus {
         let priority = Priority::new(cmd.priority)?;
         let download = download.with_priority(priority);
         self.download_repo().save(&download)?;
+        self.event_bus().publish(DomainEvent::DownloadPrioritySet {
+            id: cmd.id,
+            priority: cmd.priority,
+        });
         Ok(())
     }
 }
@@ -103,10 +108,22 @@ mod tests {
         }
     }
 
-    struct MockEventBus;
+    struct MockEventBus {
+        events: Mutex<Vec<DomainEvent>>,
+    }
+
+    impl MockEventBus {
+        fn new() -> Self {
+            Self {
+                events: Mutex::new(Vec::new()),
+            }
+        }
+    }
 
     impl EventBus for MockEventBus {
-        fn publish(&self, _event: DomainEvent) {}
+        fn publish(&self, event: DomainEvent) {
+            self.events.lock().unwrap().push(event);
+        }
         fn subscribe(&self, _handler: Box<dyn Fn(&DomainEvent) + Send + Sync>) {}
     }
 
@@ -261,10 +278,14 @@ mod tests {
     }
 
     fn make_command_bus(repo: MockDownloadRepo) -> CommandBus {
+        make_command_bus_with_bus(repo, Arc::new(MockEventBus::new()))
+    }
+
+    fn make_command_bus_with_bus(repo: MockDownloadRepo, bus: Arc<MockEventBus>) -> CommandBus {
         CommandBus::new(
             Arc::new(repo),
             Arc::new(MockDownloadEngine),
-            Arc::new(MockEventBus),
+            bus,
             Arc::new(MockFileStorage),
             Arc::new(MockHttpClient),
             Arc::new(MockPluginLoader),
@@ -313,6 +334,27 @@ mod tests {
             result.unwrap_err(),
             AppError::Domain(DomainError::InvalidPriority(_))
         ));
+    }
+
+    #[tokio::test]
+    async fn test_set_priority_publishes_domain_event() {
+        let dl = make_download();
+        let repo = MockDownloadRepo::new().with_download(dl);
+        let events = Arc::new(MockEventBus::new());
+        let bus = make_command_bus_with_bus(repo, events.clone());
+
+        let cmd = SetPriorityCommand {
+            id: DownloadId(1),
+            priority: 9,
+        };
+        bus.handle_set_priority(cmd).await.unwrap();
+
+        let recorded = events.events.lock().unwrap().clone();
+        assert!(recorded.iter().any(|e| matches!(
+            e,
+            DomainEvent::DownloadPrioritySet { id, priority }
+                if id.0 == 1 && *priority == 9
+        )));
     }
 
     #[tokio::test]

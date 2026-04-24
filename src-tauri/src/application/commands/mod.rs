@@ -9,6 +9,7 @@ mod delete_history;
 mod export_history;
 mod extract_archive;
 mod install_plugin;
+mod move_queue;
 mod open_download_file;
 mod open_download_folder;
 mod pause_all;
@@ -117,6 +118,31 @@ pub struct SetPriorityCommand {
     pub priority: u8,
 }
 impl Command for SetPriorityCommand {}
+
+/// Move a download to the top of the queue by giving it the smallest
+/// `queue_position` value among all currently Queued/Retry/Waiting items.
+#[derive(Debug)]
+pub struct MoveToTopCommand {
+    pub id: DownloadId,
+}
+impl Command for MoveToTopCommand {}
+
+/// Move a download to the bottom of the queue by giving it the largest
+/// `queue_position` value among all currently Queued/Retry/Waiting items.
+#[derive(Debug)]
+pub struct MoveToBottomCommand {
+    pub id: DownloadId,
+}
+impl Command for MoveToBottomCommand {}
+
+/// Reorder the queue using an explicit list of download IDs. Positions are
+/// reassigned sequentially starting from 1. Downloads not listed keep their
+/// current position. Used by the drag & drop reorder UI.
+#[derive(Debug)]
+pub struct ReorderQueueCommand {
+    pub ordered_ids: Vec<DownloadId>,
+}
+impl Command for ReorderQueueCommand {}
 
 #[derive(Debug)]
 pub struct RemoveDownloadCommand {
