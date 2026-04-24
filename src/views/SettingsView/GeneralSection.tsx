@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useTauriMutation } from "@/api/hooks";
 import { toast } from "@/lib/toast";
@@ -15,6 +16,7 @@ interface GeneralSectionProps {
 export function GeneralSection({ config }: GeneralSectionProps) {
   const { t } = useTranslation();
   const browseFolder = useBrowseFolder();
+  const [browsingDir, setBrowsingDir] = useState(false);
   const { mutate } = useTauriMutation<AppConfig, { patch: AppConfigPatch }>("settings_update", {
     invalidateKeys: [["settings_get"]],
     onSuccess: () => {
@@ -27,13 +29,17 @@ export function GeneralSection({ config }: GeneralSectionProps) {
   };
 
   const handleBrowseDownloadDir = async () => {
+    if (browsingDir) return;
+    setBrowsingDir(true);
     try {
       const picked = await browseFolder(config.downloadDir);
-      if (picked) {
+      if (picked && picked !== (config.downloadDir ?? "")) {
         handleChange("downloadDir", picked);
       }
     } catch (err) {
       toast.error(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBrowsingDir(false);
     }
   };
 
@@ -58,6 +64,7 @@ export function GeneralSection({ config }: GeneralSectionProps) {
             size="icon"
             aria-label={t("settings.general.browse")}
             onClick={handleBrowseDownloadDir}
+            disabled={browsingDir}
           >
             <FolderOpen className="size-4" />
           </Button>

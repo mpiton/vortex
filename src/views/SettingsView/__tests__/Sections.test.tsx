@@ -151,6 +151,50 @@ describe("GeneralSection", () => {
     const updateCalls = mockInvoke.mock.calls.filter(([cmd]) => cmd === "settings_update");
     expect(updateCalls).toHaveLength(0);
   });
+
+  it("should skip settings_update when picked folder equals the current one", async () => {
+    mockInvoke.mockImplementation(async (command: string) => {
+      if (command === "browse_folder") return "/tmp/downloads";
+      return null;
+    });
+    const user = userEvent.setup();
+    renderWithQuery(<GeneralSection config={mockConfig} />);
+    await user.click(screen.getByLabelText("Browse"));
+
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith("browse_folder", expect.anything());
+    });
+    const updateCalls = mockInvoke.mock.calls.filter(([cmd]) => cmd === "settings_update");
+    expect(updateCalls).toHaveLength(0);
+  });
+
+  it("should prevent concurrent browse_folder calls while dialog is pending", async () => {
+    let resolveFolder: ((value: string | null) => void) | undefined;
+    mockInvoke.mockImplementation(async (command: string) => {
+      if (command === "browse_folder") {
+        return new Promise<string | null>((resolve) => {
+          resolveFolder = resolve;
+        });
+      }
+      return null;
+    });
+    const user = userEvent.setup();
+    renderWithQuery(<GeneralSection config={mockConfig} />);
+    const btn = screen.getByLabelText("Browse");
+
+    await user.click(btn);
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith("browse_folder", expect.anything());
+    });
+    await waitFor(() => expect(btn).toBeDisabled());
+
+    await user.click(btn);
+    const browseCalls = mockInvoke.mock.calls.filter(([cmd]) => cmd === "browse_folder");
+    expect(browseCalls).toHaveLength(1);
+
+    resolveFolder?.(null);
+    await waitFor(() => expect(btn).not.toBeDisabled());
+  });
 });
 
 describe("DownloadsSection", () => {
