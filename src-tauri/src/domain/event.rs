@@ -56,6 +56,19 @@ pub enum DomainEvent {
         downloaded_bytes: u64,
         total_bytes: u64,
     },
+    /// File checksum was computed and matched the expected value.
+    ChecksumVerified {
+        id: DownloadId,
+        algorithm: String,
+        checksum: String,
+    },
+    /// File checksum was computed but did not match the expected value.
+    ChecksumMismatch {
+        id: DownloadId,
+        algorithm: String,
+        expected: String,
+        computed: String,
+    },
 
     // Segments
     SegmentStarted {
@@ -203,5 +216,32 @@ mod tests {
         };
         let cloned = event.clone();
         assert_eq!(event, cloned);
+    }
+
+    #[test]
+    fn test_checksum_verified_event_carries_algorithm_and_value() {
+        let event = DomainEvent::ChecksumVerified {
+            id: DownloadId(11),
+            algorithm: "SHA-256".to_string(),
+            checksum: "deadbeef".to_string(),
+        };
+        let s = format!("{event:?}");
+        assert!(s.contains("ChecksumVerified"));
+        assert!(s.contains("SHA-256"));
+        assert!(s.contains("deadbeef"));
+    }
+
+    #[test]
+    fn test_checksum_mismatch_event_includes_expected_and_computed() {
+        let event = DomainEvent::ChecksumMismatch {
+            id: DownloadId(12),
+            algorithm: "MD5".to_string(),
+            expected: "aaa".to_string(),
+            computed: "bbb".to_string(),
+        };
+        let s = format!("{event:?}");
+        assert!(s.contains("ChecksumMismatch"));
+        assert!(s.contains("aaa"));
+        assert!(s.contains("bbb"));
     }
 }

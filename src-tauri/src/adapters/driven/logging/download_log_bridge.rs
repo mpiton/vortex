@@ -84,6 +84,22 @@ fn record_download_event(store: &DownloadLogStore, event: &DomainEvent) {
                 format!("[ERROR] Segment {segment_id} failed: {error}"),
             );
         }
+        DomainEvent::ChecksumVerified { id, algorithm, .. } => {
+            store.push(id.0, format!("[INFO] {algorithm} checksum verified"));
+        }
+        DomainEvent::ChecksumMismatch {
+            id,
+            algorithm,
+            expected,
+            computed,
+        } => {
+            store.push(
+                id.0,
+                format!(
+                    "[ERROR] {algorithm} checksum mismatch: expected {expected}, computed {computed}"
+                ),
+            );
+        }
         DomainEvent::DownloadProgress { .. }
         | DomainEvent::DownloadCompletedPersisted { .. }
         | DomainEvent::PluginLoaded { .. }

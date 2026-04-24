@@ -41,6 +41,8 @@ pub struct DownloadDetailViewDto {
     pub eta_seconds: Option<u64>,
     pub segments: Vec<SegmentViewDto>,
     pub checksum_expected: Option<String>,
+    pub checksum_computed: Option<String>,
+    pub checksum_algorithm: Option<String>,
     pub destination_path: String,
     pub module_name: Option<String>,
     pub account_name: Option<String>,
@@ -66,6 +68,8 @@ impl From<DownloadDetailView> for DownloadDetailViewDto {
             eta_seconds: v.eta_seconds,
             segments: v.segments.into_iter().map(SegmentViewDto::from).collect(),
             checksum_expected: v.checksum_expected,
+            checksum_computed: v.checksum_computed,
+            checksum_algorithm: v.checksum_algorithm,
             destination_path: v.destination_path,
             module_name: v.module_name,
             account_name: v.account_name,
@@ -114,6 +118,8 @@ mod tests {
             eta_seconds: None,
             segments: vec![],
             checksum_expected: None,
+            checksum_computed: None,
+            checksum_algorithm: None,
             destination_path: "/tmp/archive.zip".to_string(),
             module_name: None,
             account_name: None,
@@ -144,6 +150,8 @@ mod tests {
             eta_seconds: None,
             segments: vec![],
             checksum_expected: None,
+            checksum_computed: None,
+            checksum_algorithm: None,
             destination_path: "/tmp".to_string(),
             module_name: None,
             account_name: None,
@@ -159,6 +167,8 @@ mod tests {
         assert!(value.get("speedBytesPerSec").is_some());
         assert!(value.get("downloadedBytes").is_some());
         assert!(value.get("checksumExpected").is_some());
+        assert!(value.get("checksumComputed").is_some());
+        assert!(value.get("checksumAlgorithm").is_some());
         assert!(value.get("destinationPath").is_some());
         assert!(value.get("resumeSupported").is_some());
         assert!(value.get("retryCount").is_some());

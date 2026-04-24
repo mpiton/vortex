@@ -179,6 +179,8 @@ mod tests {
             eta_seconds: Some(10),
             segments: vec![],
             checksum_expected: None,
+            checksum_computed: None,
+            checksum_algorithm: None,
             destination_path: "/tmp/test.zip".to_string(),
             module_name: None,
             account_name: None,

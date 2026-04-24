@@ -23,6 +23,14 @@ pub enum DomainError {
     ValidationError(String),
     PluginError(String),
     AdaptiveStreamOnly,
+    /// Computed checksum did not match the expected value.
+    ChecksumMismatch {
+        expected: String,
+        computed: String,
+        algorithm: String,
+    },
+    /// Expected checksum string format is not supported (length / non-hex).
+    UnsupportedChecksumFormat(String),
 }
 
 impl std::fmt::Display for DomainError {
@@ -64,6 +72,18 @@ impl std::fmt::Display for DomainError {
             DomainError::AdaptiveStreamOnly => write!(
                 f,
                 "Video is only available as adaptive stream (DASH/HLS); use download_to_file"
+            ),
+            DomainError::ChecksumMismatch {
+                expected,
+                computed,
+                algorithm,
+            } => write!(
+                f,
+                "Checksum mismatch ({algorithm}): expected {expected}, computed {computed}"
+            ),
+            DomainError::UnsupportedChecksumFormat(value) => write!(
+                f,
+                "Unsupported checksum format: {value} (expected 32 hex chars for MD5 or 64 for SHA-256)"
             ),
         }
     }
@@ -157,5 +177,27 @@ mod tests {
             err.to_string(),
             "Video is only available as adaptive stream (DASH/HLS); use download_to_file"
         );
+    }
+
+    #[test]
+    fn test_display_checksum_mismatch_includes_all_fields() {
+        let err = DomainError::ChecksumMismatch {
+            expected: "abc".to_string(),
+            computed: "def".to_string(),
+            algorithm: "SHA-256".to_string(),
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("SHA-256"));
+        assert!(msg.contains("abc"));
+        assert!(msg.contains("def"));
+    }
+
+    #[test]
+    fn test_display_unsupported_checksum_format() {
+        let err = DomainError::UnsupportedChecksumFormat("xyz".to_string());
+        let msg = err.to_string();
+        assert!(msg.contains("xyz"));
+        assert!(msg.contains("MD5"));
+        assert!(msg.contains("SHA-256"));
     }
 }

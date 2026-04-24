@@ -402,6 +402,8 @@ mod tests {
             max_retries: Set(5),
             segments_count: Set(1),
             checksum_expected: Set(None),
+            checksum_computed: Set(None),
+            checksum_algorithm: Set(None),
             source_hostname: Set("example.test".to_string()),
             protocol: Set("https".to_string()),
             resume_supported: Set(1),

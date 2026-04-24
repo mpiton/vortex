@@ -29,6 +29,8 @@ function mockDownloadDetail(overrides?: Partial<DownloadDetailView>): DownloadDe
       { id: 0, startByte: 0, endByte: 524288, downloadedBytes: 262144, state: 'Downloading' },
     ],
     checksumExpected: null,
+    checksumComputed: null,
+    checksumAlgorithm: null,
     destinationPath: '/home/user/Downloads/test-file.zip',
     moduleName: null,
     accountName: null,

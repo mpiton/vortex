@@ -26,6 +26,7 @@ mod toggle_clipboard;
 mod toggle_plugin;
 mod uninstall_plugin;
 mod update_config;
+mod verify_checksum;
 
 use std::path::PathBuf;
 
@@ -185,6 +186,18 @@ pub struct PurgeHistoryCommand {
     pub before_timestamp: u64,
 }
 impl Command for PurgeHistoryCommand {}
+
+/// Re-run the checksum validation for an existing download.
+///
+/// Used by the detail panel "Verify checksum" action so the user can re-check
+/// integrity after a manual file move or after replacing the file.
+#[derive(Debug)]
+pub struct VerifyChecksumCommand {
+    pub id: DownloadId,
+}
+impl Command for VerifyChecksumCommand {}
+
+pub use verify_checksum::VerifyChecksumOutcome;
 
 /// Register an already-downloaded local file as a Completed download.
 ///

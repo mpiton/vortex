@@ -2,6 +2,7 @@
 mod tests;
 
 pub mod archive_extractor;
+pub mod checksum_computer;
 pub mod clipboard_observer;
 pub mod config_store;
 pub mod credential_store;
@@ -18,6 +19,7 @@ pub mod plugin_store_client;
 pub mod stats_repository;
 
 pub use archive_extractor::ArchiveExtractor;
+pub use checksum_computer::ChecksumComputer;
 pub use clipboard_observer::ClipboardObserver;
 pub use config_store::ConfigStore;
 pub use credential_store::CredentialStore;

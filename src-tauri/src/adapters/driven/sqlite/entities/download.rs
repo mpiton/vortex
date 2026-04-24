@@ -1,6 +1,7 @@
 use sea_orm::entity::prelude::*;
 
 use crate::domain::error::DomainError;
+use crate::domain::model::checksum::ChecksumAlgorithm;
 use crate::domain::model::download::{Download, DownloadId, DownloadState, FileSize, Url};
 use crate::domain::model::queue::Priority;
 
@@ -20,6 +21,8 @@ pub struct Model {
     pub max_retries: i32,
     pub segments_count: i32,
     pub checksum_expected: Option<String>,
+    pub checksum_computed: Option<String>,
+    pub checksum_algorithm: Option<String>,
     pub source_hostname: String,
     pub protocol: String,
     pub resume_supported: i32,
@@ -57,6 +60,18 @@ impl Model {
         })?;
         let priority = Priority::new(priority_val)?;
         let file_size = self.total_bytes.map(|b| FileSize(b as u64));
+        let checksum_algorithm = match self.checksum_algorithm.as_deref() {
+            Some(s) => Some(s.parse::<ChecksumAlgorithm>().map_err(|e| {
+                DomainError::StorageError(format!("invalid checksum algorithm in DB: {e}"))
+            })?),
+            // Migrated rows may have checksum_expected without an algorithm
+            // column. Detect from the hex length so verification stays
+            // functional after the migration runs.
+            None => self
+                .checksum_expected
+                .as_deref()
+                .and_then(ChecksumAlgorithm::detect_from_hex),
+        };
 
         Ok(Download::reconstruct(
             DownloadId(self.id as u64),
@@ -70,6 +85,8 @@ impl Model {
             self.max_retries as u32,
             self.segments_count as u32,
             self.checksum_expected,
+            self.checksum_computed,
+            checksum_algorithm,
             self.source_hostname,
             self.protocol,
             self.resume_supported != 0,
@@ -99,6 +116,8 @@ impl ActiveModel {
             max_retries: Set(download.max_retries() as i32),
             segments_count: Set(download.segments_count() as i32),
             checksum_expected: Set(download.checksum_expected().map(|s| s.to_string())),
+            checksum_computed: Set(download.checksum_computed().map(|s| s.to_string())),
+            checksum_algorithm: Set(download.checksum_algorithm().map(|a| a.to_string())),
             source_hostname: Set(download.source_hostname().to_string()),
             protocol: Set(download.protocol().to_string()),
             resume_supported: Set(if download.resume_supported() { 1 } else { 0 }),
