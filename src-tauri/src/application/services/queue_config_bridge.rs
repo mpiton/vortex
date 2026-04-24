@@ -28,9 +28,8 @@ pub fn subscribe_queue_to_config(
         }
         match config_store.get_config() {
             Ok(config) => {
-                queue_manager.set_max_concurrent(normalize_max_concurrent(
-                    config.max_concurrent_downloads,
-                ));
+                queue_manager
+                    .set_max_concurrent(normalize_max_concurrent(config.max_concurrent_downloads));
             }
             Err(err) => {
                 tracing::error!(%err, "queue_config_bridge: failed to read config");

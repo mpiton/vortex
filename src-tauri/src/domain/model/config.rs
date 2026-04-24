@@ -343,7 +343,10 @@ mod tests {
 
     #[test]
     fn test_normalize_max_concurrent_clamps_zero_to_min() {
-        assert_eq!(normalize_max_concurrent(0), MIN_MAX_CONCURRENT_DOWNLOADS as usize);
+        assert_eq!(
+            normalize_max_concurrent(0),
+            MIN_MAX_CONCURRENT_DOWNLOADS as usize
+        );
     }
 
     #[test]
@@ -355,7 +358,13 @@ mod tests {
 
     #[test]
     fn test_normalize_max_concurrent_clamps_above_range_to_max() {
-        assert_eq!(normalize_max_concurrent(21), MAX_MAX_CONCURRENT_DOWNLOADS as usize);
-        assert_eq!(normalize_max_concurrent(u32::MAX), MAX_MAX_CONCURRENT_DOWNLOADS as usize);
+        assert_eq!(
+            normalize_max_concurrent(21),
+            MAX_MAX_CONCURRENT_DOWNLOADS as usize
+        );
+        assert_eq!(
+            normalize_max_concurrent(u32::MAX),
+            MAX_MAX_CONCURRENT_DOWNLOADS as usize
+        );
     }
 }
