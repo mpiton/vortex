@@ -1,23 +1,23 @@
-import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
-import userEvent from '@testing-library/user-event';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { GeneralSection } from '../GeneralSection';
-import { DownloadsSection } from '../DownloadsSection';
-import { NetworkSection } from '../NetworkSection';
-import { RemoteAccessSection } from '../RemoteAccessSection';
-import { BrowserSection } from '../BrowserSection';
-import { AppearanceSection } from '../AppearanceSection';
-import type { AppConfig } from '@/types/settings';
-import { ThemeProvider } from '@/theme/theme-provider';
+import { describe, it, expect, vi, beforeAll, beforeEach } from "vitest";
+import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { GeneralSection } from "../GeneralSection";
+import { DownloadsSection } from "../DownloadsSection";
+import { NetworkSection } from "../NetworkSection";
+import { RemoteAccessSection } from "../RemoteAccessSection";
+import { BrowserSection } from "../BrowserSection";
+import { AppearanceSection } from "../AppearanceSection";
+import type { AppConfig } from "@/types/settings";
+import { ThemeProvider } from "@/theme/theme-provider";
 
 const mockInvoke = vi.hoisted(() => vi.fn());
 
-vi.mock('@tauri-apps/api/core', () => ({
+vi.mock("@tauri-apps/api/core", () => ({
   invoke: mockInvoke,
 }));
 
-vi.mock('@tauri-apps/api/event', () => ({
+vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn().mockResolvedValue(vi.fn()),
 }));
 
@@ -29,7 +29,7 @@ beforeAll(() => {
 });
 
 const mockConfig: AppConfig = {
-  downloadDir: '/tmp/downloads',
+  downloadDir: "/tmp/downloads",
   startMinimized: false,
   notificationsEnabled: true,
   autoExtract: true,
@@ -44,23 +44,23 @@ const mockConfig: AppConfig = {
   retryDelaySeconds: 10,
   verifyChecksums: true,
   preAllocateSpace: true,
-  proxyType: 'none',
+  proxyType: "none",
   proxyUrl: null,
-  userAgent: 'Vortex/1.0',
+  userAgent: "Vortex/1.0",
   dnsOverHttps: false,
   connectionTimeoutSeconds: 30,
   webInterfaceEnabled: false,
   webInterfacePort: 9876,
   restApiEnabled: true,
-  apiKey: 'test-api-key-abc-123',
+  apiKey: "test-api-key-abc-123",
   websocketEnabled: true,
   minFileSizeMb: 1,
   excludedDomains: [],
   excludedExtensions: [],
-  theme: 'auto',
-  accentColor: '#4F46E5',
+  theme: "auto",
+  accentColor: "#4F46E5",
   compactMode: false,
-  locale: 'en',
+  locale: "en",
 };
 
 function renderWithQuery(children: React.ReactNode) {
@@ -70,11 +70,7 @@ function renderWithQuery(children: React.ReactNode) {
       mutations: { retry: false },
     },
   });
-  return render(
-    <QueryClientProvider client={queryClient}>
-      {children}
-    </QueryClientProvider>,
-  );
+  return render(<QueryClientProvider client={queryClient}>{children}</QueryClientProvider>);
 }
 
 function renderWithTheme(children: React.ReactNode) {
@@ -85,192 +81,272 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockInvoke.mockResolvedValue(null);
   localStorage.clear();
-  document.documentElement.classList.remove('dark');
+  document.documentElement.classList.remove("dark");
 });
 
-describe('GeneralSection', () => {
-  it('should render download directory input', () => {
+describe("GeneralSection", () => {
+  it("should render download directory input", () => {
     renderWithQuery(<GeneralSection config={mockConfig} />);
-    expect(screen.getByDisplayValue('/tmp/downloads')).toBeInTheDocument();
+    expect(screen.getByDisplayValue("/tmp/downloads")).toBeInTheDocument();
   });
 
-  it('should render all toggle settings', () => {
+  it("should render all toggle settings", () => {
     renderWithQuery(<GeneralSection config={mockConfig} />);
-    expect(screen.getByText('Start minimized')).toBeInTheDocument();
-    expect(screen.getByText('Notifications')).toBeInTheDocument();
-    expect(screen.getByText('Auto extract')).toBeInTheDocument();
-    expect(screen.getByText('Clipboard monitoring')).toBeInTheDocument();
-    expect(screen.getByText('Sound effects')).toBeInTheDocument();
-    expect(screen.getByText('Confirm before delete')).toBeInTheDocument();
-    expect(screen.getByText('Subfolder per package')).toBeInTheDocument();
+    expect(screen.getByText("Start minimized")).toBeInTheDocument();
+    expect(screen.getByText("Notifications")).toBeInTheDocument();
+    expect(screen.getByText("Auto extract")).toBeInTheDocument();
+    expect(screen.getByText("Clipboard monitoring")).toBeInTheDocument();
+    expect(screen.getByText("Sound effects")).toBeInTheDocument();
+    expect(screen.getByText("Confirm before delete")).toBeInTheDocument();
+    expect(screen.getByText("Subfolder per package")).toBeInTheDocument();
   });
 
-  it('should render Browse button for directory picker', () => {
+  it("should render Browse button for directory picker", () => {
     renderWithQuery(<GeneralSection config={mockConfig} />);
-    expect(screen.getByLabelText('Browse')).toBeInTheDocument();
+    expect(screen.getByLabelText("Browse")).toBeInTheDocument();
+  });
+
+  it("should render Browse button enabled", () => {
+    renderWithQuery(<GeneralSection config={mockConfig} />);
+    const btn = screen.getByLabelText("Browse");
+    expect(btn).not.toBeDisabled();
+  });
+
+  it("should call browse_folder and persist selection on click", async () => {
+    mockInvoke.mockImplementation(async (command: string) => {
+      if (command === "browse_folder") return "/new/downloads";
+      if (command === "settings_update") return null;
+      return null;
+    });
+    const user = userEvent.setup();
+    renderWithQuery(<GeneralSection config={mockConfig} />);
+    await user.click(screen.getByLabelText("Browse"));
+
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith(
+        "browse_folder",
+        expect.objectContaining({ defaultPath: "/tmp/downloads" }),
+      );
+    });
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith(
+        "settings_update",
+        expect.objectContaining({ patch: { downloadDir: "/new/downloads" } }),
+      );
+    });
+  });
+
+  it("should not update settings when user cancels the dialog", async () => {
+    mockInvoke.mockImplementation(async (command: string) => {
+      if (command === "browse_folder") return null;
+      return null;
+    });
+    const user = userEvent.setup();
+    renderWithQuery(<GeneralSection config={mockConfig} />);
+    await user.click(screen.getByLabelText("Browse"));
+
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith("browse_folder", expect.anything());
+    });
+    const updateCalls = mockInvoke.mock.calls.filter(([cmd]) => cmd === "settings_update");
+    expect(updateCalls).toHaveLength(0);
+  });
+
+  it("should skip settings_update when picked folder equals the current one", async () => {
+    mockInvoke.mockImplementation(async (command: string) => {
+      if (command === "browse_folder") return "/tmp/downloads";
+      return null;
+    });
+    const user = userEvent.setup();
+    renderWithQuery(<GeneralSection config={mockConfig} />);
+    await user.click(screen.getByLabelText("Browse"));
+
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith("browse_folder", expect.anything());
+    });
+    const updateCalls = mockInvoke.mock.calls.filter(([cmd]) => cmd === "settings_update");
+    expect(updateCalls).toHaveLength(0);
+  });
+
+  it("should prevent concurrent browse_folder calls while dialog is pending", async () => {
+    let resolveFolder: ((value: string | null) => void) | undefined;
+    mockInvoke.mockImplementation(async (command: string) => {
+      if (command === "browse_folder") {
+        return new Promise<string | null>((resolve) => {
+          resolveFolder = resolve;
+        });
+      }
+      return null;
+    });
+    const user = userEvent.setup();
+    renderWithQuery(<GeneralSection config={mockConfig} />);
+    const btn = screen.getByLabelText("Browse");
+
+    await user.click(btn);
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith("browse_folder", expect.anything());
+    });
+    await waitFor(() => expect(btn).toBeDisabled());
+
+    await user.click(btn);
+    const browseCalls = mockInvoke.mock.calls.filter(([cmd]) => cmd === "browse_folder");
+    expect(browseCalls).toHaveLength(1);
+
+    resolveFolder?.(null);
+    await waitFor(() => expect(btn).not.toBeDisabled());
   });
 });
 
-describe('DownloadsSection', () => {
-  it('should render number inputs with correct values', () => {
+describe("DownloadsSection", () => {
+  it("should render number inputs with correct values", () => {
     renderWithQuery(<DownloadsSection config={mockConfig} />);
-    expect(screen.getByText('Max concurrent downloads')).toBeInTheDocument();
-    expect(screen.getByText('Max segments per download')).toBeInTheDocument();
-    expect(screen.getByText('Speed limit (MiB/s)')).toBeInTheDocument();
+    expect(screen.getByText("Max concurrent downloads")).toBeInTheDocument();
+    expect(screen.getByText("Max segments per download")).toBeInTheDocument();
+    expect(screen.getByText("Speed limit (MiB/s)")).toBeInTheDocument();
   });
 
-  it('should render toggle settings', () => {
+  it("should render toggle settings", () => {
     renderWithQuery(<DownloadsSection config={mockConfig} />);
-    expect(screen.getByText('Verify checksums')).toBeInTheDocument();
-    expect(screen.getByText('Pre-allocate space')).toBeInTheDocument();
+    expect(screen.getByText("Verify checksums")).toBeInTheDocument();
+    expect(screen.getByText("Pre-allocate space")).toBeInTheDocument();
   });
 
-  it('should cap maxConcurrentDownloads input at 20 per PRD §6.10', () => {
+  it("should cap maxConcurrentDownloads input at 20 per PRD §6.10", () => {
     renderWithQuery(<DownloadsSection config={mockConfig} />);
-    const label = screen.getByText('Max concurrent downloads');
-    const input = label.closest('div')?.parentElement?.querySelector('input');
+    const label = screen.getByText("Max concurrent downloads");
+    const input = label.closest("div")?.parentElement?.querySelector("input");
     expect(input).not.toBeNull();
-    expect(input?.max).toBe('20');
+    expect(input?.max).toBe("20");
   });
 });
 
-describe('NetworkSection', () => {
-  it('should render proxy type selector', () => {
+describe("NetworkSection", () => {
+  it("should render proxy type selector", () => {
     renderWithQuery(<NetworkSection config={mockConfig} />);
-    expect(screen.getByText('Proxy type')).toBeInTheDocument();
+    expect(screen.getByText("Proxy type")).toBeInTheDocument();
   });
 
-  it('should not show proxy URL when proxy type is none', () => {
+  it("should not show proxy URL when proxy type is none", () => {
     renderWithQuery(<NetworkSection config={mockConfig} />);
-    expect(screen.queryByText('Proxy URL')).not.toBeInTheDocument();
+    expect(screen.queryByText("Proxy URL")).not.toBeInTheDocument();
   });
 
-  it('should show proxy URL when proxy type is http', () => {
-    renderWithQuery(
-      <NetworkSection config={{ ...mockConfig, proxyType: 'http' }} />,
-    );
-    expect(screen.getByPlaceholderText('http://proxy:8080')).toBeInTheDocument();
+  it("should show proxy URL when proxy type is http", () => {
+    renderWithQuery(<NetworkSection config={{ ...mockConfig, proxyType: "http" }} />);
+    expect(screen.getByPlaceholderText("http://proxy:8080")).toBeInTheDocument();
   });
 
-  it('should render DNS over HTTPS toggle', () => {
+  it("should render DNS over HTTPS toggle", () => {
     renderWithQuery(<NetworkSection config={mockConfig} />);
-    expect(screen.getByText('DNS over HTTPS')).toBeInTheDocument();
+    expect(screen.getByText("DNS over HTTPS")).toBeInTheDocument();
   });
 });
 
-describe('RemoteAccessSection', () => {
-  it('should render security warning', () => {
+describe("RemoteAccessSection", () => {
+  it("should render security warning", () => {
     renderWithQuery(<RemoteAccessSection config={mockConfig} />);
     expect(screen.getByText(/remote access exposes/i)).toBeInTheDocument();
   });
 
-  it('should not show port input when web interface is disabled', () => {
+  it("should not show port input when web interface is disabled", () => {
     renderWithQuery(<RemoteAccessSection config={mockConfig} />);
-    expect(screen.queryByText('Web interface port')).not.toBeInTheDocument();
+    expect(screen.queryByText("Web interface port")).not.toBeInTheDocument();
   });
 
-  it('should show port input when web interface is enabled', () => {
-    renderWithQuery(
-      <RemoteAccessSection config={{ ...mockConfig, webInterfaceEnabled: true }} />,
-    );
-    expect(screen.getByText('Web interface port')).toBeInTheDocument();
+  it("should show port input when web interface is enabled", () => {
+    renderWithQuery(<RemoteAccessSection config={{ ...mockConfig, webInterfaceEnabled: true }} />);
+    expect(screen.getByText("Web interface port")).toBeInTheDocument();
   });
 
-  it('should not show API key when REST API is disabled', () => {
-    renderWithQuery(
-      <RemoteAccessSection config={{ ...mockConfig, restApiEnabled: false }} />,
-    );
-    expect(screen.queryByText('API Key')).not.toBeInTheDocument();
+  it("should not show API key when REST API is disabled", () => {
+    renderWithQuery(<RemoteAccessSection config={{ ...mockConfig, restApiEnabled: false }} />);
+    expect(screen.queryByText("API Key")).not.toBeInTheDocument();
   });
 
-  it('should show masked API key when REST API is enabled', () => {
-    renderWithQuery(
-      <RemoteAccessSection config={{ ...mockConfig, restApiEnabled: true }} />,
-    );
-    expect(screen.getByText('API Key')).toBeInTheDocument();
-    expect(screen.getByLabelText('Show API key')).toBeInTheDocument();
+  it("should show masked API key when REST API is enabled", () => {
+    renderWithQuery(<RemoteAccessSection config={{ ...mockConfig, restApiEnabled: true }} />);
+    expect(screen.getByText("API Key")).toBeInTheDocument();
+    expect(screen.getByLabelText("Show API key")).toBeInTheDocument();
   });
 
-  it('should reveal API key when show button clicked', async () => {
+  it("should reveal API key when show button clicked", async () => {
     const user = userEvent.setup();
-    renderWithQuery(
-      <RemoteAccessSection config={{ ...mockConfig, restApiEnabled: true }} />,
-    );
+    renderWithQuery(<RemoteAccessSection config={{ ...mockConfig, restApiEnabled: true }} />);
 
-    await user.click(screen.getByLabelText('Show API key'));
+    await user.click(screen.getByLabelText("Show API key"));
 
-    expect(screen.getByDisplayValue('test-api-key-abc-123')).toBeInTheDocument();
-    expect(screen.getByLabelText('Hide API key')).toBeInTheDocument();
+    expect(screen.getByDisplayValue("test-api-key-abc-123")).toBeInTheDocument();
+    expect(screen.getByLabelText("Hide API key")).toBeInTheDocument();
   });
 });
 
-describe('BrowserSection', () => {
-  it('should render min file size input', () => {
+describe("BrowserSection", () => {
+  it("should render min file size input", () => {
     renderWithQuery(<BrowserSection config={mockConfig} />);
-    expect(screen.getByText('Minimum file size (MB)')).toBeInTheDocument();
+    expect(screen.getByText("Minimum file size (MB)")).toBeInTheDocument();
   });
 
-  it('should render domain and extension textareas', () => {
+  it("should render domain and extension textareas", () => {
     renderWithQuery(<BrowserSection config={mockConfig} />);
-    expect(screen.getByText('Excluded domains')).toBeInTheDocument();
-    expect(screen.getByText('Excluded extensions')).toBeInTheDocument();
+    expect(screen.getByText("Excluded domains")).toBeInTheDocument();
+    expect(screen.getByText("Excluded extensions")).toBeInTheDocument();
   });
 });
 
-describe('AppearanceSection', () => {
-  it('should render theme selector', () => {
+describe("AppearanceSection", () => {
+  it("should render theme selector", () => {
     renderWithTheme(<AppearanceSection config={mockConfig} />);
-    expect(screen.getByText('Theme')).toBeInTheDocument();
+    expect(screen.getByText("Theme")).toBeInTheDocument();
   });
 
-  it('should apply dark theme immediately when dark is selected', async () => {
+  it("should apply dark theme immediately when dark is selected", async () => {
     const user = userEvent.setup();
 
     renderWithTheme(<AppearanceSection config={mockConfig} />);
 
-    await user.click(screen.getByRole('combobox', { name: 'Theme' }));
-    await user.click(await screen.findByRole('option', { name: 'Dark' }));
+    await user.click(screen.getByRole("combobox", { name: "Theme" }));
+    await user.click(await screen.findByRole("option", { name: "Dark" }));
 
     await waitFor(() => {
-      expect(localStorage.getItem('vortex-theme')).toBe('dark');
-      expect(document.documentElement).toHaveClass('dark');
+      expect(localStorage.getItem("vortex-theme")).toBe("dark");
+      expect(document.documentElement).toHaveClass("dark");
     });
   });
 
-  it('should keep the current theme when the theme mutation fails', async () => {
+  it("should keep the current theme when the theme mutation fails", async () => {
     const user = userEvent.setup();
-    mockInvoke.mockRejectedValueOnce(new Error('config store unavailable'));
+    mockInvoke.mockRejectedValueOnce(new Error("config store unavailable"));
 
     renderWithTheme(<AppearanceSection config={mockConfig} />);
 
-    await user.click(screen.getByRole('combobox', { name: 'Theme' }));
-    await user.click(await screen.findByRole('option', { name: 'Dark' }));
+    await user.click(screen.getByRole("combobox", { name: "Theme" }));
+    await user.click(await screen.findByRole("option", { name: "Dark" }));
 
     await waitFor(() => {
-      expect(mockInvoke).toHaveBeenCalledWith('settings_update', { patch: { theme: 'dark' } });
+      expect(mockInvoke).toHaveBeenCalledWith("settings_update", { patch: { theme: "dark" } });
     });
 
-    expect(localStorage.getItem('vortex-theme')).toBe('auto');
-    expect(document.documentElement).not.toHaveClass('dark');
+    expect(localStorage.getItem("vortex-theme")).toBe("auto");
+    expect(document.documentElement).not.toHaveClass("dark");
   });
 
-  it('should render 6 accent color buttons', () => {
+  it("should render 6 accent color buttons", () => {
     renderWithTheme(<AppearanceSection config={mockConfig} />);
-    expect(screen.getByLabelText('Indigo')).toBeInTheDocument();
-    expect(screen.getByLabelText('Blue')).toBeInTheDocument();
-    expect(screen.getByLabelText('Purple')).toBeInTheDocument();
-    expect(screen.getByLabelText('Pink')).toBeInTheDocument();
-    expect(screen.getByLabelText('Red')).toBeInTheDocument();
-    expect(screen.getByLabelText('Green')).toBeInTheDocument();
+    expect(screen.getByLabelText("Indigo")).toBeInTheDocument();
+    expect(screen.getByLabelText("Blue")).toBeInTheDocument();
+    expect(screen.getByLabelText("Purple")).toBeInTheDocument();
+    expect(screen.getByLabelText("Pink")).toBeInTheDocument();
+    expect(screen.getByLabelText("Red")).toBeInTheDocument();
+    expect(screen.getByLabelText("Green")).toBeInTheDocument();
   });
 
-  it('should render compact mode toggle', () => {
+  it("should render compact mode toggle", () => {
     renderWithTheme(<AppearanceSection config={mockConfig} />);
-    expect(screen.getByText('Compact mode')).toBeInTheDocument();
+    expect(screen.getByText("Compact mode")).toBeInTheDocument();
   });
 
-  it('should render language selector', () => {
+  it("should render language selector", () => {
     renderWithTheme(<AppearanceSection config={mockConfig} />);
-    expect(screen.getByText('Language')).toBeInTheDocument();
+    expect(screen.getByText("Language")).toBeInTheDocument();
   });
 });

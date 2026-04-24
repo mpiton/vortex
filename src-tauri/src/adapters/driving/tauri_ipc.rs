@@ -2117,6 +2117,96 @@ pub async fn reveal_in_folder(path: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Filter entry forwarded to the native file dialog.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct BrowseFileFilter {
+    pub name: String,
+    pub extensions: Vec<String>,
+}
+
+/// Open the native OS folder picker and return the selected path.
+///
+/// Returns `Ok(None)` when the user cancels the dialog. The command is async
+/// so the tokio pool thread can block on the dialog without stalling the
+/// webview main thread.
+#[tauri::command]
+pub async fn browse_folder(
+    app: tauri::AppHandle,
+    default_path: Option<String>,
+) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let mut builder = app.dialog().file();
+    if let Some(start) = default_path
+        .as_deref()
+        .filter(|s| !s.is_empty() && Path::new(s).is_dir())
+    {
+        builder = builder.set_directory(start);
+    }
+    builder.pick_folder(move |path| {
+        let _ = tx.send(path);
+    });
+
+    let picked = rx
+        .await
+        .map_err(|e| format!("folder dialog was dropped before a result: {e}"))?;
+    match picked {
+        None => Ok(None),
+        Some(fp) => fp
+            .into_path()
+            .map(|p| Some(p.display().to_string()))
+            .map_err(|e| e.to_string()),
+    }
+}
+
+/// Open the native OS file picker and return the selected path.
+///
+/// Filters are optional; when omitted the dialog accepts any file. The
+/// cancellation and async behaviour mirror [`browse_folder`].
+#[tauri::command]
+pub async fn browse_file(
+    app: tauri::AppHandle,
+    filters: Option<Vec<BrowseFileFilter>>,
+    default_path: Option<String>,
+) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let mut builder = app.dialog().file();
+    if let Some(start) = default_path.as_deref().filter(|s| !s.is_empty()) {
+        let start_path = Path::new(start);
+        let anchor = if start_path.is_dir() {
+            Some(start_path)
+        } else {
+            start_path.parent().filter(|p| p.is_dir())
+        };
+        if let Some(dir) = anchor {
+            builder = builder.set_directory(dir);
+        }
+    }
+    if let Some(filters) = filters {
+        for filter in &filters {
+            let extensions: Vec<&str> = filter.extensions.iter().map(String::as_str).collect();
+            builder = builder.add_filter(&filter.name, &extensions);
+        }
+    }
+    builder.pick_file(move |path| {
+        let _ = tx.send(path);
+    });
+
+    let picked = rx
+        .await
+        .map_err(|e| format!("file dialog was dropped before a result: {e}"))?;
+    match picked {
+        None => Ok(None),
+        Some(fp) => fp
+            .into_path()
+            .map(|p| Some(p.display().to_string()))
+            .map_err(|e| e.to_string()),
+    }
+}
+
 #[tauri::command]
 pub async fn history_purge_older_than(
     state: State<'_, AppState>,
