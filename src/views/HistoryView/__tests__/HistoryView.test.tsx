@@ -1,18 +1,18 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
-import userEvent from '@testing-library/user-event';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { invoke } from '@tauri-apps/api/core';
-import { save } from '@tauri-apps/plugin-dialog';
-import { toast } from 'sonner';
-import type { HistoryView as HistoryEntry } from '@/types/download';
-import { HistoryView } from '../HistoryView';
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { invoke } from "@tauri-apps/api/core";
+import { save } from "@tauri-apps/plugin-dialog";
+import { toast } from "sonner";
+import type { HistoryView as HistoryEntry } from "@/types/download";
+import { HistoryView } from "../HistoryView";
 
-vi.mock('@tauri-apps/api/core', () => ({
+vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(),
 }));
 
-vi.mock('@tauri-apps/plugin-dialog', () => ({
+vi.mock("@tauri-apps/plugin-dialog", () => ({
   save: vi.fn(),
 }));
 
@@ -23,26 +23,26 @@ const mockToastSuccess = vi.mocked(toast.success);
 function sampleEntries(): HistoryEntry[] {
   return [
     {
-      entryId: '1',
-      downloadId: '10',
-      fileName: 'alpha.zip',
-      url: 'https://a.example.com/alpha.zip',
+      entryId: "1",
+      downloadId: "10",
+      fileName: "alpha.zip",
+      url: "https://a.example.com/alpha.zip",
       totalBytes: 1024,
       completedAt: Math.floor(new Date(2026, 3, 20, 12, 0, 0).getTime() / 1000),
       durationSeconds: 10,
       avgSpeed: 102,
-      destinationPath: '/tmp/alpha.zip',
+      destinationPath: "/tmp/alpha.zip",
     },
     {
-      entryId: '2',
-      downloadId: '11',
-      fileName: 'beta.mkv',
-      url: 'https://b.example.com/beta.mkv',
+      entryId: "2",
+      downloadId: "11",
+      fileName: "beta.mkv",
+      url: "https://b.example.com/beta.mkv",
       totalBytes: 5000,
       completedAt: Math.floor(new Date(2026, 3, 19, 15, 30, 0).getTime() / 1000),
       durationSeconds: 30,
       avgSpeed: 166,
-      destinationPath: '/tmp/beta.mkv',
+      destinationPath: "/tmp/beta.mkv",
     },
   ];
 }
@@ -60,161 +60,184 @@ function renderView() {
 }
 
 beforeEach(() => {
+  window.localStorage.setItem("i18nextLng", "en");
   mockInvoke.mockReset();
   mockSave.mockReset();
   mockToastSuccess.mockClear();
 });
 
-describe('HistoryView integration', () => {
-  it('should replace the placeholder and render grouped entries from history_list', async () => {
+describe("HistoryView integration", () => {
+  it("should replace the placeholder and render grouped entries from history_list", async () => {
     mockInvoke.mockImplementation(async (command: string) => {
-      if (command === 'history_list') return sampleEntries();
+      if (command === "history_list") return sampleEntries();
       return null;
     });
 
     renderView();
 
     await waitFor(() => {
-      expect(screen.getByText('alpha.zip')).toBeInTheDocument();
-      expect(screen.getByText('beta.mkv')).toBeInTheDocument();
+      expect(screen.getByText("alpha.zip")).toBeInTheDocument();
+      expect(screen.getByText("beta.mkv")).toBeInTheDocument();
     });
     expect(screen.queryByText(/coming soon/i)).not.toBeInTheDocument();
-    expect(mockInvoke).toHaveBeenCalledWith('history_list', undefined);
+    expect(mockInvoke).toHaveBeenCalledWith("history_list", undefined);
   });
 
-  it('should render the empty state when history is empty', async () => {
+  it("should render the empty state when history is empty", async () => {
     mockInvoke.mockResolvedValue([]);
     renderView();
-    await waitFor(() =>
-      expect(screen.getByTestId('history-empty')).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(screen.getByTestId("history-empty")).toBeInTheDocument());
   });
 
-  it('should show the search-empty state when a search returns no results', async () => {
+  it("should show the search-empty state when a search returns no results", async () => {
     mockInvoke.mockImplementation(async (command: string) => {
-      if (command === 'history_list') return sampleEntries();
-      if (command === 'history_search') return [];
+      if (command === "history_list") return sampleEntries();
+      if (command === "history_search") return [];
       return null;
     });
 
     renderView();
     const user = userEvent.setup();
-    await waitFor(() => expect(screen.getByText('alpha.zip')).toBeInTheDocument());
-    await user.type(screen.getByLabelText('Search history'), 'zeta');
+    await waitFor(() => expect(screen.getByText("alpha.zip")).toBeInTheDocument());
+    await user.type(screen.getByLabelText("Search history"), "zeta");
 
-    await waitFor(
-      () => expect(screen.getByTestId('history-search-empty')).toBeInTheDocument(),
-      { timeout: 2000 },
-    );
-    expect(screen.queryByTestId('history-empty')).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByTestId("history-search-empty")).toBeInTheDocument(), {
+      timeout: 2000,
+    });
+    expect(screen.queryByTestId("history-empty")).not.toBeInTheDocument();
   }, 10_000);
 
-  it('should filter to a single status tab and show 0 entries on cancelled', async () => {
+  it("should filter to a single status tab and show 0 entries on cancelled", async () => {
     mockInvoke.mockImplementation(async (command: string) => {
-      if (command === 'history_list') return sampleEntries();
+      if (command === "history_list") return sampleEntries();
       return null;
     });
     renderView();
     const user = userEvent.setup();
-    await waitFor(() => expect(screen.getByText('alpha.zip')).toBeInTheDocument());
-    await user.click(screen.getByRole('tab', { name: /Cancelled/i }));
-    expect(screen.queryByText('alpha.zip')).not.toBeInTheDocument();
-    expect(screen.getByTestId('history-filter-empty')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText("alpha.zip")).toBeInTheDocument());
+    await user.click(screen.getByRole("tab", { name: /Cancelled/i }));
+    expect(screen.queryByText("alpha.zip")).not.toBeInTheDocument();
+    expect(screen.getByTestId("history-filter-empty")).toBeInTheDocument();
   });
 
-  it('should debounce search input and invoke history_search', async () => {
+  it("should debounce search input and invoke history_search", async () => {
     mockInvoke.mockImplementation(async (command: string) => {
-      if (command === 'history_list') return sampleEntries();
-      if (command === 'history_search') return [sampleEntries()[1]];
+      if (command === "history_list") return sampleEntries();
+      if (command === "history_search") return [sampleEntries()[1]];
       return null;
     });
 
     renderView();
-    await waitFor(() =>
-      expect(mockInvoke).toHaveBeenCalledWith('history_list', undefined),
-    );
+    await waitFor(() => expect(mockInvoke).toHaveBeenCalledWith("history_list", undefined));
 
     const user = userEvent.setup();
-    await user.type(screen.getByLabelText('Search history'), 'beta');
+    await user.type(screen.getByLabelText("Search history"), "beta");
 
     await waitFor(
       () =>
         expect(
           mockInvoke.mock.calls.some(
             ([cmd, args]) =>
-              cmd === 'history_search' &&
-              (args as { q: string } | undefined)?.q === 'beta',
+              cmd === "history_search" && (args as { q: string } | undefined)?.q === "beta",
           ),
         ).toBe(true),
       { timeout: 2000 },
     );
   }, 10_000);
 
-  it('should open save dialog and invoke history_export on CSV export', async () => {
+  it("should open save dialog and invoke history_export on CSV export", async () => {
     mockInvoke.mockImplementation(async (command: string) => {
-      if (command === 'history_list') return sampleEntries();
-      if (command === 'history_export') return 2;
+      if (command === "history_list") return sampleEntries();
+      if (command === "history_export") return 2;
       return null;
     });
-    mockSave.mockResolvedValue('/tmp/history.csv');
+    mockSave.mockResolvedValue("/tmp/history.csv");
 
     renderView();
     const user = userEvent.setup();
-    await waitFor(() => expect(screen.getByText('alpha.zip')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("alpha.zip")).toBeInTheDocument());
 
-    await user.click(screen.getByRole('button', { name: /Export/i }));
-    await user.click(screen.getByRole('menuitem', { name: /Export as CSV/i }));
+    await user.click(screen.getByRole("button", { name: /Export/i }));
+    await user.click(screen.getByRole("menuitem", { name: /Export as CSV/i }));
 
     await waitFor(() => expect(mockSave).toHaveBeenCalledTimes(1));
     await waitFor(() =>
-      expect(mockInvoke).toHaveBeenCalledWith('history_export', {
-        format: 'csv',
-        path: '/tmp/history.csv',
+      expect(mockInvoke).toHaveBeenCalledWith("history_export", {
+        format: "csv",
+        path: "/tmp/history.csv",
       }),
     );
     await waitFor(() => expect(mockToastSuccess).toHaveBeenCalled());
   });
 
-  it('should skip history_export when the user cancels the save dialog', async () => {
+  it("should skip history_export when the user cancels the save dialog", async () => {
     mockInvoke.mockImplementation(async (command: string) => {
-      if (command === 'history_list') return sampleEntries();
+      if (command === "history_list") return sampleEntries();
       return null;
     });
     mockSave.mockResolvedValue(null);
 
     renderView();
     const user = userEvent.setup();
-    await waitFor(() => expect(screen.getByText('alpha.zip')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("alpha.zip")).toBeInTheDocument());
 
-    await user.click(screen.getByRole('button', { name: /Export/i }));
-    await user.click(screen.getByRole('menuitem', { name: /Export as JSON/i }));
+    await user.click(screen.getByRole("button", { name: /Export/i }));
+    await user.click(screen.getByRole("menuitem", { name: /Export as JSON/i }));
 
     await waitFor(() => expect(mockSave).toHaveBeenCalledTimes(1));
-    expect(
-      mockInvoke.mock.calls.some(([cmd]) => cmd === 'history_export'),
-    ).toBe(false);
+    expect(mockInvoke.mock.calls.some(([cmd]) => cmd === "history_export")).toBe(false);
   });
 
-  it('should re-download an entry by invoking download_start with the entry URL', async () => {
+  it("re-downloads an entry through download_redownload keyed on entry id", async () => {
     mockInvoke.mockImplementation(async (command: string) => {
-      if (command === 'history_list') return sampleEntries();
-      if (command === 'download_start') return 99;
+      if (command === "history_list") return sampleEntries();
+      if (command === "download_redownload") return { kind: "created", id: 99 };
       return null;
     });
 
     renderView();
     const user = userEvent.setup();
-    await waitFor(() => expect(screen.getByText('alpha.zip')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("alpha.zip")).toBeInTheDocument());
 
-    const buttons = screen.getAllByRole('button', { name: 'Re-download' });
+    const buttons = screen.getAllByRole("button", { name: "Re-download" });
     await user.click(buttons[0]);
 
     await waitFor(() =>
       expect(mockInvoke).toHaveBeenCalledWith(
-        'download_start',
-        expect.objectContaining({ url: expect.stringContaining('example.com') }),
+        "download_redownload",
+        expect.objectContaining({
+          sourceKind: "history",
+          sourceId: "1",
+          overwriteMode: null,
+        }),
       ),
     );
     await waitFor(() => expect(mockToastSuccess).toHaveBeenCalled());
+  });
+
+  it("shows the overwrite dialog when the destination already exists", async () => {
+    mockInvoke.mockImplementation(async (command: string) => {
+      if (command === "history_list") return sampleEntries();
+      if (command === "download_redownload") {
+        return {
+          kind: "fileExists",
+          originalPath: "/tmp/alpha.zip",
+          suggestedPath: "/tmp/alpha (1).zip",
+        };
+      }
+      return null;
+    });
+
+    renderView();
+    const user = userEvent.setup();
+    await waitFor(() => expect(screen.getByText("alpha.zip")).toBeInTheDocument());
+
+    const buttons = screen.getAllByRole("button", { name: "Re-download" });
+    await user.click(buttons[0]);
+
+    await waitFor(() =>
+      expect(screen.getByRole("heading", { name: /file already exists/i })).toBeInTheDocument(),
+    );
+    expect(screen.getByTestId("overwrite-suggested-path")).toHaveTextContent("/tmp/alpha (1).zip");
   });
 });

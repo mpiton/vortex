@@ -184,12 +184,15 @@
         "setPriority": "Set Priority",
         "remove": "Remove",
         "openFile": "Open file",
-        "openFolder": "Open folder"
+        "openFolder": "Open folder",
+        "redownload": "Re-download"
       },
       "toast": {
         "openFileError": "Failed to open file",
         "openFileMissing": "File not found",
-        "openFolderError": "Failed to open folder"
+        "openFolderError": "Failed to open folder",
+        "redownloadSuccess": "Download re-added",
+        "redownloadError": "Failed to re-download"
       },
       "priority": {
         "high": "High",
@@ -250,7 +253,15 @@
     "failedToLoadSettings": "Failed to load settings",
     "comingSoon": "Coming soon",
     "clear": "Clear",
-    "unlimited": "unlimited"
+    "unlimited": "unlimited",
+    "overwriteDialog": {
+      "title": "File already exists",
+      "description": "{{path}} already exists. Overwrite the existing file or save with a new name?",
+      "suggestedPathLabel": "New path",
+      "overwrite": "Overwrite",
+      "rename": "Keep both",
+      "cancel": "Cancel"
+    }
   },
   "plugins": {
     "title": "Plugins",

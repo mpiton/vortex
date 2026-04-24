@@ -14,6 +14,7 @@ mod open_download_folder;
 mod pause_all;
 mod pause_download;
 mod purge_history;
+mod redownload;
 mod register_local_file;
 mod remove_download;
 mod resolve_links;
@@ -215,6 +216,29 @@ pub struct OpenDownloadFolderCommand {
 impl Command for OpenDownloadFolderCommand {}
 
 pub use verify_checksum::VerifyChecksumOutcome;
+
+/// Source to rebuild a download from when the user triggers "Re-download".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RedownloadSource {
+    /// Clone a completed download aggregate (URL + options preserved).
+    Download(DownloadId),
+    /// Rebuild from a history entry (URL/destination only — history does not
+    /// retain segments/priority/module/account).
+    History(u64),
+}
+
+/// Re-create a download using the URL and options of a previous one.
+///
+/// Always produces a brand-new `DownloadId`. When the destination file
+/// already exists, the driving adapter is responsible for prompting the
+/// user (overwrite / rename) and passing the resolved path via
+/// `destination_override` before invoking the handler.
+#[derive(Debug, Clone)]
+pub struct RedownloadCommand {
+    pub source: RedownloadSource,
+    pub destination_override: Option<PathBuf>,
+}
+impl Command for RedownloadCommand {}
 
 /// Register an already-downloaded local file as a Completed download.
 ///

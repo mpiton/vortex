@@ -1,13 +1,13 @@
-import { useRef, useMemo, useState, useCallback, createContext, useContext } from 'react';
+import { useRef, useMemo, useState, useCallback, createContext, useContext } from "react";
 import {
   useReactTable,
   getCoreRowModel,
   getSortedRowModel,
   flexRender,
-} from '@tanstack/react-table';
-import type { ColumnDef, SortingState } from '@tanstack/react-table';
-import { useVirtualizer } from '@tanstack/react-virtual';
-import { useTranslation } from 'react-i18next';
+} from "@tanstack/react-table";
+import type { ColumnDef, SortingState } from "@tanstack/react-table";
+import { useVirtualizer } from "@tanstack/react-virtual";
+import { useTranslation } from "react-i18next";
 import {
   Pause,
   Play,
@@ -18,15 +18,12 @@ import {
   ArrowDown,
   ExternalLink,
   FolderOpen,
-} from 'lucide-react';
-import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
-import { Checkbox } from '@/components/ui/checkbox';
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from '@/components/ui/tooltip';
+  RefreshCw,
+} from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -36,16 +33,17 @@ import {
   DropdownMenuSubContent,
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu';
-import { useTauriMutation } from '@/api/hooks';
-import { downloadQueries } from '@/api/queries';
-import { useUiStore } from '@/stores/uiStore';
-import type { DownloadView, DownloadState } from '@/types/download';
-import type { FilterType } from './types';
-import { StateIndicator } from './StateIndicator';
-import { ProgressCell } from './ProgressCell';
-import { SpeedCell } from './SpeedCell';
-import { EtaCell } from './EtaCell';
+} from "@/components/ui/dropdown-menu";
+import { useTauriMutation } from "@/api/hooks";
+import { downloadQueries } from "@/api/queries";
+import { useUiStore } from "@/stores/uiStore";
+import { useRedownload } from "@/hooks/useRedownload";
+import type { DownloadView, DownloadState } from "@/types/download";
+import type { FilterType } from "./types";
+import { StateIndicator } from "./StateIndicator";
+import { ProgressCell } from "./ProgressCell";
+import { SpeedCell } from "./SpeedCell";
+import { EtaCell } from "./EtaCell";
 
 type Translate = (key: string, options?: Record<string, unknown>) => string;
 
@@ -65,15 +63,15 @@ interface FilterDownloadsOptions {
 
 const STATE_FILTER_MAP: Record<FilterType, DownloadState[] | null> = {
   all: null,
-  active: ['Downloading', 'Queued'],
-  queued: ['Queued'],
-  done: ['Completed'],
-  failed: ['Error', 'Retry'],
+  active: ["Downloading", "Queued"],
+  queued: ["Queued"],
+  done: ["Completed"],
+  failed: ["Error", "Retry"],
 };
 
 function extractExtension(fileName: string): string {
-  const dot = fileName.lastIndexOf('.');
-  if (dot <= 0 || dot === fileName.length - 1) return '';
+  const dot = fileName.lastIndexOf(".");
+  if (dot <= 0 || dot === fileName.length - 1) return "";
   return fileName.slice(dot + 1).toUpperCase();
 }
 
@@ -81,17 +79,13 @@ function extractHostname(url: string): string {
   try {
     return new URL(url).hostname;
   } catch {
-    return '\u2014';
+    return "\u2014";
   }
 }
 
 export function filterDownloads(
   downloads: DownloadView[],
-  {
-    downloadsAreFiltered = false,
-    filter = 'all',
-    searchQuery = '',
-  }: FilterDownloadsOptions = {},
+  { downloadsAreFiltered = false, filter = "all", searchQuery = "" }: FilterDownloadsOptions = {},
 ) {
   if (downloadsAreFiltered) {
     return downloads;
@@ -125,13 +119,14 @@ interface RowActions {
   setPriority: (id: string, priority: number) => void;
   openFile: (id: string) => void;
   openFolder: (id: string) => void;
+  redownload: (id: string) => void;
 }
 
 const RowActionsContext = createContext<RowActions | null>(null);
 
 function useRowActions(): RowActions {
   const ctx = useContext(RowActionsContext);
-  if (!ctx) throw new Error('useRowActions must be inside RowActionsContext');
+  if (!ctx) throw new Error("useRowActions must be inside RowActionsContext");
   return ctx;
 }
 
@@ -145,12 +140,12 @@ function ActionCell({ download, t }: ActionCellProps) {
 
   return (
     <div className="flex items-center gap-1">
-      {download.state === 'Downloading' && (
+      {download.state === "Downloading" && (
         <Button
           variant="ghost"
           size="icon"
           className="h-7 w-7"
-          aria-label={t('downloads.table.actions.pause')}
+          aria-label={t("downloads.table.actions.pause")}
           onClick={(e) => {
             e.stopPropagation();
             actions.pause(download.id);
@@ -159,12 +154,12 @@ function ActionCell({ download, t }: ActionCellProps) {
           <Pause className="size-3.5" />
         </Button>
       )}
-      {download.state === 'Paused' && (
+      {download.state === "Paused" && (
         <Button
           variant="ghost"
           size="icon"
           className="h-7 w-7"
-          aria-label={t('downloads.table.actions.resume')}
+          aria-label={t("downloads.table.actions.resume")}
           onClick={(e) => {
             e.stopPropagation();
             actions.resume(download.id);
@@ -173,12 +168,12 @@ function ActionCell({ download, t }: ActionCellProps) {
           <Play className="size-3.5" />
         </Button>
       )}
-      {download.state === 'Error' && (
+      {download.state === "Error" && (
         <Button
           variant="ghost"
           size="icon"
           className="h-7 w-7"
-          aria-label={t('downloads.table.actions.retry')}
+          aria-label={t("downloads.table.actions.retry")}
           onClick={(e) => {
             e.stopPropagation();
             actions.start(download.id);
@@ -193,14 +188,14 @@ function ActionCell({ download, t }: ActionCellProps) {
             variant="ghost"
             size="icon"
             className="h-7 w-7"
-            aria-label={t('downloads.table.moreActions')}
+            aria-label={t("downloads.table.moreActions")}
             onClick={(e) => e.stopPropagation()}
           >
             <MoreHorizontal className="size-3.5" />
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
-          {download.state === 'Completed' && (
+          {download.state === "Completed" && (
             <>
               <DropdownMenuItem
                 onClick={(e) => {
@@ -209,7 +204,7 @@ function ActionCell({ download, t }: ActionCellProps) {
                 }}
               >
                 <ExternalLink className="size-3.5" />
-                {t('downloads.table.actions.openFile')}
+                {t("downloads.table.actions.openFile")}
               </DropdownMenuItem>
               <DropdownMenuItem
                 onClick={(e) => {
@@ -218,18 +213,29 @@ function ActionCell({ download, t }: ActionCellProps) {
                 }}
               >
                 <FolderOpen className="size-3.5" />
-                {t('downloads.table.actions.openFolder')}
+                {t("downloads.table.actions.openFolder")}
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={(e) => {
+                  e.stopPropagation();
+                  actions.redownload(download.id);
+                }}
+              >
+                <RefreshCw className="size-3.5" />
+                {t("downloads.table.actions.redownload")}
               </DropdownMenuItem>
               <DropdownMenuSeparator />
             </>
           )}
           <DropdownMenuSub>
-            <DropdownMenuSubTrigger>{t('downloads.table.actions.setPriority')}</DropdownMenuSubTrigger>
+            <DropdownMenuSubTrigger>
+              {t("downloads.table.actions.setPriority")}
+            </DropdownMenuSubTrigger>
             <DropdownMenuSubContent>
               {[
-                { label: t('downloads.table.priority.high'), value: 1 },
-                { label: t('downloads.table.priority.normal'), value: 5 },
-                { label: t('downloads.table.priority.low'), value: 10 },
+                { label: t("downloads.table.priority.high"), value: 1 },
+                { label: t("downloads.table.priority.normal"), value: 5 },
+                { label: t("downloads.table.priority.low"), value: 10 },
               ].map((p) => (
                 <DropdownMenuItem
                   key={p.value}
@@ -252,7 +258,7 @@ function ActionCell({ download, t }: ActionCellProps) {
             }}
           >
             <Trash2 className="size-3.5" />
-            {t('downloads.table.actions.remove')}
+            {t("downloads.table.actions.remove")}
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
@@ -263,12 +269,12 @@ function ActionCell({ download, t }: ActionCellProps) {
 function getColumns(t: Translate): ColumnDef<DownloadView>[] {
   return [
     {
-      id: 'select',
+      id: "select",
       header: ({ table }) => (
         <Checkbox
           checked={table.getIsAllRowsSelected()}
           onCheckedChange={(checked) => table.toggleAllRowsSelected(!!checked)}
-          aria-label={t('downloads.table.selectAll')}
+          aria-label={t("downloads.table.selectAll")}
         />
       ),
       cell: ({ row }) => (
@@ -276,30 +282,25 @@ function getColumns(t: Translate): ColumnDef<DownloadView>[] {
           checked={row.getIsSelected()}
           onCheckedChange={(checked) => row.toggleSelected(!!checked)}
           onClick={(e) => e.stopPropagation()}
-          aria-label={t('downloads.table.selectRow')}
+          aria-label={t("downloads.table.selectRow")}
         />
       ),
       enableSorting: false,
     },
     {
-      accessorKey: 'state',
-      header: t('downloads.table.columns.state'),
+      accessorKey: "state",
+      header: t("downloads.table.columns.state"),
       cell: ({ row }) => (
-        <StateIndicator
-          state={row.original.state}
-          errorMessage={row.original.errorMessage}
-        />
+        <StateIndicator state={row.original.state} errorMessage={row.original.errorMessage} />
       ),
     },
     {
-      accessorKey: 'fileName',
-      header: t('downloads.table.columns.fileName'),
+      accessorKey: "fileName",
+      header: t("downloads.table.columns.fileName"),
       cell: ({ row }) => (
         <Tooltip>
           <TooltipTrigger asChild>
-            <span className="block max-w-[200px] truncate">
-              {row.original.fileName}
-            </span>
+            <span className="block max-w-[200px] truncate">{row.original.fileName}</span>
           </TooltipTrigger>
           <TooltipContent>
             <p className="max-w-[400px] break-all">{row.original.url}</p>
@@ -308,16 +309,16 @@ function getColumns(t: Translate): ColumnDef<DownloadView>[] {
       ),
     },
     {
-      id: 'type',
-      header: t('downloads.table.columns.type'),
+      id: "type",
+      header: t("downloads.table.columns.type"),
       cell: ({ row }) => {
         const ext = extractExtension(row.original.fileName);
         return ext ? <Badge variant="outline">{ext}</Badge> : null;
       },
     },
     {
-      id: 'host',
-      header: t('downloads.table.columns.host'),
+      id: "host",
+      header: t("downloads.table.columns.host"),
       cell: ({ row }) => (
         <span className="text-xs text-muted-foreground">
           {row.original.sourceHostname || extractHostname(row.original.url)}
@@ -325,25 +326,25 @@ function getColumns(t: Translate): ColumnDef<DownloadView>[] {
       ),
     },
     {
-      accessorKey: 'progressPercent',
-      header: t('downloads.table.columns.progress'),
+      accessorKey: "progressPercent",
+      header: t("downloads.table.columns.progress"),
       cell: ({ row }) => <ProgressCell download={row.original} />,
     },
     {
-      id: 'speed',
-      header: t('downloads.table.columns.speed'),
+      id: "speed",
+      header: t("downloads.table.columns.speed"),
       cell: ({ row }) => <SpeedCell downloadId={row.original.id} />,
       enableSorting: false,
     },
     {
-      id: 'eta',
-      header: t('downloads.table.columns.eta'),
+      id: "eta",
+      header: t("downloads.table.columns.eta"),
       cell: ({ row }) => <EtaCell downloadId={row.original.id} />,
       enableSorting: false,
     },
     {
-      id: 'actions',
-      header: '',
+      id: "actions",
+      header: "",
       cell: ({ row }) => <ActionCell download={row.original} t={t} />,
       enableSorting: false,
     },
@@ -354,49 +355,63 @@ export function DownloadsTable({
   downloads,
   downloadsAreFiltered = false,
   isLoading,
-  filter = 'all',
-  searchQuery = '',
+  filter = "all",
+  searchQuery = "",
 }: DownloadsTableProps) {
   const { t } = useTranslation();
   const [sorting, setSorting] = useState<SortingState>([]);
   const tableContainerRef = useRef<HTMLDivElement>(null);
   const columns = useMemo(() => getColumns(t), [t]);
 
-  const invalidateKeys = useMemo(() => [downloadQueries.lists(), downloadQueries.countByState()] as const, []);
-  const pauseMut = useTauriMutation<unknown, { id: number }>('download_pause', { invalidateKeys });
-  const resumeMut = useTauriMutation<unknown, { id: number }>('download_resume', { invalidateKeys });
-  const retryMut = useTauriMutation<unknown, { id: number }>('download_retry', { invalidateKeys });
-  const removeMut = useTauriMutation<unknown, { id: number; deleteFiles: boolean }>('download_remove', { invalidateKeys });
-  const priorityMut = useTauriMutation<unknown, { id: number; priority: number }>('download_set_priority', { invalidateKeys });
-  const openFileMut = useTauriMutation<unknown, { id: number }>('download_open_file', {
-    errorMessage: (err) =>
-      err.message.toLowerCase().includes('not found')
-        ? t('downloads.table.toast.openFileMissing')
-        : t('downloads.table.toast.openFileError'),
+  const invalidateKeys = useMemo(
+    () => [downloadQueries.lists(), downloadQueries.countByState()] as const,
+    [],
+  );
+  const pauseMut = useTauriMutation<unknown, { id: number }>("download_pause", { invalidateKeys });
+  const resumeMut = useTauriMutation<unknown, { id: number }>("download_resume", {
+    invalidateKeys,
   });
-  const openFolderMut = useTauriMutation<unknown, { id: number }>('download_open_folder', {
+  const retryMut = useTauriMutation<unknown, { id: number }>("download_retry", { invalidateKeys });
+  const removeMut = useTauriMutation<unknown, { id: number; deleteFiles: boolean }>(
+    "download_remove",
+    { invalidateKeys },
+  );
+  const priorityMut = useTauriMutation<unknown, { id: number; priority: number }>(
+    "download_set_priority",
+    { invalidateKeys },
+  );
+  const openFileMut = useTauriMutation<unknown, { id: number }>("download_open_file", {
     errorMessage: (err) =>
-      err.message.toLowerCase().includes('not found')
-        ? t('downloads.table.toast.openFileMissing')
-        : t('downloads.table.toast.openFolderError'),
+      err.message.toLowerCase().includes("not found")
+        ? t("downloads.table.toast.openFileMissing")
+        : t("downloads.table.toast.openFileError"),
   });
+  const openFolderMut = useTauriMutation<unknown, { id: number }>("download_open_folder", {
+    errorMessage: (err) =>
+      err.message.toLowerCase().includes("not found")
+        ? t("downloads.table.toast.openFileMissing")
+        : t("downloads.table.toast.openFolderError"),
+  });
+  const redownload = useRedownload();
 
-  const rowActions = useMemo<RowActions>(() => ({
-    pause: (id) => pauseMut.mutate({ id: Number(id) }),
-    resume: (id) => resumeMut.mutate({ id: Number(id) }),
-    start: (id) => retryMut.mutate({ id: Number(id) }),
-    remove: (id) => removeMut.mutate({ id: Number(id), deleteFiles: false }),
-    setPriority: (id, priority) => priorityMut.mutate({ id: Number(id), priority }),
-    openFile: (id) => openFileMut.mutate({ id: Number(id) }),
-    openFolder: (id) => openFolderMut.mutate({ id: Number(id) }),
-  }), [pauseMut, resumeMut, retryMut, removeMut, priorityMut, openFileMut, openFolderMut]);
+  const rowActions = useMemo<RowActions>(
+    () => ({
+      pause: (id) => pauseMut.mutate({ id: Number(id) }),
+      resume: (id) => resumeMut.mutate({ id: Number(id) }),
+      start: (id) => retryMut.mutate({ id: Number(id) }),
+      remove: (id) => removeMut.mutate({ id: Number(id), deleteFiles: false }),
+      setPriority: (id, priority) => priorityMut.mutate({ id: Number(id), priority }),
+      openFile: (id) => openFileMut.mutate({ id: Number(id) }),
+      openFolder: (id) => openFolderMut.mutate({ id: Number(id) }),
+      redownload: (id) => redownload.trigger("download", id),
+    }),
+    [pauseMut, resumeMut, retryMut, removeMut, priorityMut, openFileMut, openFolderMut, redownload],
+  );
 
   const selectedDownloadIds = useUiStore((s) => s.selectedDownloadIds);
   const selectDownload = useUiStore((s) => s.selectDownload);
   const setSelectedDownloadIds = useUiStore((s) => s.setSelectedDownloadIds);
-  const toggleDownloadSelection = useUiStore(
-    (s) => s.toggleDownloadSelection,
-  );
+  const toggleDownloadSelection = useUiStore((s) => s.toggleDownloadSelection);
   const clearSelection = useUiStore((s) => s.clearSelection);
 
   const filteredDownloads = useMemo(
@@ -427,8 +442,7 @@ export function DownloadsTable({
     getRowId: (row) => row.id,
     onSortingChange: setSorting,
     onRowSelectionChange: (updater) => {
-      const next =
-        typeof updater === 'function' ? updater(rowSelection) : updater;
+      const next = typeof updater === "function" ? updater(rowSelection) : updater;
       setSelectedDownloadIds(Object.keys(next).filter((k) => next[k]));
     },
     getCoreRowModel: getCoreRowModel(),
@@ -461,7 +475,7 @@ export function DownloadsTable({
   if (isLoading) {
     return (
       <div className="flex flex-1 items-center justify-center">
-        <span className="text-sm text-muted-foreground">{t('downloads.loading')}</span>
+        <span className="text-sm text-muted-foreground">{t("downloads.loading")}</span>
       </div>
     );
   }
@@ -469,7 +483,7 @@ export function DownloadsTable({
   if (filteredDownloads.length === 0) {
     return (
       <div className="flex flex-1 items-center justify-center">
-        <span className="text-sm text-muted-foreground">{t('downloads.empty')}</span>
+        <span className="text-sm text-muted-foreground">{t("downloads.empty")}</span>
       </div>
     );
   }
@@ -479,86 +493,75 @@ export function DownloadsTable({
 
   return (
     <RowActionsContext value={rowActions}>
-    <div ref={tableContainerRef} className="flex-1 overflow-auto rounded-md border">
-      <table className="w-full text-sm">
-        <thead className="sticky top-0 z-10 border-b bg-background">
-          {table.getHeaderGroups().map((headerGroup) => (
-            <tr key={headerGroup.id}>
-              {headerGroup.headers.map((header) => (
-                <th
-                  key={header.id}
-                  className="cursor-pointer select-none px-3 py-2 text-left text-xs font-medium text-muted-foreground hover:text-foreground"
-                  onClick={
-                    header.column.getCanSort()
-                      ? header.column.getToggleSortingHandler()
-                      : undefined
-                  }
-                >
-                  <div className="flex items-center gap-1">
-                    {header.isPlaceholder
-                      ? null
-                      : flexRender(
-                          header.column.columnDef.header,
-                          header.getContext(),
-                        )}
-                    {header.column.getIsSorted() === 'asc' && (
-                      <ArrowUp className="size-3" />
-                    )}
-                    {header.column.getIsSorted() === 'desc' && (
-                      <ArrowDown className="size-3" />
-                    )}
-                  </div>
-                </th>
-              ))}
-            </tr>
-          ))}
-        </thead>
-        <tbody>
-          {virtualRows.length > 0 && (
-            <tr>
-              <td
-                colSpan={columns.length}
-                style={{ height: virtualRows[0].start }}
-              />
-            </tr>
-          )}
-          {virtualRows.map((virtualRow) => {
-            const row = rows[virtualRow.index];
-            const isSelected = rowSelection[row.original.id] === true;
-
-            return (
-              <tr
-                key={row.id}
-                data-index={virtualRow.index}
-                ref={(node) => rowVirtualizer.measureElement(node)}
-                className={`border-b transition-colors hover:bg-muted/50 ${
-                  isSelected ? 'bg-accent/50' : ''
-                }`}
-                onClick={(e) => handleRowClick(e, row.original.id)}
-              >
-                {row.getVisibleCells().map((cell) => (
-                  <td key={cell.id} className="px-3 py-2">
-                    {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                  </td>
+      {redownload.dialog}
+      <div ref={tableContainerRef} className="flex-1 overflow-auto rounded-md border">
+        <table className="w-full text-sm">
+          <thead className="sticky top-0 z-10 border-b bg-background">
+            {table.getHeaderGroups().map((headerGroup) => (
+              <tr key={headerGroup.id}>
+                {headerGroup.headers.map((header) => (
+                  <th
+                    key={header.id}
+                    className="cursor-pointer select-none px-3 py-2 text-left text-xs font-medium text-muted-foreground hover:text-foreground"
+                    onClick={
+                      header.column.getCanSort()
+                        ? header.column.getToggleSortingHandler()
+                        : undefined
+                    }
+                  >
+                    <div className="flex items-center gap-1">
+                      {header.isPlaceholder
+                        ? null
+                        : flexRender(header.column.columnDef.header, header.getContext())}
+                      {header.column.getIsSorted() === "asc" && <ArrowUp className="size-3" />}
+                      {header.column.getIsSorted() === "desc" && <ArrowDown className="size-3" />}
+                    </div>
+                  </th>
                 ))}
               </tr>
-            );
-          })}
-          {virtualRows.length > 0 && (
-            <tr>
-              <td
-                colSpan={columns.length}
-                style={{
-                  height:
-                    totalSize -
-                    virtualRows[virtualRows.length - 1].end,
-                }}
-              />
-            </tr>
-          )}
-        </tbody>
-      </table>
-    </div>
+            ))}
+          </thead>
+          <tbody>
+            {virtualRows.length > 0 && (
+              <tr>
+                <td colSpan={columns.length} style={{ height: virtualRows[0].start }} />
+              </tr>
+            )}
+            {virtualRows.map((virtualRow) => {
+              const row = rows[virtualRow.index];
+              const isSelected = rowSelection[row.original.id] === true;
+
+              return (
+                <tr
+                  key={row.id}
+                  data-index={virtualRow.index}
+                  ref={(node) => rowVirtualizer.measureElement(node)}
+                  className={`border-b transition-colors hover:bg-muted/50 ${
+                    isSelected ? "bg-accent/50" : ""
+                  }`}
+                  onClick={(e) => handleRowClick(e, row.original.id)}
+                >
+                  {row.getVisibleCells().map((cell) => (
+                    <td key={cell.id} className="px-3 py-2">
+                      {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                    </td>
+                  ))}
+                </tr>
+              );
+            })}
+            {virtualRows.length > 0 && (
+              <tr>
+                <td
+                  colSpan={columns.length}
+                  style={{
+                    height: totalSize - virtualRows[virtualRows.length - 1].end,
+                  }}
+                />
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
     </RowActionsContext>
   );
 }
