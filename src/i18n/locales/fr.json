@@ -182,7 +182,14 @@
         "resume": "Reprendre",
         "retry": "Réessayer",
         "setPriority": "Définir la priorité",
-        "remove": "Supprimer"
+        "remove": "Supprimer",
+        "openFile": "Ouvrir le fichier",
+        "openFolder": "Ouvrir le dossier"
+      },
+      "toast": {
+        "openFileError": "Échec de l'ouverture du fichier",
+        "openFileMissing": "Fichier introuvable",
+        "openFolderError": "Échec de l'ouverture du dossier"
       },
       "priority": {
         "high": "Haute",

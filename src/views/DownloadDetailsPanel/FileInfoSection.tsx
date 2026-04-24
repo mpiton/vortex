@@ -1,7 +1,10 @@
 import { useTranslation } from 'react-i18next';
+import { ExternalLink, FolderOpen } from 'lucide-react';
 import type { DownloadDetailView } from '@/types/download';
 import { formatBytes, formatDate } from '@/lib/format';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { Button } from '@/components/ui/button';
+import { useTauriMutation } from '@/api/hooks';
 
 interface FileInfoSectionProps {
   download: DownloadDetailView;
@@ -36,6 +39,21 @@ function getMimeType(fileName: string): string {
 export function FileInfoSection({ download }: FileInfoSectionProps) {
   const { t, i18n } = useTranslation();
   const mimeType = getMimeType(download.fileName);
+
+  const openFileMut = useTauriMutation<unknown, { id: number }>('download_open_file', {
+    errorMessage: (err) =>
+      err.message.toLowerCase().includes('not found')
+        ? t('downloads.table.toast.openFileMissing')
+        : t('downloads.table.toast.openFileError'),
+  });
+  const openFolderMut = useTauriMutation<unknown, { id: number }>('download_open_folder', {
+    errorMessage: (err) =>
+      err.message.toLowerCase().includes('not found')
+        ? t('downloads.table.toast.openFileMissing')
+        : t('downloads.table.toast.openFolderError'),
+  });
+
+  const isCompleted = download.state === 'Completed';
 
   return (
     <section className="space-y-3">
@@ -75,6 +93,28 @@ export function FileInfoSection({ download }: FileInfoSectionProps) {
             </TooltipContent>
           </Tooltip>
         </div>
+        {isCompleted && (
+          <div className="flex gap-2 pt-1">
+            <Button
+              variant="outline"
+              size="sm"
+              className="gap-1.5"
+              onClick={() => openFileMut.mutate({ id: Number(download.id) })}
+            >
+              <ExternalLink className="size-3.5" />
+              {t('downloads.table.actions.openFile')}
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="gap-1.5"
+              onClick={() => openFolderMut.mutate({ id: Number(download.id) })}
+            >
+              <FolderOpen className="size-3.5" />
+              {t('downloads.table.actions.openFolder')}
+            </Button>
+          </div>
+        )}
       </div>
     </section>
   );

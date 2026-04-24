@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { TooltipProvider } from '@/components/ui/tooltip';
@@ -8,8 +8,20 @@ import { useDownloadStore } from '@/stores/downloadStore';
 import type { DownloadView } from '@/types/download';
 import { DownloadsTable } from '../DownloadsTable';
 
+const invokeMock = vi.fn().mockResolvedValue(undefined);
+const toastErrorMock = vi.fn();
+
 vi.mock('@tauri-apps/api/core', () => ({
-  invoke: vi.fn().mockResolvedValue(undefined),
+  invoke: (...args: unknown[]) => invokeMock(...args),
+}));
+
+vi.mock('@/lib/toast', () => ({
+  toast: {
+    error: (...args: unknown[]) => toastErrorMock(...args),
+    success: vi.fn(),
+    info: vi.fn(),
+    warning: vi.fn(),
+  },
 }));
 
 vi.mock('@tanstack/react-virtual', () => ({
@@ -117,6 +129,9 @@ beforeEach(() => {
     filterBarExpanded: false,
   });
   useDownloadStore.setState({ progressMap: {} });
+  invokeMock.mockClear();
+  invokeMock.mockResolvedValue(undefined);
+  toastErrorMock.mockClear();
 });
 
 describe('DownloadsTable', () => {
@@ -287,6 +302,73 @@ describe('DownloadsTable', () => {
       expect(container.querySelector('.lucide-pause')).toBeNull();
       expect(container.querySelector('.lucide-play')).toBeNull();
       expect(container.querySelector('.lucide-rotate-ccw')).toBeNull();
+    });
+  });
+
+  describe('open-file / open-folder menu items', () => {
+    it('should expose Open file and Open folder menu items only for Completed rows', async () => {
+      const user = userEvent.setup();
+      renderTable();
+
+      // Completed row (image.png) — menu must include both items
+      const moreButtons = screen.getAllByLabelText('More actions');
+      const completedButton = moreButtons[1];
+      await user.click(completedButton);
+      expect(screen.getByText('Open file')).toBeInTheDocument();
+      expect(screen.getByText('Open folder')).toBeInTheDocument();
+    });
+
+    it('should hide Open file and Open folder items for non-completed rows', async () => {
+      const user = userEvent.setup();
+      renderTable();
+
+      await user.click(screen.getAllByLabelText('More actions')[0]);
+      expect(screen.queryByText('Open file')).not.toBeInTheDocument();
+      expect(screen.queryByText('Open folder')).not.toBeInTheDocument();
+    });
+
+    it('should invoke download_open_file when Open file clicked', async () => {
+      const user = userEvent.setup();
+      renderTable();
+
+      await user.click(screen.getAllByLabelText('More actions')[1]);
+      await user.click(screen.getByText('Open file'));
+
+      await waitFor(() => {
+        expect(invokeMock).toHaveBeenCalledWith(
+          'download_open_file',
+          expect.objectContaining({ id: 2 }),
+        );
+      });
+    });
+
+    it('should invoke download_open_folder when Open folder clicked', async () => {
+      const user = userEvent.setup();
+      renderTable();
+
+      await user.click(screen.getAllByLabelText('More actions')[1]);
+      await user.click(screen.getByText('Open folder'));
+
+      await waitFor(() => {
+        expect(invokeMock).toHaveBeenCalledWith(
+          'download_open_folder',
+          expect.objectContaining({ id: 2 }),
+        );
+      });
+    });
+
+    it('should surface File not found toast when backend reports missing file', async () => {
+      invokeMock.mockRejectedValueOnce(new Error('Not found: file not found: /tmp/x'));
+
+      const user = userEvent.setup();
+      renderTable();
+
+      await user.click(screen.getAllByLabelText('More actions')[1]);
+      await user.click(screen.getByText('Open file'));
+
+      await waitFor(() => {
+        expect(toastErrorMock).toHaveBeenCalledWith('File not found');
+      });
     });
   });
 });
