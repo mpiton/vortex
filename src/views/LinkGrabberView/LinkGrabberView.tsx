@@ -155,7 +155,7 @@ export function LinkGrabberView() {
           <Switch
             id="clipboard-toggle"
             checked={clipboardMonitoringEnabled}
-            onCheckedChange={(enabled) => toggleClipboard(enabled)}
+            onCheckedChange={toggleClipboard}
           />
         </div>
       </div>

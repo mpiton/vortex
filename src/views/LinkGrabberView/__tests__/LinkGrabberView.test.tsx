@@ -147,6 +147,9 @@ describe("LinkGrabberView", () => {
     expect(
       screen.getByTitle("Clipboard monitoring paused"),
     ).toBeInTheDocument();
+    expect(
+      document.querySelector('[data-testid="clipboard-status-dot"].bg-border'),
+    ).not.toBeNull();
   });
 
   it("should render PasteZone with Analyze Links button", () => {

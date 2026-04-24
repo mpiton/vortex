@@ -21,7 +21,7 @@ export function useClipboardMonitoring(initialEnabled = false) {
     }, [])
   );
 
-  const toggleMutation = useTauriMutation<boolean, { enabled: boolean }>(
+  const { mutate } = useTauriMutation<boolean, { enabled: boolean }>(
     'clipboard_toggle',
     {
       onSuccess: (confirmed) => {
@@ -37,9 +37,9 @@ export function useClipboardMonitoring(initialEnabled = false) {
 
   const toggle = useCallback(
     (enabled: boolean) => {
-      toggleMutation.mutate({ enabled });
+      mutate({ enabled });
     },
-    [toggleMutation]
+    [mutate]
   );
 
   return { isEnabled, toggle };
