@@ -604,6 +604,34 @@ impl ArchiveExtractor for FakeArchiveExtractor {
     }
 }
 
+// ── RecordingFileOpener ─────────────────────────────────────────
+
+struct RecordingFileOpener {
+    opened: Mutex<Vec<std::path::PathBuf>>,
+    revealed: Mutex<Vec<std::path::PathBuf>>,
+}
+
+impl RecordingFileOpener {
+    fn new() -> Self {
+        Self {
+            opened: Mutex::new(Vec::new()),
+            revealed: Mutex::new(Vec::new()),
+        }
+    }
+}
+
+impl FileOpener for RecordingFileOpener {
+    fn open_file(&self, path: &Path) -> Result<(), DomainError> {
+        self.opened.lock().unwrap().push(path.to_path_buf());
+        Ok(())
+    }
+
+    fn reveal_file(&self, path: &Path) -> Result<(), DomainError> {
+        self.revealed.lock().unwrap().push(path.to_path_buf());
+        Ok(())
+    }
+}
+
 // ── Send + Sync compile-time assertions ─────────────────────────
 
 fn assert_send_sync<T: Send + Sync>() {}
@@ -623,6 +651,21 @@ fn all_driven_port_mocks_are_send_sync() {
     assert_send_sync::<FakePluginLoader>();
     assert_send_sync::<FakeDownloadEngine>();
     assert_send_sync::<FakeArchiveExtractor>();
+    assert_send_sync::<RecordingFileOpener>();
+}
+
+#[test]
+fn file_opener_records_open_and_reveal_calls() {
+    let opener = RecordingFileOpener::new();
+    opener.open_file(Path::new("/tmp/file.mp4")).unwrap();
+    opener.reveal_file(Path::new("/tmp/file.mp4")).unwrap();
+
+    let opened = opener.opened.lock().unwrap();
+    let revealed = opener.revealed.lock().unwrap();
+    assert_eq!(opened.len(), 1);
+    assert_eq!(revealed.len(), 1);
+    assert_eq!(opened[0], Path::new("/tmp/file.mp4"));
+    assert_eq!(revealed[0], Path::new("/tmp/file.mp4"));
 }
 
 // ── Functional tests ────────────────────────────────────────────

@@ -16,6 +16,8 @@ import {
   Trash2,
   ArrowUp,
   ArrowDown,
+  ExternalLink,
+  FolderOpen,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -121,6 +123,8 @@ interface RowActions {
   start: (id: string) => void;
   remove: (id: string) => void;
   setPriority: (id: string, priority: number) => void;
+  openFile: (id: string) => void;
+  openFolder: (id: string) => void;
 }
 
 const RowActionsContext = createContext<RowActions | null>(null);
@@ -196,6 +200,29 @@ function ActionCell({ download, t }: ActionCellProps) {
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
+          {download.state === 'Completed' && (
+            <>
+              <DropdownMenuItem
+                onClick={(e) => {
+                  e.stopPropagation();
+                  actions.openFile(download.id);
+                }}
+              >
+                <ExternalLink className="size-3.5" />
+                {t('downloads.table.actions.openFile')}
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={(e) => {
+                  e.stopPropagation();
+                  actions.openFolder(download.id);
+                }}
+              >
+                <FolderOpen className="size-3.5" />
+                {t('downloads.table.actions.openFolder')}
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+            </>
+          )}
           <DropdownMenuSub>
             <DropdownMenuSubTrigger>{t('downloads.table.actions.setPriority')}</DropdownMenuSubTrigger>
             <DropdownMenuSubContent>
@@ -341,6 +368,18 @@ export function DownloadsTable({
   const retryMut = useTauriMutation<unknown, { id: number }>('download_retry', { invalidateKeys });
   const removeMut = useTauriMutation<unknown, { id: number; deleteFiles: boolean }>('download_remove', { invalidateKeys });
   const priorityMut = useTauriMutation<unknown, { id: number; priority: number }>('download_set_priority', { invalidateKeys });
+  const openFileMut = useTauriMutation<unknown, { id: number }>('download_open_file', {
+    errorMessage: (err) =>
+      err.message.toLowerCase().includes('not found')
+        ? t('downloads.table.toast.openFileMissing')
+        : t('downloads.table.toast.openFileError'),
+  });
+  const openFolderMut = useTauriMutation<unknown, { id: number }>('download_open_folder', {
+    errorMessage: (err) =>
+      err.message.toLowerCase().includes('not found')
+        ? t('downloads.table.toast.openFileMissing')
+        : t('downloads.table.toast.openFolderError'),
+  });
 
   const rowActions = useMemo<RowActions>(() => ({
     pause: (id) => pauseMut.mutate({ id: Number(id) }),
@@ -348,7 +387,9 @@ export function DownloadsTable({
     start: (id) => retryMut.mutate({ id: Number(id) }),
     remove: (id) => removeMut.mutate({ id: Number(id), deleteFiles: false }),
     setPriority: (id, priority) => priorityMut.mutate({ id: Number(id), priority }),
-  }), [pauseMut, resumeMut, retryMut, removeMut, priorityMut]);
+    openFile: (id) => openFileMut.mutate({ id: Number(id) }),
+    openFolder: (id) => openFolderMut.mutate({ id: Number(id) }),
+  }), [pauseMut, resumeMut, retryMut, removeMut, priorityMut, openFileMut, openFolderMut]);
 
   const selectedDownloadIds = useUiStore((s) => s.selectedDownloadIds);
   const selectDownload = useUiStore((s) => s.selectDownload);

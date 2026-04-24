@@ -9,6 +9,8 @@ mod delete_history;
 mod export_history;
 mod extract_archive;
 mod install_plugin;
+mod open_download_file;
+mod open_download_folder;
 mod pause_all;
 mod pause_download;
 mod purge_history;
@@ -196,6 +198,21 @@ pub struct VerifyChecksumCommand {
     pub id: DownloadId,
 }
 impl Command for VerifyChecksumCommand {}
+
+/// Launch a completed download file with the OS default application.
+#[derive(Debug)]
+pub struct OpenDownloadFileCommand {
+    pub id: DownloadId,
+}
+impl Command for OpenDownloadFileCommand {}
+
+/// Open the folder containing a completed download, selecting the file
+/// when the host file manager supports it.
+#[derive(Debug)]
+pub struct OpenDownloadFolderCommand {
+    pub id: DownloadId,
+}
+impl Command for OpenDownloadFolderCommand {}
 
 pub use verify_checksum::VerifyChecksumOutcome;
 

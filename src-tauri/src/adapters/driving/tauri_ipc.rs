@@ -15,11 +15,11 @@ use crate::application::commands::store_install::{StoreInstallCommand, StoreUpda
 use crate::application::commands::{
     CancelDownloadCommand, ClearDownloadsByStateCommand, ClearHistoryCommand,
     DeleteHistoryEntryCommand, DisablePluginCommand, EnablePluginCommand, ExportHistoryCommand,
-    ExportHistoryFormat, InstallPluginCommand, PauseAllDownloadsCommand, PauseDownloadCommand,
-    PurgeHistoryCommand, RemoveDownloadCommand, ResolveLinksCommand, ResolvedLinkDto,
-    ResumeAllDownloadsCommand, ResumeDownloadCommand, RetryDownloadCommand, SetPriorityCommand,
-    StartDownloadCommand, UninstallPluginCommand, UpdateConfigCommand, VerifyChecksumCommand,
-    VerifyChecksumOutcome,
+    ExportHistoryFormat, InstallPluginCommand, OpenDownloadFileCommand, OpenDownloadFolderCommand,
+    PauseAllDownloadsCommand, PauseDownloadCommand, PurgeHistoryCommand, RemoveDownloadCommand,
+    ResolveLinksCommand, ResolvedLinkDto, ResumeAllDownloadsCommand, ResumeDownloadCommand,
+    RetryDownloadCommand, SetPriorityCommand, StartDownloadCommand, UninstallPluginCommand,
+    UpdateConfigCommand, VerifyChecksumCommand, VerifyChecksumOutcome,
 };
 use crate::application::error::AppError;
 use crate::application::queries::{
@@ -118,6 +118,31 @@ pub async fn download_verify_checksum(
     state
         .command_bus
         .handle_verify_checksum(cmd)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Launch the file of a completed download with the OS default application.
+/// Refuses non-completed downloads and missing files (those surface as toasts
+/// on the frontend).
+#[tauri::command]
+pub async fn download_open_file(state: State<'_, AppState>, id: u64) -> Result<(), String> {
+    let cmd = OpenDownloadFileCommand { id: DownloadId(id) };
+    state
+        .command_bus
+        .handle_open_download_file(cmd)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Open the folder holding a completed download's file, selecting the file
+/// when the host file manager supports it.
+#[tauri::command]
+pub async fn download_open_folder(state: State<'_, AppState>, id: u64) -> Result<(), String> {
+    let cmd = OpenDownloadFolderCommand { id: DownloadId(id) };
+    state
+        .command_bus
+        .handle_open_download_folder(cmd)
         .await
         .map_err(|e| e.to_string())
 }

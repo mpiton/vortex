@@ -182,7 +182,14 @@
         "resume": "Resume",
         "retry": "Retry",
         "setPriority": "Set Priority",
-        "remove": "Remove"
+        "remove": "Remove",
+        "openFile": "Open file",
+        "openFolder": "Open folder"
+      },
+      "toast": {
+        "openFileError": "Failed to open file",
+        "openFileMissing": "File not found",
+        "openFolderError": "Failed to open folder"
       },
       "priority": {
         "high": "High",

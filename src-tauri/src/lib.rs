@@ -20,7 +20,9 @@ pub use adapters::driven::credential::NoopCredentialStore;
 pub use adapters::driven::event::TokioEventBus;
 pub use adapters::driven::event::spawn_tauri_event_bridge;
 pub use adapters::driven::extractor::VortexArchiveExtractor;
-pub use adapters::driven::filesystem::{FsFileStorage, resolve_system_download_dir};
+pub use adapters::driven::filesystem::{
+    FsFileStorage, SystemFileOpener, resolve_system_download_dir,
+};
 pub use adapters::driven::logging::download_log_bridge::spawn_download_log_bridge;
 pub use adapters::driven::logging::download_log_store::DownloadLogStore;
 pub use adapters::driven::network::ReqwestHttpClient;
@@ -56,13 +58,13 @@ pub use adapters::driving::tauri_ipc::{
     self, AppState, browse_file, browse_folder, clipboard_state, clipboard_toggle,
     command_get_media_metadata, download_cancel, download_clear_completed, download_clear_failed,
     download_count_by_state, download_detail, download_list, download_logs, download_media_start,
-    download_pause, download_pause_all, download_remove, download_resume, download_resume_all,
-    download_retry, download_set_priority, download_start, download_verify_checksum, history_clear,
-    history_delete_entry, history_export, history_get_by_id, history_list,
-    history_purge_older_than, history_search, link_resolve, plugin_disable, plugin_enable,
-    plugin_install, plugin_list, plugin_store_install, plugin_store_list, plugin_store_refresh,
-    plugin_store_update, plugin_uninstall, reveal_in_folder, settings_get, settings_update,
-    stats_get, stats_top_modules, status_bar_get,
+    download_open_file, download_open_folder, download_pause, download_pause_all, download_remove,
+    download_resume, download_resume_all, download_retry, download_set_priority, download_start,
+    download_verify_checksum, history_clear, history_delete_entry, history_export,
+    history_get_by_id, history_list, history_purge_older_than, history_search, link_resolve,
+    plugin_disable, plugin_enable, plugin_install, plugin_list, plugin_store_install,
+    plugin_store_list, plugin_store_refresh, plugin_store_update, plugin_uninstall,
+    reveal_in_folder, settings_get, settings_update, stats_get, stats_top_modules, status_bar_get,
 };
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -257,6 +259,8 @@ pub fn run() {
             // ── CQRS buses ──────────────────────────────────────────
             let checksum_computer: Arc<dyn crate::domain::ports::driven::ChecksumComputer> =
                 Arc::new(crate::adapters::driven::network::StreamingChecksumComputer::new());
+            let file_opener: Arc<dyn crate::domain::ports::driven::FileOpener> =
+                Arc::new(SystemFileOpener::new());
             let command_bus = Arc::new(
                 CommandBus::new(
                     download_repo,
@@ -272,7 +276,8 @@ pub fn run() {
                     history_repo.clone(),
                     Some(store_client),
                 )
-                .with_checksum_computer(checksum_computer),
+                .with_checksum_computer(checksum_computer)
+                .with_file_opener(file_opener),
             );
 
             let query_bus = Arc::new(QueryBus::new(
@@ -337,6 +342,8 @@ pub fn run() {
             download_cancel,
             download_retry,
             download_verify_checksum,
+            download_open_file,
+            download_open_folder,
             download_pause_all,
             download_resume_all,
             download_set_priority,

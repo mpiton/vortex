@@ -7,8 +7,8 @@ use std::sync::Arc;
 
 use crate::domain::ports::driven::{
     ArchiveExtractor, ChecksumComputer, ClipboardObserver, ConfigStore, CredentialStore,
-    DownloadEngine, DownloadRepository, EventBus, FileStorage, HistoryRepository, HttpClient,
-    PluginLoader, PluginStoreClient,
+    DownloadEngine, DownloadRepository, EventBus, FileOpener, FileStorage, HistoryRepository,
+    HttpClient, PluginLoader, PluginStoreClient,
 };
 
 /// Central dispatcher for CQRS commands.
@@ -29,6 +29,7 @@ pub struct CommandBus {
     history_repo: Arc<dyn HistoryRepository>,
     plugin_store_client: Option<Arc<dyn PluginStoreClient>>,
     checksum_computer: Option<Arc<dyn ChecksumComputer>>,
+    file_opener: Option<Arc<dyn FileOpener>>,
 }
 
 impl CommandBus {
@@ -61,6 +62,7 @@ impl CommandBus {
             history_repo,
             plugin_store_client,
             checksum_computer: None,
+            file_opener: None,
         }
     }
 
@@ -69,6 +71,14 @@ impl CommandBus {
     /// exercise the verify-checksum path.
     pub fn with_checksum_computer(mut self, computer: Arc<dyn ChecksumComputer>) -> Self {
         self.checksum_computer = Some(computer);
+        self
+    }
+
+    /// Builder-style setter for the file-opener port. Optional so existing
+    /// test fixtures that never invoke the open-file/open-folder handlers
+    /// don't have to provide a mock.
+    pub fn with_file_opener(mut self, opener: Arc<dyn FileOpener>) -> Self {
+        self.file_opener = Some(opener);
         self
     }
 
@@ -142,6 +152,14 @@ impl CommandBus {
 
     pub(crate) fn checksum_computer_arc(&self) -> Option<Arc<dyn ChecksumComputer>> {
         self.checksum_computer.clone()
+    }
+
+    pub fn file_opener(&self) -> Option<&dyn FileOpener> {
+        self.file_opener.as_deref()
+    }
+
+    pub(crate) fn file_opener_arc(&self) -> Option<Arc<dyn FileOpener>> {
+        self.file_opener.clone()
     }
 }
 
