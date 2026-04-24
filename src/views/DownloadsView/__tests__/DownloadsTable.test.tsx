@@ -407,7 +407,7 @@ describe("DownloadsTable", () => {
           "download_redownload",
           expect.objectContaining({
             sourceKind: "download",
-            sourceId: 2,
+            sourceId: "2",
             overwriteMode: null,
           }),
         ),

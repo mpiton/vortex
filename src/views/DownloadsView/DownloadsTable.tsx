@@ -403,7 +403,7 @@ export function DownloadsTable({
       setPriority: (id, priority) => priorityMut.mutate({ id: Number(id), priority }),
       openFile: (id) => openFileMut.mutate({ id: Number(id) }),
       openFolder: (id) => openFolderMut.mutate({ id: Number(id) }),
-      redownload: (id) => redownload.trigger("download", Number(id)),
+      redownload: (id) => redownload.trigger("download", id),
     }),
     [pauseMut, resumeMut, retryMut, removeMut, priorityMut, openFileMut, openFolderMut, redownload],
   );

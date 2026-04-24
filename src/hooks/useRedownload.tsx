@@ -10,7 +10,7 @@ export type RedownloadOverwriteMode = "overwrite" | "rename";
 
 export interface RedownloadIpcArgs extends Record<string, unknown> {
   sourceKind: RedownloadSourceKind;
-  sourceId: number;
+  sourceId: string;
   overwriteMode: RedownloadOverwriteMode | null;
 }
 
@@ -20,7 +20,7 @@ export type RedownloadOutcome =
 
 interface PendingPrompt {
   sourceKind: RedownloadSourceKind;
-  sourceId: number;
+  sourceId: string;
   originalPath: string;
   suggestedPath: string;
 }
@@ -62,7 +62,7 @@ export function useRedownload(options: UseRedownloadOptions = {}) {
   const handleOutcome = useCallback(
     (
       outcome: RedownloadOutcome | null | undefined,
-      context: { sourceKind: RedownloadSourceKind; sourceId: number },
+      context: { sourceKind: RedownloadSourceKind; sourceId: string },
     ) => {
       if (!outcome) return;
       if (outcome.kind === "fileExists") {
@@ -80,7 +80,7 @@ export function useRedownload(options: UseRedownloadOptions = {}) {
   );
 
   const trigger = useCallback(
-    (sourceKind: RedownloadSourceKind, sourceId: number) => {
+    (sourceKind: RedownloadSourceKind, sourceId: string) => {
       mutation.mutate(
         { sourceKind, sourceId, overwriteMode: null },
         {

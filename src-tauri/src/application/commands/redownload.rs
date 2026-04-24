@@ -10,7 +10,7 @@ use crate::application::command_bus::CommandBus;
 use crate::application::commands::RedownloadSource;
 use crate::application::error::AppError;
 use crate::domain::event::DomainEvent;
-use crate::domain::model::download::{Download, DownloadId, Url};
+use crate::domain::model::download::{Download, DownloadId, DownloadState, Url};
 
 impl CommandBus {
     pub async fn handle_redownload(
@@ -58,6 +58,12 @@ impl CommandBus {
                     .download_repo()
                     .find_by_id(*id)?
                     .ok_or_else(|| AppError::NotFound(format!("Download {} not found", id.0)))?;
+                if download.state() != DownloadState::Completed {
+                    return Err(AppError::Validation(format!(
+                        "download is not completed (current state: {})",
+                        download.state()
+                    )));
+                }
                 Ok(RedownloadTemplate {
                     url: download.url().as_str().to_string(),
                     file_name: download.file_name().to_string(),
@@ -478,6 +484,32 @@ mod tests {
         assert_eq!(created.destination_path(), "/downloads/clip.mp4");
         assert_eq!(created.segments_count(), 1, "history lacks segments");
         assert_eq!(created.module_name(), None);
+    }
+
+    #[tokio::test]
+    async fn redownload_rejects_non_completed_download() {
+        let repo = Arc::new(MockDownloadRepo::new());
+        let events = Arc::new(MockEventBus::new());
+        let history: Arc<dyn HistoryRepository> = Arc::new(InMemoryHistoryRepo::new());
+        let mut queued = Download::new(
+            DownloadId(42),
+            Url::new("https://example.com/x.zip").unwrap(),
+            "x.zip".to_string(),
+            "/downloads/x.zip".to_string(),
+        );
+        queued.start().unwrap();
+        repo.save(&queued).unwrap();
+        let bus = make_bus(repo, events, history);
+
+        let err = bus
+            .handle_redownload(RedownloadCommand {
+                source: RedownloadSource::Download(DownloadId(42)),
+                destination_override: None,
+            })
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, AppError::Validation(_)), "{err:?}");
     }
 
     #[tokio::test]

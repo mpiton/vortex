@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Dialog,
@@ -27,9 +28,20 @@ export function OverwriteDialog({
   onDecision,
 }: OverwriteDialogProps) {
   const { t } = useTranslation();
+  const decidedRef = useRef(false);
+
+  useEffect(() => {
+    if (open) decidedRef.current = false;
+  }, [open]);
+
+  const emit = (decision: OverwriteDecision) => {
+    if (decidedRef.current) return;
+    decidedRef.current = true;
+    onDecision(decision);
+  };
 
   const handle = (decision: OverwriteDecision) => {
-    onDecision(decision);
+    emit(decision);
     onOpenChange(false);
   };
 
@@ -37,9 +49,7 @@ export function OverwriteDialog({
     <Dialog
       open={open}
       onOpenChange={(next) => {
-        if (!next) {
-          onDecision("cancel");
-        }
+        if (!next) emit("cancel");
         onOpenChange(next);
       }}
     >

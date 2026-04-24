@@ -60,6 +60,7 @@ function renderView() {
 }
 
 beforeEach(() => {
+  window.localStorage.setItem("i18nextLng", "en");
   mockInvoke.mockReset();
   mockSave.mockReset();
   mockToastSuccess.mockClear();
@@ -206,7 +207,7 @@ describe("HistoryView integration", () => {
         "download_redownload",
         expect.objectContaining({
           sourceKind: "history",
-          sourceId: 1,
+          sourceId: "1",
           overwriteMode: null,
         }),
       ),

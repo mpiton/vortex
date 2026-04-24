@@ -154,9 +154,12 @@ pub enum RedownloadOutcome {
 pub async fn download_redownload(
     state: State<'_, AppState>,
     source_kind: RedownloadSourceKind,
-    source_id: u64,
+    source_id: String,
     overwrite_mode: Option<OverwriteMode>,
 ) -> Result<RedownloadOutcome, String> {
+    let source_id = source_id
+        .parse::<u64>()
+        .map_err(|_| format!("invalid source id: {source_id}"))?;
     let (source, template_dest) =
         resolve_redownload_source(&state.query_bus, source_kind, source_id).await?;
 

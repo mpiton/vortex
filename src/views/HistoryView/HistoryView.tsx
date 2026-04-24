@@ -71,7 +71,7 @@ export function HistoryView() {
 
   const handleRedownload = useCallback(
     (entry: HistoryEntry) => {
-      redownload.trigger("history", Number(entry.entryId));
+      redownload.trigger("history", entry.entryId);
     },
     [redownload],
   );
