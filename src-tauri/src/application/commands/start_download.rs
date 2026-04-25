@@ -67,6 +67,9 @@ impl CommandBus {
         // Append to the back of the queue so a freshly added download
         // does not jump in front of items the user has explicitly
         // reordered (default queue_position 0 would sort before 1..N).
+        // Hold the queue-position lock so the read+write is atomic vs.
+        // concurrent move_to_top/move_to_bottom/start_download calls.
+        let _guard = self.lock_queue_positions().await;
         let queue_position = super::move_queue::next_queue_position(self.download_repo())?;
 
         let mut download = Download::new(id, url, file_name, dest.to_string_lossy().to_string())

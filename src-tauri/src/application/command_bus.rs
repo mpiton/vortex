@@ -30,6 +30,11 @@ pub struct CommandBus {
     plugin_store_client: Option<Arc<dyn PluginStoreClient>>,
     checksum_computer: Option<Arc<dyn ChecksumComputer>>,
     file_opener: Option<Arc<dyn FileOpener>>,
+    /// Serializes queue-position allocation across handlers. Without this,
+    /// two concurrent move-to-top/move-to-bottom/start-download calls can
+    /// observe the same min/max and write colliding `queue_position`
+    /// values, breaking deterministic ordering.
+    queue_position_lock: tokio::sync::Mutex<()>,
 }
 
 impl CommandBus {
@@ -63,7 +68,16 @@ impl CommandBus {
             plugin_store_client,
             checksum_computer: None,
             file_opener: None,
+            queue_position_lock: tokio::sync::Mutex::new(()),
         }
+    }
+
+    /// Acquire the application-wide lock that serializes queue-position
+    /// allocation. Held by handlers that read the current min/max and
+    /// then persist a new `queue_position`, so the read+write is atomic
+    /// with respect to other queue mutations.
+    pub(crate) async fn lock_queue_positions(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.queue_position_lock.lock().await
     }
 
     /// Builder-style setter for the checksum computer port. Kept optional so
