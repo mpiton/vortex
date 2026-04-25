@@ -752,6 +752,9 @@ pub struct SettingsDto {
     pub verify_checksums: bool,
     pub pre_allocate_space: bool,
 
+    // History
+    pub history_retention_days: i64,
+
     // Network
     pub proxy_type: String,
     pub proxy_url: Option<String>,
@@ -802,6 +805,7 @@ impl From<AppConfig> for SettingsDto {
             retry_delay_seconds: c.retry_delay_seconds,
             verify_checksums: c.verify_checksums,
             pre_allocate_space: c.pre_allocate_space,
+            history_retention_days: c.history_retention_days,
             proxy_type: c.proxy_type,
             proxy_url: c.proxy_url,
             user_agent: c.user_agent,
@@ -844,6 +848,9 @@ pub struct ConfigPatchDto {
     pub retry_delay_seconds: Option<u32>,
     pub verify_checksums: Option<bool>,
     pub pre_allocate_space: Option<bool>,
+
+    // History
+    pub history_retention_days: Option<i64>,
 
     // Network
     pub proxy_type: Option<String>,
@@ -889,6 +896,7 @@ impl From<ConfigPatchDto> for ConfigPatch {
             retry_delay_seconds: d.retry_delay_seconds,
             verify_checksums: d.verify_checksums,
             pre_allocate_space: d.pre_allocate_space,
+            history_retention_days: d.history_retention_days,
             proxy_type: d.proxy_type,
             proxy_url: d.proxy_url,
             user_agent: d.user_agent,

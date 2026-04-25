@@ -7,7 +7,7 @@ use std::sync::Arc;
 use tauri::Manager;
 
 use domain::ports::driven::{
-    ArchiveExtractor, ClipboardObserver, ConfigStore, CredentialStore, DownloadEngine,
+    ArchiveExtractor, ClipboardObserver, Clock, ConfigStore, CredentialStore, DownloadEngine,
     DownloadReadRepository, DownloadRepository, EventBus, FileStorage, HistoryRepository,
     HttpClient, PluginLoader, PluginReadRepository, StatsRepository,
 };
@@ -33,6 +33,7 @@ pub use adapters::driven::plugin::capabilities::SharedHostResources;
 pub use adapters::driven::plugin::{
     ExtismPluginLoader, GithubStoreClient, PluginRegistry, PluginWatcher,
 };
+pub use adapters::driven::scheduler::{HISTORY_PURGE_STATE_FILE, HistoryPurgeWorker, SystemClock};
 pub use adapters::driven::sqlite::connection;
 pub use adapters::driven::sqlite::download_read_repo::SqliteDownloadReadRepo;
 pub use adapters::driven::sqlite::download_repo::SqliteDownloadRepo;
@@ -264,6 +265,10 @@ pub fn run() {
                 Arc::new(crate::adapters::driven::network::StreamingChecksumComputer::new());
             let file_opener: Arc<dyn crate::domain::ports::driven::FileOpener> =
                 Arc::new(SystemFileOpener::new());
+            // Clone the Arcs the purge worker will need before the bus
+            // takes ownership of `config_store`.
+            let config_store_for_purge: Arc<dyn ConfigStore> = config_store.clone();
+            let history_repo_for_purge: Arc<dyn HistoryRepository> = history_repo.clone();
             let command_bus = Arc::new(
                 CommandBus::new(
                     download_repo,
@@ -324,6 +329,19 @@ pub fn run() {
             });
 
             app.manage(queue_manager);
+
+            // ── History retention purge worker ──────────────────────
+            // Daily tokio task that hard-deletes history rows older than
+            // `config.history_retention_days`. Shares the same Arcs the
+            // CommandBus / QueryBus hold so settings mutations are visible
+            // here without restart.
+            let purge_worker = Arc::new(HistoryPurgeWorker::new(
+                history_repo_for_purge,
+                config_store_for_purge,
+                Arc::new(SystemClock) as Arc<dyn Clock>,
+                app_data_dir.join(HISTORY_PURGE_STATE_FILE),
+            ));
+            purge_worker.spawn();
 
             // ── Plugin hot-reload watcher ────────────────────────────
             // Kept alive by moving into a managed resource; dropped on app exit.

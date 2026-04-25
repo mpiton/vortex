@@ -155,6 +155,9 @@ struct ConfigDto {
     verify_checksums: bool,
     pre_allocate_space: bool,
 
+    // History
+    history_retention_days: i64,
+
     // Network
     proxy_type: String,
     proxy_url: Option<String>,
@@ -206,6 +209,7 @@ impl From<AppConfig> for ConfigDto {
             retry_delay_seconds: c.retry_delay_seconds,
             verify_checksums: c.verify_checksums,
             pre_allocate_space: c.pre_allocate_space,
+            history_retention_days: c.history_retention_days,
             proxy_type: c.proxy_type,
             proxy_url: c.proxy_url,
             user_agent: c.user_agent,
@@ -245,6 +249,7 @@ impl From<ConfigDto> for AppConfig {
             retry_delay_seconds: d.retry_delay_seconds,
             verify_checksums: d.verify_checksums,
             pre_allocate_space: d.pre_allocate_space,
+            history_retention_days: d.history_retention_days,
             proxy_type: d.proxy_type,
             proxy_url: d.proxy_url,
             user_agent: d.user_agent,
@@ -479,6 +484,49 @@ mod tests {
             "existing config with no download_dir key stays None"
         );
         assert_eq!(config.theme, "dark");
+    }
+
+    #[test]
+    fn test_existing_config_without_history_retention_days_uses_default() {
+        // Migration safety: a `config.toml` written before this field
+        // existed must hydrate to the PRD default (30 days), not to
+        // serde's i64 zero (which would silently disable purging on
+        // upgrade).
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "theme = \"dark\"\n").unwrap();
+
+        let store = TomlConfigStore::new(path, None, None);
+        let config = store.get_config().unwrap();
+
+        assert_eq!(config.history_retention_days, 30);
+    }
+
+    #[test]
+    fn test_history_retention_days_is_persisted_and_reloaded() {
+        // Round-trips the new history retention preference through
+        // the TOML adapter so a regression that drops the field from
+        // `ConfigDto` (or its `From` impls) is caught immediately.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let store = TomlConfigStore::new(path.clone(), None, Some(TEST_API_KEY.to_string()));
+
+        let updated = store
+            .update_config(ConfigPatch {
+                history_retention_days: Some(90),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(updated.history_retention_days, 90);
+
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            raw.contains("history_retention_days"),
+            "TOML must contain the retention key: {raw}"
+        );
+
+        let reloaded = store.get_config().unwrap();
+        assert_eq!(reloaded.history_retention_days, 90);
     }
 
     #[test]

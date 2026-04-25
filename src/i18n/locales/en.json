@@ -40,7 +40,16 @@
       "confirmDelete": "Confirm before delete",
       "confirmDeleteDesc": "Ask for confirmation before deleting downloads",
       "subfolderPerPackage": "Subfolder per package",
-      "subfolderPerPackageDesc": "Create a separate folder for each download package"
+      "subfolderPerPackageDesc": "Create a separate folder for each download package",
+      "historyRetention": {
+        "label": "History retention",
+        "description": "Hard-delete history entries older than the chosen window. Cannot be undone.",
+        "days7": "7 days",
+        "days30": "30 days",
+        "days90": "90 days",
+        "days365": "1 year",
+        "never": "Never"
+      }
     },
     "downloads": {
       "title": "Downloads",
