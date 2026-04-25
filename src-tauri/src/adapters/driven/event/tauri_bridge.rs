@@ -59,6 +59,7 @@ fn event_name(event: &DomainEvent) -> &'static str {
         DomainEvent::ChecksumMismatch { .. } => "checksum-mismatch",
         DomainEvent::DownloadPrioritySet { .. } => "download-priority-set",
         DomainEvent::QueueReordered { .. } => "queue-reordered",
+        DomainEvent::DownloadDirectoryChanged { .. } => "download-directory-changed",
     }
 }
 
@@ -142,6 +143,12 @@ fn event_payload(event: &DomainEvent) -> serde_json::Value {
         DomainEvent::QueueReordered { affected_ids } => {
             let ids: Vec<u64> = affected_ids.iter().map(|id| id.0).collect();
             json!({ "affectedIds": ids })
+        }
+        DomainEvent::DownloadDirectoryChanged {
+            id,
+            new_destination_path,
+        } => {
+            json!({ "id": id.0, "newDestinationPath": new_destination_path })
         }
     }
 }
@@ -366,6 +373,19 @@ mod tests {
         let (name, payload) = to_tauri_event(&event);
         assert_eq!(name, "settings-updated");
         assert_eq!(payload, serde_json::json!({}));
+    }
+
+    #[test]
+    fn test_download_directory_changed_event_bridge_mapping() {
+        let event = DomainEvent::DownloadDirectoryChanged {
+            id: DownloadId(11),
+            new_destination_path: "/new/folder/file.bin".to_string(),
+        };
+        let (name, payload) = to_tauri_event(&event);
+        assert_eq!(name, "download-directory-changed");
+        assert_eq!(payload["id"], 11);
+        assert_eq!(payload["newDestinationPath"], "/new/folder/file.bin");
+        assert!(payload.get("new_destination_path").is_none());
     }
 
     #[test]

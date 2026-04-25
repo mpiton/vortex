@@ -1,16 +1,28 @@
 import { useRef, useState } from 'react';
-import { CheckCheck, Pause, Play, X, XCircle } from 'lucide-react';
+import { CheckCheck, FolderInput, Pause, Play, X, XCircle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
+import { MoveDialog } from '@/components/ui/MoveDialog';
 import { useTauriMutation, useTauriQuery } from '@/api/hooks';
 import { downloadQueries } from '@/api/queries';
+import { useDownloadDetail } from '@/hooks/useDownloadDetail';
 import { useUiStore } from '@/stores/uiStore';
 import { toast } from '@/lib/toast';
 import {
   ClearDownloadsDialog,
   type ClearDownloadsTarget,
 } from './ClearDownloadsDialog';
+
+interface ChangeDirectoryFailure {
+  id: number;
+  message: string;
+}
+
+interface ChangeDirectoryBulkOutcome {
+  moved: number[];
+  failed: ChangeDirectoryFailure[];
+}
 
 const INVALIDATE_KEYS = [
   downloadQueries.lists(),
@@ -22,6 +34,18 @@ export function ActionsBar() {
   const selectedDownloadIds = useUiStore((s) => s.selectedDownloadIds);
   const setSelectedDownloadIds = useUiStore((s) => s.setSelectedDownloadIds);
   const clearSelection = useUiStore((s) => s.clearSelection);
+  const narrowSelectionToFailed = (failedIds: string[]) => {
+    // Update both selection fields together so the details panel never ends
+    // up focused on a row that is no longer in the multi-select set.
+    useUiStore.setState((state) => ({
+      selectedDownloadIds: failedIds,
+      selectedDownloadId:
+        state.selectedDownloadId !== null
+        && failedIds.includes(state.selectedDownloadId)
+          ? state.selectedDownloadId
+          : (failedIds[0] ?? null),
+    }));
+  };
 
   const pauseAll = useTauriMutation<void, void>('download_pause_all', {
     invalidateKeys: INVALIDATE_KEYS,
@@ -33,6 +57,39 @@ export function ActionsBar() {
 
   const cancelDownload = useTauriMutation<void, { id: number }>('download_cancel', {
     invalidateKeys: INVALIDATE_KEYS,
+  });
+
+  const moveDownloads = useTauriMutation<
+    ChangeDirectoryBulkOutcome,
+    { ids: number[]; newDestinationDir: string }
+  >('download_change_directory_bulk', {
+    invalidateKeys: INVALIDATE_KEYS,
+    onSuccess: (outcome, vars) => {
+      const total = vars.ids.length;
+      if (outcome.failed.length === 0) {
+        toast.success(
+          t('downloads.toast.moveSucceeded', { count: outcome.moved.length }),
+        );
+        clearSelection();
+      } else {
+        toast.error(
+          t('downloads.toast.movePartial', {
+            moved: outcome.moved.length,
+            total,
+            failed: outcome.failed.length,
+          }),
+        );
+        // Keep failed rows selected so the user can retry against another
+        // folder without re-picking each download. The store holds ids as
+        // strings; the IPC outcome surfaces them as numbers, so coerce back.
+        // Also re-anchor the focused row so the details pane doesn't show a
+        // download that just moved successfully.
+        narrowSelectionToFailed(outcome.failed.map((f) => String(f.id)));
+      }
+    },
+    onError: (err) => {
+      toast.error(t('downloads.toast.moveError', { error: err.message }));
+    },
   });
 
   const clearCompleted = useTauriMutation<number, { deleteFiles: boolean }>(
@@ -102,6 +159,22 @@ export function ActionsBar() {
   const dialogOpen = dialogTarget !== null;
   const dialogCount = dialogTarget === 'completed' ? completedCount : errorCount;
 
+  const [moveDialogOpen, setMoveDialogOpen] = useState(false);
+  // Surface the first selected download's destination so the dialog can show
+  // a "current location" hint and seed the OS folder picker near the file.
+  // The query is cheap (cached, gated on a non-empty id) and avoids piping
+  // destinationPath through the lightweight DownloadView read model.
+  const firstSelectedId = selectedDownloadIds[0] ?? '';
+  const { data: firstSelectedDetail } = useDownloadDetail(firstSelectedId);
+  const moveDialogCurrentPath = firstSelectedDetail?.destinationPath;
+
+  const handleMoveConfirm = async (destination: string) => {
+    await moveDownloads.mutateAsync({
+      ids: selectedDownloadIds.map((id) => Number(id)),
+      newDestinationDir: destination,
+    });
+  };
+
   const handleDialogConfirm = async (deleteFiles: boolean) => {
     if (dialogTarget === 'completed') {
       await clearCompleted.mutateAsync({ deleteFiles });
@@ -122,6 +195,14 @@ export function ActionsBar() {
           <Button variant="ghost" size="sm" onClick={handleCancelSelected}>
             <X className="mr-1 h-4 w-4" />
             {t('downloads.actions.cancelSelected')}
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setMoveDialogOpen(true)}
+          >
+            <FolderInput className="mr-1 h-4 w-4" />
+            {t('downloads.actions.moveSelected')}
           </Button>
           <Button variant="ghost" size="sm" onClick={clearSelection}>
             {t('common.clear')}
@@ -170,6 +251,14 @@ export function ActionsBar() {
           onConfirm={handleDialogConfirm}
         />
       )}
+
+      <MoveDialog
+        open={moveDialogOpen}
+        onOpenChange={setMoveDialogOpen}
+        count={selectedDownloadIds.length}
+        currentPath={moveDialogCurrentPath}
+        onConfirm={handleMoveConfirm}
+      />
     </div>
   );
 }

@@ -56,7 +56,8 @@ pub use domain::model::ExtractionConfig;
 
 pub use adapters::driving::tauri_ipc::{
     self, AppState, browse_file, browse_folder, clipboard_state, clipboard_toggle,
-    command_get_media_metadata, download_cancel, download_clear_completed, download_clear_failed,
+    command_get_media_metadata, download_cancel, download_change_directory,
+    download_change_directory_bulk, download_clear_completed, download_clear_failed,
     download_count_by_state, download_detail, download_list, download_logs, download_media_start,
     download_move_to_bottom, download_move_to_top, download_open_file, download_open_folder,
     download_pause, download_pause_all, download_redownload, download_remove,
@@ -342,6 +343,8 @@ pub fn run() {
             download_pause,
             download_resume,
             download_cancel,
+            download_change_directory,
+            download_change_directory_bulk,
             download_retry,
             download_redownload,
             download_verify_checksum,
