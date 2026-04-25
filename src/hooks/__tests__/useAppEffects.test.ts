@@ -42,6 +42,7 @@ const baseConfig: AppConfig = {
   excludedExtensions: [],
   accentColor: '#4F46E5',
   compactMode: false,
+  historyRetentionDays: 30,
 };
 
 describe('useAppEffects', () => {

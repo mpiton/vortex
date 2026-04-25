@@ -50,6 +50,7 @@ const mockConfig: AppConfig = {
   accentColor: "#4F46E5",
   compactMode: false,
   locale: "en",
+  historyRetentionDays: 30,
 };
 
 function renderWithProviders() {
