@@ -34,6 +34,18 @@ export function ActionsBar() {
   const selectedDownloadIds = useUiStore((s) => s.selectedDownloadIds);
   const setSelectedDownloadIds = useUiStore((s) => s.setSelectedDownloadIds);
   const clearSelection = useUiStore((s) => s.clearSelection);
+  const narrowSelectionToFailed = (failedIds: string[]) => {
+    // Update both selection fields together so the details panel never ends
+    // up focused on a row that is no longer in the multi-select set.
+    useUiStore.setState((state) => ({
+      selectedDownloadIds: failedIds,
+      selectedDownloadId:
+        state.selectedDownloadId !== null
+        && failedIds.includes(state.selectedDownloadId)
+          ? state.selectedDownloadId
+          : (failedIds[0] ?? null),
+    }));
+  };
 
   const pauseAll = useTauriMutation<void, void>('download_pause_all', {
     invalidateKeys: INVALIDATE_KEYS,
@@ -70,7 +82,9 @@ export function ActionsBar() {
         // Keep failed rows selected so the user can retry against another
         // folder without re-picking each download. The store holds ids as
         // strings; the IPC outcome surfaces them as numbers, so coerce back.
-        setSelectedDownloadIds(outcome.failed.map((f) => String(f.id)));
+        // Also re-anchor the focused row so the details pane doesn't show a
+        // download that just moved successfully.
+        narrowSelectionToFailed(outcome.failed.map((f) => String(f.id)));
       }
     },
     onError: (err) => {

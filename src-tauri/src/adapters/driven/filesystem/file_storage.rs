@@ -251,9 +251,12 @@ impl FileStorage for FsFileStorage {
             // `ErrorKind::CrossesDevices` is stable since Rust 1.85; the raw
             // os error fallback covers older kernels and other platforms.
             Err(e) if is_cross_device(&e) => {
-                // Drop the placeholder before falling back; copy_then_delete
-                // expects to write a brand-new destination via fs::copy.
-                let _ = fs::remove_file(to);
+                // Keep the reserved placeholder in place: `fs::copy` truncates
+                // and overwrites the destination, so it will fill our empty
+                // placeholder with the source bytes. Removing it first would
+                // reopen the TOCTOU window — a concurrent process could
+                // create a different file at the same path between the
+                // remove and the copy.
                 copy_then_delete(from, to)?;
                 debug!(from = %from.display(), to = %to.display(), "moved file via copy+delete");
                 Ok(())

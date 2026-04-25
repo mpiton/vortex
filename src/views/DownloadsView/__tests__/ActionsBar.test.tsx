@@ -251,4 +251,59 @@ describe('ActionsBar — move selected', () => {
     // failed rows selected.
     expect(useUiStore.getState().selectedDownloadIds).toEqual(['2']);
   });
+
+  it('re-anchors selectedDownloadId to a failed row when the focused row was moved', async () => {
+    browseFolderMock.mockResolvedValueOnce('/dest');
+    invokeMock.mockResolvedValueOnce({
+      moved: [1],
+      failed: [{ id: 2, message: 'boom' }],
+    });
+    const user = userEvent.setup();
+    // Details panel is currently focused on the row that will succeed; after
+    // the partial move it must re-anchor onto the failed row instead of
+    // staying on a download that's no longer in the multi-select set.
+    useUiStore.setState({
+      selectedDownloadIds: ['1', '2'],
+      selectedDownloadId: '1',
+    });
+    renderBar({ Completed: 0, Error: 0 });
+
+    await user.click(screen.getByRole('button', { name: /move to/i }));
+    await user.click(screen.getByRole('button', { name: /browse/i }));
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /^move$/i })).toBeEnabled(),
+    );
+    await user.click(screen.getByRole('button', { name: /^move$/i }));
+
+    await waitFor(() =>
+      expect(useUiStore.getState().selectedDownloadIds).toEqual(['2']),
+    );
+    expect(useUiStore.getState().selectedDownloadId).toBe('2');
+  });
+
+  it('keeps selectedDownloadId untouched when the focused row stays in the failed set', async () => {
+    browseFolderMock.mockResolvedValueOnce('/dest');
+    invokeMock.mockResolvedValueOnce({
+      moved: [1],
+      failed: [{ id: 2, message: 'boom' }],
+    });
+    const user = userEvent.setup();
+    useUiStore.setState({
+      selectedDownloadIds: ['1', '2'],
+      selectedDownloadId: '2',
+    });
+    renderBar({ Completed: 0, Error: 0 });
+
+    await user.click(screen.getByRole('button', { name: /move to/i }));
+    await user.click(screen.getByRole('button', { name: /browse/i }));
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /^move$/i })).toBeEnabled(),
+    );
+    await user.click(screen.getByRole('button', { name: /^move$/i }));
+
+    await waitFor(() =>
+      expect(useUiStore.getState().selectedDownloadIds).toEqual(['2']),
+    );
+    expect(useUiStore.getState().selectedDownloadId).toBe('2');
+  });
 });
