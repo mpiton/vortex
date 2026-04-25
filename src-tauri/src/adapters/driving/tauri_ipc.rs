@@ -15,9 +15,10 @@ use crate::application::commands::store_install::{StoreInstallCommand, StoreUpda
 use crate::application::commands::{
     CancelDownloadCommand, ClearDownloadsByStateCommand, ClearHistoryCommand,
     DeleteHistoryEntryCommand, DisablePluginCommand, EnablePluginCommand, ExportHistoryCommand,
-    ExportHistoryFormat, InstallPluginCommand, OpenDownloadFileCommand, OpenDownloadFolderCommand,
-    PauseAllDownloadsCommand, PauseDownloadCommand, PurgeHistoryCommand, RedownloadCommand,
-    RedownloadSource, RemoveDownloadCommand, ResolveLinksCommand, ResolvedLinkDto,
+    ExportHistoryFormat, InstallPluginCommand, MoveToBottomCommand, MoveToTopCommand,
+    OpenDownloadFileCommand, OpenDownloadFolderCommand, PauseAllDownloadsCommand,
+    PauseDownloadCommand, PurgeHistoryCommand, RedownloadCommand, RedownloadSource,
+    RemoveDownloadCommand, ReorderQueueCommand, ResolveLinksCommand, ResolvedLinkDto,
     ResumeAllDownloadsCommand, ResumeDownloadCommand, RetryDownloadCommand, SetPriorityCommand,
     StartDownloadCommand, UninstallPluginCommand, UpdateConfigCommand, VerifyChecksumCommand,
     VerifyChecksumOutcome,
@@ -303,6 +304,39 @@ pub async fn download_set_priority(
     state
         .command_bus
         .handle_set_priority(cmd)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn download_move_to_top(state: State<'_, AppState>, id: u64) -> Result<(), String> {
+    state
+        .command_bus
+        .handle_move_to_top(MoveToTopCommand { id: DownloadId(id) })
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn download_move_to_bottom(state: State<'_, AppState>, id: u64) -> Result<(), String> {
+    state
+        .command_bus
+        .handle_move_to_bottom(MoveToBottomCommand { id: DownloadId(id) })
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn download_reorder_queue(
+    state: State<'_, AppState>,
+    ordered_ids: Vec<u64>,
+) -> Result<(), String> {
+    let cmd = ReorderQueueCommand {
+        ordered_ids: ordered_ids.into_iter().map(DownloadId).collect(),
+    };
+    state
+        .command_bus
+        .handle_reorder_queue(cmd)
         .await
         .map_err(|e| e.to_string())
 }
@@ -1924,6 +1958,7 @@ fn parse_sort_field(s: &str) -> SortField {
         "progress" => SortField::Progress,
         "speed" => SortField::Speed,
         "state" | "status" => SortField::State,
+        "queue" | "queueposition" | "queue_position" => SortField::QueuePosition,
         _ => SortField::CreatedAt,
     }
 }

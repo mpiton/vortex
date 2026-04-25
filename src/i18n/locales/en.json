@@ -203,6 +203,8 @@
         "resume": "Resume",
         "retry": "Retry",
         "setPriority": "Set Priority",
+        "moveToTop": "Move to top",
+        "moveToBottom": "Move to bottom",
         "remove": "Remove",
         "openFile": "Open file",
         "openFolder": "Open folder",

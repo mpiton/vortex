@@ -57,6 +57,8 @@ fn event_name(event: &DomainEvent) -> &'static str {
         DomainEvent::SettingsUpdated => "settings-updated",
         DomainEvent::ChecksumVerified { .. } => "checksum-verified",
         DomainEvent::ChecksumMismatch { .. } => "checksum-mismatch",
+        DomainEvent::DownloadPrioritySet { .. } => "download-priority-set",
+        DomainEvent::QueueReordered { .. } => "queue-reordered",
     }
 }
 
@@ -133,6 +135,13 @@ fn event_payload(event: &DomainEvent) -> serde_json::Value {
             computed,
         } => {
             json!({ "id": id.0, "algorithm": algorithm, "expected": expected, "computed": computed })
+        }
+        DomainEvent::DownloadPrioritySet { id, priority } => {
+            json!({ "id": id.0, "priority": priority })
+        }
+        DomainEvent::QueueReordered { affected_ids } => {
+            let ids: Vec<u64> = affected_ids.iter().map(|id| id.0).collect();
+            json!({ "affectedIds": ids })
         }
     }
 }

@@ -9,7 +9,7 @@ export type DownloadState =
   | 'Checking'
   | 'Extracting';
 
-export type SortField = 'name' | 'filename' | 'size' | 'filesize' | 'progress' | 'speed' | 'state' | 'status';
+export type SortField = 'name' | 'filename' | 'size' | 'filesize' | 'progress' | 'speed' | 'state' | 'status' | 'queue' | 'queuePosition';
 export type SortDirection = 'asc' | 'ascending' | 'desc' | 'descending';
 
 export interface DownloadFilter {
@@ -45,6 +45,8 @@ export interface DownloadView {
   moduleName: string | null;
   accountName: string | null;
   errorMessage?: string | null;
+  priority: number;
+  queuePosition: number;
   createdAt: number;
 }
 

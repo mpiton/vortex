@@ -26,7 +26,12 @@ impl CommandBus {
             .unwrap_or_else(|| template.destination_path.clone());
 
         let id = super::start_download::next_download_id();
-        let mut download = Download::new(id, url, template.file_name.clone(), dest);
+        // Lock against concurrent queue-position allocation; held until
+        // after `save` so the read+write is atomic.
+        let _guard = self.lock_queue_positions().await;
+        let queue_position = super::move_queue::next_queue_position(self.download_repo())?;
+        let mut download = Download::new(id, url, template.file_name.clone(), dest)
+            .with_queue_position(queue_position);
 
         if let Some(hostname) = template.source_hostname.clone() {
             download = download.with_source_hostname(hostname);

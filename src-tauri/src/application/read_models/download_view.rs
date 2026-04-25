@@ -22,6 +22,8 @@ pub struct DownloadViewDto {
     pub module_name: Option<String>,
     pub account_name: Option<String>,
     pub error_message: Option<String>,
+    pub priority: u8,
+    pub queue_position: i64,
     pub created_at: u64,
 }
 
@@ -43,6 +45,8 @@ impl From<DownloadView> for DownloadViewDto {
             module_name: v.module_name,
             account_name: v.account_name,
             error_message: v.error_message,
+            priority: v.priority,
+            queue_position: v.queue_position,
             created_at: v.created_at,
         }
     }
@@ -71,6 +75,8 @@ mod tests {
             module_name: None,
             account_name: None,
             error_message: Some("network error".to_string()),
+            priority: 5,
+            queue_position: 0,
             created_at: 1700000000,
         }
     }
@@ -90,6 +96,8 @@ mod tests {
         assert!(value.get("moduleName").is_some());
         assert!(value.get("accountName").is_some());
         assert!(value.get("errorMessage").is_some());
+        assert!(value.get("priority").is_some());
+        assert!(value.get("queuePosition").is_some());
         assert!(value.get("createdAt").is_some());
     }
 
@@ -111,11 +119,15 @@ mod tests {
             module_name: None,
             account_name: None,
             error_message: Some("network error".to_string()),
+            priority: 5,
+            queue_position: 7,
             created_at: 1700000000,
         };
         let dto = DownloadViewDto::from(view);
         assert_eq!(dto.id, "42");
         assert_eq!(dto.state, "Downloading");
         assert_eq!(dto.error_message.as_deref(), Some("network error"));
+        assert_eq!(dto.priority, 5);
+        assert_eq!(dto.queue_position, 7);
     }
 }

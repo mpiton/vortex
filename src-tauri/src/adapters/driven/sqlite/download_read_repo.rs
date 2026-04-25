@@ -78,6 +78,8 @@ fn model_to_view(
         DomainError::StorageError(format!("invalid download state in DB: {}", model.state))
     })?;
 
+    let priority_u8 = u8::try_from(model.priority).unwrap_or(5);
+
     Ok(DownloadView {
         id: DownloadId(safe_u64(model.id)),
         file_name: model.file_name.clone(),
@@ -94,6 +96,8 @@ fn model_to_view(
         module_name: model.module_name.clone(),
         account_name: None, // Resolved when accounts table is implemented
         error_message: model.error_message.clone(),
+        priority: priority_u8,
+        queue_position: model.queue_position,
         created_at: read_created_at(model),
     })
 }
@@ -176,9 +180,22 @@ impl DownloadReadRepository for SqliteDownloadReadRepo {
                     (SortField::State, SortDirection::Descending) => {
                         query.order_by_desc(download::Column::State)
                     }
+                    (SortField::QueuePosition, SortDirection::Ascending) => query
+                        .order_by_asc(download::Column::QueuePosition)
+                        .order_by_desc(inferred_download_created_at_order_expr()),
+                    (SortField::QueuePosition, SortDirection::Descending) => query
+                        .order_by_desc(download::Column::QueuePosition)
+                        .order_by_asc(inferred_download_created_at_order_expr()),
                 };
             } else {
-                query = query.order_by_desc(inferred_download_created_at_order_expr());
+                // Default sort: queue_position ASC so manual reordering
+                // (drag & drop, move-to-top/bottom) takes effect. Downloads
+                // that have never been reordered share position 0, so the
+                // secondary key (created_at DESC) preserves the "newest first"
+                // behaviour for fresh items.
+                query = query
+                    .order_by_asc(download::Column::QueuePosition)
+                    .order_by_desc(inferred_download_created_at_order_expr());
             }
 
             if let Some(o) = offset {
@@ -356,6 +373,7 @@ mod tests {
             file_name: Set(file_name.to_string()),
             state: Set(state.to_string()),
             priority: Set(5),
+            queue_position: Set(0),
             total_bytes: Set(Some(1000)),
             downloaded_bytes: Set(500),
             speed_bytes_per_sec: Set(100),
@@ -458,6 +476,7 @@ mod tests {
             file_name: Set("video.mp4".to_string()),
             state: Set("Error".to_string()),
             priority: Set(5),
+            queue_position: Set(0),
             total_bytes: Set(Some(1000)),
             downloaded_bytes: Set(500),
             speed_bytes_per_sec: Set(0),
@@ -552,6 +571,7 @@ mod tests {
             file_name: Set("file1.zip".to_string()),
             state: Set("Downloading".to_string()),
             priority: Set(5),
+            queue_position: Set(0),
             total_bytes: Set(Some(1000)),
             downloaded_bytes: Set(500),
             speed_bytes_per_sec: Set(100),
@@ -592,6 +612,7 @@ mod tests {
             file_name: Set("file1.zip".to_string()),
             state: Set("Downloading".to_string()),
             priority: Set(5),
+            queue_position: Set(0),
             total_bytes: Set(Some(1000)),
             downloaded_bytes: Set(500),
             speed_bytes_per_sec: Set(100),
@@ -633,6 +654,7 @@ mod tests {
             file_name: Set("file1.zip".to_string()),
             state: Set("Downloading".to_string()),
             priority: Set(5),
+            queue_position: Set(0),
             total_bytes: Set(Some(1000)),
             downloaded_bytes: Set(500),
             speed_bytes_per_sec: Set(100),
@@ -665,6 +687,76 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_find_downloads_default_sort_uses_queue_position() {
+        let db = setup().await;
+        let model_a = download::ActiveModel {
+            id: Set(1),
+            url: Set("https://example.com/a.zip".to_string()),
+            file_name: Set("a.zip".to_string()),
+            state: Set("Queued".to_string()),
+            priority: Set(5),
+            queue_position: Set(10),
+            total_bytes: Set(Some(1000)),
+            downloaded_bytes: Set(0),
+            speed_bytes_per_sec: Set(0),
+            retry_count: Set(0),
+            max_retries: Set(5),
+            segments_count: Set(1),
+            checksum_expected: Set(None),
+            checksum_computed: Set(None),
+            checksum_algorithm: Set(None),
+            source_hostname: Set("example.com".to_string()),
+            protocol: Set("https".to_string()),
+            resume_supported: Set(1),
+            module_name: Set(None),
+            account_id: Set(None),
+            destination_path: Set("/tmp/a.zip".to_string()),
+            error_message: Set(None),
+            created_at: Set(1000),
+            updated_at: Set(2000),
+        };
+        let model_b = download::ActiveModel {
+            id: Set(2),
+            url: Set("https://example.com/b.zip".to_string()),
+            file_name: Set("b.zip".to_string()),
+            state: Set("Queued".to_string()),
+            priority: Set(5),
+            queue_position: Set(1),
+            total_bytes: Set(Some(1000)),
+            downloaded_bytes: Set(0),
+            speed_bytes_per_sec: Set(0),
+            retry_count: Set(0),
+            max_retries: Set(5),
+            segments_count: Set(1),
+            checksum_expected: Set(None),
+            checksum_computed: Set(None),
+            checksum_algorithm: Set(None),
+            source_hostname: Set("example.com".to_string()),
+            protocol: Set("https".to_string()),
+            resume_supported: Set(1),
+            module_name: Set(None),
+            account_id: Set(None),
+            destination_path: Set("/tmp/b.zip".to_string()),
+            error_message: Set(None),
+            created_at: Set(1001),
+            updated_at: Set(2001),
+        };
+        model_a.insert(&db).await.expect("insert a");
+        model_b.insert(&db).await.expect("insert b");
+
+        let repo = SqliteDownloadReadRepo::new(db);
+        let views = repo.find_downloads(None, None, None, None).unwrap();
+
+        assert_eq!(views.len(), 2);
+        assert_eq!(
+            views[0].file_name, "b.zip",
+            "smallest queue_position must come first"
+        );
+        assert_eq!(views[0].queue_position, 1);
+        assert_eq!(views[1].queue_position, 10);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_find_downloads_sorts_by_inferred_created_at_for_legacy_rows() {
         let db = setup().await;
         let legacy_created_at = 1_700_000_000_000_u64;
@@ -676,6 +768,7 @@ mod tests {
             file_name: Set("legacy.zip".to_string()),
             state: Set("Queued".to_string()),
             priority: Set(5),
+            queue_position: Set(0),
             total_bytes: Set(Some(1000)),
             downloaded_bytes: Set(0),
             speed_bytes_per_sec: Set(0),

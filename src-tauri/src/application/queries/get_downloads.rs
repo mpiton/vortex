@@ -215,6 +215,8 @@ mod tests {
             module_name: None,
             account_name: None,
             error_message: None,
+            priority: 5,
+            queue_position: 0,
             created_at: 0,
         }
     }

@@ -395,6 +395,7 @@ mod tests {
             file_name: Set("file.bin".to_string()),
             state: Set("Downloading".to_string()),
             priority: Set(5),
+            queue_position: Set(0),
             total_bytes: Set(total_bytes),
             downloaded_bytes: Set(downloaded_bytes),
             speed_bytes_per_sec: Set(0),

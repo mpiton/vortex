@@ -18,6 +18,18 @@ pub trait DownloadRepository: Send + Sync {
     /// Persist a download (insert or update).
     fn save(&self, download: &Download) -> Result<(), DomainError>;
 
+    /// Persist a batch of downloads atomically.
+    ///
+    /// Default implementation iterates `save`; adapters that support
+    /// transactions should override to commit all writes together so a
+    /// mid-batch failure does not leave partial state.
+    fn save_batch(&self, downloads: &[Download]) -> Result<(), DomainError> {
+        for d in downloads {
+            self.save(d)?;
+        }
+        Ok(())
+    }
+
     /// Persist a failed download and store its raw backend error string.
     fn save_failed(&self, download: &Download, _error_message: &str) -> Result<(), DomainError> {
         self.save(download)

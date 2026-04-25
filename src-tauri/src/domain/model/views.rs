@@ -33,6 +33,10 @@ pub struct DownloadView {
     pub module_name: Option<String>,
     pub account_name: Option<String>,
     pub error_message: Option<String>,
+    pub priority: u8,
+    /// Manual queue ordering. Lower values = earlier in queue. Zero = default
+    /// (falls back to `created_at` ordering).
+    pub queue_position: i64,
     pub created_at: u64,
 }
 
@@ -196,6 +200,7 @@ pub enum SortField {
     Progress,
     Speed,
     State,
+    QueuePosition,
 }
 
 /// Sort direction (ascending or descending).
