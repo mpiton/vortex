@@ -281,14 +281,19 @@ mod tests {
             &self,
             s: crate::domain::model::download::DownloadState,
         ) -> Result<Vec<Download>, DomainError> {
-            Ok(self
+            // Deterministic order so tie-breaker tests don't depend on
+            // HashMap iteration order. Mirrors the SQLite adapter's
+            // `(queue_position, created_at, id)` ordering.
+            let mut items: Vec<Download> = self
                 .store
                 .lock()
                 .unwrap()
                 .values()
                 .filter(|d| d.state() == s)
                 .cloned()
-                .collect())
+                .collect();
+            items.sort_by_key(|d| (d.queue_position(), d.created_at(), d.id().0));
+            Ok(items)
         }
     }
 

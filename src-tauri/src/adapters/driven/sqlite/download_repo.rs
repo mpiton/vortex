@@ -3,7 +3,8 @@
 use sea_orm::ActiveValue::Set;
 use sea_orm::sea_query::Expr;
 use sea_orm::{
-    ColumnTrait, ConnectionTrait, DatabaseConnection, EntityTrait, QueryFilter, TransactionTrait,
+    ColumnTrait, ConnectionTrait, DatabaseConnection, EntityTrait, QueryFilter, QueryOrder,
+    TransactionTrait,
 };
 
 use crate::domain::error::DomainError;
@@ -175,8 +176,14 @@ impl DownloadRepository for SqliteDownloadRepo {
 
     fn find_by_state(&self, state: DownloadState) -> Result<Vec<Download>, DomainError> {
         block_on(async {
+            // Deterministic order so callers (e.g. queue_position
+            // tie-breaker in handle_reorder_queue) get a stable iteration
+            // sequence across runs.
             let models = download::Entity::find()
                 .filter(download::Column::State.eq(state.to_string()))
+                .order_by_asc(download::Column::QueuePosition)
+                .order_by_asc(download::Column::CreatedAt)
+                .order_by_asc(download::Column::Id)
                 .all(&self.db)
                 .await
                 .map_err(map_db_err)?;
@@ -447,5 +454,50 @@ mod tests {
             .find_by_state(DownloadState::Completed)
             .expect("find_by_state Completed");
         assert!(completed.is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_find_by_state_returns_deterministic_order() {
+        let db = setup_test_db().await.expect("test db");
+        let repo = SqliteDownloadRepo::new(db);
+
+        // Saving three downloads with the same queue_position twice in
+        // different sequences must yield identical iteration orders so
+        // the reorder tie-breaker is stable across processes.
+        let d3 = make_download(3).with_queue_position(0);
+        let d1 = make_download(1).with_queue_position(0);
+        let d2 = make_download(2).with_queue_position(0);
+        repo.save(&d3).expect("save d3");
+        std::thread::sleep(Duration::from_millis(2));
+        repo.save(&d1).expect("save d1");
+        std::thread::sleep(Duration::from_millis(2));
+        repo.save(&d2).expect("save d2");
+
+        let first = repo
+            .find_by_state(DownloadState::Queued)
+            .expect("find_by_state Queued");
+        let second = repo
+            .find_by_state(DownloadState::Queued)
+            .expect("find_by_state Queued");
+        let ids_first: Vec<u64> = first.iter().map(|d| d.id().0).collect();
+        let ids_second: Vec<u64> = second.iter().map(|d| d.id().0).collect();
+        assert_eq!(
+            ids_first, ids_second,
+            "two consecutive find_by_state calls must return the same order"
+        );
+        assert_eq!(ids_first.len(), 3);
+
+        // queue_position is the primary sort key, so a smaller value
+        // must come before the default 0 set regardless of created_at.
+        let d4 = make_download(4).with_queue_position(-5);
+        repo.save(&d4).expect("save d4");
+        let queued = repo
+            .find_by_state(DownloadState::Queued)
+            .expect("find_by_state Queued");
+        assert_eq!(
+            queued.first().map(|d| d.id().0),
+            Some(4),
+            "queue_position is the primary sort key"
+        );
     }
 }
