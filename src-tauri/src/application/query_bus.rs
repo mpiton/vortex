@@ -6,8 +6,8 @@
 use std::sync::Arc;
 
 use crate::domain::ports::driven::{
-    ArchiveExtractor, DownloadReadRepository, HistoryRepository, PluginReadRepository,
-    StatsRepository,
+    ArchiveExtractor, DownloadReadRepository, HistoryRepository, PluginConfigStore, PluginLoader,
+    PluginReadRepository, StatsRepository,
 };
 
 /// Central dispatcher for CQRS queries.
@@ -20,6 +20,8 @@ pub struct QueryBus {
     stats_repo: Arc<dyn StatsRepository>,
     plugin_read_repo: Arc<dyn PluginReadRepository>,
     archive_extractor: Arc<dyn ArchiveExtractor>,
+    plugin_loader: Option<Arc<dyn PluginLoader>>,
+    plugin_config_store: Option<Arc<dyn PluginConfigStore>>,
 }
 
 impl QueryBus {
@@ -36,7 +38,23 @@ impl QueryBus {
             stats_repo,
             plugin_read_repo,
             archive_extractor,
+            plugin_loader: None,
+            plugin_config_store: None,
         }
+    }
+
+    /// Builder-style setter for the plugin loader. Optional so test
+    /// fixtures that never query plugin manifests don't have to provide
+    /// one.
+    pub fn with_plugin_loader(mut self, loader: Arc<dyn PluginLoader>) -> Self {
+        self.plugin_loader = Some(loader);
+        self
+    }
+
+    /// Builder-style setter for the plugin config persistence port.
+    pub fn with_plugin_config_store(mut self, store: Arc<dyn PluginConfigStore>) -> Self {
+        self.plugin_config_store = Some(store);
+        self
     }
 
     pub fn download_read_repo(&self) -> &dyn DownloadReadRepository {
@@ -53,6 +71,14 @@ impl QueryBus {
 
     pub fn plugin_read_repo(&self) -> &dyn PluginReadRepository {
         self.plugin_read_repo.as_ref()
+    }
+
+    pub fn plugin_loader(&self) -> Option<&dyn PluginLoader> {
+        self.plugin_loader.as_deref()
+    }
+
+    pub fn plugin_config_store(&self) -> Option<&dyn PluginConfigStore> {
+        self.plugin_config_store.as_deref()
     }
 
     pub(crate) fn archive_extractor_arc(&self) -> Arc<dyn ArchiveExtractor> {

@@ -8,7 +8,7 @@ use std::sync::Arc;
 use crate::domain::ports::driven::{
     ArchiveExtractor, ChecksumComputer, ClipboardObserver, ConfigStore, CredentialStore,
     DownloadEngine, DownloadRepository, EventBus, FileOpener, FileStorage, HistoryRepository,
-    HttpClient, PluginLoader, PluginStoreClient,
+    HttpClient, PluginConfigStore, PluginLoader, PluginStoreClient,
 };
 
 /// Central dispatcher for CQRS commands.
@@ -30,6 +30,7 @@ pub struct CommandBus {
     plugin_store_client: Option<Arc<dyn PluginStoreClient>>,
     checksum_computer: Option<Arc<dyn ChecksumComputer>>,
     file_opener: Option<Arc<dyn FileOpener>>,
+    plugin_config_store: Option<Arc<dyn PluginConfigStore>>,
     /// Serializes queue-position allocation across handlers. Without this,
     /// two concurrent move-to-top/move-to-bottom/start-download calls can
     /// observe the same min/max and write colliding `queue_position`
@@ -68,8 +69,21 @@ impl CommandBus {
             plugin_store_client,
             checksum_computer: None,
             file_opener: None,
+            plugin_config_store: None,
             queue_position_lock: tokio::sync::Mutex::new(()),
         }
+    }
+
+    /// Builder-style setter for the plugin configuration persistence port.
+    /// Optional so existing test fixtures don't have to construct one when
+    /// they don't exercise the plugin-config commands.
+    pub fn with_plugin_config_store(mut self, store: Arc<dyn PluginConfigStore>) -> Self {
+        self.plugin_config_store = Some(store);
+        self
+    }
+
+    pub fn plugin_config_store(&self) -> Option<&dyn PluginConfigStore> {
+        self.plugin_config_store.as_deref()
     }
 
     /// Acquire the application-wide lock that serializes queue-position

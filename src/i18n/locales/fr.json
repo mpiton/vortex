@@ -328,6 +328,7 @@
       "uninstall": "Désinstaller",
       "update": "Mettre à jour",
       "more": "Plus d'actions",
+      "configure": "Configurer",
       "refresh": "Vérifier les mises à jour",
       "browseRepo": "Parcourir le dépôt"
     },
@@ -359,6 +360,17 @@
       "disableSuccess": "Plugin désactivé",
       "enableSuccess": "Plugin activé",
       "uninstallSuccess": "Plugin désinstallé"
+    },
+    "config": {
+      "title": "Configurer {{name}}",
+      "description": "Paramètres déclarés par le manifeste du plugin. Les valeurs sont validées avant d'être enregistrées.",
+      "loading": "Chargement de la configuration…",
+      "error": "Échec du chargement de la configuration",
+      "noFields": "Ce plugin n'expose aucun champ de configuration.",
+      "toast": {
+        "saveSuccess": "Configuration enregistrée",
+        "validationFailed": "Corrigez les erreurs de validation avant d'enregistrer"
+      }
     }
   },
   "clipboard": {

@@ -51,6 +51,13 @@ impl PluginRegistry {
         self.plugins.contains_key(name)
     }
 
+    /// Clone the full manifest of a loaded plugin so callers (like the
+    /// configuration query handler) can inspect its `[config]` schema
+    /// without holding a registry reference.
+    pub fn manifest(&self, name: &str) -> Option<PluginManifest> {
+        self.plugins.get(name).map(|entry| entry.manifest.clone())
+    }
+
     /// Returns info for all plugins (enabled and disabled).
     pub fn list_info(&self) -> Vec<PluginInfo> {
         self.plugins

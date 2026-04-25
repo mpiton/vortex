@@ -107,6 +107,23 @@ pub trait PluginLoader: Send + Sync {
             "download_to_file not supported by this loader".into(),
         ))
     }
+
+    /// Return the full manifest of a loaded plugin by name.
+    ///
+    /// Used by the configuration query/command handlers to read the
+    /// declared `[config]` schema. Default returns `None` so adapters
+    /// without a manifest registry remain compatible.
+    fn get_manifest(&self, _name: &str) -> Result<Option<PluginManifest>, DomainError> {
+        Ok(None)
+    }
+
+    /// Update the live config value for a plugin so subsequent
+    /// `get_config(key)` calls from inside the WASM plugin observe the
+    /// new value without a reload. Default is a no-op for adapters that
+    /// don't expose a runtime config map.
+    fn set_runtime_config(&self, _name: &str, _key: &str, _value: &str) -> Result<(), DomainError> {
+        Ok(())
+    }
 }
 
 #[cfg(test)]

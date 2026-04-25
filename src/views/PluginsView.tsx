@@ -1,13 +1,17 @@
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { useQuery } from "@tanstack/react-query";
+import { tauriInvoke } from "@/api/client";
 import { PluginStoreRow } from "./PluginsView/PluginStoreRow";
 import { PluginsHeader } from "./PluginsView/PluginsHeader";
 import { PluginsToolbar } from "./PluginsView/PluginsToolbar";
+import { PluginConfigDialog } from "./PluginsView/PluginConfigDialog";
 import { groupByCategory } from "./PluginsView/groupByCategory";
 import { usePluginStore } from "./PluginsView/usePluginStore";
 import { useTauriMutation } from "@/api/hooks";
 import { toast } from "@/lib/toast";
 import { Button } from "@/components/ui/button";
+import type { PluginConfigView } from "@/types/plugin-config";
 
 const CATEGORIES = [
   "all",
@@ -38,6 +42,12 @@ export function PluginsView() {
   // field. State is not persisted across reloads on purpose — same as the
   // pre-PR behaviour.
   const [locallyDisabled, setLocallyDisabled] = useState<ReadonlySet<string>>(new Set());
+  const [configPluginName, setConfigPluginName] = useState<string | null>(null);
+
+  // Each installed plugin's schema is fetched once on mount so the
+  // "Configure" button can be hidden when the manifest declares no
+  // `[config]` fields. We piggyback on TanStack Query's cache so the
+  // dialog can reuse the same key without a duplicate fetch.
 
   const {
     entries,
@@ -107,6 +117,37 @@ export function PluginsView() {
     [entries, locallyDisabled],
   );
 
+  const installedNames = useMemo(
+    () =>
+      filtered
+        .filter((e) => isInstalled(e.status) && !locallyDisabled.has(e.name))
+        .map((e) => e.name),
+    [filtered, locallyDisabled],
+  );
+
+  const { data: configsByPlugin } = useQuery({
+    queryKey: ["plugin_config_get_all", installedNames],
+    enabled: installedNames.length > 0,
+    queryFn: async () => {
+      const results = await Promise.all(
+        installedNames.map(async (name) => {
+          try {
+            const view = await tauriInvoke<PluginConfigView>("plugin_config_get", { name });
+            return [name, view] as const;
+          } catch {
+            return [name, null] as const;
+          }
+        }),
+      );
+      return Object.fromEntries(results) as Record<string, PluginConfigView | null>;
+    },
+  });
+
+  const hasConfig = (name: string): boolean => {
+    const view = configsByPlugin?.[name];
+    return view !== null && view !== undefined && view.fields.length > 0;
+  };
+
   const groups = useMemo(() => groupByCategory(filtered), [filtered]);
 
   return (
@@ -171,6 +212,8 @@ export function PluginsView() {
                       onDisable={(name) => disableMutation.mutate({ name })}
                       onEnable={(name) => enableMutation.mutate({ name })}
                       onUninstall={(name) => uninstallMutation.mutate({ name })}
+                      onConfigure={(name) => setConfigPluginName(name)}
+                      hasConfig={hasConfig(entry.name)}
                       isInstalling={isInstalling(entry.name)}
                       isUpdating={isUpdating(entry.name)}
                     />
@@ -182,6 +225,14 @@ export function PluginsView() {
 
         <div className="h-6" />
       </div>
+
+      <PluginConfigDialog
+        pluginName={configPluginName}
+        open={configPluginName !== null}
+        onOpenChange={(open) => {
+          if (!open) setConfigPluginName(null);
+        }}
+      />
     </div>
   );
 }

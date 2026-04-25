@@ -252,6 +252,19 @@ impl PluginLoader for ExtismPluginLoader {
         self.registry.set_enabled(name, enabled)
     }
 
+    fn get_manifest(&self, name: &str) -> Result<Option<PluginManifest>, DomainError> {
+        Ok(self.registry.manifest(name))
+    }
+
+    fn set_runtime_config(&self, name: &str, key: &str, value: &str) -> Result<(), DomainError> {
+        self.shared_resources
+            .plugin_configs()
+            .entry(name.to_string())
+            .or_default()
+            .insert(key.to_string(), value.to_string());
+        Ok(())
+    }
+
     fn extract_links(&self, url: &str) -> Result<String, DomainError> {
         self.call_url_plugin_function(url, "extract_links")
     }

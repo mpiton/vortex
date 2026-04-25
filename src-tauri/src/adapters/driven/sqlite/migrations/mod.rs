@@ -4,6 +4,7 @@ mod m20260407_000001_create_tables;
 mod m20260415_000002_add_download_error_message;
 mod m20260424_000003_add_checksum_columns;
 mod m20260425_000004_add_queue_position;
+mod m20260425_000005_create_plugin_configs;
 
 pub struct Migrator;
 
@@ -15,6 +16,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260415_000002_add_download_error_message::Migration),
             Box::new(m20260424_000003_add_checksum_columns::Migration),
             Box::new(m20260425_000004_add_queue_position::Migration),
+            Box::new(m20260425_000005_create_plugin_configs::Migration),
         ]
     }
 }

@@ -1,4 +1,4 @@
-import { MoreVertical, ArrowUpCircle } from "lucide-react";
+import { MoreVertical, ArrowUpCircle, Settings } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -19,6 +19,13 @@ interface PluginStoreRowProps {
   onDisable?: (name: string) => void;
   onEnable?: (name: string) => void;
   onUninstall?: (name: string) => void;
+  /**
+   * Open the dynamic config dialog for this plugin. Hidden when omitted
+   * or when the plugin declares no `[config]` fields (the row gets
+   * `hasConfig` from the parent's resolution of the schema query).
+   */
+  onConfigure?: (name: string) => void;
+  hasConfig?: boolean;
   isInstalling: boolean;
   isUpdating: boolean;
 }
@@ -42,6 +49,8 @@ export function PluginStoreRow({
   onDisable,
   onEnable,
   onUninstall,
+  onConfigure,
+  hasConfig = false,
   isInstalling,
   isUpdating,
 }: PluginStoreRowProps) {
@@ -121,6 +130,18 @@ export function PluginStoreRow({
             className="h-7 text-[10px] px-3"
           >
             {t("plugins.action.install")}
+          </Button>
+        )}
+
+        {installed && hasConfig && onConfigure && (
+          <Button
+            size="icon"
+            variant="ghost"
+            className="h-7 w-7"
+            aria-label={t("plugins.action.configure")}
+            onClick={() => onConfigure(entry.name)}
+          >
+            <Settings className="h-3.5 w-3.5" />
           </Button>
         )}
 

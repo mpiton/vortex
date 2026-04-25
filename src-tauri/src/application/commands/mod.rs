@@ -31,6 +31,7 @@ mod toggle_clipboard;
 mod toggle_plugin;
 mod uninstall_plugin;
 mod update_config;
+mod update_plugin_config;
 mod verify_checksum;
 
 use std::path::PathBuf;
@@ -173,6 +174,19 @@ pub struct UpdateConfigCommand {
     pub patch: ConfigPatch,
 }
 impl Command for UpdateConfigCommand {}
+
+/// Update a single (key, value) pair on a plugin's persisted configuration.
+///
+/// The handler validates the value against the manifest schema before
+/// persisting, so the backend remains the source of truth even if a
+/// rogue caller bypasses the UI form.
+#[derive(Debug)]
+pub struct UpdatePluginConfigCommand {
+    pub plugin_name: String,
+    pub key: String,
+    pub value: String,
+}
+impl Command for UpdatePluginConfigCommand {}
 
 // Handler: task 26 (archive extraction)
 #[derive(Debug)]
