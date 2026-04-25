@@ -7,7 +7,9 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use crate::domain::error::DomainError;
-use crate::domain::model::config::{AppConfig, ConfigPatch, apply_patch};
+use crate::domain::model::config::{
+    AppConfig, ConfigPatch, apply_patch, normalize_history_retention_days,
+};
 use crate::domain::ports::driven::ConfigStore;
 
 /// Persists application configuration as a TOML file.
@@ -249,7 +251,7 @@ impl From<ConfigDto> for AppConfig {
             retry_delay_seconds: d.retry_delay_seconds,
             verify_checksums: d.verify_checksums,
             pre_allocate_space: d.pre_allocate_space,
-            history_retention_days: d.history_retention_days,
+            history_retention_days: normalize_history_retention_days(d.history_retention_days),
             proxy_type: d.proxy_type,
             proxy_url: d.proxy_url,
             user_agent: d.user_agent,
@@ -500,6 +502,21 @@ mod tests {
         let config = store.get_config().unwrap();
 
         assert_eq!(config.history_retention_days, 30);
+    }
+
+    #[test]
+    fn test_loading_config_with_negative_history_retention_normalizes_to_zero() {
+        // Defense-in-depth: a hand-edited or corrupted `config.toml`
+        // with a negative retention must be normalized at the read
+        // boundary so the UI never sees an invalid preset value.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "history_retention_days = -7\n").unwrap();
+
+        let store = TomlConfigStore::new(path, None, None);
+        let config = store.get_config().unwrap();
+
+        assert_eq!(config.history_retention_days, 0);
     }
 
     #[test]

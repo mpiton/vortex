@@ -95,19 +95,35 @@ impl HistoryPurgeWorker {
         Ok(Some(self.run_once()?))
     }
 
-    /// Spawn the daemon: run once at startup if due, then re-run every 24h.
+    /// Spawn the daemon. The first run fires either immediately (no
+    /// sentinel, or last run is already ≥24h old) or after a partial
+    /// sleep that aligns to the last successful purge. After that, the
+    /// loop ticks every 24h.
+    ///
+    /// Anchoring to the persisted last-run avoids a drift where
+    /// restarting the app shortly before the 24h boundary would push
+    /// the next purge to almost 48h after the previous one.
     ///
     /// Errors during a run are logged and swallowed so a transient I/O
     /// fault does not poison the long-lived task.
     pub fn spawn(self: Arc<Self>) {
         tokio::spawn(async move {
-            if let Err(e) = self.clone().run_if_due_blocking().await {
+            let last = read_last_purge(&self.state_path);
+            let now = self.clock.now_unix_secs();
+            if let Some(delay_secs) = initial_delay_secs(last, now) {
+                tracing::debug!(
+                    delay_secs,
+                    "history purge: aligning first run to last successful purge"
+                );
+                tokio::time::sleep(Duration::from_secs(delay_secs)).await;
+            }
+            if let Err(e) = self.clone().run_once_blocking().await {
                 tracing::warn!(error = %e, "history purge: startup run failed");
             }
+
             let mut ticker = tokio::time::interval(Duration::from_secs(SECS_PER_DAY));
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            // Skip the immediate first tick — startup `run_if_due` already
-            // handled it. Without this, we'd run twice in <1ms back-to-back.
+            // Skip the immediate first tick — we already ran above.
             ticker.tick().await;
             loop {
                 ticker.tick().await;
@@ -116,12 +132,6 @@ impl HistoryPurgeWorker {
                 }
             }
         });
-    }
-
-    async fn run_if_due_blocking(self: Arc<Self>) -> Result<Option<u64>, DomainError> {
-        tokio::task::spawn_blocking(move || self.run_if_due())
-            .await
-            .map_err(|e| DomainError::StorageError(format!("history purge join error: {e}")))?
     }
 
     async fn run_once_blocking(self: Arc<Self>) -> Result<u64, DomainError> {
@@ -148,6 +158,30 @@ fn read_last_purge(path: &Path) -> Option<u64> {
     std::fs::read_to_string(path)
         .ok()
         .and_then(|s| s.trim().parse().ok())
+}
+
+/// Compute how long the spawn loop should sleep before its first run.
+///
+/// - `None`        → run immediately (no sentinel, or last run is stale).
+/// - `Some(secs)`  → sleep `secs` seconds, then run. Aligns the first
+///   post-startup purge to roughly 24h after the previous successful
+///   one, instead of 24h after process start.
+///
+/// A `last_purge` value in the future (clock skew) yields a full-day
+/// sleep — the saturating sub clamps the delta to `0`, leaving
+/// `SECS_PER_DAY - 0`.
+fn initial_delay_secs(last_purge: Option<u64>, now: u64) -> Option<u64> {
+    match last_purge {
+        Some(t) => {
+            let elapsed = now.saturating_sub(t);
+            if elapsed >= SECS_PER_DAY {
+                None
+            } else {
+                Some(SECS_PER_DAY - elapsed)
+            }
+        }
+        None => None,
+    }
 }
 
 #[cfg(test)]
@@ -458,5 +492,45 @@ mod tests {
         history.seed(&[10 * SECS_PER_DAY]);
         let purged = worker.run_once().unwrap();
         assert_eq!(purged, 1);
+    }
+
+    #[test]
+    fn initial_delay_returns_none_when_no_sentinel() {
+        // No persisted last-run → spawn() should fire a run immediately.
+        assert_eq!(initial_delay_secs(None, 1_000_000), None);
+    }
+
+    #[test]
+    fn initial_delay_returns_none_when_last_purge_is_at_least_one_day_old() {
+        // 24h elapsed exactly → run now (not "wait 0 seconds").
+        let last = 100 * SECS_PER_DAY;
+        let now = last + SECS_PER_DAY;
+        assert_eq!(initial_delay_secs(Some(last), now), None);
+
+        // 10 days elapsed → still run now.
+        assert_eq!(
+            initial_delay_secs(Some(last), last + 10 * SECS_PER_DAY),
+            None
+        );
+    }
+
+    #[test]
+    fn initial_delay_aligns_to_the_remaining_window_when_recent() {
+        // 23h elapsed since the last purge → wait 1h before the next run,
+        // keeping the daily cadence anchored to the last successful run
+        // rather than process start time.
+        let last = 100 * SECS_PER_DAY;
+        let now = last + 23 * 3_600;
+        assert_eq!(initial_delay_secs(Some(last), now), Some(3_600));
+    }
+
+    #[test]
+    fn initial_delay_clamps_future_last_purge_to_full_day() {
+        // Clock skew: persisted timestamp is "in the future" relative to
+        // `now`. Saturating sub yields 0 elapsed, so we wait a full day
+        // — never panic, never run twice in a row.
+        let now = 1_000_000;
+        let last = 2_000_000;
+        assert_eq!(initial_delay_secs(Some(last), now), Some(SECS_PER_DAY));
     }
 }

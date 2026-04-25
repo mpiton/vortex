@@ -28,19 +28,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_system_clock_returns_post_2026_timestamp() {
-        // 2026-01-01T00:00:00Z = 1_767_225_600s. The build host clock
-        // could only fall before this if it is wildly misconfigured,
-        // and we accept that as out-of-scope for this guard.
+    fn test_system_clock_returns_value_within_observed_window() {
+        // SystemTime is wall-clock and not monotonic, so we can't rely on
+        // an absolute threshold (frozen CI clocks) or pairwise ordering
+        // (NTP step-backs). Instead, sandwich the call between two direct
+        // SystemTime reads and assert the observed value falls in that
+        // window.
         let clock = SystemClock;
-        assert!(clock.now_unix_secs() >= 1_767_225_600);
-    }
-
-    #[test]
-    fn test_system_clock_is_monotonic_within_call() {
-        let clock = SystemClock;
-        let a = clock.now_unix_secs();
-        let b = clock.now_unix_secs();
-        assert!(b >= a);
+        let before = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let observed = clock.now_unix_secs();
+        let after = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        assert!(
+            before <= observed && observed <= after,
+            "expected {before} <= {observed} <= {after}"
+        );
     }
 }

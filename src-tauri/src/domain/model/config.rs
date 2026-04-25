@@ -270,7 +270,7 @@ pub fn apply_patch(config: &mut AppConfig, patch: &ConfigPatch) {
 
     // History
     if let Some(v) = patch.history_retention_days {
-        config.history_retention_days = v;
+        config.history_retention_days = normalize_history_retention_days(v);
     }
 
     // Network
@@ -425,6 +425,19 @@ mod tests {
         };
         let patch = ConfigPatch {
             history_retention_days: Some(0),
+            ..Default::default()
+        };
+        apply_patch(&mut config, &patch);
+        assert_eq!(config.history_retention_days, 0);
+    }
+
+    #[test]
+    fn test_apply_patch_clamps_negative_history_retention_to_zero() {
+        // A crafted IPC/REST payload could send a negative value;
+        // `apply_patch` must normalize it instead of trusting the input.
+        let mut config = AppConfig::default();
+        let patch = ConfigPatch {
+            history_retention_days: Some(-99),
             ..Default::default()
         };
         apply_patch(&mut config, &patch);
