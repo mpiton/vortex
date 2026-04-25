@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { tauriInvoke } from "@/api/client";
@@ -97,23 +97,23 @@ export function PluginConfigDialog({
   const updateMutation = useTauriMutation<
     void,
     { name: string; key: string; value: string }
-  >("plugin_config_update", {
-    onSuccess: (_d, _v) => {
-      // Refresh the form values from disk so the UI reflects the
-      // canonical persisted state, not just the optimistic draft.
-      if (pluginName) {
-        queryClient.invalidateQueries({ queryKey: QUERY_KEY(pluginName) });
-      }
-    },
-  });
+  >("plugin_config_update");
 
-  // Reset draft whenever a fresh schema arrives or the dialog is reopened.
-  // Skip while a save is in flight: each `mutateAsync` triggers
-  // `invalidateQueries`, and a refetch landing mid-save would otherwise
-  // overwrite the draft and feed stale values into the next update.
+  // Seed the draft on the first successful fetch per dialog opening only.
+  // Subsequent refetches must not clobber the user's in-progress edits —
+  // in particular after a failed save, where keying off `isPending`
+  // would re-overwrite the draft when the mutation settles.
+  const initializedFor = useRef<string | null>(null);
   useEffect(() => {
-    if (data && !updateMutation.isPending) setDraft(data.values);
-  }, [data, updateMutation.isPending]);
+    if (!enabled) {
+      initializedFor.current = null;
+      return;
+    }
+    if (data && initializedFor.current !== pluginName) {
+      setDraft(data.values);
+      initializedFor.current = pluginName;
+    }
+  }, [data, enabled, pluginName]);
 
   const errors = useMemo(() => {
     if (!data) return {} as Record<string, string>;
@@ -150,6 +150,9 @@ export function PluginConfigDialog({
           value: draft[key],
         });
       }
+      // Single invalidation after the loop so each iteration doesn't
+      // race a refetch back into the draft.
+      queryClient.invalidateQueries({ queryKey: QUERY_KEY(pluginName) });
       toast.success(t("plugins.config.toast.saveSuccess"));
       onOpenChange(false);
     } catch {

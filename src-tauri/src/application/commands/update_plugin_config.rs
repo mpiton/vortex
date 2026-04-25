@@ -37,14 +37,23 @@ impl CommandBus {
             .plugin_config_store()
             .ok_or_else(|| AppError::Plugin("plugin config store not configured".into()))?;
 
-        // Capture the previous value so we can roll back the runtime if the
-        // persistence step fails: that prevents a half-applied state where
-        // the live plugin observes the new value but disk does not.
+        // Capture the prior effective value so we can roll back the runtime
+        // if the persistence step fails. The runtime map is seeded with both
+        // manifest defaults and persisted overrides at plugin load time, so
+        // the rollback target is the persisted value when present, else the
+        // manifest default, else nothing (in which case we leave the new
+        // value in the runtime map — the field has no fallback to restore).
+        let manifest_default = manifest
+            .config_schema()
+            .get(&cmd.key)
+            .and_then(|f| f.default_value())
+            .map(String::from);
         let previous = store
             .get_values(&cmd.plugin_name)
             .map_err(AppError::Domain)?
             .get(&cmd.key)
-            .cloned();
+            .cloned()
+            .or(manifest_default);
 
         // Apply the runtime change first so a runtime failure can short
         // circuit before anything is persisted.

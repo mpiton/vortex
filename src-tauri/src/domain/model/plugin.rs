@@ -321,17 +321,20 @@ impl ConfigField {
                 let parsed: i64 = value.parse().map_err(|_| {
                     DomainError::ValidationError(format!("expected integer, got '{value}'"))
                 })?;
+                // Use ceil/floor on f64 bounds so fractional limits like
+                // min=1.5 still reject the integer 1, and so we never widen
+                // the range by truncating toward zero (e.g. -1.5 as i64 = -1).
                 if let Some(min) = self.min {
-                    let min_i = min as i64;
-                    if parsed < min_i {
+                    let min_required = min.ceil() as i64;
+                    if parsed < min_required {
                         return Err(DomainError::ValidationError(format!(
                             "value {parsed} below minimum {min}"
                         )));
                     }
                 }
                 if let Some(max) = self.max {
-                    let max_i = max as i64;
-                    if parsed > max_i {
+                    let max_allowed = max.floor() as i64;
+                    if parsed > max_allowed {
                         return Err(DomainError::ValidationError(format!(
                             "value {parsed} above maximum {max}"
                         )));
