@@ -6,6 +6,7 @@ import { Separator } from '@/components/ui/separator';
 import { MoveDialog } from '@/components/ui/MoveDialog';
 import { useTauriMutation, useTauriQuery } from '@/api/hooks';
 import { downloadQueries } from '@/api/queries';
+import { useDownloadDetail } from '@/hooks/useDownloadDetail';
 import { useUiStore } from '@/stores/uiStore';
 import { toast } from '@/lib/toast';
 import {
@@ -67,8 +68,9 @@ export function ActionsBar() {
           }),
         );
         // Keep failed rows selected so the user can retry against another
-        // folder without re-picking each download.
-        setSelectedDownloadIds(outcome.failed.map((f) => f.id));
+        // folder without re-picking each download. The store holds ids as
+        // strings; the IPC outcome surfaces them as numbers, so coerce back.
+        setSelectedDownloadIds(outcome.failed.map((f) => String(f.id)));
       }
     },
     onError: (err) => {
@@ -144,6 +146,14 @@ export function ActionsBar() {
   const dialogCount = dialogTarget === 'completed' ? completedCount : errorCount;
 
   const [moveDialogOpen, setMoveDialogOpen] = useState(false);
+  // Surface the first selected download's destination so the dialog can show
+  // a "current location" hint and seed the OS folder picker near the file.
+  // The query is cheap (cached, gated on a non-empty id) and avoids piping
+  // destinationPath through the lightweight DownloadView read model.
+  const firstSelectedId = selectedDownloadIds[0] ?? '';
+  const { data: firstSelectedDetail } = useDownloadDetail(firstSelectedId);
+  const moveDialogCurrentPath = firstSelectedDetail?.destinationPath;
+
   const handleMoveConfirm = async (destination: string) => {
     await moveDownloads.mutateAsync({
       ids: selectedDownloadIds.map((id) => Number(id)),
@@ -232,6 +242,7 @@ export function ActionsBar() {
         open={moveDialogOpen}
         onOpenChange={setMoveDialogOpen}
         count={selectedDownloadIds.length}
+        currentPath={moveDialogCurrentPath}
         onConfirm={handleMoveConfirm}
       />
     </div>

@@ -143,10 +143,20 @@ impl CommandBus {
                     new_full_path.display(),
                     old_full_path.display()
                 );
-            } else {
-                let _ = self
-                    .file_storage()
-                    .move_meta(&new_full_path, &old_full_path);
+            } else if let Err(rb) = self
+                .file_storage()
+                .move_meta(&new_full_path, &old_full_path)
+            {
+                // Body restored to the old path but the sidecar move failed.
+                // Log loudly so the metadata/body divergence is observable —
+                // resume metadata for this download may now be stranded at
+                // the new location while the body lives at the old one.
+                tracing::error!(
+                    "rollback move_meta failed for download {:?}: body restored to {} but sidecar may remain near {} ({rb})",
+                    id,
+                    old_full_path.display(),
+                    new_full_path.display()
+                );
             }
             if was_downloading && let Err(rb) = self.download_engine().resume(id) {
                 tracing::error!(
@@ -157,19 +167,27 @@ impl CommandBus {
             return Err(e.into());
         }
 
-        if was_downloading {
-            // Resume failure is non-fatal for the move itself: the file is
-            // already at the new location and persisted. We surface the
-            // error so the user knows their download is paused, but we do
-            // not undo the move.
-            self.download_engine().resume(id)?;
-        }
-
+        // Persistence succeeded: the move is committed from the user's point
+        // of view. Publish the event BEFORE attempting to resume so the
+        // frontend invalidates its caches even if the engine restart fails.
         self.event_bus()
             .publish(DomainEvent::DownloadDirectoryChanged {
                 id,
                 new_destination_path: updated.destination_path().to_string(),
             });
+
+        if was_downloading && let Err(e) = self.download_engine().resume(id) {
+            // Resume failure is non-fatal for the move: the file is already
+            // at the new location and persisted. Log so operators can react
+            // (the user will see the download as paused), but do NOT
+            // propagate — that would let bulk callers misclassify a
+            // successful move as a failure and keep its row selected for
+            // retry, which would silently re-move an already-moved file.
+            tracing::warn!(
+                "engine resume after directory change failed for download {:?}: {e}",
+                id
+            );
+        }
         Ok(())
     }
 
@@ -177,8 +195,10 @@ impl CommandBus {
         // Skip the body move when the source doesn't exist on disk yet —
         // happens for `Queued`/`Waiting` items whose engine has never run.
         // The DB path still gets updated so the next start lands in the
-        // right folder.
-        if self.file_storage().file_exists(from) {
+        // right folder. A probe error must propagate (not be silently
+        // treated as "missing") so we don't skip a move whose source is
+        // present but unreadable.
+        if self.file_storage().file_exists(from)? {
             self.file_storage().move_file(from, to)?;
         }
         // `move_meta` is already a no-op when the sidecar is missing, so we
@@ -188,15 +208,25 @@ impl CommandBus {
             // we don't leave the user with a split state. If THAT fails we
             // log and bail — the DB has not been updated yet, so the
             // original record still points to `from`.
-            if from != to
-                && self.file_storage().file_exists(to)
-                && let Err(rb) = self.file_storage().move_file(to, from)
-            {
-                tracing::error!(
-                    "failed to roll back body move from {} → {}: {rb}",
-                    to.display(),
-                    from.display()
-                );
+            if from != to {
+                match self.file_storage().file_exists(to) {
+                    Ok(true) => {
+                        if let Err(rb) = self.file_storage().move_file(to, from) {
+                            tracing::error!(
+                                "failed to roll back body move from {} → {}: {rb}",
+                                to.display(),
+                                from.display()
+                            );
+                        }
+                    }
+                    Ok(false) => {}
+                    Err(probe_err) => {
+                        tracing::error!(
+                            "could not probe destination {} during sidecar-move rollback: {probe_err}",
+                            to.display()
+                        );
+                    }
+                }
             }
             return Err(e.into());
         }
@@ -310,12 +340,13 @@ mod tests {
         fn delete_meta(&self, _p: &Path) -> Result<(), DomainError> {
             Ok(())
         }
-        fn file_exists(&self, p: &Path) -> bool {
-            self.existing_files
+        fn file_exists(&self, p: &Path) -> Result<bool, DomainError> {
+            Ok(self
+                .existing_files
                 .lock()
                 .unwrap()
                 .iter()
-                .any(|e| e == &p.to_string_lossy())
+                .any(|e| e == &p.to_string_lossy()))
         }
         fn move_file(&self, from: &Path, to: &Path) -> Result<(), DomainError> {
             if std::mem::take(&mut *self.fail_move.lock().unwrap()) {
@@ -360,7 +391,7 @@ mod tests {
         fn delete_meta(&self, p: &Path) -> Result<(), DomainError> {
             self.inner.delete_meta(p)
         }
-        fn file_exists(&self, p: &Path) -> bool {
+        fn file_exists(&self, p: &Path) -> Result<bool, DomainError> {
             self.inner.file_exists(p)
         }
         fn move_file(&self, from: &Path, to: &Path) -> Result<(), DomainError> {
@@ -375,6 +406,13 @@ mod tests {
     struct RecordingEngine {
         pauses: Mutex<Vec<DownloadId>>,
         resumes: Mutex<Vec<DownloadId>>,
+        fail_resume: Mutex<bool>,
+    }
+    impl RecordingEngine {
+        fn fail_next_resume(self) -> Self {
+            *self.fail_resume.lock().unwrap() = true;
+            self
+        }
     }
     impl DownloadEngine for RecordingEngine {
         fn start(&self, _d: &Download) -> Result<(), DomainError> {
@@ -386,6 +424,9 @@ mod tests {
         }
         fn resume(&self, id: DownloadId) -> Result<(), DomainError> {
             self.resumes.lock().unwrap().push(id);
+            if std::mem::take(&mut *self.fail_resume.lock().unwrap()) {
+                return Err(DomainError::StorageError("resume fault".into()));
+            }
             Ok(())
         }
         fn cancel(&self, _id: DownloadId) -> Result<(), DomainError> {
@@ -1027,6 +1068,56 @@ mod tests {
         assert!(
             events.events.lock().unwrap().is_empty(),
             "no event on rollback"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_change_directory_resume_failure_is_non_fatal_after_persistence() {
+        // Engine pause succeeds, file move + DB save succeed, then resume
+        // explodes. The move itself is committed at that point — surfacing
+        // the resume error would make bulk callers misclassify a successful
+        // move as failed and try to re-move an already-moved file.
+        let mut dl = make_download_at(11, "/old/r.bin", "r.bin");
+        dl.start().unwrap(); // -> Downloading so was_downloading = true
+        let storage = Arc::new(RecordingStorage::default().with_existing("/old/r.bin"));
+        let engine = Arc::new(RecordingEngine::default().fail_next_resume());
+        let events = Arc::new(RecordingBus::new());
+        let bus = build_bus(
+            MockRepo::new().with(dl),
+            engine.clone(),
+            events.clone(),
+            storage.clone(),
+        );
+
+        bus.handle_change_directory(ChangeDirectoryCommand {
+            id: DownloadId(11),
+            new_destination_dir: PathBuf::from("/new"),
+        })
+        .await
+        .expect("resume failure must not propagate as a move failure");
+
+        let saved = bus
+            .download_repo()
+            .find_by_id(DownloadId(11))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            saved.destination_path(),
+            "/new/r.bin",
+            "DB still advances even though the engine couldn't resume"
+        );
+        // The directory-changed event must fire so the frontend invalidates
+        // its cache regardless of the resume outcome.
+        let evt_count = events
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|e| matches!(e, DomainEvent::DownloadDirectoryChanged { .. }))
+            .count();
+        assert_eq!(
+            evt_count, 1,
+            "directory-changed event must fire even when resume fails"
         );
     }
 }

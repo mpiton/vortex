@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MoveDialog } from "../MoveDialog";
+import { MoveDialog, deriveDefaultDir } from "../MoveDialog";
 
 const browseFolderMock = vi.fn<(defaultPath?: string | null) => Promise<string | null>>();
 
@@ -143,5 +143,31 @@ describe("MoveDialog", () => {
     await user.click(screen.getByRole("button", { name: /^cancel$/i }));
 
     expect(props.onOpenChange).toHaveBeenCalledWith(false);
+  });
+});
+
+describe("deriveDefaultDir", () => {
+  it("returns null when no current path is supplied", () => {
+    expect(deriveDefaultDir(undefined)).toBeNull();
+  });
+
+  it("strips the basename for a regular POSIX path", () => {
+    expect(deriveDefaultDir("/old/folder/file.bin")).toBe("/old/folder");
+  });
+
+  it("returns the root for a POSIX path with the file at root", () => {
+    // Without the root-aware branch this would return "" and the picker
+    // would treat it as null, ignoring the user's actual current location.
+    expect(deriveDefaultDir("/file.bin")).toBe("/");
+  });
+
+  it("preserves the trailing slash for a Windows drive root", () => {
+    // "C:" alone resolves to the cwd of the C: drive on Windows; the picker
+    // needs the trailing backslash to land on the actual drive root.
+    expect(deriveDefaultDir("C:\\file.bin")).toBe("C:\\");
+  });
+
+  it("strips the basename for a nested Windows path", () => {
+    expect(deriveDefaultDir("C:\\Users\\me\\file.bin")).toBe("C:\\Users\\me");
   });
 });

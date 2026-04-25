@@ -6,11 +6,13 @@ import { useUiStore } from '@/stores/uiStore';
 import { ActionsBar } from '../ActionsBar';
 import { downloadQueries } from '@/api/queries';
 
-const { invokeMock, toastMock, browseFolderMock } = vi.hoisted(() => ({
-  invokeMock: vi.fn(),
-  toastMock: { success: vi.fn(), error: vi.fn() },
-  browseFolderMock: vi.fn<(p?: string | null) => Promise<string | null>>(),
-}));
+const { invokeMock, toastMock, browseFolderMock, useDownloadDetailMock } =
+  vi.hoisted(() => ({
+    invokeMock: vi.fn(),
+    toastMock: { success: vi.fn(), error: vi.fn() },
+    browseFolderMock: vi.fn<(p?: string | null) => Promise<string | null>>(),
+    useDownloadDetailMock: vi.fn(() => ({ data: undefined })),
+  }));
 
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: (...args: unknown[]) => invokeMock(...args),
@@ -24,6 +26,12 @@ vi.mock('@/lib/toast', () => ({ toast: toastMock }));
 // what the action bar does once a folder has been chosen.
 vi.mock('@/hooks/useBrowseFolder', () => ({
   useBrowseFolder: () => browseFolderMock,
+}));
+
+// Stub the detail hook so the bar can read currentPath for the move dialog
+// without firing the real `download_detail` IPC during tests.
+vi.mock('@/hooks/useDownloadDetail', () => ({
+  useDownloadDetail: () => useDownloadDetailMock(),
 }));
 
 function makeClient(counts?: Record<string, number>) {
@@ -53,6 +61,8 @@ beforeEach(() => {
   toastMock.error.mockReset();
   browseFolderMock.mockReset();
   browseFolderMock.mockResolvedValue(null);
+  useDownloadDetailMock.mockReset();
+  useDownloadDetailMock.mockReturnValue({ data: undefined });
   window.localStorage.setItem('i18nextLng', 'en');
 });
 
@@ -236,6 +246,9 @@ describe('ActionsBar — move selected', () => {
     await waitFor(() => {
       expect(toastMock.error).toHaveBeenCalled();
     });
-    expect(useUiStore.getState().selectedDownloadIds).toEqual([2]);
+    // Selection ids are strings in the UI store; the IPC outcome surfaces
+    // them as numbers, so the bar must coerce back to string when keeping
+    // failed rows selected.
+    expect(useUiStore.getState().selectedDownloadIds).toEqual(['2']);
   });
 });

@@ -144,13 +144,22 @@ export function MoveDialog({
  * as "open at last location / OS default" which is the right fallback when
  * the caller has no representative path.
  */
-function deriveDefaultDir(currentPath: string | undefined): string | null {
+export function deriveDefaultDir(
+  currentPath: string | undefined,
+): string | null {
   if (!currentPath) return null;
   // Strip the trailing basename — the picker wants a directory, not a file.
   const lastSep = Math.max(
     currentPath.lastIndexOf("/"),
     currentPath.lastIndexOf("\\"),
   );
-  if (lastSep <= 0) return null;
+  if (lastSep < 0) return null;
+  // Root-level paths need the separator preserved: "/file.bin" → "/" rather
+  // than "" (which the picker reads as null), and "C:\file.bin" → "C:\"
+  // rather than "C:" (which Windows resolves to the cwd of the C: drive).
+  if (lastSep === 0) return currentPath.slice(0, 1);
+  if (lastSep === 2 && currentPath[1] === ":") {
+    return currentPath.slice(0, 3);
+  }
   return currentPath.slice(0, lastSep);
 }

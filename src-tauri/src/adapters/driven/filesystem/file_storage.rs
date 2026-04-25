@@ -4,6 +4,7 @@
 //! and `.vortex-meta` persistence (bincode) for download resume.
 
 use std::fs::{self, File, OpenOptions};
+use std::io;
 use std::io::{Read as _, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -220,14 +221,25 @@ impl FileStorage for FsFileStorage {
             })?;
         }
 
-        // Refuse to silently overwrite a different file at the destination —
-        // the caller should pick a different folder rather than risk shadowing
-        // user data. `from == to` was handled above so equal paths slip through.
-        if to.exists() {
-            return Err(DomainError::StorageError(format!(
-                "destination already exists: {}",
-                to.display()
-            )));
+        // Atomically reserve the destination filename. `create_new` fails if
+        // the file already exists, so a concurrent process can't sneak a
+        // different file in between an `exists()` check and our move. We own
+        // the placeholder for the rest of the function, which makes the
+        // subsequent rename/copy safe against TOCTOU clobbering.
+        match OpenOptions::new().write(true).create_new(true).open(to) {
+            Ok(_) => {}
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                return Err(DomainError::StorageError(format!(
+                    "destination already exists: {}",
+                    to.display()
+                )));
+            }
+            Err(e) => {
+                return Err(DomainError::StorageError(format!(
+                    "failed to reserve destination {}: {e}",
+                    to.display()
+                )));
+            }
         }
 
         match fs::rename(from, to) {
@@ -239,21 +251,34 @@ impl FileStorage for FsFileStorage {
             // `ErrorKind::CrossesDevices` is stable since Rust 1.85; the raw
             // os error fallback covers older kernels and other platforms.
             Err(e) if is_cross_device(&e) => {
+                // Drop the placeholder before falling back; copy_then_delete
+                // expects to write a brand-new destination via fs::copy.
+                let _ = fs::remove_file(to);
                 copy_then_delete(from, to)?;
                 debug!(from = %from.display(), to = %to.display(), "moved file via copy+delete");
                 Ok(())
             }
-            Err(e) => Err(DomainError::StorageError(format!(
-                "failed to move {} → {}: {e}",
-                from.display(),
-                to.display()
-            ))),
+            Err(e) => {
+                // Rename failed for an unrecoverable reason — clean up the
+                // empty placeholder so we don't leave a 0-byte orphan behind.
+                let _ = fs::remove_file(to);
+                Err(DomainError::StorageError(format!(
+                    "failed to move {} → {}: {e}",
+                    from.display(),
+                    to.display()
+                )))
+            }
         }
     }
 
     fn move_meta(&self, from: &Path, to: &Path) -> Result<(), DomainError> {
         let from_meta = meta_path(from);
-        if !from_meta.exists() {
+        if !from_meta.try_exists().map_err(|e| {
+            DomainError::StorageError(format!(
+                "failed to probe sidecar at {}: {e}",
+                from_meta.display()
+            ))
+        })? {
             return Ok(());
         }
         let to_meta = meta_path(to);
@@ -681,6 +706,29 @@ mod tests {
         let result = super::copy_then_delete(&from, &to);
         assert!(result.is_err());
         assert!(from.exists(), "source must remain after rollback");
+    }
+
+    #[test]
+    fn test_move_file_atomically_reserves_destination_against_clobber() {
+        // The destination is created between the start of move_file and the
+        // rename; without the create_new reservation step a racing process
+        // could squeeze a different file in there and we would silently
+        // overwrite it. With the reservation the second move sees the
+        // pre-existing reserved name and refuses with "destination exists".
+        let dir = tempfile::tempdir().expect("tempdir");
+        let from = dir.path().join("source.bin");
+        let to = dir.path().join("dest.bin");
+        fs::write(&from, b"new").expect("seed source");
+        // Simulate the race outcome: someone else's file is already at `to`
+        // before we even start. Without the reservation step, fs::rename
+        // would clobber it on Unix; with the reservation it is rejected.
+        fs::write(&to, b"victim").expect("seed competing dest");
+
+        let storage = FsFileStorage::new();
+        let result = storage.move_file(&from, &to);
+        assert!(result.is_err(), "must refuse to clobber an existing file");
+        assert_eq!(fs::read(&from).expect("source still here"), b"new");
+        assert_eq!(fs::read(&to).expect("victim untouched"), b"victim");
     }
 
     #[test]
