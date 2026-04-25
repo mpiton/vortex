@@ -26,6 +26,14 @@ const REORDERABLE_STATES: &[DownloadState] = &[
     DownloadState::Waiting,
 ];
 
+/// Stride used by move-to-top/bottom to keep gaps between positions, so
+/// repeated moves don't immediately collide at `i64::MIN`/`MAX`.
+const POSITION_STRIDE: i64 = 1024;
+
+fn is_reorderable(state: DownloadState) -> bool {
+    REORDERABLE_STATES.contains(&state)
+}
+
 fn load_reorderable_pool(repo: &dyn DownloadRepository) -> Result<Vec<Download>, AppError> {
     let mut pool = Vec::new();
     for state in REORDERABLE_STATES {
@@ -41,6 +49,14 @@ impl CommandBus {
             .find_by_id(cmd.id)?
             .ok_or_else(|| AppError::NotFound(format!("Download {} not found", cmd.id.0)))?;
 
+        if !is_reorderable(target.state()) {
+            return Err(AppError::Validation(format!(
+                "Download {} is in state {:?} and cannot be reordered",
+                cmd.id.0,
+                target.state()
+            )));
+        }
+
         let pool = load_reorderable_pool(self.download_repo())?;
         let min_pos = pool
             .iter()
@@ -48,7 +64,7 @@ impl CommandBus {
             .map(|d| d.queue_position())
             .min();
         let new_position = match min_pos {
-            Some(m) => m.saturating_sub(1),
+            Some(m) => m.saturating_sub(POSITION_STRIDE),
             None => 0,
         };
 
@@ -69,6 +85,14 @@ impl CommandBus {
             .find_by_id(cmd.id)?
             .ok_or_else(|| AppError::NotFound(format!("Download {} not found", cmd.id.0)))?;
 
+        if !is_reorderable(target.state()) {
+            return Err(AppError::Validation(format!(
+                "Download {} is in state {:?} and cannot be reordered",
+                cmd.id.0,
+                target.state()
+            )));
+        }
+
         let pool = load_reorderable_pool(self.download_repo())?;
         let max_pos = pool
             .iter()
@@ -76,7 +100,7 @@ impl CommandBus {
             .map(|d| d.queue_position())
             .max();
         let new_position = match max_pos {
-            Some(m) => m.saturating_add(1),
+            Some(m) => m.saturating_add(POSITION_STRIDE),
             None => 0,
         };
 
@@ -96,17 +120,67 @@ impl CommandBus {
             return Ok(());
         }
 
-        let mut affected: Vec<DownloadId> = Vec::with_capacity(cmd.ordered_ids.len());
-        for (idx, id) in cmd.ordered_ids.iter().enumerate() {
-            let Some(download) = self.download_repo().find_by_id(*id)? else {
-                return Err(AppError::NotFound(format!("Download {} not found", id.0)));
+        // Load full reorderable pool so omitted items keep a coherent
+        // global position rather than colliding with the renumbered subset.
+        let pool = load_reorderable_pool(self.download_repo())?;
+        let pool_index: std::collections::HashMap<DownloadId, Download> =
+            pool.into_iter().map(|d| (d.id(), d)).collect();
+
+        // Validate every submitted id exists and is reorderable.
+        for id in &cmd.ordered_ids {
+            let Some(download) = pool_index.get(id) else {
+                return match self.download_repo().find_by_id(*id)? {
+                    Some(_) => Err(AppError::Validation(format!(
+                        "Download {} cannot be reordered",
+                        id.0
+                    ))),
+                    None => Err(AppError::NotFound(format!("Download {} not found", id.0))),
+                };
             };
-            let position = i64::try_from(idx + 1).unwrap_or(i64::MAX);
-            let moved = download.with_queue_position(position);
-            self.download_repo().save(&moved)?;
-            affected.push(*id);
+            if !is_reorderable(download.state()) {
+                return Err(AppError::Validation(format!(
+                    "Download {} cannot be reordered",
+                    id.0
+                )));
+            }
         }
 
+        // Build the final order: caller-supplied IDs first (preserving the
+        // submitted order), then any omitted reorderable items sorted by
+        // current queue_position so their relative order stays intact.
+        let submitted: std::collections::HashSet<DownloadId> =
+            cmd.ordered_ids.iter().copied().collect();
+        let mut omitted: Vec<&Download> = pool_index
+            .values()
+            .filter(|d| !submitted.contains(&d.id()))
+            .collect();
+        omitted.sort_by_key(|d| (d.queue_position(), d.id().0));
+
+        let mut final_order: Vec<&Download> = Vec::with_capacity(pool_index.len());
+        for id in &cmd.ordered_ids {
+            if let Some(download) = pool_index.get(id) {
+                final_order.push(download);
+            }
+        }
+        final_order.extend(omitted);
+
+        let mut updates: Vec<Download> = Vec::with_capacity(final_order.len());
+        let mut affected: Vec<DownloadId> = Vec::with_capacity(final_order.len());
+        for (idx, download) in final_order.iter().enumerate() {
+            let position = i64::try_from(idx + 1).unwrap_or(i64::MAX);
+            if download.queue_position() != position {
+                updates.push((*download).clone().with_queue_position(position));
+                affected.push(download.id());
+            }
+        }
+
+        if updates.is_empty() {
+            return Ok(());
+        }
+
+        // Atomic batch persist so a mid-loop failure cannot leave the
+        // queue partially renumbered.
+        self.download_repo().save_batch(&updates)?;
         self.event_bus().publish(DomainEvent::QueueReordered {
             affected_ids: affected,
         });
@@ -389,7 +463,11 @@ mod tests {
             .find_by_id(DownloadId(3))
             .unwrap()
             .unwrap();
-        assert_eq!(moved.queue_position(), 2, "must be below min (3 - 1)");
+        assert_eq!(
+            moved.queue_position(),
+            3 - super::POSITION_STRIDE,
+            "must be min minus stride"
+        );
         let recorded = events.events.lock().unwrap().clone();
         assert!(matches!(
             recorded.as_slice(),
@@ -416,7 +494,179 @@ mod tests {
             .find_by_id(DownloadId(2))
             .unwrap()
             .unwrap();
-        assert_eq!(moved.queue_position(), 8, "must be above max (7 + 1)");
+        assert_eq!(
+            moved.queue_position(),
+            7 + super::POSITION_STRIDE,
+            "must be max plus stride"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_move_to_top_rejects_non_reorderable_state() {
+        let mut dl = make_download(1, 5);
+        dl.start().expect("Queued -> Downloading");
+        let repo = MockRepo::new().with(dl);
+        let events = Arc::new(RecordingBus::new());
+        let bus = make_bus(repo, events.clone());
+
+        let result = bus
+            .handle_move_to_top(MoveToTopCommand { id: DownloadId(1) })
+            .await;
+        assert!(matches!(result, Err(AppError::Validation(_))));
+        assert!(events.events.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_move_to_bottom_rejects_non_reorderable_state() {
+        let mut dl = make_download(1, 5);
+        dl.start().expect("Queued -> Downloading");
+        let repo = MockRepo::new().with(dl);
+        let events = Arc::new(RecordingBus::new());
+        let bus = make_bus(repo, events.clone());
+
+        let result = bus
+            .handle_move_to_bottom(MoveToBottomCommand { id: DownloadId(1) })
+            .await;
+        assert!(matches!(result, Err(AppError::Validation(_))));
+        assert!(events.events.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_reorder_queue_merges_omitted_items() {
+        // d1, d2, d3 are reorderable; the submitted order is [d3, d1] which
+        // omits d2. d2 must keep its relative slot (current position 5)
+        // rather than colliding with the new 1..N range.
+        let repo = MockRepo::new()
+            .with(make_download(1, 10))
+            .with(make_download(2, 5))
+            .with(make_download(3, 30));
+        let events = Arc::new(RecordingBus::new());
+        let bus = make_bus(repo, events.clone());
+
+        bus.handle_reorder_queue(ReorderQueueCommand {
+            ordered_ids: vec![DownloadId(3), DownloadId(1)],
+        })
+        .await
+        .unwrap();
+
+        let d3 = bus
+            .download_repo()
+            .find_by_id(DownloadId(3))
+            .unwrap()
+            .unwrap();
+        let d1 = bus
+            .download_repo()
+            .find_by_id(DownloadId(1))
+            .unwrap()
+            .unwrap();
+        let d2 = bus
+            .download_repo()
+            .find_by_id(DownloadId(2))
+            .unwrap()
+            .unwrap();
+        assert_eq!(d3.queue_position(), 1, "submitted first");
+        assert_eq!(d1.queue_position(), 2, "submitted second");
+        assert_eq!(d2.queue_position(), 3, "omitted item appended after");
+    }
+
+    #[tokio::test]
+    async fn test_reorder_queue_rejects_non_reorderable_id() {
+        let mut active = make_download(2, 5);
+        active.start().expect("Queued -> Downloading");
+        let repo = MockRepo::new().with(make_download(1, 10)).with(active);
+        let events = Arc::new(RecordingBus::new());
+        let bus = make_bus(repo, events.clone());
+
+        let result = bus
+            .handle_reorder_queue(ReorderQueueCommand {
+                ordered_ids: vec![DownloadId(1), DownloadId(2)],
+            })
+            .await;
+        assert!(matches!(result, Err(AppError::Validation(_))));
+        // Nothing persisted, no event published.
+        let d1 = bus
+            .download_repo()
+            .find_by_id(DownloadId(1))
+            .unwrap()
+            .unwrap();
+        assert_eq!(d1.queue_position(), 10, "unchanged on validation failure");
+        assert!(events.events.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_reorder_queue_uses_atomic_batch_save() {
+        // Counters are shared with the wrapping repo via Arc so the test
+        // can assert the handler routes through `save_batch`, not per-row
+        // `save`.
+        struct CountingRepo {
+            inner: MockRepo,
+            batch_calls: Arc<Mutex<usize>>,
+            individual_saves: Arc<Mutex<usize>>,
+        }
+        impl DownloadRepository for CountingRepo {
+            fn find_by_id(&self, id: DownloadId) -> Result<Option<Download>, DomainError> {
+                self.inner.find_by_id(id)
+            }
+            fn save(&self, d: &Download) -> Result<(), DomainError> {
+                *self.individual_saves.lock().unwrap() += 1;
+                self.inner.save(d)
+            }
+            fn save_batch(&self, ds: &[Download]) -> Result<(), DomainError> {
+                *self.batch_calls.lock().unwrap() += 1;
+                for d in ds {
+                    self.inner.save(d)?;
+                }
+                Ok(())
+            }
+            fn delete(&self, id: DownloadId) -> Result<(), DomainError> {
+                self.inner.delete(id)
+            }
+            fn find_by_state(
+                &self,
+                s: crate::domain::model::download::DownloadState,
+            ) -> Result<Vec<Download>, DomainError> {
+                self.inner.find_by_state(s)
+            }
+        }
+
+        let batch_calls = Arc::new(Mutex::new(0_usize));
+        let individual_saves = Arc::new(Mutex::new(0_usize));
+        let inner = MockRepo::new()
+            .with(make_download(1, 10))
+            .with(make_download(2, 20));
+        let repo = CountingRepo {
+            inner,
+            batch_calls: batch_calls.clone(),
+            individual_saves: individual_saves.clone(),
+        };
+        let events = Arc::new(RecordingBus::new());
+        let bus = CommandBus::new(
+            Arc::new(repo),
+            Arc::new(MockEngine),
+            events.clone(),
+            Arc::new(NoopStorage),
+            Arc::new(NoopHttp),
+            Arc::new(NoopPlugin),
+            Arc::new(NoopConfig),
+            Arc::new(NoopCred),
+            Arc::new(NoopClip),
+            Arc::new(NoopArchive),
+            Arc::new(crate::application::test_support::NoopHistoryRepo),
+            None,
+        );
+
+        bus.handle_reorder_queue(ReorderQueueCommand {
+            ordered_ids: vec![DownloadId(2), DownloadId(1)],
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(*batch_calls.lock().unwrap(), 1, "batch path used");
+        assert_eq!(
+            *individual_saves.lock().unwrap(),
+            0,
+            "individual save not used inside reorder"
+        );
     }
 
     #[tokio::test]

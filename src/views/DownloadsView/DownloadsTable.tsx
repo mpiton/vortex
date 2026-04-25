@@ -387,12 +387,13 @@ function SortableRow({
   const enabled = isReorderable(state);
   const sortable = useSortable({ id, disabled: !enabled });
 
+  const { setNodeRef } = sortable;
   const setRef = useCallback(
     (node: HTMLTableRowElement | null) => {
-      sortable.setNodeRef(node);
+      setNodeRef(node);
       measureRef(node);
     },
-    [sortable, measureRef],
+    [setNodeRef, measureRef],
   );
 
   const style: React.CSSProperties = {
@@ -661,6 +662,32 @@ export function DownloadsTable({
     [toggleDownloadSelection, clearSelection, selectDownload, setSelectedDownloadIds],
   );
 
+  // Build the dnd-kit sortable id list from the visually sorted rows so
+  // collision/strategy calculations match what the user sees when a column
+  // sort is active.
+  const sortableIds = useMemo(() => rows.map((r) => r.original.id), [rows]);
+
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
+  );
+
+  const sortedDownloads = useMemo(() => rows.map((r) => r.original), [rows]);
+
+  const handleDragEnd = useCallback(
+    (event: DragEndEvent) => {
+      const { active, over } = event;
+      if (!over) return;
+      const orderedIds = computeReorderedIds(
+        sortedDownloads,
+        String(active.id),
+        String(over.id),
+      );
+      if (!orderedIds || orderedIds.length === 0) return;
+      reorderMut.mutate({ orderedIds });
+    },
+    [sortedDownloads, reorderMut],
+  );
+
   if (isLoading) {
     return (
       <div className="flex flex-1 items-center justify-center">
@@ -679,30 +706,6 @@ export function DownloadsTable({
 
   const virtualRows = rowVirtualizer.getVirtualItems();
   const totalSize = rowVirtualizer.getTotalSize();
-
-  const sortableIds = useMemo(
-    () => filteredDownloads.map((d) => d.id),
-    [filteredDownloads],
-  );
-
-  const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
-  );
-
-  const handleDragEnd = useCallback(
-    (event: DragEndEvent) => {
-      const { active, over } = event;
-      if (!over) return;
-      const orderedIds = computeReorderedIds(
-        filteredDownloads,
-        String(active.id),
-        String(over.id),
-      );
-      if (!orderedIds || orderedIds.length === 0) return;
-      reorderMut.mutate({ orderedIds });
-    },
-    [filteredDownloads, reorderMut],
-  );
 
   return (
     <RowActionsContext value={rowActions}>

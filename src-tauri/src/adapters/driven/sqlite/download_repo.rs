@@ -2,7 +2,9 @@
 
 use sea_orm::ActiveValue::Set;
 use sea_orm::sea_query::Expr;
-use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter};
+use sea_orm::{
+    ColumnTrait, ConnectionTrait, DatabaseConnection, EntityTrait, QueryFilter, TransactionTrait,
+};
 
 use crate::domain::error::DomainError;
 use crate::domain::model::download::{Download, DownloadId, DownloadState};
@@ -29,84 +31,93 @@ impl SqliteDownloadRepo {
         update_error_message: bool,
     ) -> Result<(), DomainError> {
         block_on(async {
-            let mut active_model = download::ActiveModel::from_domain(download);
-            let now = current_timestamp_ms();
-            let created_at = if download.created_at() == 0 {
-                infer_timestamp_ms_from_download_id(download.id().0 as i64).unwrap_or(now)
-            } else {
-                download.created_at()
-            };
-            let updated_at = if download.updated_at() == 0 {
-                created_at
-            } else {
-                now.max(download.updated_at())
-            };
-
-            active_model.created_at = Set(created_at as i64);
-            active_model.updated_at = Set(updated_at as i64);
-            active_model.error_message = Set(error_message.map(str::to_string));
-
-            let mut on_conflict = sea_orm::sea_query::OnConflict::column(download::Column::Id);
-            on_conflict
-                // SpeedBytesPerSec excluded: it's a runtime value
-                // written by the download engine, not the write repo.
-                // DownloadedBytes excluded from update_columns: we use a
-                // MAX expression below so that progress_bridge writes
-                // (which may race with state-transition saves) are never
-                // regressed back to a stale lower value.
-                .update_columns([
-                    download::Column::Url,
-                    download::Column::FileName,
-                    download::Column::State,
-                    download::Column::Priority,
-                    download::Column::QueuePosition,
-                    download::Column::TotalBytes,
-                    download::Column::RetryCount,
-                    download::Column::MaxRetries,
-                    download::Column::SegmentsCount,
-                    download::Column::ChecksumExpected,
-                    download::Column::ChecksumComputed,
-                    download::Column::ChecksumAlgorithm,
-                    download::Column::SourceHostname,
-                    download::Column::Protocol,
-                    download::Column::ResumeSupported,
-                    download::Column::ModuleName,
-                    download::Column::AccountId,
-                    download::Column::DestinationPath,
-                ]);
-            if update_error_message {
-                on_conflict.update_column(download::Column::ErrorMessage);
-            }
-
-            download::Entity::insert(active_model)
-                .on_conflict(
-                    on_conflict
-                        .value(
-                            download::Column::CreatedAt,
-                            Expr::cust(
-                                "CASE WHEN created_at > 0 THEN created_at ELSE excluded.created_at END",
-                            ),
-                        )
-                        .value(download::Column::UpdatedAt, now as i64)
-                        // Keep the larger of the two values so that a
-                        // state-transition save (which may carry a stale 0)
-                        // never overwrites bytes already written by
-                        // progress_bridge's update_download_progress().
-                        .value(
-                            download::Column::DownloadedBytes,
-                            Expr::cust(
-                                "MAX(excluded.downloaded_bytes, COALESCE(downloads.downloaded_bytes, 0))",
-                            ),
-                        )
-                        .to_owned(),
-                )
-                .exec(&self.db)
-                .await
-                .map_err(map_db_err)?;
-
-            Ok(())
+            persist_download(&self.db, download, error_message, update_error_message).await
         })
     }
+}
+
+async fn persist_download<C: ConnectionTrait>(
+    conn: &C,
+    download: &Download,
+    error_message: Option<&str>,
+    update_error_message: bool,
+) -> Result<(), DomainError> {
+    let mut active_model = download::ActiveModel::from_domain(download);
+    let now = current_timestamp_ms();
+    let created_at = if download.created_at() == 0 {
+        infer_timestamp_ms_from_download_id(download.id().0 as i64).unwrap_or(now)
+    } else {
+        download.created_at()
+    };
+    let updated_at = if download.updated_at() == 0 {
+        created_at
+    } else {
+        now.max(download.updated_at())
+    };
+
+    active_model.created_at = Set(created_at as i64);
+    active_model.updated_at = Set(updated_at as i64);
+    active_model.error_message = Set(error_message.map(str::to_string));
+
+    let mut on_conflict = sea_orm::sea_query::OnConflict::column(download::Column::Id);
+    on_conflict
+        // SpeedBytesPerSec excluded: it's a runtime value
+        // written by the download engine, not the write repo.
+        // DownloadedBytes excluded from update_columns: we use a
+        // MAX expression below so that progress_bridge writes
+        // (which may race with state-transition saves) are never
+        // regressed back to a stale lower value.
+        .update_columns([
+            download::Column::Url,
+            download::Column::FileName,
+            download::Column::State,
+            download::Column::Priority,
+            download::Column::QueuePosition,
+            download::Column::TotalBytes,
+            download::Column::RetryCount,
+            download::Column::MaxRetries,
+            download::Column::SegmentsCount,
+            download::Column::ChecksumExpected,
+            download::Column::ChecksumComputed,
+            download::Column::ChecksumAlgorithm,
+            download::Column::SourceHostname,
+            download::Column::Protocol,
+            download::Column::ResumeSupported,
+            download::Column::ModuleName,
+            download::Column::AccountId,
+            download::Column::DestinationPath,
+        ]);
+    if update_error_message {
+        on_conflict.update_column(download::Column::ErrorMessage);
+    }
+
+    download::Entity::insert(active_model)
+        .on_conflict(
+            on_conflict
+                .value(
+                    download::Column::CreatedAt,
+                    Expr::cust(
+                        "CASE WHEN created_at > 0 THEN created_at ELSE excluded.created_at END",
+                    ),
+                )
+                .value(download::Column::UpdatedAt, now as i64)
+                // Keep the larger of the two values so that a
+                // state-transition save (which may carry a stale 0)
+                // never overwrites bytes already written by
+                // progress_bridge's update_download_progress().
+                .value(
+                    download::Column::DownloadedBytes,
+                    Expr::cust(
+                        "MAX(excluded.downloaded_bytes, COALESCE(downloads.downloaded_bytes, 0))",
+                    ),
+                )
+                .to_owned(),
+        )
+        .exec(conn)
+        .await
+        .map_err(map_db_err)?;
+
+    Ok(())
 }
 
 impl DownloadRepository for SqliteDownloadRepo {
@@ -134,6 +145,21 @@ impl DownloadRepository for SqliteDownloadRepo {
 
     fn save_failed(&self, download: &Download, error_message: &str) -> Result<(), DomainError> {
         self.save_internal(download, Some(error_message), true)
+    }
+
+    fn save_batch(&self, downloads: &[Download]) -> Result<(), DomainError> {
+        if downloads.is_empty() {
+            return Ok(());
+        }
+        block_on(async {
+            let txn = self.db.begin().await.map_err(map_db_err)?;
+            for download in downloads {
+                let update_error_message = download.state() != DownloadState::Error;
+                persist_download(&txn, download, None, update_error_message).await?;
+            }
+            txn.commit().await.map_err(map_db_err)?;
+            Ok(())
+        })
     }
 
     fn delete(&self, id: DownloadId) -> Result<(), DomainError> {
