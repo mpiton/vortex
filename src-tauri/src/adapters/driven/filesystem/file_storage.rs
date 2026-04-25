@@ -299,9 +299,9 @@ fn ensure_parent_dir(path: &Path) -> Result<(), DomainError> {
 fn reserve_destination(path: &Path) -> Result<(), DomainError> {
     match OpenOptions::new().write(true).create_new(true).open(path) {
         Ok(_) => Ok(()),
-        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => Err(
-            DomainError::StorageError(format!("destination already exists: {}", path.display())),
-        ),
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => Err(DomainError::StorageError(
+            format!("destination already exists: {}", path.display()),
+        )),
         Err(e) => Err(DomainError::StorageError(format!(
             "failed to reserve destination {}: {e}",
             path.display()
@@ -745,7 +745,9 @@ mod tests {
         let to = dest_dir.join("file.bin");
 
         let storage = FsFileStorage::new();
-        storage.write_meta(&to, &make_meta()).expect("seed dest meta");
+        storage
+            .write_meta(&to, &make_meta())
+            .expect("seed dest meta");
         assert!(meta_path(&to).exists(), "dest sidecar must pre-exist");
         assert!(!meta_path(&from).exists(), "source sidecar must be absent");
 
@@ -770,8 +772,12 @@ mod tests {
         let to = dest_dir.join("file.bin");
 
         let storage = FsFileStorage::new();
-        storage.write_meta(&from, &make_meta()).expect("seed source meta");
-        storage.write_meta(&to, &make_meta()).expect("seed dest meta");
+        storage
+            .write_meta(&from, &make_meta())
+            .expect("seed source meta");
+        storage
+            .write_meta(&to, &make_meta())
+            .expect("seed dest meta");
 
         let err = storage
             .move_meta(&from, &to)
