@@ -241,7 +241,18 @@ impl FileStorage for FsFileStorage {
             return Ok(());
         }
         ensure_parent_dir(&to_meta)?;
-        reserve_destination(&to_meta)?;
+        // Reservation can fail with `AlreadyExists`. Source-missing trumps
+        // that for sidecars — the FileStorage contract says a missing
+        // sidecar is a no-op. Probe the source and only propagate the
+        // reservation error when the sidecar is actually there. The probe
+        // is best-effort; on its own error we treat the source as present
+        // and surface the original reservation failure (cautious default).
+        if let Err(reservation_err) = reserve_destination(&to_meta) {
+            return match from_meta.try_exists() {
+                Ok(false) => Ok(()),
+                _ => Err(reservation_err),
+            };
+        }
 
         // Don't pre-check `from_meta`: a concurrent process could delete it
         // between the probe and the move, causing this function to spuriously
@@ -372,11 +383,18 @@ fn copy_then_delete_io(from: &Path, to: &Path) -> io::Result<()> {
         )));
     }
 
-    if let Err(e) = fs::remove_file(from) {
-        let _ = fs::remove_file(to);
-        return Err(e);
+    match fs::remove_file(from) {
+        Ok(()) => Ok(()),
+        // Source vanished between the verify and the unlink — most likely
+        // a concurrent cleanup. We have a verified copy at `to`, so the
+        // move is effectively complete; throwing it away here would lose
+        // data and break the move_meta NotFound contract.
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(e) => {
+            let _ = fs::remove_file(to);
+            Err(e)
+        }
     }
-    Ok(())
 }
 
 /// Backwards-compatible wrapper that maps the io error into `DomainError`.
@@ -711,6 +729,57 @@ mod tests {
             .move_meta(&from, &to)
             .expect("missing sidecar must succeed silently");
         assert!(!meta_path(&to).exists(), "no sidecar should appear");
+    }
+
+    #[test]
+    fn test_move_meta_returns_ok_when_destination_exists_and_source_missing() {
+        // Race shape: the destination sidecar already exists (e.g. left
+        // over from an earlier failed move) AND the source sidecar is
+        // absent. The sidecar contract says missing source = no-op, so we
+        // MUST NOT surface "destination already exists" — it would roll
+        // back the change_directory handler's body move for nothing.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let from = dir.path().join("file.bin");
+        let dest_dir = dir.path().join("dest");
+        std::fs::create_dir(&dest_dir).expect("seed dest dir");
+        let to = dest_dir.join("file.bin");
+
+        let storage = FsFileStorage::new();
+        storage.write_meta(&to, &make_meta()).expect("seed dest meta");
+        assert!(meta_path(&to).exists(), "dest sidecar must pre-exist");
+        assert!(!meta_path(&from).exists(), "source sidecar must be absent");
+
+        storage
+            .move_meta(&from, &to)
+            .expect("missing source must trump dest-exists for sidecars");
+
+        // Pre-existing dest sidecar must NOT be touched: we returned a
+        // no-op without reserving anything.
+        assert!(meta_path(&to).exists(), "dest sidecar must remain intact");
+    }
+
+    #[test]
+    fn test_move_meta_surfaces_destination_exists_when_source_present() {
+        // Symmetric guard: if the source IS present and the destination
+        // is occupied by some other sidecar, we must refuse the move so
+        // we don't silently clobber unrelated metadata.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let from = dir.path().join("file.bin");
+        let dest_dir = dir.path().join("dest");
+        std::fs::create_dir(&dest_dir).expect("seed dest dir");
+        let to = dest_dir.join("file.bin");
+
+        let storage = FsFileStorage::new();
+        storage.write_meta(&from, &make_meta()).expect("seed source meta");
+        storage.write_meta(&to, &make_meta()).expect("seed dest meta");
+
+        let err = storage
+            .move_meta(&from, &to)
+            .expect_err("present source + occupied dest must error");
+        assert!(matches!(err, DomainError::StorageError(_)));
+        // Both sidecars stay intact so the user can intervene.
+        assert!(meta_path(&from).exists());
+        assert!(meta_path(&to).exists());
     }
 
     #[test]
