@@ -42,6 +42,17 @@ fn load_reorderable_pool(repo: &dyn DownloadRepository) -> Result<Vec<Download>,
     Ok(pool)
 }
 
+/// Return the queue position to assign to a freshly created download so it
+/// appends to the back of the existing reorderable queue. Falls back to 0
+/// when no other reorderable downloads exist.
+pub(crate) fn next_queue_position(repo: &dyn DownloadRepository) -> Result<i64, AppError> {
+    let pool = load_reorderable_pool(repo)?;
+    Ok(match pool.iter().map(|d| d.queue_position()).max() {
+        Some(m) => m.saturating_add(POSITION_STRIDE),
+        None => 0,
+    })
+}
+
 impl CommandBus {
     pub async fn handle_move_to_top(&self, cmd: super::MoveToTopCommand) -> Result<(), AppError> {
         let target = self
@@ -118,6 +129,18 @@ impl CommandBus {
     ) -> Result<(), AppError> {
         if cmd.ordered_ids.is_empty() {
             return Ok(());
+        }
+
+        // Reject duplicate ids — they would push the same download to two
+        // positions in the renumbering and leave the queue inconsistent.
+        let mut seen = std::collections::HashSet::with_capacity(cmd.ordered_ids.len());
+        for id in &cmd.ordered_ids {
+            if !seen.insert(*id) {
+                return Err(AppError::Validation(format!(
+                    "duplicate download id in ordered_ids: {}",
+                    id.0
+                )));
+            }
         }
 
         // Load full reorderable pool so omitted items keep a coherent
@@ -567,6 +590,29 @@ mod tests {
         assert_eq!(d3.queue_position(), 1, "submitted first");
         assert_eq!(d1.queue_position(), 2, "submitted second");
         assert_eq!(d2.queue_position(), 3, "omitted item appended after");
+    }
+
+    #[tokio::test]
+    async fn test_reorder_queue_rejects_duplicate_ids() {
+        let repo = MockRepo::new()
+            .with(make_download(1, 10))
+            .with(make_download(2, 20));
+        let events = Arc::new(RecordingBus::new());
+        let bus = make_bus(repo, events.clone());
+
+        let result = bus
+            .handle_reorder_queue(ReorderQueueCommand {
+                ordered_ids: vec![DownloadId(1), DownloadId(2), DownloadId(1)],
+            })
+            .await;
+        assert!(matches!(result, Err(AppError::Validation(_))));
+        let d1 = bus
+            .download_repo()
+            .find_by_id(DownloadId(1))
+            .unwrap()
+            .unwrap();
+        assert_eq!(d1.queue_position(), 10, "no writes when validation fails");
+        assert!(events.events.lock().unwrap().is_empty());
     }
 
     #[tokio::test]

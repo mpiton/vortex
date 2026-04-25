@@ -64,8 +64,13 @@ impl CommandBus {
         let dest = dest_dir.join(&file_name);
 
         let id = next_download_id();
+        // Append to the back of the queue so a freshly added download
+        // does not jump in front of items the user has explicitly
+        // reordered (default queue_position 0 would sort before 1..N).
+        let queue_position = super::move_queue::next_queue_position(self.download_repo())?;
 
-        let mut download = Download::new(id, url, file_name, dest.to_string_lossy().to_string());
+        let mut download = Download::new(id, url, file_name, dest.to_string_lossy().to_string())
+            .with_queue_position(queue_position);
 
         if let Some(hostname) = cmd.source_hostname_override {
             download = download.with_source_hostname(hostname);
@@ -522,6 +527,38 @@ mod tests {
             saved.file_name(),
             "Rick Astley - Never Gonna Give You Up.mp4",
             "filename override must be used, not the CDN URL path segment"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_start_download_appends_to_back_of_existing_queue() {
+        // Regression: a freshly created download must not jump in front of
+        // items the user has already reordered. With a max queue_position of 5
+        // among reorderable items, the new download must land at 5 + stride.
+        let (bus, repo, _) = make_command_bus(Arc::new(MockHttpClient::failing()));
+
+        let pre_existing = Download::new(
+            DownloadId(1),
+            crate::domain::model::download::Url::new("https://example.com/a.zip").unwrap(),
+            "a.zip".to_string(),
+            "/tmp/a.zip".to_string(),
+        )
+        .with_queue_position(5);
+        repo.save(&pre_existing).unwrap();
+
+        let cmd = StartDownloadCommand {
+            url: "https://example.com/b.zip".to_string(),
+            destination: Some(PathBuf::from("/tmp")),
+            filename: Some("b.zip".to_string()),
+            source_hostname_override: None,
+        };
+
+        let id = bus.handle_start_download(cmd).await.unwrap();
+        let saved = repo.store.lock().unwrap().get(&id.0).cloned().unwrap();
+        assert_eq!(
+            saved.queue_position(),
+            5 + 1024,
+            "new download must append after the highest existing reorderable position"
         );
     }
 
