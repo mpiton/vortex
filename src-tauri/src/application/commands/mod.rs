@@ -4,6 +4,7 @@
 //! Handler implementations live in submodules and add methods to `CommandBus`.
 
 mod cancel_download;
+mod change_directory;
 mod clear_downloads_by_state;
 mod delete_history;
 mod export_history;
@@ -265,6 +266,30 @@ pub struct RedownloadCommand {
     pub destination_override: Option<PathBuf>,
 }
 impl Command for RedownloadCommand {}
+
+/// Move a single download's on-disk file (and its `.vortex-meta` sidecar
+/// when applicable) into a new destination directory. Pauses then resumes
+/// the engine when the download is currently running so the move never
+/// races against an in-flight write.
+#[derive(Debug)]
+pub struct ChangeDirectoryCommand {
+    pub id: DownloadId,
+    /// Absolute path of the destination directory. The handler appends the
+    /// existing filename so the on-disk basename never changes.
+    pub new_destination_dir: PathBuf,
+}
+impl Command for ChangeDirectoryCommand {}
+
+/// Move several downloads in one IPC round-trip. Each item is treated as
+/// an independent atomic move — partial failures are reported per id.
+#[derive(Debug)]
+pub struct ChangeDirectoryBulkCommand {
+    pub ids: Vec<DownloadId>,
+    pub new_destination_dir: PathBuf,
+}
+impl Command for ChangeDirectoryBulkCommand {}
+
+pub use change_directory::{ChangeDirectoryBulkOutcome, ChangeDirectoryFailure};
 
 /// Register an already-downloaded local file as a Completed download.
 ///

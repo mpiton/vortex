@@ -27,4 +27,38 @@ pub trait FileStorage: Send + Sync {
 
     /// Delete the `.vortex-meta` file (called after successful completion).
     fn delete_meta(&self, path: &Path) -> Result<(), DomainError>;
+
+    /// Return `true` when `path` points to an existing file or directory.
+    /// Used by the `change_directory` handler to decide whether to skip the
+    /// body move (e.g. for `Queued` items whose engine has not started yet).
+    ///
+    /// The default implementation defers to the real filesystem so existing
+    /// adapters work unchanged; in-memory test stubs override.
+    fn file_exists(&self, path: &Path) -> bool {
+        path.exists()
+    }
+
+    /// Relocate `from` to `to`, creating any missing parent directories.
+    ///
+    /// Implementations must handle cross-filesystem moves transparently
+    /// (i.e. fall back to copy + remove when an in-place rename would cross
+    /// device boundaries) and must roll back any partial destination on
+    /// failure so the caller can retry without leaving orphaned files.
+    ///
+    /// The default implementation is a noop suitable for in-memory test
+    /// stubs that don't track real on-disk paths. Production adapters MUST
+    /// override.
+    fn move_file(&self, _from: &Path, _to: &Path) -> Result<(), DomainError> {
+        Ok(())
+    }
+
+    /// Relocate the `.vortex-meta` sidecar associated with `from` so it sits
+    /// next to `to`. Silently succeeds when the source sidecar is missing
+    /// (the file may have been completed and its meta already deleted).
+    ///
+    /// The default implementation is a noop suitable for in-memory test
+    /// stubs. Production adapters MUST override.
+    fn move_meta(&self, _from: &Path, _to: &Path) -> Result<(), DomainError> {
+        Ok(())
+    }
 }

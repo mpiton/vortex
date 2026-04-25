@@ -159,7 +159,19 @@
       "resumeAll": "Resume All",
       "cancelSelected": "Cancel Selected",
       "clearCompleted": "Clear completed",
-      "clearFailed": "Clear failed"
+      "clearFailed": "Clear failed",
+      "moveSelected": "Move to..."
+    },
+    "moveDialog": {
+      "title_one": "Move {{count}} download",
+      "title_other": "Move {{count}} downloads",
+      "description": "Choose the destination folder. The filename and download metadata are preserved.",
+      "currentLabel": "Current location",
+      "destinationLabel": "New destination",
+      "browse": "Browse...",
+      "noFolderSelected": "No folder selected",
+      "confirm": "Move",
+      "cancel": "Cancel"
     },
     "clearDialog": {
       "titleCompleted_one": "Clear {{count}} completed download?",
@@ -179,7 +191,11 @@
       "clearedCompleted_other": "{{count}} completed downloads cleared",
       "clearedFailed_one": "{{count}} failed download cleared",
       "clearedFailed_other": "{{count}} failed downloads cleared",
-      "clearError": "Failed to clear downloads: {{error}}"
+      "clearError": "Failed to clear downloads: {{error}}",
+      "moveSucceeded_one": "Moved {{count}} download",
+      "moveSucceeded_other": "Moved {{count}} downloads",
+      "movePartial": "Moved {{moved}} of {{total}} downloads ({{failed}} failed)",
+      "moveError": "Failed to move downloads: {{error}}"
     },
     "selectedCount_one": "{{count}} selected",
     "selectedCount_other": "{{count}} selected",

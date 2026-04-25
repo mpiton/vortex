@@ -100,6 +100,15 @@ fn record_download_event(store: &DownloadLogStore, event: &DomainEvent) {
                 ),
             );
         }
+        DomainEvent::DownloadDirectoryChanged {
+            id,
+            new_destination_path,
+        } => {
+            store.push(
+                id.0,
+                format!("[INFO] Moved download to {new_destination_path}"),
+            );
+        }
         DomainEvent::DownloadProgress { .. }
         | DomainEvent::DownloadCompletedPersisted { .. }
         | DomainEvent::DownloadPrioritySet { .. }

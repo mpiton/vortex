@@ -13,10 +13,11 @@ use crate::adapters::driven::logging::download_log_store::DownloadLogStore;
 use crate::application::command_bus::CommandBus;
 use crate::application::commands::store_install::{StoreInstallCommand, StoreUpdateCommand};
 use crate::application::commands::{
-    CancelDownloadCommand, ClearDownloadsByStateCommand, ClearHistoryCommand,
-    DeleteHistoryEntryCommand, DisablePluginCommand, EnablePluginCommand, ExportHistoryCommand,
-    ExportHistoryFormat, InstallPluginCommand, MoveToBottomCommand, MoveToTopCommand,
-    OpenDownloadFileCommand, OpenDownloadFolderCommand, PauseAllDownloadsCommand,
+    CancelDownloadCommand, ChangeDirectoryBulkCommand, ChangeDirectoryBulkOutcome,
+    ChangeDirectoryCommand, ChangeDirectoryFailure, ClearDownloadsByStateCommand,
+    ClearHistoryCommand, DeleteHistoryEntryCommand, DisablePluginCommand, EnablePluginCommand,
+    ExportHistoryCommand, ExportHistoryFormat, InstallPluginCommand, MoveToBottomCommand,
+    MoveToTopCommand, OpenDownloadFileCommand, OpenDownloadFolderCommand, PauseAllDownloadsCommand,
     PauseDownloadCommand, PurgeHistoryCommand, RedownloadCommand, RedownloadSource,
     RemoveDownloadCommand, ReorderQueueCommand, ResolveLinksCommand, ResolvedLinkDto,
     ResumeAllDownloadsCommand, ResumeDownloadCommand, RetryDownloadCommand, SetPriorityCommand,
@@ -98,6 +99,81 @@ pub async fn download_cancel(state: State<'_, AppState>, id: u64) -> Result<(), 
         .command_bus
         .handle_cancel_download(cmd)
         .await
+        .map_err(|e| e.to_string())
+}
+
+/// Per-id failure entry surfaced in [`ChangeDirectoryBulkOutcomeDto`].
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChangeDirectoryFailureDto {
+    pub id: u64,
+    pub message: String,
+}
+
+impl From<ChangeDirectoryFailure> for ChangeDirectoryFailureDto {
+    fn from(f: ChangeDirectoryFailure) -> Self {
+        Self {
+            id: f.id.0,
+            message: f.message,
+        }
+    }
+}
+
+/// Bulk move outcome surfaced to the frontend so the UI can keep failed
+/// rows selected for retry without parsing a free-form error string.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChangeDirectoryBulkOutcomeDto {
+    pub moved: Vec<u64>,
+    pub failed: Vec<ChangeDirectoryFailureDto>,
+}
+
+impl From<ChangeDirectoryBulkOutcome> for ChangeDirectoryBulkOutcomeDto {
+    fn from(o: ChangeDirectoryBulkOutcome) -> Self {
+        Self {
+            moved: o.moved.into_iter().map(|id| id.0).collect(),
+            failed: o.failed.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+/// Move a single download into `new_destination_dir`. The on-disk basename
+/// is preserved; the engine is paused and resumed automatically when the
+/// download is currently running.
+#[tauri::command]
+pub async fn download_change_directory(
+    state: State<'_, AppState>,
+    id: u64,
+    new_destination_dir: String,
+) -> Result<(), String> {
+    let cmd = ChangeDirectoryCommand {
+        id: DownloadId(id),
+        new_destination_dir: PathBuf::from(new_destination_dir),
+    };
+    state
+        .command_bus
+        .handle_change_directory(cmd)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Move several downloads in one round-trip. Each id is processed
+/// independently — failures don't abort the rest of the batch.
+#[tauri::command]
+pub async fn download_change_directory_bulk(
+    state: State<'_, AppState>,
+    ids: Vec<u64>,
+    new_destination_dir: String,
+) -> Result<ChangeDirectoryBulkOutcomeDto, String> {
+    let cmd = ChangeDirectoryBulkCommand {
+        ids: ids.into_iter().map(DownloadId).collect(),
+        new_destination_dir: PathBuf::from(new_destination_dir),
+    };
+    state
+        .command_bus
+        .handle_change_directory_bulk(cmd)
+        .await
+        .map(Into::into)
         .map_err(|e| e.to_string())
 }
 

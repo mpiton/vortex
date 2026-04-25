@@ -122,6 +122,14 @@ pub enum DomainEvent {
     QueueReordered {
         affected_ids: Vec<DownloadId>,
     },
+    /// A download's on-disk file (and its `.vortex-meta` sidecar when
+    /// applicable) was successfully relocated to a new directory. The Tauri
+    /// bridge forwards this to the frontend so the UI can refresh the path
+    /// shown in the detail panel.
+    DownloadDirectoryChanged {
+        id: DownloadId,
+        new_destination_path: String,
+    },
 
     // Settings
     SettingsUpdated,

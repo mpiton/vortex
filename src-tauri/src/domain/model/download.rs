@@ -302,6 +302,20 @@ impl Download {
         self
     }
 
+    /// Replace the absolute filesystem destination path.
+    ///
+    /// Used by `ChangeDirectoryCommand` after the underlying file has been
+    /// successfully relocated. Callers are responsible for ensuring the path
+    /// points to the new on-disk location before persisting.
+    pub fn with_destination_path(mut self, path: String) -> Self {
+        self.destination_path = path;
+        self
+    }
+
+    pub fn set_destination_path(&mut self, path: String) {
+        self.destination_path = path;
+    }
+
     pub fn touch(&mut self, now: u64) {
         self.updated_at = now;
     }

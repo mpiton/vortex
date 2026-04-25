@@ -206,6 +206,131 @@ impl FileStorage for FsFileStorage {
             ))),
         }
     }
+
+    fn move_file(&self, from: &Path, to: &Path) -> Result<(), DomainError> {
+        if from == to {
+            return Ok(());
+        }
+        if let Some(parent) = to.parent() {
+            fs::create_dir_all(parent).map_err(|e| {
+                DomainError::StorageError(format!(
+                    "failed to create directory {}: {e}",
+                    parent.display()
+                ))
+            })?;
+        }
+
+        // Refuse to silently overwrite a different file at the destination —
+        // the caller should pick a different folder rather than risk shadowing
+        // user data. `from == to` was handled above so equal paths slip through.
+        if to.exists() {
+            return Err(DomainError::StorageError(format!(
+                "destination already exists: {}",
+                to.display()
+            )));
+        }
+
+        match fs::rename(from, to) {
+            Ok(()) => {
+                debug!(from = %from.display(), to = %to.display(), "moved file via rename");
+                Ok(())
+            }
+            // EXDEV — same operation across mount points needs copy+delete.
+            // `ErrorKind::CrossesDevices` is stable since Rust 1.85; the raw
+            // os error fallback covers older kernels and other platforms.
+            Err(e) if is_cross_device(&e) => {
+                copy_then_delete(from, to)?;
+                debug!(from = %from.display(), to = %to.display(), "moved file via copy+delete");
+                Ok(())
+            }
+            Err(e) => Err(DomainError::StorageError(format!(
+                "failed to move {} → {}: {e}",
+                from.display(),
+                to.display()
+            ))),
+        }
+    }
+
+    fn move_meta(&self, from: &Path, to: &Path) -> Result<(), DomainError> {
+        let from_meta = meta_path(from);
+        if !from_meta.exists() {
+            return Ok(());
+        }
+        let to_meta = meta_path(to);
+        self.move_file(&from_meta, &to_meta)
+    }
+}
+
+/// Returns true when `err` is an EXDEV-style "can't rename across devices"
+/// error — the only case where we fall back to copy+delete instead of bailing.
+fn is_cross_device(err: &std::io::Error) -> bool {
+    // Stable since Rust 1.85. Wrapped in a match because adding a new
+    // ErrorKind variant we don't recognise would otherwise be a hard error.
+    if matches!(err.kind(), std::io::ErrorKind::CrossesDevices) {
+        return true;
+    }
+    // EXDEV = 18 on Linux/macOS, ERROR_NOT_SAME_DEVICE = 17 on Windows.
+    matches!(err.raw_os_error(), Some(18) | Some(17))
+}
+
+/// Copy `from` → `to` byte-for-byte, verify both ends are the same size,
+/// then delete `from`. Cleans up the partially-written destination on any
+/// failure so the source stays intact.
+///
+/// The size check guards against truncated copies that the OS reported as
+/// successful (rare but possible on full disks or interrupted IO). It is
+/// cheap and is the bare minimum acceptance criterion for cross-filesystem
+/// moves; a content-level checksum would be stronger but is deferred until
+/// we actually see a size match coexisting with content corruption.
+fn copy_then_delete(from: &Path, to: &Path) -> Result<(), DomainError> {
+    let source_len = fs::metadata(from)
+        .map_err(|e| {
+            DomainError::StorageError(format!(
+                "failed to stat source {} before copy: {e}",
+                from.display()
+            ))
+        })?
+        .len();
+
+    if let Err(e) = fs::copy(from, to) {
+        // Best-effort cleanup; if the destination wasn't created the remove
+        // is a NotFound which we ignore.
+        let _ = fs::remove_file(to);
+        return Err(DomainError::StorageError(format!(
+            "failed to copy {} → {}: {e}",
+            from.display(),
+            to.display()
+        )));
+    }
+
+    let dest_len = fs::metadata(to).map(|m| m.len()).map_err(|e| {
+        // Destination missing or unreadable after a "successful" copy —
+        // treat as corruption, drop the partial dest and abort.
+        let _ = fs::remove_file(to);
+        DomainError::StorageError(format!(
+            "failed to stat destination {} after copy: {e}",
+            to.display()
+        ))
+    })?;
+    if dest_len != source_len {
+        let _ = fs::remove_file(to);
+        return Err(DomainError::StorageError(format!(
+            "copy verification failed for {} → {}: source {source_len} bytes, destination {dest_len} bytes",
+            from.display(),
+            to.display()
+        )));
+    }
+
+    if let Err(e) = fs::remove_file(from) {
+        // Source removal failed after a successful copy — undo the copy so
+        // we don't end up with two files on disk and a confused database.
+        let _ = fs::remove_file(to);
+        return Err(DomainError::StorageError(format!(
+            "failed to delete source {} after copy: {e}",
+            from.display()
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -424,5 +549,151 @@ mod tests {
 
         let p = meta_path(Path::new("/tmp/downloads/file"));
         assert_eq!(p, PathBuf::from("/tmp/downloads/file.vortex-meta"));
+    }
+
+    #[test]
+    fn test_move_file_same_filesystem_renames_atomically() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let from = dir.path().join("original.bin");
+        let to = dir.path().join("subdir").join("renamed.bin");
+        fs::write(&from, b"payload").expect("seed file");
+
+        let storage = FsFileStorage::new();
+        storage.move_file(&from, &to).expect("move should succeed");
+
+        assert!(!from.exists(), "source must be gone after move");
+        assert_eq!(fs::read(&to).expect("read dest"), b"payload");
+    }
+
+    #[test]
+    fn test_move_file_creates_missing_parent_directories() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let from = dir.path().join("file.bin");
+        let to = dir.path().join("nested/deeper/file.bin");
+        fs::write(&from, b"x").expect("seed file");
+
+        let storage = FsFileStorage::new();
+        storage
+            .move_file(&from, &to)
+            .expect("move should auto-create parents");
+
+        assert!(to.exists());
+    }
+
+    #[test]
+    fn test_move_file_noop_when_paths_equal() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("same.bin");
+        fs::write(&path, b"keep").expect("seed file");
+
+        let storage = FsFileStorage::new();
+        storage
+            .move_file(&path, &path)
+            .expect("self-move must be a noop");
+
+        assert_eq!(fs::read(&path).expect("read"), b"keep");
+    }
+
+    #[test]
+    fn test_move_file_refuses_to_overwrite_existing_destination() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let from = dir.path().join("source.bin");
+        let to = dir.path().join("victim.bin");
+        fs::write(&from, b"new").expect("seed source");
+        fs::write(&to, b"existing").expect("seed dest");
+
+        let storage = FsFileStorage::new();
+        let result = storage.move_file(&from, &to);
+        assert!(result.is_err(), "must not silently clobber");
+        // Source kept intact so the user can retry against another folder.
+        assert_eq!(fs::read(&from).expect("source still here"), b"new");
+        assert_eq!(fs::read(&to).expect("victim untouched"), b"existing");
+    }
+
+    #[test]
+    fn test_move_file_propagates_missing_source_error() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let from = dir.path().join("ghost.bin");
+        let to = dir.path().join("dest.bin");
+
+        let storage = FsFileStorage::new();
+        let result = storage.move_file(&from, &to);
+        assert!(matches!(result, Err(DomainError::StorageError(_))));
+    }
+
+    #[test]
+    fn test_move_meta_relocates_sidecar_when_present() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let from = dir.path().join("file.bin");
+        let to = dir.path().join("moved").join("file.bin");
+        let storage = FsFileStorage::new();
+
+        storage.write_meta(&from, &make_meta()).expect("seed meta");
+        // Body file isn't required for move_meta; it operates on the sidecar
+        // alone, which is exactly the contract the change_directory handler
+        // relies on after the body has already been moved.
+        storage
+            .move_meta(&from, &to)
+            .expect("move_meta should succeed");
+
+        assert!(!meta_path(&from).exists(), "old sidecar must be gone");
+        assert!(meta_path(&to).exists(), "new sidecar must exist");
+    }
+
+    #[test]
+    fn test_move_meta_is_noop_when_sidecar_absent() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let from = dir.path().join("file.bin");
+        let to = dir.path().join("moved").join("file.bin");
+
+        let storage = FsFileStorage::new();
+        storage
+            .move_meta(&from, &to)
+            .expect("missing sidecar must succeed silently");
+        assert!(!meta_path(&to).exists(), "no sidecar should appear");
+    }
+
+    #[test]
+    fn test_copy_then_delete_round_trip() {
+        // Direct test of the cross-FS fallback: covers byte preservation and
+        // source removal even though we can't realistically straddle two
+        // filesystems inside a unit test.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let from = dir.path().join("payload.bin");
+        let to = dir.path().join("dest.bin");
+        fs::write(&from, b"copy-me").expect("seed");
+
+        super::copy_then_delete(&from, &to).expect("copy+delete should succeed");
+        assert!(!from.exists());
+        assert_eq!(fs::read(&to).expect("read dest"), b"copy-me");
+    }
+
+    #[test]
+    fn test_copy_then_delete_cleans_up_destination_on_copy_failure() {
+        // The destination is a directory, so `fs::copy` fails after no bytes
+        // have been written. We expect an error and no orphan file at `to`.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let from = dir.path().join("source.bin");
+        let to = dir.path().join("dest_dir");
+        fs::write(&from, b"x").expect("seed");
+        fs::create_dir(&to).expect("seed dest dir");
+
+        let result = super::copy_then_delete(&from, &to);
+        assert!(result.is_err());
+        assert!(from.exists(), "source must remain after rollback");
+    }
+
+    #[test]
+    fn test_is_cross_device_recognises_exdev_codes() {
+        // Synthetic os errors — covers the raw_os_error fallback path even
+        // when the host kernel doesn't surface ErrorKind::CrossesDevices.
+        let exdev = std::io::Error::from_raw_os_error(18);
+        assert!(super::is_cross_device(&exdev), "EXDEV must be detected");
+
+        let other = std::io::Error::from_raw_os_error(2); // ENOENT
+        assert!(
+            !super::is_cross_device(&other),
+            "ENOENT is not cross-device"
+        );
     }
 }

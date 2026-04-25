@@ -159,7 +159,19 @@
       "resumeAll": "Tout reprendre",
       "cancelSelected": "Annuler la sélection",
       "clearCompleted": "Effacer terminés",
-      "clearFailed": "Effacer en erreur"
+      "clearFailed": "Effacer en erreur",
+      "moveSelected": "Déplacer vers..."
+    },
+    "moveDialog": {
+      "title_one": "Déplacer {{count}} téléchargement",
+      "title_other": "Déplacer {{count}} téléchargements",
+      "description": "Choisissez le dossier de destination. Le nom du fichier et les métadonnées sont conservés.",
+      "currentLabel": "Emplacement actuel",
+      "destinationLabel": "Nouvelle destination",
+      "browse": "Parcourir...",
+      "noFolderSelected": "Aucun dossier sélectionné",
+      "confirm": "Déplacer",
+      "cancel": "Annuler"
     },
     "clearDialog": {
       "titleCompleted_one": "Effacer {{count}} téléchargement terminé ?",
@@ -179,7 +191,11 @@
       "clearedCompleted_other": "{{count}} téléchargements terminés effacés",
       "clearedFailed_one": "{{count}} téléchargement en erreur effacé",
       "clearedFailed_other": "{{count}} téléchargements en erreur effacés",
-      "clearError": "Échec de l'effacement des téléchargements : {{error}}"
+      "clearError": "Échec de l'effacement des téléchargements : {{error}}",
+      "moveSucceeded_one": "{{count}} téléchargement déplacé",
+      "moveSucceeded_other": "{{count}} téléchargements déplacés",
+      "movePartial": "{{moved}} téléchargements sur {{total}} déplacés ({{failed}} en échec)",
+      "moveError": "Échec du déplacement : {{error}}"
     },
     "selectedCount_one": "{{count}} sélectionné",
     "selectedCount_other": "{{count}} sélectionnés",
