@@ -2,9 +2,16 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useTauriMutation } from "@/api/hooks";
 import { toast } from "@/lib/toast";
-import type { AppConfig, AppConfigPatch } from "@/types/settings";
+import { HISTORY_RETENTION_PRESETS, type AppConfig, type AppConfigPatch } from "@/types/settings";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { FolderOpen } from "lucide-react";
 import { SettingToggle } from "./SettingField";
 import { useBrowseFolder } from "@/hooks/useBrowseFolder";
@@ -114,6 +121,33 @@ export function GeneralSection({ config }: GeneralSectionProps) {
           checked={config.subfolderPerPackage}
           onCheckedChange={(v) => handleChange("subfolderPerPackage", v)}
         />
+      </div>
+
+      <div className="flex items-center justify-between gap-4 py-2">
+        <div>
+          <p className="text-sm font-medium">{t("settings.general.historyRetention.label")}</p>
+          <p className="text-xs text-muted-foreground">
+            {t("settings.general.historyRetention.description")}
+          </p>
+        </div>
+        <Select
+          value={String(config.historyRetentionDays)}
+          onValueChange={(v) => handleChange("historyRetentionDays", Number(v))}
+        >
+          <SelectTrigger
+            className="w-40"
+            aria-label={t("settings.general.historyRetention.label")}
+          >
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {HISTORY_RETENTION_PRESETS.map((preset) => (
+              <SelectItem key={preset.days} value={String(preset.days)}>
+                {t(preset.labelKey)}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       </div>
     </div>
   );

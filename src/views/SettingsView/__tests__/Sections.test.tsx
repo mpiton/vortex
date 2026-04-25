@@ -44,6 +44,7 @@ const mockConfig: AppConfig = {
   retryDelaySeconds: 10,
   verifyChecksums: true,
   preAllocateSpace: true,
+  historyRetentionDays: 30,
   proxyType: "none",
   proxyUrl: null,
   userAgent: "Vortex/1.0",
@@ -99,6 +100,31 @@ describe("GeneralSection", () => {
     expect(screen.getByText("Sound effects")).toBeInTheDocument();
     expect(screen.getByText("Confirm before delete")).toBeInTheDocument();
     expect(screen.getByText("Subfolder per package")).toBeInTheDocument();
+  });
+
+  it("should render the history retention dropdown bound to the current value", () => {
+    renderWithQuery(<GeneralSection config={mockConfig} />);
+    const trigger = screen.getByRole("combobox", { name: "History retention" });
+    expect(trigger).toHaveTextContent("30 days");
+  });
+
+  it("should persist a new history retention value via settings_update", async () => {
+    mockInvoke.mockImplementation(async (command: string) => {
+      if (command === "settings_update") return null;
+      return null;
+    });
+    const user = userEvent.setup();
+    renderWithQuery(<GeneralSection config={mockConfig} />);
+    const trigger = screen.getByRole("combobox", { name: "History retention" });
+    await user.click(trigger);
+    await user.click(await screen.findByRole("option", { name: "Never" }));
+
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith(
+        "settings_update",
+        expect.objectContaining({ patch: { historyRetentionDays: 0 } }),
+      );
+    });
   });
 
   it("should render Browse button for directory picker", () => {

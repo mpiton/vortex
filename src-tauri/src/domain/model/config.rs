@@ -31,6 +31,12 @@ pub struct AppConfig {
     pub verify_checksums: bool,
     pub pre_allocate_space: bool,
 
+    // ── History ──────────────────────────────────────────────────────
+    /// Number of days history entries are retained before automatic
+    /// hard-delete. `0` disables retention (entries are kept forever).
+    /// PRD §6.8 / §7.9 — hard delete decision (privacy by default).
+    pub history_retention_days: i64,
+
     // ── Network ──────────────────────────────────────────────────────
     /// `"none"`, `"http"`, or `"socks5"`.
     pub proxy_type: String,
@@ -91,6 +97,9 @@ impl Default for AppConfig {
             verify_checksums: true,
             pre_allocate_space: true,
 
+            // History
+            history_retention_days: 30,
+
             // Network
             proxy_type: "none".to_string(),
             proxy_url: None,
@@ -148,6 +157,9 @@ pub struct ConfigPatch {
     pub verify_checksums: Option<bool>,
     pub pre_allocate_space: Option<bool>,
 
+    // History
+    pub history_retention_days: Option<i64>,
+
     // Network
     pub proxy_type: Option<String>,
     pub proxy_url: Option<Option<String>>,
@@ -179,6 +191,19 @@ pub const MIN_MAX_CONCURRENT_DOWNLOADS: u32 = 1;
 
 /// Upper bound for `max_concurrent_downloads` accepted by the scheduler.
 pub const MAX_MAX_CONCURRENT_DOWNLOADS: u32 = 20;
+
+/// Allowed retention values exposed in the Settings UI dropdown
+/// (PRD §6.8: 7j / 30j / 90j / 1an / illimité).
+/// `0` means "never purge".
+pub const HISTORY_RETENTION_PRESETS_DAYS: [i64; 5] = [0, 7, 30, 90, 365];
+
+/// Sanitize a persisted `history_retention_days` value.
+///
+/// Negative values (corrupted/hand-edited) collapse to `0` (= unlimited),
+/// matching the privacy-safe default of "no spurious deletes".
+pub fn normalize_history_retention_days(raw: i64) -> i64 {
+    raw.max(0)
+}
 
 /// Clamp a persisted `max_concurrent_downloads` to the queue scheduler's
 /// valid range and convert to `usize`.
@@ -241,6 +266,11 @@ pub fn apply_patch(config: &mut AppConfig, patch: &ConfigPatch) {
     }
     if let Some(v) = patch.pre_allocate_space {
         config.pre_allocate_space = v;
+    }
+
+    // History
+    if let Some(v) = patch.history_retention_days {
+        config.history_retention_days = normalize_history_retention_days(v);
     }
 
     // Network
@@ -366,5 +396,66 @@ mod tests {
             normalize_max_concurrent(u32::MAX),
             MAX_MAX_CONCURRENT_DOWNLOADS as usize
         );
+    }
+
+    #[test]
+    fn test_default_history_retention_is_thirty_days() {
+        // PRD §6.8 lists 7/30/90/365/illimité.  30j is a privacy-safe
+        // middle ground and matches existing defaults seen in similar
+        // download managers.
+        assert_eq!(AppConfig::default().history_retention_days, 30);
+    }
+
+    #[test]
+    fn test_apply_patch_updates_history_retention_days() {
+        let mut config = AppConfig::default();
+        let patch = ConfigPatch {
+            history_retention_days: Some(90),
+            ..Default::default()
+        };
+        apply_patch(&mut config, &patch);
+        assert_eq!(config.history_retention_days, 90);
+    }
+
+    #[test]
+    fn test_apply_patch_can_set_history_retention_to_zero_unlimited() {
+        let mut config = AppConfig {
+            history_retention_days: 30,
+            ..AppConfig::default()
+        };
+        let patch = ConfigPatch {
+            history_retention_days: Some(0),
+            ..Default::default()
+        };
+        apply_patch(&mut config, &patch);
+        assert_eq!(config.history_retention_days, 0);
+    }
+
+    #[test]
+    fn test_apply_patch_clamps_negative_history_retention_to_zero() {
+        // A crafted IPC/REST payload could send a negative value;
+        // `apply_patch` must normalize it instead of trusting the input.
+        let mut config = AppConfig::default();
+        let patch = ConfigPatch {
+            history_retention_days: Some(-99),
+            ..Default::default()
+        };
+        apply_patch(&mut config, &patch);
+        assert_eq!(config.history_retention_days, 0);
+    }
+
+    #[test]
+    fn test_normalize_history_retention_days_clamps_negatives_to_zero() {
+        assert_eq!(normalize_history_retention_days(-1), 0);
+        assert_eq!(normalize_history_retention_days(i64::MIN), 0);
+    }
+
+    #[test]
+    fn test_normalize_history_retention_days_passes_through_non_negative() {
+        for &v in &HISTORY_RETENTION_PRESETS_DAYS {
+            assert_eq!(normalize_history_retention_days(v), v);
+        }
+        assert_eq!(normalize_history_retention_days(7), 7);
+        assert_eq!(normalize_history_retention_days(i64::MAX), i64::MAX);
     }
 }

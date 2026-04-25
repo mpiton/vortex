@@ -40,7 +40,16 @@
       "confirmDelete": "Confirmer avant suppression",
       "confirmDeleteDesc": "Demander confirmation avant de supprimer des téléchargements",
       "subfolderPerPackage": "Sous-dossier par paquet",
-      "subfolderPerPackageDesc": "Créer un dossier séparé pour chaque paquet de téléchargement"
+      "subfolderPerPackageDesc": "Créer un dossier séparé pour chaque paquet de téléchargement",
+      "historyRetention": {
+        "label": "Rétention de l'historique",
+        "description": "Supprime définitivement les entrées plus anciennes que la fenêtre choisie. Action irréversible.",
+        "days7": "7 jours",
+        "days30": "30 jours",
+        "days90": "90 jours",
+        "days365": "1 an",
+        "never": "Jamais"
+      }
     },
     "downloads": {
       "title": "Téléchargements",

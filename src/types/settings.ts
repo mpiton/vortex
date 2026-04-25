@@ -29,6 +29,9 @@ export interface AppConfig {
   verifyChecksums: boolean;
   preAllocateSpace: boolean;
 
+  // History
+  historyRetentionDays: number;
+
   // Network
   proxyType: ProxyType;
   proxyUrl: string | null;
@@ -64,4 +67,17 @@ export const ACCENT_PRESETS = [
   { name: "Pink", value: "#EC4899" },
   { name: "Red", value: "#EF4444" },
   { name: "Green", value: "#10B981" },
+] as const;
+
+/**
+ * History retention presets exposed in the General settings dropdown.
+ * Mirrors `domain::model::config::HISTORY_RETENTION_PRESETS_DAYS`.
+ * `0` = unlimited (never purge).
+ */
+export const HISTORY_RETENTION_PRESETS = [
+  { days: 7, labelKey: "settings.general.historyRetention.days7" },
+  { days: 30, labelKey: "settings.general.historyRetention.days30" },
+  { days: 90, labelKey: "settings.general.historyRetention.days90" },
+  { days: 365, labelKey: "settings.general.historyRetention.days365" },
+  { days: 0, labelKey: "settings.general.historyRetention.never" },
 ] as const;

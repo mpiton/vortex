@@ -10,5 +10,6 @@ pub mod logging;
 pub mod network;
 pub mod notification;
 pub mod plugin;
+pub mod scheduler;
 pub mod sqlite;
 pub mod tray;
