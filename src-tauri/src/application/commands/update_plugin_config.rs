@@ -36,13 +36,30 @@ impl CommandBus {
         let store = self
             .plugin_config_store()
             .ok_or_else(|| AppError::Plugin("plugin config store not configured".into()))?;
-        store
-            .set_value(&cmd.plugin_name, &cmd.key, &cmd.value)
-            .map_err(AppError::Domain)?;
 
+        // Capture the previous value so we can roll back the runtime if the
+        // persistence step fails: that prevents a half-applied state where
+        // the live plugin observes the new value but disk does not.
+        let previous = store
+            .get_values(&cmd.plugin_name)
+            .map_err(AppError::Domain)?
+            .get(&cmd.key)
+            .cloned();
+
+        // Apply the runtime change first so a runtime failure can short
+        // circuit before anything is persisted.
         self.plugin_loader()
             .set_runtime_config(&cmd.plugin_name, &cmd.key, &cmd.value)
             .map_err(AppError::Domain)?;
+
+        if let Err(e) = store.set_value(&cmd.plugin_name, &cmd.key, &cmd.value) {
+            if let Some(prev) = previous {
+                let _ = self
+                    .plugin_loader()
+                    .set_runtime_config(&cmd.plugin_name, &cmd.key, &prev);
+            }
+            return Err(AppError::Domain(e));
+        }
 
         Ok(())
     }

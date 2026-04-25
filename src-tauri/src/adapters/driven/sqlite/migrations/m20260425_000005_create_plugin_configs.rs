@@ -10,7 +10,6 @@ impl MigrationTrait for Migration {
             .create_table(
                 Table::create()
                     .table(PluginConfigs::Table)
-                    .if_not_exists()
                     .col(
                         ColumnDef::new(PluginConfigs::PluginName)
                             .string()
@@ -30,7 +29,12 @@ impl MigrationTrait for Migration {
 
     async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
         manager
-            .drop_table(Table::drop().table(PluginConfigs::Table).to_owned())
+            .drop_table(
+                Table::drop()
+                    .table(PluginConfigs::Table)
+                    .if_exists()
+                    .to_owned(),
+            )
             .await
     }
 }

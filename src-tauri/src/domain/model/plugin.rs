@@ -321,7 +321,22 @@ impl ConfigField {
                 let parsed: i64 = value.parse().map_err(|_| {
                     DomainError::ValidationError(format!("expected integer, got '{value}'"))
                 })?;
-                self.check_numeric_bounds(parsed as f64)?;
+                if let Some(min) = self.min {
+                    let min_i = min as i64;
+                    if parsed < min_i {
+                        return Err(DomainError::ValidationError(format!(
+                            "value {parsed} below minimum {min}"
+                        )));
+                    }
+                }
+                if let Some(max) = self.max {
+                    let max_i = max as i64;
+                    if parsed > max_i {
+                        return Err(DomainError::ValidationError(format!(
+                            "value {parsed} above maximum {max}"
+                        )));
+                    }
+                }
             }
             ConfigFieldType::Float => {
                 let parsed: f64 = value.parse().map_err(|_| {
@@ -351,8 +366,7 @@ impl ConfigField {
                 }
             }
             ConfigFieldType::Array => {
-                let trimmed = value.trim();
-                if !trimmed.starts_with('[') || !trimmed.ends_with(']') {
+                if !is_json_array_structure(value) {
                     return Err(DomainError::ValidationError(format!(
                         "expected JSON array, got '{value}'"
                     )));
@@ -429,6 +443,56 @@ impl PluginConfigSchema {
         })?;
         field.validate(value)
     }
+}
+
+/// Lightweight JSON-array structure validator built with std only.
+///
+/// Domain layer constraint: no external crate. Verifies the trimmed value
+/// opens with `[`, closes with `]`, has balanced brackets/braces, and
+/// well-formed string literals (handling `\` escapes). Catches the most
+/// egregious malformations without pulling `serde_json` into the domain.
+fn is_json_array_structure(value: &str) -> bool {
+    let trimmed = value.trim();
+    if !trimmed.starts_with('[') || !trimmed.ends_with(']') {
+        return false;
+    }
+    let mut depth_bracket: i32 = 0;
+    let mut depth_brace: i32 = 0;
+    let mut in_string = false;
+    let mut escaped = false;
+    for c in trimmed.chars() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if in_string {
+            match c {
+                '\\' => escaped = true,
+                '"' => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
+        match c {
+            '"' => in_string = true,
+            '[' => depth_bracket += 1,
+            ']' => {
+                depth_bracket -= 1;
+                if depth_bracket < 0 {
+                    return false;
+                }
+            }
+            '{' => depth_brace += 1,
+            '}' => {
+                depth_brace -= 1;
+                if depth_brace < 0 {
+                    return false;
+                }
+            }
+            _ => {}
+        }
+    }
+    !in_string && depth_bracket == 0 && depth_brace == 0
 }
 
 /// Minimal POSIX-like regex matcher built with std only.
@@ -572,6 +636,9 @@ fn parse_atom(pat: &[char]) -> (Atom, usize) {
                     ranges.push((start, start));
                     i += 1;
                 }
+            }
+            if i >= pat.len() || pat[i] != ']' {
+                return (Atom::Class(Vec::new(), false), pat.len());
             }
             (Atom::Class(ranges, negate), i + 1)
         }

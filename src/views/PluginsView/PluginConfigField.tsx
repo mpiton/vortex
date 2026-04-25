@@ -42,12 +42,11 @@ export function PluginConfigField({
       {field.description && (
         <p className="text-[10px] text-text-dim">{field.description}</p>
       )}
-      {renderControl(field, value, onChange, labelId, field.key)}
+      {renderControl(field, value, onChange, labelId, field.key, describedBy)}
       {errorMessage && (
         <p
           id={`${labelId}-error`}
           role="alert"
-          aria-describedby={describedBy}
           className="text-[10px] text-destructive"
         >
           {errorMessage}
@@ -63,12 +62,14 @@ function renderControl(
   onChange: (value: string) => void,
   labelId: string,
   inputId: string,
+  describedBy: string | undefined,
 ) {
   if (field.fieldType === "boolean") {
     return (
       <Switch
         id={inputId}
         aria-labelledby={labelId}
+        aria-describedby={describedBy}
         checked={value === "true"}
         onCheckedChange={(checked) => onChange(checked ? "true" : "false")}
       />
@@ -78,7 +79,12 @@ function renderControl(
   if (isEnumLike(field)) {
     return (
       <Select value={value} onValueChange={onChange}>
-        <SelectTrigger id={inputId} aria-labelledby={labelId} className="h-8 text-xs">
+        <SelectTrigger
+          id={inputId}
+          aria-labelledby={labelId}
+          aria-describedby={describedBy}
+          className="h-8 text-xs"
+        >
           <SelectValue placeholder={field.default ?? ""} />
         </SelectTrigger>
         <SelectContent>
@@ -97,6 +103,7 @@ function renderControl(
       <Input
         id={inputId}
         aria-labelledby={labelId}
+        aria-describedby={describedBy}
         type="number"
         step={field.fieldType === "integer" ? 1 : "any"}
         min={field.min ?? undefined}
@@ -112,6 +119,7 @@ function renderControl(
     <Input
       id={inputId}
       aria-labelledby={labelId}
+      aria-describedby={describedBy}
       type={field.fieldType === "url" ? "url" : "text"}
       value={value}
       onChange={(e) => onChange(e.target.value)}

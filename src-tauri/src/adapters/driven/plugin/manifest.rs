@@ -186,6 +186,11 @@ fn build_config_schema(
         if let Some(regex) = &entry.regex {
             field = field.with_regex(regex.clone());
         }
+        if let Some(default) = field.default_value() {
+            field.validate(default).map_err(|e| {
+                DomainError::PluginError(format!("config field '{key}' has invalid default: {e}"))
+            })?;
+        }
         schema.insert(key.clone(), field);
     }
     Ok(schema)

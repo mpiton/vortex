@@ -119,10 +119,10 @@ export function PluginsView() {
 
   const installedNames = useMemo(
     () =>
-      filtered
+      entries
         .filter((e) => isInstalled(e.status) && !locallyDisabled.has(e.name))
         .map((e) => e.name),
-    [filtered, locallyDisabled],
+    [entries, locallyDisabled],
   );
 
   const { data: configsByPlugin } = useQuery({

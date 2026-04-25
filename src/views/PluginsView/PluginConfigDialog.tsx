@@ -37,6 +37,7 @@ function validate(field: ConfigField, value: string): string | null {
     return null;
   }
   if (field.fieldType === "float") {
+    if (value.trim() === "") return "Must be a number";
     const n = Number(value);
     if (Number.isNaN(n)) return "Must be a number";
     if (field.min !== null && n < field.min) return `Min ${field.min}`;
@@ -49,6 +50,15 @@ function validate(field: ConfigField, value: string): string | null {
   }
   if (field.fieldType === "enum") {
     if (!field.options.includes(value)) return "Pick one of the options";
+    return null;
+  }
+  if (field.fieldType === "array") {
+    try {
+      const parsed = JSON.parse(value);
+      if (!Array.isArray(parsed)) return "Must be a JSON array";
+    } catch {
+      return "Must be valid JSON";
+    }
     return null;
   }
   if (field.fieldType === "string") {
@@ -84,22 +94,6 @@ export function PluginConfigDialog({
     enabled,
   });
 
-  // Reset draft whenever a fresh schema arrives or the dialog is reopened.
-  useEffect(() => {
-    if (data) setDraft(data.values);
-  }, [data]);
-
-  const errors = useMemo(() => {
-    if (!data) return {} as Record<string, string>;
-    const out: Record<string, string> = {};
-    for (const field of data.fields) {
-      const value = draft[field.key] ?? "";
-      const err = validate(field, value);
-      if (err) out[field.key] = err;
-    }
-    return out;
-  }, [data, draft]);
-
   const updateMutation = useTauriMutation<
     void,
     { name: string; key: string; value: string }
@@ -112,6 +106,25 @@ export function PluginConfigDialog({
       }
     },
   });
+
+  // Reset draft whenever a fresh schema arrives or the dialog is reopened.
+  // Skip while a save is in flight: each `mutateAsync` triggers
+  // `invalidateQueries`, and a refetch landing mid-save would otherwise
+  // overwrite the draft and feed stale values into the next update.
+  useEffect(() => {
+    if (data && !updateMutation.isPending) setDraft(data.values);
+  }, [data, updateMutation.isPending]);
+
+  const errors = useMemo(() => {
+    if (!data) return {} as Record<string, string>;
+    const out: Record<string, string> = {};
+    for (const field of data.fields) {
+      const value = draft[field.key] ?? "";
+      const err = validate(field, value);
+      if (err) out[field.key] = err;
+    }
+    return out;
+  }, [data, draft]);
 
   async function handleSave() {
     if (!pluginName || !data) return;

@@ -30,9 +30,16 @@ impl QueryBus {
             .get_values(&query.plugin_name)
             .map_err(AppError::Domain)?;
 
+        // Drop persisted values that no longer match the current schema
+        // (e.g. after a plugin update tightens a regex, removes an enum
+        // option, or renames a key) so the UI never surfaces a value
+        // the backend would reject on save.
+        let schema = manifest.config_schema();
+        values.retain(|key, value| schema.validate(key, value).is_ok());
+
         // Fill missing keys with their manifest defaults so the UI never
         // renders an empty input for a field that has a declared default.
-        for (key, field) in manifest.config_schema().fields() {
+        for (key, field) in schema.fields() {
             if !values.contains_key(key)
                 && let Some(default) = field.default_value()
             {
