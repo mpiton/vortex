@@ -212,58 +212,18 @@ impl FileStorage for FsFileStorage {
         if from == to {
             return Ok(());
         }
-        if let Some(parent) = to.parent() {
-            fs::create_dir_all(parent).map_err(|e| {
-                DomainError::StorageError(format!(
-                    "failed to create directory {}: {e}",
-                    parent.display()
-                ))
-            })?;
-        }
+        ensure_parent_dir(to)?;
+        reserve_destination(to)?;
 
-        // Atomically reserve the destination filename. `create_new` fails if
-        // the file already exists, so a concurrent process can't sneak a
-        // different file in between an `exists()` check and our move. We own
-        // the placeholder for the rest of the function, which makes the
-        // subsequent rename/copy safe against TOCTOU clobbering.
-        match OpenOptions::new().write(true).create_new(true).open(to) {
-            Ok(_) => {}
-            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
-                return Err(DomainError::StorageError(format!(
-                    "destination already exists: {}",
-                    to.display()
-                )));
-            }
-            Err(e) => {
-                return Err(DomainError::StorageError(format!(
-                    "failed to reserve destination {}: {e}",
-                    to.display()
-                )));
-            }
-        }
-
-        match fs::rename(from, to) {
+        match rename_or_cross_fs(from, to) {
             Ok(()) => {
-                debug!(from = %from.display(), to = %to.display(), "moved file via rename");
-                Ok(())
-            }
-            // EXDEV — same operation across mount points needs copy+delete.
-            // `ErrorKind::CrossesDevices` is stable since Rust 1.85; the raw
-            // os error fallback covers older kernels and other platforms.
-            Err(e) if is_cross_device(&e) => {
-                // Keep the reserved placeholder in place: `fs::copy` truncates
-                // and overwrites the destination, so it will fill our empty
-                // placeholder with the source bytes. Removing it first would
-                // reopen the TOCTOU window — a concurrent process could
-                // create a different file at the same path between the
-                // remove and the copy.
-                copy_then_delete(from, to)?;
-                debug!(from = %from.display(), to = %to.display(), "moved file via copy+delete");
+                debug!(from = %from.display(), to = %to.display(), "moved file");
                 Ok(())
             }
             Err(e) => {
-                // Rename failed for an unrecoverable reason — clean up the
-                // empty placeholder so we don't leave a 0-byte orphan behind.
+                // The move failed; drop the placeholder so we don't leave a
+                // 0-byte orphan behind. Cleanup is best-effort because the
+                // user already needs to know about the move failure.
                 let _ = fs::remove_file(to);
                 Err(DomainError::StorageError(format!(
                     "failed to move {} → {}: {e}",
@@ -276,16 +236,84 @@ impl FileStorage for FsFileStorage {
 
     fn move_meta(&self, from: &Path, to: &Path) -> Result<(), DomainError> {
         let from_meta = meta_path(from);
-        if !from_meta.try_exists().map_err(|e| {
-            DomainError::StorageError(format!(
-                "failed to probe sidecar at {}: {e}",
-                from_meta.display()
-            ))
-        })? {
+        let to_meta = meta_path(to);
+        if from_meta == to_meta {
             return Ok(());
         }
-        let to_meta = meta_path(to);
-        self.move_file(&from_meta, &to_meta)
+        ensure_parent_dir(&to_meta)?;
+        reserve_destination(&to_meta)?;
+
+        // Don't pre-check `from_meta`: a concurrent process could delete it
+        // between the probe and the move, causing this function to spuriously
+        // fail and roll back an already-completed body move in the
+        // change_directory handler. Attempt the move, then swallow a
+        // NotFound source — the sidecar contract says missing = no-op.
+        match rename_or_cross_fs(&from_meta, &to_meta) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                // Sidecar absent (or vanished mid-call). Drop the placeholder
+                // so we don't leave a 0-byte orphan at the new location.
+                let _ = fs::remove_file(&to_meta);
+                Ok(())
+            }
+            Err(e) => {
+                let _ = fs::remove_file(&to_meta);
+                Err(DomainError::StorageError(format!(
+                    "failed to move sidecar {} → {}: {e}",
+                    from_meta.display(),
+                    to_meta.display()
+                )))
+            }
+        }
+    }
+}
+
+fn ensure_parent_dir(path: &Path) -> Result<(), DomainError> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| {
+            DomainError::StorageError(format!(
+                "failed to create directory {}: {e}",
+                parent.display()
+            ))
+        })?;
+    }
+    Ok(())
+}
+
+/// Atomically reserve `path` so a concurrent process can't sneak a different
+/// file in between an `exists()` check and our subsequent move. Uses
+/// `create_new` so the call fails with `AlreadyExists` instead of clobbering.
+/// Caller owns the placeholder until the move succeeds (which overwrites it
+/// via rename/copy) or fails (in which case caller cleans up).
+fn reserve_destination(path: &Path) -> Result<(), DomainError> {
+    match OpenOptions::new().write(true).create_new(true).open(path) {
+        Ok(_) => Ok(()),
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => Err(
+            DomainError::StorageError(format!("destination already exists: {}", path.display())),
+        ),
+        Err(e) => Err(DomainError::StorageError(format!(
+            "failed to reserve destination {}: {e}",
+            path.display()
+        ))),
+    }
+}
+
+/// Move `from` → `to`, falling back to copy+delete on cross-device errors.
+/// Returns the raw `io::Error` so callers can react to specific kinds —
+/// `move_meta` in particular swallows `NotFound` to honour the sidecar
+/// "missing = no-op" contract.
+///
+/// Caller MUST have already reserved the destination via `reserve_destination`
+/// (which created an empty placeholder file). `fs::rename` atomically replaces
+/// the placeholder; `fs::copy` truncates and overwrites it.
+fn rename_or_cross_fs(from: &Path, to: &Path) -> io::Result<()> {
+    match fs::rename(from, to) {
+        Ok(()) => Ok(()),
+        // EXDEV — same operation across mount points needs copy+delete.
+        // `ErrorKind::CrossesDevices` is stable since Rust 1.85; the raw
+        // os error fallback covers older kernels and other platforms.
+        Err(e) if is_cross_device(&e) => copy_then_delete_io(from, to),
+        Err(e) => Err(e),
     }
 }
 
@@ -310,55 +338,59 @@ fn is_cross_device(err: &std::io::Error) -> bool {
 /// cheap and is the bare minimum acceptance criterion for cross-filesystem
 /// moves; a content-level checksum would be stronger but is deferred until
 /// we actually see a size match coexisting with content corruption.
-fn copy_then_delete(from: &Path, to: &Path) -> Result<(), DomainError> {
-    let source_len = fs::metadata(from)
-        .map_err(|e| {
-            DomainError::StorageError(format!(
-                "failed to stat source {} before copy: {e}",
-                from.display()
-            ))
-        })?
-        .len();
+///
+/// Returns the raw `io::Error` so callers can react to specific kinds — in
+/// particular, `NotFound` from the source-stat step lets `move_meta` honour
+/// its "missing sidecar = no-op" contract without string-matching.
+fn copy_then_delete_io(from: &Path, to: &Path) -> io::Result<()> {
+    let source_len = match fs::metadata(from) {
+        Ok(m) => m.len(),
+        Err(e) => {
+            // Source vanished (or is unreadable). Drop the placeholder we
+            // reserved at `to` so callers don't see a 0-byte orphan.
+            let _ = fs::remove_file(to);
+            return Err(e);
+        }
+    };
 
     if let Err(e) = fs::copy(from, to) {
-        // Best-effort cleanup; if the destination wasn't created the remove
-        // is a NotFound which we ignore.
         let _ = fs::remove_file(to);
-        return Err(DomainError::StorageError(format!(
-            "failed to copy {} → {}: {e}",
-            from.display(),
-            to.display()
-        )));
+        return Err(e);
     }
 
-    let dest_len = fs::metadata(to).map(|m| m.len()).map_err(|e| {
-        // Destination missing or unreadable after a "successful" copy —
-        // treat as corruption, drop the partial dest and abort.
-        let _ = fs::remove_file(to);
-        DomainError::StorageError(format!(
-            "failed to stat destination {} after copy: {e}",
-            to.display()
-        ))
-    })?;
+    let dest_len = match fs::metadata(to) {
+        Ok(m) => m.len(),
+        Err(e) => {
+            let _ = fs::remove_file(to);
+            return Err(e);
+        }
+    };
     if dest_len != source_len {
         let _ = fs::remove_file(to);
-        return Err(DomainError::StorageError(format!(
-            "copy verification failed for {} → {}: source {source_len} bytes, destination {dest_len} bytes",
-            from.display(),
-            to.display()
+        return Err(io::Error::other(format!(
+            "copy verification failed: source {source_len} bytes, destination {dest_len} bytes"
         )));
     }
 
     if let Err(e) = fs::remove_file(from) {
-        // Source removal failed after a successful copy — undo the copy so
-        // we don't end up with two files on disk and a confused database.
         let _ = fs::remove_file(to);
-        return Err(DomainError::StorageError(format!(
-            "failed to delete source {} after copy: {e}",
-            from.display()
-        )));
+        return Err(e);
     }
     Ok(())
+}
+
+/// Backwards-compatible wrapper that maps the io error into `DomainError`.
+/// Used by tests that exercise the cross-FS path directly without going
+/// through `move_file`.
+#[cfg(test)]
+fn copy_then_delete(from: &Path, to: &Path) -> Result<(), DomainError> {
+    copy_then_delete_io(from, to).map_err(|e| {
+        DomainError::StorageError(format!(
+            "failed to copy {} → {}: {e}",
+            from.display(),
+            to.display()
+        ))
+    })
 }
 
 #[cfg(test)]
@@ -679,6 +711,28 @@ mod tests {
             .move_meta(&from, &to)
             .expect("missing sidecar must succeed silently");
         assert!(!meta_path(&to).exists(), "no sidecar should appear");
+    }
+
+    #[test]
+    fn test_move_meta_swallows_source_notfound_without_orphan_placeholder() {
+        // Race shape: a concurrent process deletes the sidecar between the
+        // start of move_meta and the rename call. The old probe-then-move
+        // version would propagate that as an error, rolling back an
+        // already-completed body move in the change_directory handler.
+        // The new contract: missing source is a no-op AND no orphan
+        // placeholder is left behind at the destination.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let from = dir.path().join("file.bin");
+        let to = dir.path().join("dest").join("file.bin");
+
+        let storage = FsFileStorage::new();
+        storage
+            .move_meta(&from, &to)
+            .expect("missing sidecar must succeed silently");
+        assert!(
+            !meta_path(&to).exists(),
+            "the reserved placeholder must be cleaned up when source is missing"
+        );
     }
 
     #[test]
