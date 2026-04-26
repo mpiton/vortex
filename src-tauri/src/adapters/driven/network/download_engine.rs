@@ -185,6 +185,17 @@ impl SegmentedDownloadEngine {
         );
     }
 
+    /// Read back the current dynamic-split parameters as `(enabled, min_remaining_bytes)`.
+    /// Lets the bridge tests prove that a `SettingsUpdated` event actually
+    /// reaches the engine; also useful for diagnostics on a running download.
+    pub fn dynamic_split_state(&self) -> (bool, u64) {
+        (
+            self.dynamic_split_enabled.load(Ordering::Relaxed),
+            self.dynamic_split_min_remaining_bytes
+                .load(Ordering::Relaxed),
+        )
+    }
+
     async fn probe_remote_metadata(
         client: &reqwest::Client,
         url: &str,

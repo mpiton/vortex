@@ -129,6 +129,8 @@ mod tests {
         ))
     }
 
+    const MIB: u64 = 1024 * 1024;
+
     #[tokio::test]
     async fn test_settings_updated_propagates_dynamic_split_changes() {
         let cfg = AppConfig {
@@ -142,13 +144,18 @@ mod tests {
         let bus = SyncEventBus::new();
         let engine = make_engine();
 
-        // Engine starts with builder defaults (enabled=true, 4 MiB).
+        // Seed the engine with values that differ from the persisted config so
+        // a successful bridge call has something to flip.
         engine.set_dynamic_split(true, 4);
+        assert_eq!(engine.dynamic_split_state(), (true, 4 * MIB));
+
         subscribe_engine_to_config(&bus, Arc::clone(&config_store), Arc::clone(&engine));
 
+        // Publishing must propagate the persisted (false, 16 MiB) into the engine.
         bus.publish(DomainEvent::SettingsUpdated);
-        // Bridge picked up the persisted (false, 16 MiB) — observable via a
-        // follow-up patch + publish that flips both values.
+        assert_eq!(engine.dynamic_split_state(), (false, 16 * MIB));
+
+        // A subsequent patch + publish must flip both knobs again.
         config_store
             .update_config(ConfigPatch {
                 dynamic_split_enabled: Some(true),
@@ -157,19 +164,31 @@ mod tests {
             })
             .unwrap();
         bus.publish(DomainEvent::SettingsUpdated);
+        assert_eq!(engine.dynamic_split_state(), (true, 8 * MIB));
     }
 
     #[tokio::test]
     async fn test_non_settings_events_are_ignored() {
-        let cfg = AppConfig::default();
+        // Persisted config differs from the engine state so a stray bridge
+        // call would be observable.
+        let cfg = AppConfig {
+            dynamic_split_enabled: false,
+            dynamic_split_min_remaining_mb: 32,
+            ..AppConfig::default()
+        };
         let config_store: Arc<dyn ConfigStore> = Arc::new(StubConfigStore {
             config: Mutex::new(cfg),
         });
         let bus = SyncEventBus::new();
         let engine = make_engine();
+        engine.set_dynamic_split(true, 4);
+        let before = engine.dynamic_split_state();
+        assert_eq!(before, (true, 4 * MIB));
+
         subscribe_engine_to_config(&bus, Arc::clone(&config_store), Arc::clone(&engine));
 
-        // Non-Settings events must not panic and must be a no-op.
+        // Non-Settings events must NOT touch the engine.
         bus.publish(DomainEvent::DownloadStarted { id: DownloadId(1) });
+        assert_eq!(engine.dynamic_split_state(), before);
     }
 }
