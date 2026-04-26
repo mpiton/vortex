@@ -369,20 +369,37 @@ impl ConfigField {
                 }
             }
             ConfigFieldType::Array => {
-                if !is_json_array_structure(value) {
+                let count = parse_json_array_len(value).ok_or_else(|| {
+                    DomainError::ValidationError(format!("expected JSON array, got '{value}'"))
+                })?;
+                if let Some(min) = self.min
+                    && (count as f64) < min
+                {
                     return Err(DomainError::ValidationError(format!(
-                        "expected JSON array, got '{value}'"
+                        "array has {count} element(s), below minimum {min}"
+                    )));
+                }
+                if let Some(max) = self.max
+                    && (count as f64) > max
+                {
+                    return Err(DomainError::ValidationError(format!(
+                        "array has {count} element(s), above maximum {max}"
                     )));
                 }
             }
         }
 
-        if let Some(pattern) = &self.regex
-            && !match_regex(pattern, value)
-        {
-            return Err(DomainError::ValidationError(format!(
-                "value '{value}' does not match regex"
-            )));
+        if let Some(pattern) = &self.regex {
+            if let Some(bad) = unsupported_regex_feature(pattern) {
+                return Err(DomainError::ValidationError(format!(
+                    "regex pattern '{pattern}' uses unsupported feature '{bad}' (alternation, groups and counted quantifiers are not implemented)"
+                )));
+            }
+            if !match_regex(pattern, value) {
+                return Err(DomainError::ValidationError(format!(
+                    "value '{value}' does not match regex"
+                )));
+            }
         }
 
         Ok(())
@@ -448,54 +465,239 @@ impl PluginConfigSchema {
     }
 }
 
-/// Lightweight JSON-array structure validator built with std only.
+/// Strict JSON-array parser built with std only.
 ///
-/// Domain layer constraint: no external crate. Verifies the trimmed value
-/// opens with `[`, closes with `]`, has balanced brackets/braces, and
-/// well-formed string literals (handling `\` escapes). Catches the most
-/// egregious malformations without pulling `serde_json` into the domain.
-fn is_json_array_structure(value: &str) -> bool {
-    let trimmed = value.trim();
-    if !trimmed.starts_with('[') || !trimmed.ends_with(']') {
-        return false;
+/// Returns the element count when `value` is a syntactically valid JSON
+/// array (rejecting things like `[1 2]`, `[1,]`, `[tru]`), or `None` for
+/// any malformation. Domain layer constraint forbids external crates,
+/// so this is a hand-rolled recursive descent parser over the JSON grammar.
+fn parse_json_array_len(value: &str) -> Option<usize> {
+    let bytes: Vec<char> = value.chars().collect();
+    let mut p = JsonCursor::new(&bytes);
+    p.skip_ws();
+    let count = p.parse_array()?;
+    p.skip_ws();
+    if p.pos < p.src.len() {
+        return None;
     }
-    let mut depth_bracket: i32 = 0;
-    let mut depth_brace: i32 = 0;
-    let mut in_string = false;
-    let mut escaped = false;
-    for c in trimmed.chars() {
-        if escaped {
-            escaped = false;
-            continue;
+    Some(count)
+}
+
+struct JsonCursor<'a> {
+    src: &'a [char],
+    pos: usize,
+}
+
+impl<'a> JsonCursor<'a> {
+    fn new(src: &'a [char]) -> Self {
+        Self { src, pos: 0 }
+    }
+
+    fn peek(&self) -> Option<char> {
+        self.src.get(self.pos).copied()
+    }
+
+    fn bump(&mut self) -> Option<char> {
+        let c = self.peek()?;
+        self.pos += 1;
+        Some(c)
+    }
+
+    fn expect(&mut self, c: char) -> Option<()> {
+        if self.peek()? == c {
+            self.pos += 1;
+            Some(())
+        } else {
+            None
         }
-        if in_string {
+    }
+
+    fn skip_ws(&mut self) {
+        while let Some(c) = self.peek() {
+            if c.is_whitespace() {
+                self.pos += 1;
+            } else {
+                break;
+            }
+        }
+    }
+
+    fn parse_array(&mut self) -> Option<usize> {
+        self.expect('[')?;
+        self.skip_ws();
+        if self.peek()? == ']' {
+            self.pos += 1;
+            return Some(0);
+        }
+        let mut count = 0;
+        loop {
+            self.parse_value()?;
+            count += 1;
+            self.skip_ws();
+            match self.peek()? {
+                ',' => {
+                    self.pos += 1;
+                    self.skip_ws();
+                    if self.peek()? == ']' {
+                        return None; // trailing comma
+                    }
+                }
+                ']' => {
+                    self.pos += 1;
+                    return Some(count);
+                }
+                _ => return None,
+            }
+        }
+    }
+
+    fn parse_object(&mut self) -> Option<()> {
+        self.expect('{')?;
+        self.skip_ws();
+        if self.peek()? == '}' {
+            self.pos += 1;
+            return Some(());
+        }
+        loop {
+            self.skip_ws();
+            self.parse_string()?;
+            self.skip_ws();
+            self.expect(':')?;
+            self.parse_value()?;
+            self.skip_ws();
+            match self.peek()? {
+                ',' => {
+                    self.pos += 1;
+                }
+                '}' => {
+                    self.pos += 1;
+                    return Some(());
+                }
+                _ => return None,
+            }
+        }
+    }
+
+    fn parse_value(&mut self) -> Option<()> {
+        self.skip_ws();
+        match self.peek()? {
+            '"' => self.parse_string(),
+            '[' => self.parse_array().map(|_| ()),
+            '{' => self.parse_object(),
+            't' => self.parse_keyword("true"),
+            'f' => self.parse_keyword("false"),
+            'n' => self.parse_keyword("null"),
+            '-' | '0'..='9' => self.parse_number(),
+            _ => None,
+        }
+    }
+
+    fn parse_string(&mut self) -> Option<()> {
+        self.expect('"')?;
+        loop {
+            let c = self.bump()?;
             match c {
-                '\\' => escaped = true,
-                '"' => in_string = false,
+                '"' => return Some(()),
+                '\\' => {
+                    self.bump()?; // skip escaped char (lenient: any char)
+                }
                 _ => {}
             }
-            continue;
-        }
-        match c {
-            '"' => in_string = true,
-            '[' => depth_bracket += 1,
-            ']' => {
-                depth_bracket -= 1;
-                if depth_bracket < 0 {
-                    return false;
-                }
-            }
-            '{' => depth_brace += 1,
-            '}' => {
-                depth_brace -= 1;
-                if depth_brace < 0 {
-                    return false;
-                }
-            }
-            _ => {}
         }
     }
-    !in_string && depth_bracket == 0 && depth_brace == 0
+
+    fn parse_keyword(&mut self, word: &str) -> Option<()> {
+        for ec in word.chars() {
+            if self.bump()? != ec {
+                return None;
+            }
+        }
+        Some(())
+    }
+
+    fn parse_number(&mut self) -> Option<()> {
+        let start = self.pos;
+        if self.peek() == Some('-') {
+            self.pos += 1;
+        }
+        let int_start = self.pos;
+        while let Some(c) = self.peek() {
+            if c.is_ascii_digit() {
+                self.pos += 1;
+            } else {
+                break;
+            }
+        }
+        if self.pos == int_start {
+            return None;
+        }
+        if self.peek() == Some('.') {
+            self.pos += 1;
+            let frac_start = self.pos;
+            while let Some(c) = self.peek() {
+                if c.is_ascii_digit() {
+                    self.pos += 1;
+                } else {
+                    break;
+                }
+            }
+            if self.pos == frac_start {
+                return None;
+            }
+        }
+        if matches!(self.peek(), Some('e') | Some('E')) {
+            self.pos += 1;
+            if matches!(self.peek(), Some('+') | Some('-')) {
+                self.pos += 1;
+            }
+            let exp_start = self.pos;
+            while let Some(c) = self.peek() {
+                if c.is_ascii_digit() {
+                    self.pos += 1;
+                } else {
+                    break;
+                }
+            }
+            if self.pos == exp_start {
+                return None;
+            }
+        }
+        if self.pos == start { None } else { Some(()) }
+    }
+}
+
+/// Returns the first regex feature in `pattern` the matcher does not
+/// support, or `None` if the pattern only uses the supported subset
+/// (anchors, `.`, `[...]`, `*`/`+`/`?`, `\d`/`\w`/`\s`, escapes). Plugin
+/// authors expecting full PCRE/Rust regex semantics for `|`, `(...)` or
+/// `{n,m}` would otherwise hit silent match failures — the manifest
+/// parser uses this to fail loudly at load time.
+pub fn unsupported_regex_feature(pattern: &str) -> Option<char> {
+    let chars: Vec<char> = pattern.chars().collect();
+    let mut i = 0;
+    let mut in_class = false;
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '\\' {
+            i += 2;
+            continue;
+        }
+        if c == '[' && !in_class {
+            in_class = true;
+            i += 1;
+            continue;
+        }
+        if c == ']' && in_class {
+            in_class = false;
+            i += 1;
+            continue;
+        }
+        if !in_class && matches!(c, '|' | '(' | ')' | '{' | '}') {
+            return Some(c);
+        }
+        i += 1;
+    }
+    None
 }
 
 /// Minimal POSIX-like regex matcher built with std only.
@@ -928,5 +1130,75 @@ mod tests {
     fn test_plugin_manifest_default_config_schema_empty() {
         let manifest = PluginManifest::new(make_info());
         assert!(manifest.config_schema().is_empty());
+    }
+
+    #[test]
+    fn test_parse_json_array_len_accepts_valid_arrays() {
+        assert_eq!(parse_json_array_len("[]"), Some(0));
+        assert_eq!(parse_json_array_len("[1]"), Some(1));
+        assert_eq!(parse_json_array_len(" [ 1 , 2 , 3 ] "), Some(3));
+        assert_eq!(parse_json_array_len("[\"a\", \"b\"]"), Some(2));
+        assert_eq!(parse_json_array_len("[null, true, false]"), Some(3));
+        assert_eq!(parse_json_array_len("[{\"k\": \"v\"}, [1, 2]]"), Some(2));
+        assert_eq!(parse_json_array_len("[-1.5e2]"), Some(1));
+    }
+
+    #[test]
+    fn test_parse_json_array_len_rejects_malformed() {
+        assert_eq!(parse_json_array_len("[1 2]"), None); // missing comma
+        assert_eq!(parse_json_array_len("[1,]"), None); // trailing comma
+        assert_eq!(parse_json_array_len("[tru]"), None); // partial keyword
+        assert_eq!(parse_json_array_len("[\"unterminated]"), None);
+        assert_eq!(parse_json_array_len("[1, 2"), None); // unclosed
+        assert_eq!(parse_json_array_len("[1] junk"), None); // trailing content
+        assert_eq!(parse_json_array_len("not an array"), None);
+        assert_eq!(parse_json_array_len("{\"k\":\"v\"}"), None); // object, not array
+    }
+
+    #[test]
+    fn test_config_field_validate_array_applies_min_max_count() {
+        let f = ConfigField::new(ConfigFieldType::Array)
+            .with_min(1.0)
+            .with_max(3.0);
+        assert!(f.validate("[1]").is_ok());
+        assert!(f.validate("[1, 2, 3]").is_ok());
+        assert!(matches!(
+            f.validate("[]").unwrap_err(),
+            DomainError::ValidationError(_)
+        ));
+        assert!(matches!(
+            f.validate("[1, 2, 3, 4]").unwrap_err(),
+            DomainError::ValidationError(_)
+        ));
+        assert!(matches!(
+            f.validate("[1,]").unwrap_err(),
+            DomainError::ValidationError(_)
+        ));
+    }
+
+    #[test]
+    fn test_unsupported_regex_feature_detects_unimplemented() {
+        assert_eq!(unsupported_regex_feature("^(foo|bar)$"), Some('('));
+        assert_eq!(unsupported_regex_feature("a|b"), Some('|'));
+        assert_eq!(unsupported_regex_feature("a{2,3}"), Some('{'));
+        assert_eq!(unsupported_regex_feature("^[a-z]+$"), None);
+        assert_eq!(unsupported_regex_feature(r"\d+"), None);
+        // Escaped versions are literal, allowed.
+        assert_eq!(unsupported_regex_feature(r"a\|b"), None);
+        // Inside character class these are literal too.
+        assert_eq!(unsupported_regex_feature("[|()]"), None);
+    }
+
+    #[test]
+    fn test_config_field_validate_regex_rejects_unsupported_syntax() {
+        let f = ConfigField::new(ConfigFieldType::String).with_regex("^(foo|bar)$");
+        let err = f.validate("foo").unwrap_err();
+        match err {
+            DomainError::ValidationError(msg) => assert!(
+                msg.contains("unsupported feature"),
+                "expected unsupported-feature message, got: {msg}"
+            ),
+            other => panic!("expected ValidationError, got {other:?}"),
+        }
     }
 }

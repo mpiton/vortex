@@ -8,6 +8,7 @@ use serde::Deserialize;
 use crate::domain::error::DomainError;
 use crate::domain::model::plugin::{
     ConfigField, ConfigFieldType, PluginCategory, PluginConfigSchema, PluginInfo, PluginManifest,
+    unsupported_regex_feature,
 };
 
 #[derive(Deserialize)]
@@ -184,6 +185,11 @@ fn build_config_schema(
             field = field.with_max(max);
         }
         if let Some(regex) = &entry.regex {
+            if let Some(bad) = unsupported_regex_feature(regex) {
+                return Err(DomainError::PluginError(format!(
+                    "config field '{key}' regex '{regex}' uses unsupported feature '{bad}' (alternation, groups and counted quantifiers are not implemented)"
+                )));
+            }
             field = field.with_regex(regex.clone());
         }
         if let Some(default) = field.default_value() {
@@ -625,6 +631,35 @@ description = "No config block"
 
         let (manifest, _) = parse_manifest(&plugin_dir).unwrap();
         assert!(manifest.config_schema().is_empty());
+    }
+
+    #[test]
+    fn test_parse_manifest_rejects_unsupported_regex_feature() {
+        let tmp = TempDir::new().unwrap();
+        let plugin_dir = tmp.path().join("bad-regex");
+        std::fs::create_dir_all(&plugin_dir).unwrap();
+        write_plugin_toml(
+            &plugin_dir,
+            r#"
+[plugin]
+name = "bad-regex"
+version = "1.0.0"
+category = "utility"
+author = "Alice"
+description = "Bad regex"
+
+[config]
+mode = { type = "string", regex = "^(foo|bar)$" }
+"#,
+        );
+        write_dummy_wasm(&plugin_dir, "bad-regex.wasm");
+
+        let result = parse_manifest(&plugin_dir);
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("unsupported feature"),
+            "expected unsupported-feature error, got: {err}"
+        );
     }
 
     #[test]
