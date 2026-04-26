@@ -82,19 +82,40 @@ fn validate_http_url(url: &str) -> Result<(), DomainError> {
     // but mean nothing to a browser and just produce a launcher error.
     let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
     let host_port = authority.rsplit('@').next().unwrap_or_default();
-    let host_missing = if let Some(rest) = host_port.strip_prefix('[') {
-        // IPv6 literal: must close with `]` and have at least one byte
-        // between the brackets — `[]` and `[unclosed` are both bogus.
-        match rest.find(']') {
-            None | Some(0) => true,
-            Some(_) => false,
+    let (host, port) = if let Some(rest) = host_port.strip_prefix('[') {
+        // Bracketed IPv6 host: require `]`, non-empty literal, and an
+        // optional `:port` tail — anything else (`[::1]oops`) is junk.
+        let end = rest
+            .find(']')
+            .ok_or_else(|| DomainError::ValidationError(format!("invalid http(s) URL: '{url}'")))?;
+        if end == 0 {
+            return Err(DomainError::ValidationError(format!(
+                "http(s) URL has empty host: '{url}'"
+            )));
         }
+        let tail = &rest[end + 1..];
+        if !tail.is_empty() && !tail.starts_with(':') {
+            return Err(DomainError::ValidationError(format!(
+                "invalid http(s) URL: '{url}'"
+            )));
+        }
+        (&rest[..end], tail.strip_prefix(':'))
     } else {
-        host_port.split(':').next().is_none_or(str::is_empty)
+        match host_port.split_once(':') {
+            Some((h, p)) => (h, Some(p)),
+            None => (host_port, None),
+        }
     };
-    if host_missing {
+    if host.is_empty() {
         return Err(DomainError::ValidationError(format!(
             "http(s) URL has empty host: '{url}'"
+        )));
+    }
+    if let Some(p) = port
+        && (p.is_empty() || !p.bytes().all(|b| b.is_ascii_digit()))
+    {
+        return Err(DomainError::ValidationError(format!(
+            "http(s) URL has non-numeric port: '{url}'"
         )));
     }
 
@@ -213,6 +234,25 @@ mod tests {
             assert!(
                 validate_http_url(good).is_ok(),
                 "expected {good:?} to validate"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_http_url_rejects_malformed_port_or_bracket_tail() {
+        // Port must be all-digits and an IPv6 literal must be followed
+        // by either nothing or `:port` — junk after `]` is invalid.
+        for bad in [
+            "https://example.com:abc/x",
+            "https://example.com:/x",
+            "https://example.com:80a/x",
+            "https://[::1]oops/x",
+            "https://[::1]:abc/x",
+        ] {
+            let err = validate_http_url(bad).unwrap_err();
+            assert!(
+                matches!(err, DomainError::ValidationError(_)),
+                "expected ValidationError for {bad:?}, got {err:?}"
             );
         }
     }
