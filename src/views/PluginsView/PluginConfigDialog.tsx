@@ -57,11 +57,18 @@ function validate(field: ConfigField, value: string): string | null {
     return null;
   }
   if (field.fieldType === "array") {
+    let parsed: unknown;
     try {
-      const parsed = JSON.parse(value);
-      if (!Array.isArray(parsed)) return "Must be a JSON array";
+      parsed = JSON.parse(value);
     } catch {
       return "Must be valid JSON";
+    }
+    if (!Array.isArray(parsed)) return "Must be a JSON array";
+    if (field.min !== null && parsed.length < field.min) {
+      return `Min ${field.min} item(s)`;
+    }
+    if (field.max !== null && parsed.length > field.max) {
+      return `Max ${field.max} item(s)`;
     }
     return null;
   }
