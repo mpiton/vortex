@@ -248,6 +248,32 @@ impl PluginLoader for ExtismPluginLoader {
         Ok(self.registry.list_info())
     }
 
+    fn find_installed_manifest(&self, name: &str) -> Result<Option<PluginInfo>, DomainError> {
+        // Reject any name that could escape `plugins_dir/` so a hostile
+        // caller can't read foreign manifests by passing `../etc/passwd`.
+        if name.is_empty() || name.contains('/') || name.contains('\\') || name.contains("..") {
+            return Err(DomainError::ValidationError(format!(
+                "invalid plugin name: '{name}'"
+            )));
+        }
+        let dir = self.plugins_dir.join(name);
+        if !dir.is_dir() {
+            return Ok(None);
+        }
+        match parse_manifest(&dir) {
+            Ok((manifest, _)) => Ok(Some(manifest.info().clone())),
+            Err(DomainError::PluginError(msg)) => {
+                // A directory is present but the manifest is unreadable —
+                // we surface None rather than an error so the caller can
+                // decide whether to fall back to other lookups (e.g. the
+                // registry-backed store entry) or report NotFound.
+                tracing::debug!("find_installed_manifest('{name}'): manifest unreadable: {msg}");
+                Ok(None)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
     fn set_enabled(&self, name: &str, enabled: bool) -> Result<(), DomainError> {
         self.registry.set_enabled(name, enabled)
     }

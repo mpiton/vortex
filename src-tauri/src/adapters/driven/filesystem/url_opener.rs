@@ -34,13 +34,17 @@ impl UrlOpener for SystemUrlOpener {
         #[cfg(target_os = "macos")]
         let (program, args): (&str, Vec<std::ffi::OsString>) =
             ("open", vec![std::ffi::OsString::from(url)]);
+        // `rundll32 url.dll,FileProtocolHandler <URL>` is the canonical
+        // Windows shortcut for "open this URL in the default browser".
+        // Unlike `cmd /C start`, it does NOT pass the URL through the
+        // command interpreter, so query strings containing `&` (issue
+        // body separators) or `%` (percent-encoded characters) reach the
+        // shell-execute call intact.
         #[cfg(target_os = "windows")]
         let (program, args): (&str, Vec<std::ffi::OsString>) = (
-            "cmd",
+            "rundll32",
             vec![
-                std::ffi::OsString::from("/C"),
-                std::ffi::OsString::from("start"),
-                std::ffi::OsString::from(""),
+                std::ffi::OsString::from("url.dll,FileProtocolHandler"),
                 std::ffi::OsString::from(url),
             ],
         );
@@ -75,6 +79,12 @@ fn run_launcher(program: &str, args: &[std::ffi::OsString]) -> Result<(), Domain
 
 #[cfg(target_os = "windows")]
 fn run_launcher(program: &str, args: &[std::ffi::OsString]) -> Result<(), DomainError> {
+    // `rundll32` returns 0 even when the user has no default browser, so
+    // the exit code carries no signal worth checking. We only surface
+    // process-spawn failures (missing binary, sandboxing) — those are
+    // the cases where the URL really did not reach Windows. This mirrors
+    // the rationale documented next to `SystemFileOpener` for the same
+    // reason.
     let _status = Command::new(program)
         .args(args)
         .status()

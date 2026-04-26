@@ -12,6 +12,7 @@ import { useTauriMutation } from "@/api/hooks";
 import { toast } from "@/lib/toast";
 import { Button } from "@/components/ui/button";
 import type { PluginConfigView } from "@/types/plugin-config";
+import type { PluginStoreEntry } from "@/types/plugin-store";
 
 const CATEGORIES = [
   "all",
@@ -102,8 +103,21 @@ export function PluginsView() {
     string,
     { pluginName: string; logLines?: string[]; testedUrl?: string }
   >("plugin_report_broken", {
-    onSuccess: (_url, variables) => {
-      toast.success(t("plugins.toast.reportBrokenSuccess", { name: variables.pluginName }));
+    onSuccess: (url, variables) => {
+      // Best-effort clipboard copy so the user always has the URL even
+      // if the OS launcher silently failed (no graphical session, broken
+      // `xdg-open`, etc.). Clipboard access can be denied by the
+      // platform — we fall back to an info-only toast in that case.
+      void navigator.clipboard
+        .writeText(url)
+        .then(() => {
+          toast.success(
+            t("plugins.toast.reportBrokenSuccessWithCopy", { name: variables.pluginName }),
+          );
+        })
+        .catch(() => {
+          toast.success(t("plugins.toast.reportBrokenSuccess", { name: variables.pluginName }));
+        });
     },
     onError: (error, variables) => {
       toast.error(
@@ -114,6 +128,16 @@ export function PluginsView() {
       );
     },
   });
+
+  // The frontend short-circuits the action for plugins whose registry
+  // entry carries no GitHub repository: the backend would only return
+  // `Validation` and the menu item would advertise an action that
+  // never works. Limiting the test to `github.com` mirrors the domain
+  // validation in `parse_github_owner_repo`.
+  const canReportBroken = (entry: PluginStoreEntry): boolean => {
+    const repo = entry.repository ?? "";
+    return repo.startsWith("https://github.com/") || repo.startsWith("http://github.com/");
+  };
 
   const filtered = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -229,7 +253,11 @@ export function PluginsView() {
                       onEnable={(name) => enableMutation.mutate({ name })}
                       onUninstall={(name) => uninstallMutation.mutate({ name })}
                       onConfigure={(name) => setConfigPluginName(name)}
-                      onReportBroken={(name) => reportBrokenMutation.mutate({ pluginName: name })}
+                      onReportBroken={
+                        canReportBroken(entry)
+                          ? (name) => reportBrokenMutation.mutate({ pluginName: name })
+                          : undefined
+                      }
                       hasConfig={hasConfig(entry.name)}
                       isInstalling={isInstalling(entry.name)}
                       isUpdating={isUpdating(entry.name)}

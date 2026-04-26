@@ -362,6 +362,7 @@
       "enableSuccess": "Plugin activé",
       "uninstallSuccess": "Plugin désinstallé",
       "reportBrokenSuccess": "Ouverture de l'issue GitHub pour « {{name}} »…",
+      "reportBrokenSuccessWithCopy": "Ouverture de l'issue GitHub pour « {{name}} »… (URL copiée dans le presse-papiers)",
       "reportBrokenError": "Impossible de signaler « {{name}} » : {{reason}}"
     },
     "config": {

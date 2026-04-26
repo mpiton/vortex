@@ -362,6 +362,7 @@
       "enableSuccess": "Plugin enabled",
       "uninstallSuccess": "Plugin uninstalled",
       "reportBrokenSuccess": "Opening GitHub issue for \"{{name}}\"…",
+      "reportBrokenSuccessWithCopy": "Opening GitHub issue for \"{{name}}\"… (URL copied to clipboard)",
       "reportBrokenError": "Cannot report \"{{name}}\": {{reason}}"
     },
     "config": {

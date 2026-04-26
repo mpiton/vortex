@@ -13,6 +13,7 @@ const baseEntry: PluginStoreEntry = {
   category: "crawler",
   official: true,
   status: "installed",
+  repository: "https://github.com/mpiton/vortex-mod-youtube",
 };
 
 function renderRow(

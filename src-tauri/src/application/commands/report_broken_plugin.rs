@@ -24,14 +24,22 @@ impl CommandBus {
             .url_opener_arc()
             .ok_or_else(|| AppError::Plugin("url opener port not configured".to_string()))?;
 
-        let manifest = self
-            .plugin_loader()
+        // A "broken plugin" is precisely the case where load failed, so
+        // `list_loaded` won't see it. Fall back to the on-disk manifest
+        // before declaring the plugin unknown.
+        let loader = self.plugin_loader();
+        let manifest = match loader
             .list_loaded()?
             .into_iter()
             .find(|info| info.name() == cmd.plugin_name)
-            .ok_or_else(|| {
-                AppError::NotFound(format!("plugin '{}' is not loaded", cmd.plugin_name))
-            })?;
+        {
+            Some(info) => info,
+            None => loader
+                .find_installed_manifest(&cmd.plugin_name)?
+                .ok_or_else(|| {
+                    AppError::NotFound(format!("plugin '{}' is not installed", cmd.plugin_name))
+                })?,
+        };
 
         let repo_url = manifest.repository_url().ok_or_else(|| {
             AppError::Validation(format!(
@@ -50,10 +58,25 @@ impl CommandBus {
             cmd.tested_url.as_deref(),
         )?;
 
+        // Launcher failure must not lose the URL: the frontend uses the
+        // returned value as a clipboard fallback when the OS browser is
+        // unavailable (no graphical session, broken `xdg-open`, etc.).
         let url_for_browser = issue_url.clone();
-        tokio::task::spawn_blocking(move || opener.open_url(&url_for_browser))
-            .await
-            .map_err(|e| AppError::Plugin(format!("open_url join error: {e}")))??;
+        let plugin_name = cmd.plugin_name.clone();
+        let join = tokio::task::spawn_blocking(move || opener.open_url(&url_for_browser)).await;
+        match join {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => tracing::warn!(
+                error = %e,
+                plugin = %plugin_name,
+                "report_broken_plugin: url opener failed; returning URL for clipboard fallback"
+            ),
+            Err(e) => tracing::warn!(
+                error = %e,
+                plugin = %plugin_name,
+                "report_broken_plugin: url opener task panicked; returning URL for clipboard fallback"
+            ),
+        }
 
         Ok(issue_url)
     }
@@ -157,6 +180,7 @@ mod tests {
 
     struct StaticLoader {
         infos: Vec<PluginInfo>,
+        installed: Vec<PluginInfo>,
     }
     impl PluginLoader for StaticLoader {
         fn load(&self, _: &PluginManifest) -> Result<(), DomainError> {
@@ -170,6 +194,9 @@ mod tests {
         }
         fn list_loaded(&self) -> Result<Vec<PluginInfo>, DomainError> {
             Ok(self.infos.clone())
+        }
+        fn find_installed_manifest(&self, name: &str) -> Result<Option<PluginInfo>, DomainError> {
+            Ok(self.installed.iter().find(|i| i.name() == name).cloned())
         }
         fn set_enabled(&self, _: &str, _: bool) -> Result<(), DomainError> {
             Ok(())
@@ -324,6 +351,7 @@ mod tests {
     #[tokio::test]
     async fn handle_report_broken_plugin_opens_prefilled_url() {
         let loader = Arc::new(StaticLoader {
+            installed: vec![],
             infos: vec![info_with_repo(
                 "vortex-mod-youtube",
                 "1.2.3",
@@ -352,7 +380,10 @@ mod tests {
 
     #[tokio::test]
     async fn handle_report_broken_plugin_returns_not_found_when_plugin_unknown() {
-        let loader = Arc::new(StaticLoader { infos: vec![] });
+        let loader = Arc::new(StaticLoader {
+            infos: vec![],
+            installed: vec![],
+        });
         let opener = RecordingUrlOpener::ok();
         let bus = build_bus(loader, Some(opener.clone() as Arc<dyn UrlOpener>));
 
@@ -365,8 +396,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn handle_report_broken_plugin_falls_back_to_installed_manifest_when_not_loaded() {
+        // The whole point of "broken plugin" is that the plugin failed to
+        // load. The handler must still find its manifest on disk.
+        let loader = Arc::new(StaticLoader {
+            infos: vec![],
+            installed: vec![info_with_repo(
+                "vortex-mod-broken",
+                "0.1.0",
+                Some("https://github.com/o/vortex-mod-broken"),
+            )],
+        });
+        let opener = RecordingUrlOpener::ok();
+        let bus = build_bus(loader, Some(opener.clone() as Arc<dyn UrlOpener>));
+
+        let url = bus
+            .handle_report_broken_plugin(cmd("vortex-mod-broken"))
+            .await
+            .unwrap();
+
+        assert!(
+            url.starts_with("https://github.com/o/vortex-mod-broken/issues/new?"),
+            "unexpected URL: {url}"
+        );
+        let opened = opener.opened.lock().unwrap();
+        assert_eq!(opened.len(), 1);
+        assert_eq!(opened[0], url);
+    }
+
+    #[tokio::test]
     async fn handle_report_broken_plugin_validation_error_when_repo_missing() {
         let loader = Arc::new(StaticLoader {
+            installed: vec![],
             infos: vec![info_with_repo("vortex-mod-foo", "1.0.0", None)],
         });
         let opener = RecordingUrlOpener::ok();
@@ -383,6 +444,7 @@ mod tests {
     #[tokio::test]
     async fn handle_report_broken_plugin_errors_when_opener_port_missing() {
         let loader = Arc::new(StaticLoader {
+            installed: vec![],
             infos: vec![info_with_repo(
                 "vortex-mod-x",
                 "1",
@@ -399,8 +461,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn handle_report_broken_plugin_propagates_opener_failure() {
+    async fn handle_report_broken_plugin_returns_url_even_when_launcher_fails() {
+        // When the OS launcher fails (no graphical session, broken
+        // `xdg-open`, …), the handler must still hand back the issue URL
+        // so the frontend can offer a clipboard fallback.
         let loader = Arc::new(StaticLoader {
+            installed: vec![],
             infos: vec![info_with_repo(
                 "vortex-mod-x",
                 "1",
@@ -409,21 +475,26 @@ mod tests {
         });
         let opener =
             RecordingUrlOpener::failing(DomainError::StorageError("xdg-open failed".into()));
-        let bus = build_bus(loader, Some(opener as Arc<dyn UrlOpener>));
+        let bus = build_bus(loader, Some(opener.clone() as Arc<dyn UrlOpener>));
 
-        let err = bus
+        let url = bus
             .handle_report_broken_plugin(cmd("vortex-mod-x"))
             .await
-            .unwrap_err();
+            .unwrap();
+
         assert!(
-            matches!(err, AppError::Domain(DomainError::StorageError(_))),
-            "{err:?}"
+            url.starts_with("https://github.com/o/r/issues/new?"),
+            "unexpected URL: {url}"
         );
+        let opened = opener.opened.lock().unwrap();
+        assert_eq!(opened.len(), 1, "opener should still be invoked once");
+        assert_eq!(opened[0], url);
     }
 
     #[tokio::test]
     async fn handle_report_broken_plugin_rejects_non_github_repo() {
         let loader = Arc::new(StaticLoader {
+            installed: vec![],
             infos: vec![info_with_repo(
                 "vortex-mod-x",
                 "1",

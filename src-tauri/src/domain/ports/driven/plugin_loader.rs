@@ -45,6 +45,17 @@ pub trait PluginLoader: Send + Sync {
     /// List all currently loaded plugins.
     fn list_loaded(&self) -> Result<Vec<PluginInfo>, DomainError>;
 
+    /// Look up an installed plugin's manifest on disk by name, even when
+    /// the plugin is not currently loaded (e.g. it failed to load and is
+    /// the very thing the user wants to report as broken).
+    ///
+    /// Adapters that don't keep a separate on-disk index should still try
+    /// to parse the directory the loader watches; the default `Ok(None)`
+    /// keeps trait-only test loaders compatible.
+    fn find_installed_manifest(&self, _name: &str) -> Result<Option<PluginInfo>, DomainError> {
+        Ok(None)
+    }
+
     /// Enable or disable a loaded plugin by name.
     fn set_enabled(&self, name: &str, enabled: bool) -> Result<(), DomainError>;
 
