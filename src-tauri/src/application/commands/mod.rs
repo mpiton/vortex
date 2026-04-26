@@ -19,6 +19,7 @@ mod purge_history;
 mod redownload;
 mod register_local_file;
 mod remove_download;
+mod report_broken_plugin;
 mod resolve_links;
 mod resume_all;
 mod resume_download;
@@ -174,6 +175,29 @@ pub struct UpdateConfigCommand {
     pub patch: ConfigPatch,
 }
 impl Command for UpdateConfigCommand {}
+
+/// Open a pre-filled GitHub issue for a broken plugin.
+///
+/// The handler looks up the plugin's `repository_url` from its manifest,
+/// builds the issue body from the supplied diagnostic context (versions,
+/// OS, recent log lines, the URL the user was testing if any) and hands
+/// the resulting URL to the [`UrlOpener`](crate::domain::ports::driven::UrlOpener)
+/// port. No mutation of plugin state — the command is named `*_report_*`
+/// for clarity, but it is effectively a "side-effecting query" on the
+/// plugin manifest.
+#[derive(Debug)]
+pub struct ReportBrokenPluginCommand {
+    pub plugin_name: String,
+    pub log_lines: Vec<String>,
+    pub tested_url: Option<String>,
+    /// Vortex version reported in the issue body. Provided by the driving
+    /// adapter (typically `env!("CARGO_PKG_VERSION")`) so the application
+    /// layer doesn't bake the host crate's metadata into its own logic.
+    pub vortex_version: String,
+    /// `std::env::consts::OS` (or equivalent) recorded by the caller.
+    pub os: String,
+}
+impl Command for ReportBrokenPluginCommand {}
 
 /// Update a single (key, value) pair on a plugin's persisted configuration.
 ///

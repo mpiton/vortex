@@ -98,6 +98,23 @@ export function PluginsView() {
     },
   });
 
+  const reportBrokenMutation = useTauriMutation<
+    string,
+    { pluginName: string; logLines?: string[]; testedUrl?: string }
+  >("plugin_report_broken", {
+    onSuccess: (_url, variables) => {
+      toast.success(t("plugins.toast.reportBrokenSuccess", { name: variables.pluginName }));
+    },
+    onError: (error, variables) => {
+      toast.error(
+        t("plugins.toast.reportBrokenError", {
+          name: variables.pluginName,
+          reason: error.message,
+        }),
+      );
+    },
+  });
+
   const filtered = useMemo(() => {
     const query = search.trim().toLowerCase();
     return entries.filter((e) => {
@@ -112,8 +129,7 @@ export function PluginsView() {
   }, [entries, search, category]);
 
   const enabledCount = useMemo(
-    () =>
-      entries.filter((e) => isInstalled(e.status) && !locallyDisabled.has(e.name)).length,
+    () => entries.filter((e) => isInstalled(e.status) && !locallyDisabled.has(e.name)).length,
     [entries, locallyDisabled],
   );
 
@@ -213,6 +229,7 @@ export function PluginsView() {
                       onEnable={(name) => enableMutation.mutate({ name })}
                       onUninstall={(name) => uninstallMutation.mutate({ name })}
                       onConfigure={(name) => setConfigPluginName(name)}
+                      onReportBroken={(name) => reportBrokenMutation.mutate({ pluginName: name })}
                       hasConfig={hasConfig(entry.name)}
                       isInstalling={isInstalling(entry.name)}
                       isUpdating={isUpdating(entry.name)}

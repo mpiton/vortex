@@ -8,7 +8,7 @@ use std::sync::Arc;
 use crate::domain::ports::driven::{
     ArchiveExtractor, ChecksumComputer, ClipboardObserver, ConfigStore, CredentialStore,
     DownloadEngine, DownloadRepository, EventBus, FileOpener, FileStorage, HistoryRepository,
-    HttpClient, PluginConfigStore, PluginLoader, PluginStoreClient,
+    HttpClient, PluginConfigStore, PluginLoader, PluginStoreClient, UrlOpener,
 };
 
 /// Central dispatcher for CQRS commands.
@@ -30,6 +30,7 @@ pub struct CommandBus {
     plugin_store_client: Option<Arc<dyn PluginStoreClient>>,
     checksum_computer: Option<Arc<dyn ChecksumComputer>>,
     file_opener: Option<Arc<dyn FileOpener>>,
+    url_opener: Option<Arc<dyn UrlOpener>>,
     plugin_config_store: Option<Arc<dyn PluginConfigStore>>,
     /// Serializes queue-position allocation across handlers. Without this,
     /// two concurrent move-to-top/move-to-bottom/start-download calls can
@@ -69,6 +70,7 @@ impl CommandBus {
             plugin_store_client,
             checksum_computer: None,
             file_opener: None,
+            url_opener: None,
             plugin_config_store: None,
             queue_position_lock: tokio::sync::Mutex::new(()),
         }
@@ -188,6 +190,22 @@ impl CommandBus {
 
     pub(crate) fn file_opener_arc(&self) -> Option<Arc<dyn FileOpener>> {
         self.file_opener.clone()
+    }
+
+    /// Builder-style setter for the URL-opener port. Optional so existing
+    /// test fixtures that never invoke the report-broken-plugin handler
+    /// don't have to provide a mock.
+    pub fn with_url_opener(mut self, opener: Arc<dyn UrlOpener>) -> Self {
+        self.url_opener = Some(opener);
+        self
+    }
+
+    pub fn url_opener(&self) -> Option<&dyn UrlOpener> {
+        self.url_opener.as_deref()
+    }
+
+    pub(crate) fn url_opener_arc(&self) -> Option<Arc<dyn UrlOpener>> {
+        self.url_opener.clone()
     }
 }
 

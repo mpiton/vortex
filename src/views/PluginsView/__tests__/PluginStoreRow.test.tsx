@@ -72,9 +72,7 @@ describe("PluginStoreRow", () => {
 
   it("does not render an install button when the plugin is already installed", () => {
     renderRow({ status: "installed" });
-    expect(
-      screen.queryByRole("button", { name: /^install(er)?$/i }),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^install(er)?$/i })).not.toBeInTheDocument();
   });
 
   it("renders an update pill prefixed with v when an update is available", async () => {
@@ -97,7 +95,9 @@ describe("PluginStoreRow", () => {
   it("exposes a disable action in the kebab menu for installed plugins", async () => {
     const user = userEvent.setup();
     const handlers = renderRow({ status: "installed" });
-    await user.click(screen.getByRole("button", { name: /(more actions|plus d['\u2019]actions)/i }));
+    await user.click(
+      screen.getByRole("button", { name: /(more actions|plus d['\u2019]actions)/i }),
+    );
     await user.click(screen.getByRole("menuitem", { name: /(^disable$|désactiver)/i }));
     expect(handlers.onDisable).toHaveBeenCalledWith("vortex-mod-youtube");
   });
@@ -105,7 +105,9 @@ describe("PluginStoreRow", () => {
   it("exposes an uninstall action in the kebab menu for installed plugins", async () => {
     const user = userEvent.setup();
     const handlers = renderRow({ status: "installed" });
-    await user.click(screen.getByRole("button", { name: /(more actions|plus d['\u2019]actions)/i }));
+    await user.click(
+      screen.getByRole("button", { name: /(more actions|plus d['\u2019]actions)/i }),
+    );
     await user.click(screen.getByRole("menuitem", { name: /(uninstall|désinstaller)/i }));
     expect(handlers.onUninstall).toHaveBeenCalledWith("vortex-mod-youtube");
   });
@@ -127,19 +129,32 @@ describe("PluginStoreRow", () => {
 
   it("swaps Disable for Enable in the kebab menu when locally disabled", async () => {
     const user = userEvent.setup();
-    const handlers = renderRow(
-      { status: "installed" },
-      { isLocallyDisabled: true },
-    );
+    const handlers = renderRow({ status: "installed" }, { isLocallyDisabled: true });
     await user.click(
       screen.getByRole("button", { name: /(more actions|plus d['\u2019]actions)/i }),
     );
-    await user.click(
-      screen.getByRole("menuitem", { name: /(^enable$|activer)/i }),
-    );
+    await user.click(screen.getByRole("menuitem", { name: /(^enable$|activer)/i }));
     expect(handlers.onEnable).toHaveBeenCalledWith("vortex-mod-youtube");
     expect(
       screen.queryByRole("menuitem", { name: /(^disable$|désactiver)/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("exposes a report-broken action in the kebab menu for installed plugins", async () => {
+    const user = userEvent.setup();
+    const onReportBroken = vi.fn();
+    renderRow({ status: "installed" }, { onReportBroken });
+    await user.click(screen.getByRole("button", { name: /(more actions|plus d['’]actions)/i }));
+    await user.click(screen.getByRole("menuitem", { name: /(report broken|signaler un plugin)/i }));
+    expect(onReportBroken).toHaveBeenCalledWith("vortex-mod-youtube");
+  });
+
+  it("does not render the report-broken action when no handler is provided", async () => {
+    const user = userEvent.setup();
+    renderRow({ status: "installed" });
+    await user.click(screen.getByRole("button", { name: /(more actions|plus d['’]actions)/i }));
+    expect(
+      screen.queryByRole("menuitem", { name: /(report broken|signaler un plugin)/i }),
     ).not.toBeInTheDocument();
   });
 });

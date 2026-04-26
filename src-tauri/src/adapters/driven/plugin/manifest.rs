@@ -28,6 +28,9 @@ struct RawPluginSection {
     description: String,
     _license: Option<String>,
     min_vortex_version: Option<String>,
+    /// Source repository URL surfaced to the host so the "Report broken
+    /// plugin" action knows where to file the issue.
+    repository: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -79,13 +82,16 @@ pub fn parse_manifest(dir: &Path) -> Result<(PluginManifest, PathBuf), DomainErr
     }
 
     let category = parse_category(&raw.plugin.category)?;
-    let info = PluginInfo::new(
+    let mut info = PluginInfo::new(
         raw.plugin.name,
         raw.plugin.version,
         raw.plugin.description,
         raw.plugin.author,
         category,
     );
+    if let Some(repo) = raw.plugin.repository {
+        info = info.with_repository_url(repo);
+    }
 
     let caps = raw
         .capabilities
@@ -720,5 +726,53 @@ api_key = { type = "string", regex = "^[a-z0-9]+$" }
         let (manifest, _) = parse_manifest(&plugin_dir).unwrap();
         let f = manifest.config_schema().get("api_key").unwrap();
         assert_eq!(f.regex(), Some("^[a-z0-9]+$"));
+    }
+
+    #[test]
+    fn test_parse_manifest_extracts_repository_url() {
+        let tmp = TempDir::new().unwrap();
+        let plugin_dir = tmp.path().join("with-repo");
+        std::fs::create_dir_all(&plugin_dir).unwrap();
+        write_plugin_toml(
+            &plugin_dir,
+            r#"
+[plugin]
+name = "with-repo"
+version = "1.0.0"
+category = "crawler"
+author = "Alice"
+description = "Has repo URL"
+repository = "https://github.com/alice/with-repo"
+"#,
+        );
+        write_dummy_wasm(&plugin_dir, "with-repo.wasm");
+
+        let (manifest, _) = parse_manifest(&plugin_dir).unwrap();
+        assert_eq!(
+            manifest.info().repository_url(),
+            Some("https://github.com/alice/with-repo")
+        );
+    }
+
+    #[test]
+    fn test_parse_manifest_repository_url_optional() {
+        let tmp = TempDir::new().unwrap();
+        let plugin_dir = tmp.path().join("no-repo");
+        std::fs::create_dir_all(&plugin_dir).unwrap();
+        write_plugin_toml(
+            &plugin_dir,
+            r#"
+[plugin]
+name = "no-repo"
+version = "1.0.0"
+category = "crawler"
+author = "Alice"
+description = "No repo URL"
+"#,
+        );
+        write_dummy_wasm(&plugin_dir, "no-repo.wasm");
+
+        let (manifest, _) = parse_manifest(&plugin_dir).unwrap();
+        assert_eq!(manifest.info().repository_url(), None);
     }
 }
