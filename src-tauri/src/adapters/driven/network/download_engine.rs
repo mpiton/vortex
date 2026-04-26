@@ -21,6 +21,14 @@ struct ActiveDownload {
     pause_sender: watch::Sender<bool>,
 }
 
+/// Minimum age and downloaded bytes a segment must have before it is
+/// eligible for split. Without this gate a fresh split child (downloaded == 0,
+/// elapsed ≈ 0) would compute as 0 B/s, become the guaranteed "slowest"
+/// candidate, and be re-split immediately on the next completion event —
+/// cascading fragmentation of the newest range without any real slow-tail
+/// signal.
+const MIN_SPLIT_SAMPLE_DURATION: std::time::Duration = std::time::Duration::from_millis(500);
+
 /// Runtime state of one in-flight segment, tracked by the engine so it can
 /// shrink the segment's range and observe its throughput for dynamic split.
 struct SegmentRuntimeState {
@@ -29,22 +37,37 @@ struct SegmentRuntimeState {
     started_at: std::time::Instant,
     start_byte: u64,
     initial_end: u64,
+    /// Set by the coordinator when the worker for this slot returns `Ok(_)`.
+    /// Completed slots stay in `active_segments` (instead of being cleared)
+    /// so `persist_split_meta` records their byte range with `completed: true`
+    /// — otherwise a crash right after a split would leave the resume meta
+    /// without any record that those bytes are already on disk.
+    completed: bool,
 }
 
 /// Pick the slowest active segment whose remaining range is large enough
 /// to benefit from a split. Returns the slot index and the byte at which
 /// to split (midpoint of the remaining range).
 fn pick_split_target(
-    segments: &[Option<SegmentRuntimeState>],
+    segments: &[SegmentRuntimeState],
     min_remaining_bytes: u64,
 ) -> Option<(usize, u64)> {
     let mut slowest: Option<(usize, f64, u64)> = None;
-    for (idx, slot) in segments.iter().enumerate() {
-        let Some(state) = slot else { continue };
+    for (idx, state) in segments.iter().enumerate() {
+        if state.completed {
+            continue;
+        }
         if state.initial_end == u64::MAX {
             continue; // unbounded segments cannot be split
         }
         let downloaded = state.progress.load(Ordering::Relaxed);
+        if downloaded == 0 {
+            continue; // no throughput sample yet
+        }
+        let elapsed = state.started_at.elapsed();
+        if elapsed < MIN_SPLIT_SAMPLE_DURATION {
+            continue; // worker hasn't run long enough to produce a meaningful bps
+        }
         let current_offset = state.start_byte.saturating_add(downloaded);
         if current_offset >= state.initial_end {
             continue; // already at end — completion event will fire shortly
@@ -57,8 +80,7 @@ fn pick_split_target(
         if split_at <= current_offset || split_at >= state.initial_end {
             continue;
         }
-        let elapsed = state.started_at.elapsed().as_secs_f64().max(1e-3);
-        let bps = downloaded as f64 / elapsed;
+        let bps = downloaded as f64 / elapsed.as_secs_f64().max(1e-3);
         match slowest {
             None => slowest = Some((idx, bps, split_at)),
             Some((_, prev_bps, _)) if bps < prev_bps => {
@@ -79,19 +101,28 @@ async fn persist_split_meta(
     download_id: DownloadId,
     url: &str,
     total_size: u64,
-    active_segments: &[Option<SegmentRuntimeState>],
+    active_segments: &[SegmentRuntimeState],
 ) {
+    // Snapshot every slot — including completed ones — so a crash right
+    // after a split does not lose the record of byte ranges already on
+    // disk. Completed segments report their full range as downloaded so
+    // resume does not re-fetch them.
     let segments_meta: Vec<SegmentMeta> = active_segments
         .iter()
         .enumerate()
-        .filter_map(|(i, slot)| {
-            slot.as_ref().map(|st| SegmentMeta {
+        .map(|(i, st)| {
+            let downloaded = if st.completed {
+                st.initial_end.saturating_sub(st.start_byte)
+            } else {
+                st.progress.load(Ordering::Relaxed)
+            };
+            SegmentMeta {
                 id: i as u32,
                 start_byte: st.start_byte,
                 end_byte: st.initial_end,
-                downloaded_bytes: st.progress.load(Ordering::Relaxed),
-                completed: false,
-            })
+                downloaded_bytes: downloaded,
+                completed: st.completed,
+            }
         })
         .collect();
     let now = std::time::SystemTime::now()
@@ -421,16 +452,17 @@ impl DownloadEngine for SegmentedDownloadEngine {
 
             let shared_downloaded = Arc::new(AtomicU64::new(0));
             let mut join_set: JoinSet<(usize, Result<u64, SegmentError>)> = JoinSet::new();
-            let mut segment_state: Vec<SegmentRuntimeState> = Vec::with_capacity(segments.len());
+            let mut active_segments: Vec<SegmentRuntimeState> = Vec::with_capacity(segments.len());
             for (index, (start, end)) in segments.iter().enumerate() {
                 let (end_tx, end_rx) = watch::channel(*end);
                 let progress = Arc::new(AtomicU64::new(0));
-                segment_state.push(SegmentRuntimeState {
+                active_segments.push(SegmentRuntimeState {
                     end_tx,
                     progress: progress.clone(),
                     started_at: std::time::Instant::now(),
                     start_byte: *start,
                     initial_end: *end,
+                    completed: false,
                 });
                 let params = SegmentParams {
                     client: client.clone(),
@@ -456,16 +488,16 @@ impl DownloadEngine for SegmentedDownloadEngine {
             let mut failed = false;
             let mut error_msg = String::new();
             let mut next_segment_id: u32 = segments.len() as u32;
-            let mut active_segments: Vec<Option<SegmentRuntimeState>> =
-                segment_state.into_iter().map(Some).collect();
 
             while let Some(result) = join_set.join_next().await {
                 match result {
                     Ok((slot_idx, Ok(_bytes))) => {
-                        // Clear the completed slot so pick_split_target ignores it
-                        // and persist_split_meta reflects the live topology.
+                        // Mark the slot completed instead of removing it — the
+                        // persist_split_meta call below must record completed
+                        // ranges so a crash mid-split does not lose the fact
+                        // that those bytes are already on disk.
                         if slot_idx < active_segments.len() {
-                            active_segments[slot_idx] = None;
+                            active_segments[slot_idx].completed = true;
                         }
 
                         if dynamic_split_enabled.load(Ordering::Relaxed)
@@ -481,18 +513,11 @@ impl DownloadEngine for SegmentedDownloadEngine {
                             // subsequent pick_split_target on the same slot — or a
                             // crash recovery via persist_split_meta — observes the
                             // shrunk range, not the pre-split end.
-                            let (initial_end, signal_sent) = {
-                                let old_state = active_segments[idx]
-                                    .as_mut()
-                                    .expect("slot present at split time");
-                                let initial_end = old_state.initial_end;
-                                let signal_sent = old_state.end_tx.send(split_at).is_ok();
-                                if signal_sent {
-                                    old_state.initial_end = split_at;
-                                }
-                                (initial_end, signal_sent)
-                            };
-                            if !signal_sent {
+                            let initial_end = active_segments[idx].initial_end;
+                            let signal_sent = active_segments[idx].end_tx.send(split_at).is_ok();
+                            if signal_sent {
+                                active_segments[idx].initial_end = split_at;
+                            } else {
                                 tracing::warn!(
                                     download_id = download_id.0,
                                     original_segment_id = idx as u32,
@@ -530,13 +555,14 @@ impl DownloadEngine for SegmentedDownloadEngine {
                             join_set.spawn(async move {
                                 (new_slot_idx, download_segment(params).await)
                             });
-                            active_segments.push(Some(SegmentRuntimeState {
+                            active_segments.push(SegmentRuntimeState {
                                 end_tx: new_end_tx,
                                 progress: new_progress,
                                 started_at: std::time::Instant::now(),
                                 start_byte: split_at,
                                 initial_end,
-                            }));
+                                completed: false,
+                            });
 
                             persist_split_meta(
                                 &file_storage,
@@ -549,10 +575,11 @@ impl DownloadEngine for SegmentedDownloadEngine {
                             .await;
                         }
                     }
-                    Ok((slot_idx, Err(e))) => {
-                        if slot_idx < active_segments.len() {
-                            active_segments[slot_idx] = None;
-                        }
+                    Ok((_slot_idx, Err(e))) => {
+                        // Errored slots stay in active_segments without
+                        // `completed = true`; pick_split_target ignores them
+                        // because the worker is gone (end_tx send fails) and
+                        // the cancel below tears the whole download down.
                         match e {
                             SegmentError::Cancelled => {
                                 cancel_token.cancel();
@@ -1113,22 +1140,21 @@ mod tests {
 
     #[test]
     fn test_pick_split_target_prefers_slowest_above_threshold() {
-        let make = |start: u64, end: u64, downloaded: u64, age_ms: u64| {
-            Some(SegmentRuntimeState {
-                end_tx: watch::channel(end).0,
-                progress: Arc::new(AtomicU64::new(downloaded)),
-                started_at: std::time::Instant::now() - std::time::Duration::from_millis(age_ms),
-                start_byte: start,
-                initial_end: end,
-            })
+        let make = |start: u64, end: u64, downloaded: u64, age_ms: u64| SegmentRuntimeState {
+            end_tx: watch::channel(end).0,
+            progress: Arc::new(AtomicU64::new(downloaded)),
+            started_at: std::time::Instant::now() - std::time::Duration::from_millis(age_ms),
+            start_byte: start,
+            initial_end: end,
+            completed: false,
         };
         let segs = [
-            // fast: 1 MiB downloaded in 100 ms → 10 MiB/s
-            make(0, 16 * 1024 * 1024, 1024 * 1024, 100),
+            // fast: 1 MiB downloaded in 1500 ms → ~700 KiB/s
+            make(0, 16 * 1024 * 1024, 1024 * 1024, 1500),
             // slow: 100 KiB in 1000 ms → ~100 KiB/s, plenty of remaining
             make(16 * 1024 * 1024, 32 * 1024 * 1024, 100 * 1024, 1000),
             // tiny remaining → must be filtered
-            make(32 * 1024 * 1024, 32 * 1024 * 1024 + 1024, 512, 200),
+            make(32 * 1024 * 1024, 32 * 1024 * 1024 + 1024, 512, 600),
         ];
         let pick = pick_split_target(&segs, 4 * 1024 * 1024);
         assert_eq!(
@@ -1149,18 +1175,64 @@ mod tests {
 
     #[test]
     fn test_pick_split_target_returns_none_when_all_below_threshold() {
-        let make = |start: u64, end: u64, downloaded: u64| {
-            Some(SegmentRuntimeState {
-                end_tx: watch::channel(end).0,
-                progress: Arc::new(AtomicU64::new(downloaded)),
-                started_at: std::time::Instant::now(),
-                start_byte: start,
-                initial_end: end,
-            })
+        let make = |start: u64, end: u64, downloaded: u64| SegmentRuntimeState {
+            end_tx: watch::channel(end).0,
+            progress: Arc::new(AtomicU64::new(downloaded)),
+            started_at: std::time::Instant::now() - std::time::Duration::from_millis(800),
+            start_byte: start,
+            initial_end: end,
+            completed: false,
         };
-        let segs = [make(0, 1024, 100), make(1024, 2048, 0), make(2048, 3072, 0)];
+        let segs = [make(0, 1024, 100), make(1024, 2048, 1), make(2048, 3072, 1)];
         let pick = pick_split_target(&segs, 4 * 1024 * 1024);
         assert!(pick.is_none(), "got {pick:?}");
+    }
+
+    #[test]
+    fn test_pick_split_target_skips_fresh_segments() {
+        // Brand-new split children should not be candidates: no throughput
+        // sample yet (downloaded == 0) and elapsed below MIN_SPLIT_SAMPLE_DURATION.
+        // A genuinely slow neighbor (1000 ms / 100 KiB) sits next to them.
+        let mk = |start: u64, end: u64, downloaded: u64, age_ms: u64| SegmentRuntimeState {
+            end_tx: watch::channel(end).0,
+            progress: Arc::new(AtomicU64::new(downloaded)),
+            started_at: std::time::Instant::now() - std::time::Duration::from_millis(age_ms),
+            start_byte: start,
+            initial_end: end,
+            completed: false,
+        };
+        let segs = [
+            // fresh child: 0 bytes, 50 ms — must be skipped despite being "slowest"
+            mk(0, 16 * 1024 * 1024, 0, 50),
+            // slightly older but still no sample — must be skipped
+            mk(16 * 1024 * 1024, 32 * 1024 * 1024, 0, 200),
+            // genuinely slow but mature
+            mk(32 * 1024 * 1024, 48 * 1024 * 1024, 100 * 1024, 1000),
+        ];
+        let pick = pick_split_target(&segs, 4 * 1024 * 1024);
+        assert_eq!(pick.map(|(i, _)| i), Some(2), "got {pick:?}");
+    }
+
+    #[test]
+    fn test_pick_split_target_skips_completed_segments() {
+        // A completed slot must never be picked even if its throughput was the
+        // slowest before completion.
+        let mk = |start: u64, end: u64, downloaded: u64, completed: bool| SegmentRuntimeState {
+            end_tx: watch::channel(end).0,
+            progress: Arc::new(AtomicU64::new(downloaded)),
+            started_at: std::time::Instant::now() - std::time::Duration::from_millis(1000),
+            start_byte: start,
+            initial_end: end,
+            completed,
+        };
+        let segs = [
+            // completed slow segment — must be ignored
+            mk(0, 16 * 1024 * 1024, 16 * 1024 * 1024, true),
+            // live, slower in absolute terms but only it is eligible
+            mk(16 * 1024 * 1024, 32 * 1024 * 1024, 100 * 1024, false),
+        ];
+        let pick = pick_split_target(&segs, 4 * 1024 * 1024);
+        assert_eq!(pick.map(|(i, _)| i), Some(1));
     }
 
     #[tokio::test]
