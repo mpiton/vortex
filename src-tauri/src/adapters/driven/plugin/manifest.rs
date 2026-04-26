@@ -8,7 +8,7 @@ use serde::Deserialize;
 use crate::domain::error::DomainError;
 use crate::domain::model::plugin::{
     ConfigField, ConfigFieldType, PluginCategory, PluginConfigSchema, PluginInfo, PluginManifest,
-    unsupported_regex_feature,
+    regex_syntax_error, unsupported_regex_feature,
 };
 
 #[derive(Deserialize)]
@@ -185,6 +185,11 @@ fn build_config_schema(
             field = field.with_max(max);
         }
         if let Some(regex) = &entry.regex {
+            if let Some(err) = regex_syntax_error(regex) {
+                return Err(DomainError::PluginError(format!(
+                    "config field '{key}' regex '{regex}' is malformed: {err}"
+                )));
+            }
             if let Some(bad) = unsupported_regex_feature(regex) {
                 return Err(DomainError::PluginError(format!(
                     "config field '{key}' regex '{regex}' uses unsupported feature '{bad}' (alternation, groups and counted quantifiers are not implemented)"
@@ -631,6 +636,35 @@ description = "No config block"
 
         let (manifest, _) = parse_manifest(&plugin_dir).unwrap();
         assert!(manifest.config_schema().is_empty());
+    }
+
+    #[test]
+    fn test_parse_manifest_rejects_malformed_regex() {
+        let tmp = TempDir::new().unwrap();
+        let plugin_dir = tmp.path().join("malformed-regex");
+        std::fs::create_dir_all(&plugin_dir).unwrap();
+        write_plugin_toml(
+            &plugin_dir,
+            r#"
+[plugin]
+name = "malformed-regex"
+version = "1.0.0"
+category = "utility"
+author = "Alice"
+description = "Malformed regex"
+
+[config]
+mode = { type = "string", regex = "[abc" }
+"#,
+        );
+        write_dummy_wasm(&plugin_dir, "malformed-regex.wasm");
+
+        let result = parse_manifest(&plugin_dir);
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("malformed"),
+            "expected malformed-pattern error, got: {err}"
+        );
     }
 
     #[test]

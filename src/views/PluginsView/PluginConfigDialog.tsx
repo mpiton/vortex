@@ -39,7 +39,11 @@ function validate(field: ConfigField, value: string): string | null {
   if (field.fieldType === "float") {
     if (value.trim() === "") return "Must be a number";
     const n = Number(value);
-    if (Number.isNaN(n)) return "Must be a number";
+    // `Number.isFinite` rejects both NaN and ±Infinity. The Rust backend's
+    // `f64::from_str` accepts "Infinity" / "inf", so we'd otherwise let the
+    // user submit a value that the schema validator then turns into a
+    // generic toast instead of an inline field error.
+    if (!Number.isFinite(n)) return "Must be a finite number";
     if (field.min !== null && n < field.min) return `Min ${field.min}`;
     if (field.max !== null && n > field.max) return `Max ${field.max}`;
     return null;

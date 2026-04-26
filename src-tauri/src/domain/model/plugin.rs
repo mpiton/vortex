@@ -345,6 +345,15 @@ impl ConfigField {
                 let parsed: f64 = value.parse().map_err(|_| {
                     DomainError::ValidationError(format!("expected float, got '{value}'"))
                 })?;
+                // `f64::from_str` accepts "NaN", "inf", "infinity" (case
+                // insensitive). NaN compares false against any bound so it
+                // would silently pass `check_numeric_bounds` — reject the
+                // non-finite values up front.
+                if !parsed.is_finite() {
+                    return Err(DomainError::ValidationError(format!(
+                        "expected finite float, got '{value}'"
+                    )));
+                }
                 self.check_numeric_bounds(parsed)?;
             }
             ConfigFieldType::Url => {
@@ -390,6 +399,11 @@ impl ConfigField {
         }
 
         if let Some(pattern) = &self.regex {
+            if let Some(err) = regex_syntax_error(pattern) {
+                return Err(DomainError::ValidationError(format!(
+                    "regex pattern '{pattern}' is malformed: {err}"
+                )));
+            }
             if let Some(bad) = unsupported_regex_feature(pattern) {
                 return Err(DomainError::ValidationError(format!(
                     "regex pattern '{pattern}' uses unsupported feature '{bad}' (alternation, groups and counted quantifiers are not implemented)"
@@ -599,8 +613,23 @@ impl<'a> JsonCursor<'a> {
             match c {
                 '"' => return Some(()),
                 '\\' => {
-                    self.bump()?; // skip escaped char (lenient: any char)
+                    let esc = self.bump()?;
+                    match esc {
+                        '"' | '\\' | '/' | 'b' | 'f' | 'n' | 'r' | 't' => {}
+                        'u' => {
+                            for _ in 0..4 {
+                                let h = self.bump()?;
+                                if !h.is_ascii_hexdigit() {
+                                    return None;
+                                }
+                            }
+                        }
+                        _ => return None,
+                    }
                 }
+                // RFC 8259: unescaped control characters (U+0000..=U+001F)
+                // are forbidden inside strings.
+                c if (c as u32) < 0x20 => return None,
                 _ => {}
             }
         }
@@ -620,16 +649,22 @@ impl<'a> JsonCursor<'a> {
         if self.peek() == Some('-') {
             self.pos += 1;
         }
-        let int_start = self.pos;
-        while let Some(c) = self.peek() {
-            if c.is_ascii_digit() {
+        // RFC 8259: integer part is `0` or [1-9][0-9]* — no leading zeros.
+        match self.peek()? {
+            '0' => {
                 self.pos += 1;
-            } else {
-                break;
             }
-        }
-        if self.pos == int_start {
-            return None;
+            '1'..='9' => {
+                self.pos += 1;
+                while let Some(c) = self.peek() {
+                    if c.is_ascii_digit() {
+                        self.pos += 1;
+                    } else {
+                        break;
+                    }
+                }
+            }
+            _ => return None,
         }
         if self.peek() == Some('.') {
             self.pos += 1;
@@ -664,6 +699,40 @@ impl<'a> JsonCursor<'a> {
         }
         if self.pos == start { None } else { Some(()) }
     }
+}
+
+/// Returns a syntax-level error for `pattern` (unclosed `[`, trailing
+/// `\`), or `None` when the pattern is well-formed for the matcher. The
+/// matcher would otherwise silently degrade malformed patterns into
+/// "never matches", so plugin authors get no feedback.
+pub fn regex_syntax_error(pattern: &str) -> Option<String> {
+    let chars: Vec<char> = pattern.chars().collect();
+    let mut i = 0;
+    let mut in_class = false;
+    while i < chars.len() {
+        let c = chars[i];
+        match c {
+            '\\' => {
+                if i + 1 >= chars.len() {
+                    return Some("trailing backslash".into());
+                }
+                i += 2;
+            }
+            '[' if !in_class => {
+                in_class = true;
+                i += 1;
+            }
+            ']' if in_class => {
+                in_class = false;
+                i += 1;
+            }
+            _ => i += 1,
+        }
+    }
+    if in_class {
+        return Some("unclosed '['".into());
+    }
+    None
 }
 
 /// Returns the first regex feature in `pattern` the matcher does not
@@ -1200,5 +1269,63 @@ mod tests {
             ),
             other => panic!("expected ValidationError, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_regex_syntax_error_detects_malformations() {
+        assert_eq!(regex_syntax_error("^[a-z]+$"), None);
+        assert_eq!(regex_syntax_error(r"\d+"), None);
+        assert!(regex_syntax_error("[abc").is_some()); // unclosed
+        assert!(regex_syntax_error("foo\\").is_some()); // trailing backslash
+        // Backslash inside class still requires a follow-up.
+        assert!(regex_syntax_error("[a\\").is_some());
+    }
+
+    #[test]
+    fn test_config_field_validate_regex_rejects_malformed_pattern() {
+        let f = ConfigField::new(ConfigFieldType::String).with_regex("[abc");
+        let err = f.validate("a").unwrap_err();
+        match err {
+            DomainError::ValidationError(msg) => assert!(
+                msg.contains("malformed"),
+                "expected malformed-pattern message, got: {msg}"
+            ),
+            other => panic!("expected ValidationError, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_json_array_len_rejects_invalid_string_escapes() {
+        // \q is not a valid JSON escape.
+        assert_eq!(parse_json_array_len(r#"["\q"]"#), None);
+        // Bare control characters (here U+000A newline) must be escaped.
+        assert_eq!(parse_json_array_len("[\"line\nbreak\"]"), None);
+        // Valid escapes still pass.
+        assert_eq!(parse_json_array_len(r#"["\n", "\t", "A"]"#), Some(3));
+    }
+
+    #[test]
+    fn test_parse_json_array_len_rejects_leading_zero_numbers() {
+        assert_eq!(parse_json_array_len("[01]"), None);
+        assert_eq!(parse_json_array_len("[001]"), None);
+        assert_eq!(parse_json_array_len("[-01]"), None);
+        // Single zero and decimals starting with zero are valid.
+        assert_eq!(parse_json_array_len("[0]"), Some(1));
+        assert_eq!(parse_json_array_len("[0.5]"), Some(1));
+        assert_eq!(parse_json_array_len("[-0.5]"), Some(1));
+    }
+
+    #[test]
+    fn test_config_field_validate_float_rejects_nan_and_infinity() {
+        let f = ConfigField::new(ConfigFieldType::Float);
+        for input in ["NaN", "nan", "inf", "Infinity", "-Infinity", "-inf"] {
+            let err = f.validate(input).unwrap_err();
+            assert!(
+                matches!(err, DomainError::ValidationError(_)),
+                "expected ValidationError for {input}"
+            );
+        }
+        assert!(f.validate("0.5").is_ok());
+        assert!(f.validate("-3.14").is_ok());
     }
 }
