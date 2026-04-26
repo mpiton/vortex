@@ -12,7 +12,7 @@ use crate::domain::ports::driven::plugin_loader::DownloadedFileInfo;
 
 use super::builtin::HttpModule;
 use super::capabilities::{SharedHostResources, build_host_functions};
-use super::manifest::{find_wasm_file, parse_manifest};
+use super::manifest::{find_wasm_file, parse_manifest, parse_manifest_metadata};
 use super::registry::{LoadedPlugin, PluginRegistry};
 
 /// Per-plugin install coordination.
@@ -260,13 +260,36 @@ impl PluginLoader for ExtismPluginLoader {
         if !dir.is_dir() {
             return Ok(None);
         }
-        match parse_manifest(&dir) {
-            Ok((manifest, _)) => Ok(Some(manifest.info().clone())),
+
+        // Symlink containment: even though `name` itself is sanitized,
+        // `plugins_dir/<name>` could be a symlink pointing outside the
+        // root. We canonicalize both sides and require the resolved
+        // plugin directory to live inside the resolved plugins root
+        // before reading anything from it.
+        let canon_root = self.plugins_dir.canonicalize().map_err(|e| {
+            DomainError::PluginError(format!(
+                "failed to canonicalize plugins_dir '{}': {e}",
+                self.plugins_dir.display()
+            ))
+        })?;
+        let canon_dir = dir.canonicalize().map_err(|e| {
+            DomainError::PluginError(format!(
+                "failed to canonicalize plugin dir '{}': {e}",
+                dir.display()
+            ))
+        })?;
+        if !canon_dir.starts_with(&canon_root) {
+            return Err(DomainError::ValidationError(format!(
+                "invalid plugin path outside plugins_dir: '{}'",
+                dir.display()
+            )));
+        }
+
+        // Use the metadata-only parser so a missing/corrupt `.wasm`
+        // file doesn't hide the very plugin the user wants to report.
+        match parse_manifest_metadata(&canon_dir) {
+            Ok(manifest) => Ok(Some(manifest.info().clone())),
             Err(DomainError::PluginError(msg)) => {
-                // A directory is present but the manifest is unreadable —
-                // we surface None rather than an error so the caller can
-                // decide whether to fall back to other lookups (e.g. the
-                // registry-backed store entry) or report NotFound.
                 tracing::debug!("find_installed_manifest('{name}'): manifest unreadable: {msg}");
                 Ok(None)
             }

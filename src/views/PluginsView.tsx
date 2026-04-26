@@ -106,18 +106,27 @@ export function PluginsView() {
     onSuccess: (url, variables) => {
       // Best-effort clipboard copy so the user always has the URL even
       // if the OS launcher silently failed (no graphical session, broken
-      // `xdg-open`, etc.). Clipboard access can be denied by the
-      // platform — we fall back to an info-only toast in that case.
-      void navigator.clipboard
-        .writeText(url)
-        .then(() => {
-          toast.success(
-            t("plugins.toast.reportBrokenSuccessWithCopy", { name: variables.pluginName }),
-          );
-        })
-        .catch(() => {
-          toast.success(t("plugins.toast.reportBrokenSuccess", { name: variables.pluginName }));
-        });
+      // `xdg-open`, etc.).
+      //
+      // `navigator.clipboard` itself is undefined in non-secure contexts
+      // and inside webviews that opt out of the API, so we must guard
+      // before the call — accessing `.writeText` on `undefined` would
+      // throw synchronously and break the success toast.
+      const clipboard = navigator.clipboard;
+      if (clipboard?.writeText) {
+        void clipboard
+          .writeText(url)
+          .then(() => {
+            toast.success(
+              t("plugins.toast.reportBrokenSuccessWithCopy", { name: variables.pluginName }),
+            );
+          })
+          .catch(() => {
+            toast.success(t("plugins.toast.reportBrokenSuccess", { name: variables.pluginName }));
+          });
+      } else {
+        toast.success(t("plugins.toast.reportBrokenSuccess", { name: variables.pluginName }));
+      }
     },
     onError: (error, variables) => {
       toast.error(

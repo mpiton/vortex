@@ -54,13 +54,29 @@ impl UrlOpener for SystemUrlOpener {
 }
 
 fn validate_http_url(url: &str) -> Result<(), DomainError> {
-    if url.starts_with("http://") || url.starts_with("https://") {
-        Ok(())
-    } else {
-        Err(DomainError::ValidationError(format!(
-            "URL must start with http(s)://, got '{url}'"
-        )))
+    let rest = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .ok_or_else(|| {
+            DomainError::ValidationError(format!("URL must start with http(s)://, got '{url}'"))
+        })?;
+
+    // Reject scheme-only inputs (`https://`), missing-authority shapes
+    // (`https:///foo`, `https://?x`, `https://#x`) and any whitespace,
+    // which would derail the OS launcher even though the prefix check
+    // passed.
+    if rest.is_empty()
+        || rest.starts_with('/')
+        || rest.starts_with('?')
+        || rest.starts_with('#')
+        || url.chars().any(char::is_whitespace)
+    {
+        return Err(DomainError::ValidationError(format!(
+            "invalid http(s) URL: '{url}'"
+        )));
     }
+
+    Ok(())
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -119,5 +135,25 @@ mod tests {
         // Validation only — we don't actually launch anything in CI.
         assert!(validate_http_url("http://example.com").is_ok());
         assert!(validate_http_url("https://github.com/foo/bar/issues/new?title=x").is_ok());
+    }
+
+    #[test]
+    fn validate_http_url_rejects_missing_authority() {
+        // Scheme-only or no-host shapes used to slip past the prefix check
+        // and bubble up as a useless launcher error.
+        for bad in [
+            "https://",
+            "http://",
+            "https:///etc/passwd",
+            "https://?title=x",
+            "https://#frag",
+            "https:// example.com",
+        ] {
+            let err = validate_http_url(bad).unwrap_err();
+            assert!(
+                matches!(err, DomainError::ValidationError(_)),
+                "expected ValidationError for {bad:?}, got {err:?}"
+            );
+        }
     }
 }

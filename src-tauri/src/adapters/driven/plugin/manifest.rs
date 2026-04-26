@@ -56,6 +56,18 @@ struct RawConfigEntry {
 ///
 /// Returns the domain manifest and the path to the `.wasm` file.
 pub fn parse_manifest(dir: &Path) -> Result<(PluginManifest, PathBuf), DomainError> {
+    let manifest = parse_manifest_metadata(dir)?;
+    let wasm_path = find_wasm_file(dir)?;
+    Ok((manifest, wasm_path))
+}
+
+/// Parse only the `plugin.toml` metadata, with no `.wasm` requirement.
+///
+/// Used by the "report broken plugin" flow: a plugin whose `.wasm` is
+/// missing or corrupted is precisely the case the user wants to file
+/// an issue for, so we must still surface its declared name, version,
+/// and `repository` even when the binary is unusable.
+pub fn parse_manifest_metadata(dir: &Path) -> Result<PluginManifest, DomainError> {
     let toml_path = dir.join("plugin.toml");
     let content = std::fs::read_to_string(&toml_path).map_err(|e| {
         DomainError::PluginError(format!(
@@ -109,8 +121,7 @@ pub fn parse_manifest(dir: &Path) -> Result<(PluginManifest, PathBuf), DomainErr
         manifest = manifest.with_min_version(v);
     }
 
-    let wasm_path = find_wasm_file(dir)?;
-    Ok((manifest, wasm_path))
+    Ok(manifest)
 }
 
 fn parse_category(s: &str) -> Result<PluginCategory, DomainError> {
@@ -449,6 +460,37 @@ description = "No wasm file"
         assert!(
             err_msg.contains("no .wasm"),
             "expected wasm error, got: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn test_parse_manifest_metadata_succeeds_without_wasm() {
+        // The "report broken plugin" flow leans on this: a plugin whose
+        // `.wasm` is missing or corrupted is exactly what we want to
+        // surface, so the metadata parser must not fail when the binary
+        // is absent.
+        let tmp = TempDir::new().unwrap();
+        let plugin_dir = tmp.path().join("metadata-only");
+        std::fs::create_dir_all(&plugin_dir).unwrap();
+        write_plugin_toml(
+            &plugin_dir,
+            r#"
+[plugin]
+name = "metadata-only"
+version = "0.3.1"
+category = "hoster"
+author = "Eve"
+description = "wasm intentionally missing"
+repository = "https://github.com/eve/metadata-only"
+"#,
+        );
+
+        let manifest = parse_manifest_metadata(&plugin_dir).unwrap();
+        assert_eq!(manifest.info().name(), "metadata-only");
+        assert_eq!(manifest.info().version(), "0.3.1");
+        assert_eq!(
+            manifest.info().repository_url(),
+            Some("https://github.com/eve/metadata-only")
         );
     }
 
