@@ -33,6 +33,8 @@ const mockConfig: AppConfig = {
   retryDelaySeconds: 10,
   verifyChecksums: true,
   preAllocateSpace: true,
+  dynamicSplitEnabled: true,
+  dynamicSplitMinRemainingMb: 4,
   proxyType: "none",
   proxyUrl: null,
   userAgent: "Vortex/1.0",

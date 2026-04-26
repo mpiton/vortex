@@ -810,6 +810,8 @@ pub struct SettingsDto {
     pub retry_delay_seconds: u32,
     pub verify_checksums: bool,
     pub pre_allocate_space: bool,
+    pub dynamic_split_enabled: bool,
+    pub dynamic_split_min_remaining_mb: u64,
 
     // History
     pub history_retention_days: i64,
@@ -864,6 +866,8 @@ impl From<AppConfig> for SettingsDto {
             retry_delay_seconds: c.retry_delay_seconds,
             verify_checksums: c.verify_checksums,
             pre_allocate_space: c.pre_allocate_space,
+            dynamic_split_enabled: c.dynamic_split_enabled,
+            dynamic_split_min_remaining_mb: c.dynamic_split_min_remaining_mb,
             history_retention_days: c.history_retention_days,
             proxy_type: c.proxy_type,
             proxy_url: c.proxy_url,
@@ -907,6 +911,8 @@ pub struct ConfigPatchDto {
     pub retry_delay_seconds: Option<u32>,
     pub verify_checksums: Option<bool>,
     pub pre_allocate_space: Option<bool>,
+    pub dynamic_split_enabled: Option<bool>,
+    pub dynamic_split_min_remaining_mb: Option<u64>,
 
     // History
     pub history_retention_days: Option<i64>,
@@ -955,6 +961,8 @@ impl From<ConfigPatchDto> for ConfigPatch {
             retry_delay_seconds: d.retry_delay_seconds,
             verify_checksums: d.verify_checksums,
             pre_allocate_space: d.pre_allocate_space,
+            dynamic_split_enabled: d.dynamic_split_enabled,
+            dynamic_split_min_remaining_mb: d.dynamic_split_min_remaining_mb,
             history_retention_days: d.history_retention_days,
             proxy_type: d.proxy_type,
             proxy_url: d.proxy_url,

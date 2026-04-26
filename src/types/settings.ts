@@ -28,6 +28,8 @@ export interface AppConfig {
   retryDelaySeconds: number;
   verifyChecksums: boolean;
   preAllocateSpace: boolean;
+  dynamicSplitEnabled: boolean;
+  dynamicSplitMinRemainingMb: number;
 
   // History
   historyRetentionDays: number;

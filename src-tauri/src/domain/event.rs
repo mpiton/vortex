@@ -88,6 +88,16 @@ pub enum DomainEvent {
         segment_id: u32,
         error: String,
     },
+    /// A still-running segment was split in two by the dynamic-split
+    /// scheduler so the remaining range can be parallelised. The original
+    /// segment now ends at `split_at`; a fresh segment with `new_segment_id`
+    /// covers `[split_at, original_end)`.
+    SegmentSplit {
+        download_id: DownloadId,
+        original_segment_id: u32,
+        new_segment_id: u32,
+        split_at: u64,
+    },
 
     // Plugins
     PluginLoaded {
