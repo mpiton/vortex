@@ -76,6 +76,28 @@ fn validate_http_url(url: &str) -> Result<(), DomainError> {
         )));
     }
 
+    // Authority MUST carry a non-empty host. RFC 3986 leaves the door
+    // open for `https://:443/x` (port-only) and `https://user@/x`
+    // (userinfo without host) — both are accepted by the prefix check
+    // but mean nothing to a browser and just produce a launcher error.
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+    let host_port = authority.rsplit('@').next().unwrap_or_default();
+    let host_missing = if let Some(rest) = host_port.strip_prefix('[') {
+        // IPv6 literal: must close with `]` and have at least one byte
+        // between the brackets — `[]` and `[unclosed` are both bogus.
+        match rest.find(']') {
+            None | Some(0) => true,
+            Some(_) => false,
+        }
+    } else {
+        host_port.split(':').next().is_none_or(str::is_empty)
+    };
+    if host_missing {
+        return Err(DomainError::ValidationError(format!(
+            "http(s) URL has empty host: '{url}'"
+        )));
+    }
+
     Ok(())
 }
 
@@ -153,6 +175,44 @@ mod tests {
             assert!(
                 matches!(err, DomainError::ValidationError(_)),
                 "expected ValidationError for {bad:?}, got {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_http_url_rejects_empty_host_authority() {
+        // Authority shapes that survive the prefix / leading-char check
+        // but still carry no usable host: a stray port, a userinfo block
+        // without a host, or an unclosed/empty IPv6 literal.
+        for bad in [
+            "https://:443/path",
+            "https://@/x",
+            "https://user@/x",
+            "https://user:pwd@/x",
+            "https://[]/foo",
+            "https://[/foo",
+        ] {
+            let err = validate_http_url(bad).unwrap_err();
+            assert!(
+                matches!(err, DomainError::ValidationError(_)),
+                "expected ValidationError for {bad:?}, got {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_http_url_accepts_userinfo_and_ipv6() {
+        // Valid authorities should still pass — a userinfo prefix or an
+        // IPv6 literal with a real host must not be classified as empty.
+        for good in [
+            "https://user:pass@example.com/path",
+            "https://[::1]/path",
+            "https://[2001:db8::1]:8080/foo",
+            "http://example.com:8080/x",
+        ] {
+            assert!(
+                validate_http_url(good).is_ok(),
+                "expected {good:?} to validate"
             );
         }
     }
