@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::sync::mpsc;
-use tokio::time::interval;
+use tokio::time::{MissedTickBehavior, interval};
 
 use crate::adapters::driven::tray::activity_tracker::{ActivityTracker, Transition};
 use crate::domain::event::DomainEvent;
@@ -106,20 +106,28 @@ pub fn spawn_tray_animator(
     frame_count: usize,
     frame_interval: Duration,
 ) {
-    // Bounded channel: ActivityTracker is idempotent, so dropping events under
-    // burst load is safe — only the final active/idle state matters.
-    let (tx, mut rx) = mpsc::channel::<DomainEvent>(64);
+    // Lossless channel: ActivityTracker tracks per-download add/remove events,
+    // so dropping a Started(B) followed by a delivered Paused(A) would leave
+    // the tracker thinking we are idle while B is still active. The channel
+    // is drained immediately by the spawned task and only carries lifecycle
+    // events (high-frequency progress/segment events are filtered out before
+    // send), so unbounded growth is not a practical concern.
+    let (tx, mut rx) = mpsc::unbounded_channel::<DomainEvent>();
 
     event_bus.subscribe(Box::new(move |event: &DomainEvent| {
         if !is_relevant(event) {
             return;
         }
-        let _ = tx.try_send(event.clone());
+        let _ = tx.send(event.clone());
     }));
 
     tokio::spawn(async move {
         let mut core = AnimatorCore::new(frame_count);
         let mut tick = interval(frame_interval);
+        // Delay missed ticks instead of bursting them — when animation
+        // restarts after a long idle, we want clean periodic frames, not
+        // a flurry of catch-up ticks.
+        tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
         // Skip the immediate first tick so we don't redraw the static icon.
         tick.tick().await;
         loop {
