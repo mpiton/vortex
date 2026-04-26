@@ -369,20 +369,23 @@ pub fn run() {
             // ── System tray ─────────────────────────────────────────
             match setup_system_tray(app, false) {
                 Ok(tray) => {
-                    let static_icon = app
-                        .default_window_icon()
-                        .cloned()
-                        .map(|i| i.to_owned())
-                        .ok_or("default window icon missing")?;
-                    let frames = pulse_frames();
-                    if let Some(swapper) = TauriIconSwapper::new(tray, static_icon, frames) {
-                        let frame_count = swapper.frame_count();
-                        let swapper: Arc<dyn IconSwapper> = Arc::new(swapper);
-                        spawn_tray_animator(
-                            event_bus.as_ref(),
-                            swapper,
-                            frame_count,
-                            DEFAULT_FRAME_INTERVAL,
+                    if let Some(static_icon) =
+                        app.default_window_icon().cloned().map(|i| i.to_owned())
+                    {
+                        let frames = pulse_frames();
+                        if let Some(swapper) = TauriIconSwapper::new(tray, static_icon, frames) {
+                            let frame_count = swapper.frame_count();
+                            let swapper: Arc<dyn IconSwapper> = Arc::new(swapper);
+                            spawn_tray_animator(
+                                event_bus.as_ref(),
+                                swapper,
+                                frame_count,
+                                DEFAULT_FRAME_INTERVAL,
+                            );
+                        }
+                    } else {
+                        tracing::warn!(
+                            "default window icon missing; tray animation disabled"
                         );
                     }
                 }

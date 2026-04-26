@@ -106,13 +106,15 @@ pub fn spawn_tray_animator(
     frame_count: usize,
     frame_interval: Duration,
 ) {
-    let (tx, mut rx) = mpsc::unbounded_channel::<DomainEvent>();
+    // Bounded channel: ActivityTracker is idempotent, so dropping events under
+    // burst load is safe — only the final active/idle state matters.
+    let (tx, mut rx) = mpsc::channel::<DomainEvent>(64);
 
     event_bus.subscribe(Box::new(move |event: &DomainEvent| {
         if !is_relevant(event) {
             return;
         }
-        let _ = tx.send(event.clone());
+        let _ = tx.try_send(event.clone());
     }));
 
     tokio::spawn(async move {
