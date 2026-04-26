@@ -21,18 +21,20 @@ use crate::application::commands::{
     PauseDownloadCommand, PurgeHistoryCommand, RedownloadCommand, RedownloadSource,
     RemoveDownloadCommand, ReorderQueueCommand, ResolveLinksCommand, ResolvedLinkDto,
     ResumeAllDownloadsCommand, ResumeDownloadCommand, RetryDownloadCommand, SetPriorityCommand,
-    StartDownloadCommand, UninstallPluginCommand, UpdateConfigCommand, VerifyChecksumCommand,
-    VerifyChecksumOutcome,
+    StartDownloadCommand, UninstallPluginCommand, UpdateConfigCommand, UpdatePluginConfigCommand,
+    VerifyChecksumCommand, VerifyChecksumOutcome,
 };
 use crate::application::error::AppError;
 use crate::application::queries::{
     CountDownloadsByStateQuery, GetDownloadDetailQuery, GetDownloadsQuery, GetHistoryEntryQuery,
-    GetStatsQuery, ListHistoryQuery, ListPluginsQuery, SearchHistoryQuery, TopModulesQuery,
+    GetPluginConfigQuery, GetStatsQuery, ListHistoryQuery, ListPluginsQuery, SearchHistoryQuery,
+    TopModulesQuery,
 };
 use crate::application::query_bus::QueryBus;
 use crate::application::read_models::download_detail_view::DownloadDetailViewDto;
 use crate::application::read_models::download_view::DownloadViewDto;
 use crate::application::read_models::history_view::HistoryViewDto;
+use crate::application::read_models::plugin_config_view::PluginConfigView;
 use crate::application::read_models::plugin_store_view::PluginStoreEntryDto;
 use crate::application::read_models::plugin_view::PluginViewDto;
 use crate::application::read_models::stats_view::{ModuleStatsDto, StatsViewDto};
@@ -573,6 +575,36 @@ pub async fn plugin_store_update(state: State<'_, AppState>, name: String) -> Re
     state
         .command_bus
         .handle_store_update(StoreUpdateCommand { name }, &cache)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn plugin_config_get(
+    state: State<'_, AppState>,
+    name: String,
+) -> Result<PluginConfigView, String> {
+    state
+        .query_bus
+        .handle_get_plugin_config(GetPluginConfigQuery { plugin_name: name })
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn plugin_config_update(
+    state: State<'_, AppState>,
+    name: String,
+    key: String,
+    value: String,
+) -> Result<(), String> {
+    state
+        .command_bus
+        .handle_update_plugin_config(UpdatePluginConfigCommand {
+            plugin_name: name,
+            key,
+            value,
+        })
         .await
         .map_err(|e| e.to_string())
 }

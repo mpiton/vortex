@@ -106,6 +106,24 @@ pub fn build_host_functions(
 
     // Ensure per-plugin config/state maps exist before any function runs.
     let plugin_configs = shared.plugin_configs.entry(name.clone()).or_default();
+    // Persisted overrides may have been replayed before the plugin loaded.
+    // Drop entries that no longer pass the current schema (e.g. a manifest
+    // update narrowed an enum, tightened a regex, or removed the key) so
+    // the WASM plugin never observes a stale schema-invalid value via
+    // `get_config`.
+    let schema = manifest.config_schema();
+    plugin_configs.retain(|key, value| {
+        if schema.validate(key, value).is_ok() {
+            true
+        } else {
+            tracing::warn!(
+                plugin = %name,
+                key = %key,
+                "dropping persisted plugin config value that no longer matches schema"
+            );
+            false
+        }
+    });
     for (key, value) in manifest.config_defaults() {
         plugin_configs
             .entry(key.clone())

@@ -6,7 +6,10 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 use crate::domain::error::DomainError;
-use crate::domain::model::plugin::{PluginCategory, PluginInfo, PluginManifest};
+use crate::domain::model::plugin::{
+    ConfigField, ConfigFieldType, PluginCategory, PluginConfigSchema, PluginInfo, PluginManifest,
+    regex_syntax_error, unsupported_regex_feature,
+};
 
 #[derive(Deserialize)]
 struct RawManifest {
@@ -36,7 +39,14 @@ struct RawCapabilities {
 
 #[derive(Deserialize)]
 struct RawConfigEntry {
+    #[serde(rename = "type")]
+    field_type: Option<String>,
     default: Option<toml::Value>,
+    description: Option<String>,
+    options: Option<Vec<toml::Value>>,
+    min: Option<f64>,
+    max: Option<f64>,
+    regex: Option<String>,
 }
 
 /// Parse a plugin directory containing `plugin.toml` and a `.wasm` file.
@@ -83,10 +93,12 @@ pub fn parse_manifest(dir: &Path) -> Result<(PluginManifest, PathBuf), DomainErr
         .map(build_capabilities)
         .unwrap_or_default();
     let config_defaults = build_config_defaults(&raw.config)?;
+    let config_schema = build_config_schema(&raw.config)?;
 
     let mut manifest = PluginManifest::new(info)
         .with_capabilities(caps)
-        .with_config_defaults(config_defaults);
+        .with_config_defaults(config_defaults)
+        .with_config_schema(config_schema);
     if let Some(v) = raw.plugin.min_vortex_version {
         manifest = manifest.with_min_version(v);
     }
@@ -138,6 +150,61 @@ fn build_config_defaults(
         defaults.insert(key.clone(), encode_config_default(value)?);
     }
     Ok(defaults)
+}
+
+fn build_config_schema(
+    raw_config: &HashMap<String, RawConfigEntry>,
+) -> Result<PluginConfigSchema, DomainError> {
+    let mut schema = PluginConfigSchema::new();
+    for (key, entry) in raw_config {
+        let field_type = match entry.field_type.as_deref() {
+            Some(t) => t
+                .parse::<ConfigFieldType>()
+                .map_err(|e| DomainError::PluginError(format!("config field '{key}': {e}")))?,
+            None => ConfigFieldType::String,
+        };
+
+        let mut field = ConfigField::new(field_type);
+        if let Some(default) = &entry.default {
+            field = field.with_default(encode_config_default(default)?);
+        }
+        if let Some(desc) = &entry.description {
+            field = field.with_description(desc.clone());
+        }
+        if let Some(options) = &entry.options {
+            let opts = options
+                .iter()
+                .map(encode_config_default)
+                .collect::<Result<Vec<_>, _>>()?;
+            field = field.with_options(opts);
+        }
+        if let Some(min) = entry.min {
+            field = field.with_min(min);
+        }
+        if let Some(max) = entry.max {
+            field = field.with_max(max);
+        }
+        if let Some(regex) = &entry.regex {
+            if let Some(err) = regex_syntax_error(regex) {
+                return Err(DomainError::PluginError(format!(
+                    "config field '{key}' regex '{regex}' is malformed: {err}"
+                )));
+            }
+            if let Some(bad) = unsupported_regex_feature(regex) {
+                return Err(DomainError::PluginError(format!(
+                    "config field '{key}' regex '{regex}' uses unsupported feature '{bad}' (alternation, groups and counted quantifiers are not implemented)"
+                )));
+            }
+            field = field.with_regex(regex.clone());
+        }
+        if let Some(default) = field.default_value() {
+            field.validate(default).map_err(|e| {
+                DomainError::PluginError(format!("config field '{key}' has invalid default: {e}"))
+            })?;
+        }
+        schema.insert(key.clone(), field);
+    }
+    Ok(schema)
 }
 
 fn encode_config_default(value: &toml::Value) -> Result<String, DomainError> {
@@ -447,5 +514,211 @@ description = "Dir name mismatch"
         let result = parse_category("unknown");
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), DomainError::PluginError(_)));
+    }
+
+    #[test]
+    fn test_parse_manifest_extracts_full_config_schema() {
+        use crate::domain::model::plugin::ConfigFieldType;
+
+        let tmp = TempDir::new().unwrap();
+        let plugin_dir = tmp.path().join("with-schema");
+        std::fs::create_dir_all(&plugin_dir).unwrap();
+        write_plugin_toml(
+            &plugin_dir,
+            r#"
+[plugin]
+name = "with-schema"
+version = "1.0.0"
+category = "crawler"
+author = "Alice"
+description = "Schema fields"
+
+[config]
+default_quality = { type = "enum", default = "1080p", options = ["360p", "720p", "1080p"], description = "Preferred resolution" }
+extract_audio_only = { type = "boolean", default = false }
+max_retries = { type = "integer", default = 3, min = 0, max = 10 }
+"#,
+        );
+        write_dummy_wasm(&plugin_dir, "with-schema.wasm");
+
+        let (manifest, _) = parse_manifest(&plugin_dir).unwrap();
+        let schema = manifest.config_schema();
+        assert_eq!(schema.len(), 3);
+
+        let q = schema.get("default_quality").unwrap();
+        assert_eq!(q.field_type(), ConfigFieldType::Enum);
+        assert_eq!(q.default_value(), Some("1080p"));
+        assert_eq!(q.options(), &["360p", "720p", "1080p"]);
+        assert_eq!(q.description(), Some("Preferred resolution"));
+
+        let a = schema.get("extract_audio_only").unwrap();
+        assert_eq!(a.field_type(), ConfigFieldType::Boolean);
+        assert_eq!(a.default_value(), Some("false"));
+
+        let r = schema.get("max_retries").unwrap();
+        assert_eq!(r.field_type(), ConfigFieldType::Integer);
+        assert_eq!(r.min(), Some(0.0));
+        assert_eq!(r.max(), Some(10.0));
+    }
+
+    #[test]
+    fn test_parse_manifest_missing_type_defaults_to_string() {
+        use crate::domain::model::plugin::ConfigFieldType;
+
+        let tmp = TempDir::new().unwrap();
+        let plugin_dir = tmp.path().join("loose-config");
+        std::fs::create_dir_all(&plugin_dir).unwrap();
+        write_plugin_toml(
+            &plugin_dir,
+            r#"
+[plugin]
+name = "loose-config"
+version = "1.0.0"
+category = "crawler"
+author = "Alice"
+description = "Loose schema"
+
+[config]
+api_token = { default = "" }
+"#,
+        );
+        write_dummy_wasm(&plugin_dir, "loose-config.wasm");
+
+        let (manifest, _) = parse_manifest(&plugin_dir).unwrap();
+        let f = manifest.config_schema().get("api_token").unwrap();
+        assert_eq!(f.field_type(), ConfigFieldType::String);
+    }
+
+    #[test]
+    fn test_parse_manifest_unknown_type_returns_err() {
+        let tmp = TempDir::new().unwrap();
+        let plugin_dir = tmp.path().join("bad-type");
+        std::fs::create_dir_all(&plugin_dir).unwrap();
+        write_plugin_toml(
+            &plugin_dir,
+            r#"
+[plugin]
+name = "bad-type"
+version = "1.0.0"
+category = "crawler"
+author = "Alice"
+description = "Bad type"
+
+[config]
+foo = { type = "spaceship" }
+"#,
+        );
+        write_dummy_wasm(&plugin_dir, "bad-type.wasm");
+
+        let result = parse_manifest(&plugin_dir);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("spaceship"), "got: {err}");
+    }
+
+    #[test]
+    fn test_parse_manifest_no_config_yields_empty_schema() {
+        let tmp = TempDir::new().unwrap();
+        let plugin_dir = tmp.path().join("no-config");
+        std::fs::create_dir_all(&plugin_dir).unwrap();
+        write_plugin_toml(
+            &plugin_dir,
+            r#"
+[plugin]
+name = "no-config"
+version = "1.0.0"
+category = "utility"
+author = "Charlie"
+description = "No config block"
+"#,
+        );
+        write_dummy_wasm(&plugin_dir, "no-config.wasm");
+
+        let (manifest, _) = parse_manifest(&plugin_dir).unwrap();
+        assert!(manifest.config_schema().is_empty());
+    }
+
+    #[test]
+    fn test_parse_manifest_rejects_malformed_regex() {
+        let tmp = TempDir::new().unwrap();
+        let plugin_dir = tmp.path().join("malformed-regex");
+        std::fs::create_dir_all(&plugin_dir).unwrap();
+        write_plugin_toml(
+            &plugin_dir,
+            r#"
+[plugin]
+name = "malformed-regex"
+version = "1.0.0"
+category = "utility"
+author = "Alice"
+description = "Malformed regex"
+
+[config]
+mode = { type = "string", regex = "[abc" }
+"#,
+        );
+        write_dummy_wasm(&plugin_dir, "malformed-regex.wasm");
+
+        let result = parse_manifest(&plugin_dir);
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("malformed"),
+            "expected malformed-pattern error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_parse_manifest_rejects_unsupported_regex_feature() {
+        let tmp = TempDir::new().unwrap();
+        let plugin_dir = tmp.path().join("bad-regex");
+        std::fs::create_dir_all(&plugin_dir).unwrap();
+        write_plugin_toml(
+            &plugin_dir,
+            r#"
+[plugin]
+name = "bad-regex"
+version = "1.0.0"
+category = "utility"
+author = "Alice"
+description = "Bad regex"
+
+[config]
+mode = { type = "string", regex = "^(foo|bar)$" }
+"#,
+        );
+        write_dummy_wasm(&plugin_dir, "bad-regex.wasm");
+
+        let result = parse_manifest(&plugin_dir);
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("unsupported feature"),
+            "expected unsupported-feature error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_parse_manifest_extracts_regex_constraint() {
+        let tmp = TempDir::new().unwrap();
+        let plugin_dir = tmp.path().join("regexed");
+        std::fs::create_dir_all(&plugin_dir).unwrap();
+        write_plugin_toml(
+            &plugin_dir,
+            r#"
+[plugin]
+name = "regexed"
+version = "1.0.0"
+category = "utility"
+author = "Alice"
+description = "Regex"
+
+[config]
+api_key = { type = "string", regex = "^[a-z0-9]+$" }
+"#,
+        );
+        write_dummy_wasm(&plugin_dir, "regexed.wasm");
+
+        let (manifest, _) = parse_manifest(&plugin_dir).unwrap();
+        let f = manifest.config_schema().get("api_key").unwrap();
+        assert_eq!(f.regex(), Some("^[a-z0-9]+$"));
     }
 }

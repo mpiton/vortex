@@ -2,6 +2,8 @@ use std::collections::HashMap;
 use std::fmt;
 use std::str::FromStr;
 
+use crate::domain::error::DomainError;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PluginCategory {
     Crawler,
@@ -115,6 +117,7 @@ pub struct PluginManifest {
     capabilities: Vec<String>,
     min_vortex_version: Option<String>,
     config_defaults: HashMap<String, String>,
+    config_schema: PluginConfigSchema,
 }
 
 impl PluginManifest {
@@ -124,6 +127,7 @@ impl PluginManifest {
             capabilities: Vec::new(),
             min_vortex_version: None,
             config_defaults: HashMap::new(),
+            config_schema: PluginConfigSchema::new(),
         }
     }
 
@@ -139,6 +143,11 @@ impl PluginManifest {
 
     pub fn with_config_defaults(mut self, defaults: HashMap<String, String>) -> Self {
         self.config_defaults = defaults;
+        self
+    }
+
+    pub fn with_config_schema(mut self, schema: PluginConfigSchema) -> Self {
+        self.config_schema = schema;
         self
     }
 
@@ -160,6 +169,768 @@ impl PluginManifest {
 
     pub fn config_defaults(&self) -> &HashMap<String, String> {
         &self.config_defaults
+    }
+
+    pub fn config_schema(&self) -> &PluginConfigSchema {
+        &self.config_schema
+    }
+}
+
+/// Type tag of a single configuration field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigFieldType {
+    String,
+    Boolean,
+    Integer,
+    Float,
+    Url,
+    Enum,
+    Array,
+}
+
+impl fmt::Display for ConfigFieldType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let name = match self {
+            ConfigFieldType::String => "string",
+            ConfigFieldType::Boolean => "boolean",
+            ConfigFieldType::Integer => "integer",
+            ConfigFieldType::Float => "float",
+            ConfigFieldType::Url => "url",
+            ConfigFieldType::Enum => "enum",
+            ConfigFieldType::Array => "array",
+        };
+        write!(f, "{name}")
+    }
+}
+
+impl FromStr for ConfigFieldType {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "string" => Ok(ConfigFieldType::String),
+            "boolean" | "bool" => Ok(ConfigFieldType::Boolean),
+            "integer" | "int" => Ok(ConfigFieldType::Integer),
+            "float" | "number" => Ok(ConfigFieldType::Float),
+            "url" => Ok(ConfigFieldType::Url),
+            "enum" => Ok(ConfigFieldType::Enum),
+            "array" => Ok(ConfigFieldType::Array),
+            other => Err(format!("unknown config field type: '{other}'")),
+        }
+    }
+}
+
+/// One configuration field declared by a plugin's `[config]` table.
+///
+/// Values are encoded as strings on the wire (matching the host's
+/// `plugin_configs` storage). [`ConfigField::validate`] is the single
+/// source of truth — UI hints are derived from the field metadata but
+/// the backend re-validates before persisting.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConfigField {
+    field_type: ConfigFieldType,
+    default: Option<String>,
+    description: Option<String>,
+    options: Vec<String>,
+    min: Option<f64>,
+    max: Option<f64>,
+    regex: Option<String>,
+}
+
+impl ConfigField {
+    pub fn new(field_type: ConfigFieldType) -> Self {
+        Self {
+            field_type,
+            default: None,
+            description: None,
+            options: Vec::new(),
+            min: None,
+            max: None,
+            regex: None,
+        }
+    }
+
+    pub fn with_default(mut self, default: impl Into<String>) -> Self {
+        self.default = Some(default.into());
+        self
+    }
+
+    pub fn with_description(mut self, description: impl Into<String>) -> Self {
+        self.description = Some(description.into());
+        self
+    }
+
+    pub fn with_options(mut self, options: Vec<String>) -> Self {
+        self.options = options;
+        self
+    }
+
+    pub fn with_min(mut self, min: f64) -> Self {
+        self.min = Some(min);
+        self
+    }
+
+    pub fn with_max(mut self, max: f64) -> Self {
+        self.max = Some(max);
+        self
+    }
+
+    pub fn with_regex(mut self, regex: impl Into<String>) -> Self {
+        self.regex = Some(regex.into());
+        self
+    }
+
+    pub fn field_type(&self) -> ConfigFieldType {
+        self.field_type
+    }
+
+    pub fn default_value(&self) -> Option<&str> {
+        self.default.as_deref()
+    }
+
+    pub fn description(&self) -> Option<&str> {
+        self.description.as_deref()
+    }
+
+    pub fn options(&self) -> &[String] {
+        &self.options
+    }
+
+    pub fn min(&self) -> Option<f64> {
+        self.min
+    }
+
+    pub fn max(&self) -> Option<f64> {
+        self.max
+    }
+
+    pub fn regex(&self) -> Option<&str> {
+        self.regex.as_deref()
+    }
+
+    pub fn validate(&self, value: &str) -> Result<(), DomainError> {
+        match self.field_type {
+            ConfigFieldType::Boolean => {
+                if value != "true" && value != "false" {
+                    return Err(DomainError::ValidationError(format!(
+                        "expected 'true' or 'false', got '{value}'"
+                    )));
+                }
+            }
+            ConfigFieldType::Integer => {
+                let parsed: i64 = value.parse().map_err(|_| {
+                    DomainError::ValidationError(format!("expected integer, got '{value}'"))
+                })?;
+                // Use ceil/floor on f64 bounds so fractional limits like
+                // min=1.5 still reject the integer 1, and so we never widen
+                // the range by truncating toward zero (e.g. -1.5 as i64 = -1).
+                if let Some(min) = self.min {
+                    let min_required = min.ceil() as i64;
+                    if parsed < min_required {
+                        return Err(DomainError::ValidationError(format!(
+                            "value {parsed} below minimum {min}"
+                        )));
+                    }
+                }
+                if let Some(max) = self.max {
+                    let max_allowed = max.floor() as i64;
+                    if parsed > max_allowed {
+                        return Err(DomainError::ValidationError(format!(
+                            "value {parsed} above maximum {max}"
+                        )));
+                    }
+                }
+            }
+            ConfigFieldType::Float => {
+                let parsed: f64 = value.parse().map_err(|_| {
+                    DomainError::ValidationError(format!("expected float, got '{value}'"))
+                })?;
+                // `f64::from_str` accepts "NaN", "inf", "infinity" (case
+                // insensitive). NaN compares false against any bound so it
+                // would silently pass `check_numeric_bounds` — reject the
+                // non-finite values up front.
+                if !parsed.is_finite() {
+                    return Err(DomainError::ValidationError(format!(
+                        "expected finite float, got '{value}'"
+                    )));
+                }
+                self.check_numeric_bounds(parsed)?;
+            }
+            ConfigFieldType::Url => {
+                if !value.starts_with("http://") && !value.starts_with("https://") {
+                    return Err(DomainError::ValidationError(format!(
+                        "expected http(s) URL, got '{value}'"
+                    )));
+                }
+            }
+            ConfigFieldType::Enum => {
+                if !self.options.iter().any(|o| o == value) {
+                    return Err(DomainError::ValidationError(format!(
+                        "value '{value}' not in allowed options"
+                    )));
+                }
+            }
+            ConfigFieldType::String => {
+                if !self.options.is_empty() && !self.options.iter().any(|o| o == value) {
+                    return Err(DomainError::ValidationError(format!(
+                        "value '{value}' not in allowed options"
+                    )));
+                }
+            }
+            ConfigFieldType::Array => {
+                let count = parse_json_array_len(value).ok_or_else(|| {
+                    DomainError::ValidationError(format!("expected JSON array, got '{value}'"))
+                })?;
+                if let Some(min) = self.min
+                    && (count as f64) < min
+                {
+                    return Err(DomainError::ValidationError(format!(
+                        "array has {count} element(s), below minimum {min}"
+                    )));
+                }
+                if let Some(max) = self.max
+                    && (count as f64) > max
+                {
+                    return Err(DomainError::ValidationError(format!(
+                        "array has {count} element(s), above maximum {max}"
+                    )));
+                }
+            }
+        }
+
+        if let Some(pattern) = &self.regex {
+            if let Some(err) = regex_syntax_error(pattern) {
+                return Err(DomainError::ValidationError(format!(
+                    "regex pattern '{pattern}' is malformed: {err}"
+                )));
+            }
+            if let Some(bad) = unsupported_regex_feature(pattern) {
+                return Err(DomainError::ValidationError(format!(
+                    "regex pattern '{pattern}' uses unsupported feature '{bad}' (alternation, groups and counted quantifiers are not implemented)"
+                )));
+            }
+            if !match_regex(pattern, value) {
+                return Err(DomainError::ValidationError(format!(
+                    "value '{value}' does not match regex"
+                )));
+            }
+        }
+
+        Ok(())
+    }
+
+    fn check_numeric_bounds(&self, n: f64) -> Result<(), DomainError> {
+        if let Some(min) = self.min
+            && n < min
+        {
+            return Err(DomainError::ValidationError(format!(
+                "value {n} below minimum {min}"
+            )));
+        }
+        if let Some(max) = self.max
+            && n > max
+        {
+            return Err(DomainError::ValidationError(format!(
+                "value {n} above maximum {max}"
+            )));
+        }
+        Ok(())
+    }
+}
+
+/// Schema describing every configurable field of a plugin.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct PluginConfigSchema {
+    fields: HashMap<String, ConfigField>,
+}
+
+impl PluginConfigSchema {
+    pub fn new() -> Self {
+        Self {
+            fields: HashMap::new(),
+        }
+    }
+
+    pub fn insert(&mut self, key: impl Into<String>, field: ConfigField) {
+        self.fields.insert(key.into(), field);
+    }
+
+    pub fn get(&self, key: &str) -> Option<&ConfigField> {
+        self.fields.get(key)
+    }
+
+    pub fn fields(&self) -> &HashMap<String, ConfigField> {
+        &self.fields
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.fields.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.fields.len()
+    }
+
+    pub fn validate(&self, key: &str, value: &str) -> Result<(), DomainError> {
+        let field = self.fields.get(key).ok_or_else(|| {
+            DomainError::NotFound(format!("config key '{key}' not declared by plugin"))
+        })?;
+        field.validate(value)
+    }
+}
+
+/// Strict JSON-array parser built with std only.
+///
+/// Returns the element count when `value` is a syntactically valid JSON
+/// array (rejecting things like `[1 2]`, `[1,]`, `[tru]`), or `None` for
+/// any malformation. Domain layer constraint forbids external crates,
+/// so this is a hand-rolled recursive descent parser over the JSON grammar.
+fn parse_json_array_len(value: &str) -> Option<usize> {
+    let bytes: Vec<char> = value.chars().collect();
+    let mut p = JsonCursor::new(&bytes);
+    p.skip_ws();
+    let count = p.parse_array()?;
+    p.skip_ws();
+    if p.pos < p.src.len() {
+        return None;
+    }
+    Some(count)
+}
+
+struct JsonCursor<'a> {
+    src: &'a [char],
+    pos: usize,
+}
+
+impl<'a> JsonCursor<'a> {
+    fn new(src: &'a [char]) -> Self {
+        Self { src, pos: 0 }
+    }
+
+    fn peek(&self) -> Option<char> {
+        self.src.get(self.pos).copied()
+    }
+
+    fn bump(&mut self) -> Option<char> {
+        let c = self.peek()?;
+        self.pos += 1;
+        Some(c)
+    }
+
+    fn expect(&mut self, c: char) -> Option<()> {
+        if self.peek()? == c {
+            self.pos += 1;
+            Some(())
+        } else {
+            None
+        }
+    }
+
+    fn skip_ws(&mut self) {
+        while let Some(c) = self.peek() {
+            if c.is_whitespace() {
+                self.pos += 1;
+            } else {
+                break;
+            }
+        }
+    }
+
+    fn parse_array(&mut self) -> Option<usize> {
+        self.expect('[')?;
+        self.skip_ws();
+        if self.peek()? == ']' {
+            self.pos += 1;
+            return Some(0);
+        }
+        let mut count = 0;
+        loop {
+            self.parse_value()?;
+            count += 1;
+            self.skip_ws();
+            match self.peek()? {
+                ',' => {
+                    self.pos += 1;
+                    self.skip_ws();
+                    if self.peek()? == ']' {
+                        return None; // trailing comma
+                    }
+                }
+                ']' => {
+                    self.pos += 1;
+                    return Some(count);
+                }
+                _ => return None,
+            }
+        }
+    }
+
+    fn parse_object(&mut self) -> Option<()> {
+        self.expect('{')?;
+        self.skip_ws();
+        if self.peek()? == '}' {
+            self.pos += 1;
+            return Some(());
+        }
+        loop {
+            self.skip_ws();
+            self.parse_string()?;
+            self.skip_ws();
+            self.expect(':')?;
+            self.parse_value()?;
+            self.skip_ws();
+            match self.peek()? {
+                ',' => {
+                    self.pos += 1;
+                }
+                '}' => {
+                    self.pos += 1;
+                    return Some(());
+                }
+                _ => return None,
+            }
+        }
+    }
+
+    fn parse_value(&mut self) -> Option<()> {
+        self.skip_ws();
+        match self.peek()? {
+            '"' => self.parse_string(),
+            '[' => self.parse_array().map(|_| ()),
+            '{' => self.parse_object(),
+            't' => self.parse_keyword("true"),
+            'f' => self.parse_keyword("false"),
+            'n' => self.parse_keyword("null"),
+            '-' | '0'..='9' => self.parse_number(),
+            _ => None,
+        }
+    }
+
+    fn parse_string(&mut self) -> Option<()> {
+        self.expect('"')?;
+        loop {
+            let c = self.bump()?;
+            match c {
+                '"' => return Some(()),
+                '\\' => {
+                    let esc = self.bump()?;
+                    match esc {
+                        '"' | '\\' | '/' | 'b' | 'f' | 'n' | 'r' | 't' => {}
+                        'u' => {
+                            for _ in 0..4 {
+                                let h = self.bump()?;
+                                if !h.is_ascii_hexdigit() {
+                                    return None;
+                                }
+                            }
+                        }
+                        _ => return None,
+                    }
+                }
+                // RFC 8259: unescaped control characters (U+0000..=U+001F)
+                // are forbidden inside strings.
+                c if (c as u32) < 0x20 => return None,
+                _ => {}
+            }
+        }
+    }
+
+    fn parse_keyword(&mut self, word: &str) -> Option<()> {
+        for ec in word.chars() {
+            if self.bump()? != ec {
+                return None;
+            }
+        }
+        Some(())
+    }
+
+    fn parse_number(&mut self) -> Option<()> {
+        let start = self.pos;
+        if self.peek() == Some('-') {
+            self.pos += 1;
+        }
+        // RFC 8259: integer part is `0` or [1-9][0-9]* — no leading zeros.
+        match self.peek()? {
+            '0' => {
+                self.pos += 1;
+            }
+            '1'..='9' => {
+                self.pos += 1;
+                while let Some(c) = self.peek() {
+                    if c.is_ascii_digit() {
+                        self.pos += 1;
+                    } else {
+                        break;
+                    }
+                }
+            }
+            _ => return None,
+        }
+        if self.peek() == Some('.') {
+            self.pos += 1;
+            let frac_start = self.pos;
+            while let Some(c) = self.peek() {
+                if c.is_ascii_digit() {
+                    self.pos += 1;
+                } else {
+                    break;
+                }
+            }
+            if self.pos == frac_start {
+                return None;
+            }
+        }
+        if matches!(self.peek(), Some('e') | Some('E')) {
+            self.pos += 1;
+            if matches!(self.peek(), Some('+') | Some('-')) {
+                self.pos += 1;
+            }
+            let exp_start = self.pos;
+            while let Some(c) = self.peek() {
+                if c.is_ascii_digit() {
+                    self.pos += 1;
+                } else {
+                    break;
+                }
+            }
+            if self.pos == exp_start {
+                return None;
+            }
+        }
+        if self.pos == start { None } else { Some(()) }
+    }
+}
+
+/// Returns a syntax-level error for `pattern` (unclosed `[`, trailing
+/// `\`), or `None` when the pattern is well-formed for the matcher. The
+/// matcher would otherwise silently degrade malformed patterns into
+/// "never matches", so plugin authors get no feedback.
+pub fn regex_syntax_error(pattern: &str) -> Option<String> {
+    let chars: Vec<char> = pattern.chars().collect();
+    let mut i = 0;
+    let mut in_class = false;
+    while i < chars.len() {
+        let c = chars[i];
+        match c {
+            '\\' => {
+                if i + 1 >= chars.len() {
+                    return Some("trailing backslash".into());
+                }
+                i += 2;
+            }
+            '[' if !in_class => {
+                in_class = true;
+                i += 1;
+            }
+            ']' if in_class => {
+                in_class = false;
+                i += 1;
+            }
+            _ => i += 1,
+        }
+    }
+    if in_class {
+        return Some("unclosed '['".into());
+    }
+    None
+}
+
+/// Returns the first regex feature in `pattern` the matcher does not
+/// support, or `None` if the pattern only uses the supported subset
+/// (anchors, `.`, `[...]`, `*`/`+`/`?`, `\d`/`\w`/`\s`, escapes). Plugin
+/// authors expecting full PCRE/Rust regex semantics for `|`, `(...)` or
+/// `{n,m}` would otherwise hit silent match failures — the manifest
+/// parser uses this to fail loudly at load time.
+pub fn unsupported_regex_feature(pattern: &str) -> Option<char> {
+    let chars: Vec<char> = pattern.chars().collect();
+    let mut i = 0;
+    let mut in_class = false;
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '\\' {
+            i += 2;
+            continue;
+        }
+        if c == '[' && !in_class {
+            in_class = true;
+            i += 1;
+            continue;
+        }
+        if c == ']' && in_class {
+            in_class = false;
+            i += 1;
+            continue;
+        }
+        if !in_class && matches!(c, '|' | '(' | ')' | '{' | '}') {
+            return Some(c);
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Minimal POSIX-like regex matcher built with std only.
+///
+/// Domain layer constraint: no external crate. Supports anchors (`^`, `$`),
+/// wildcard (`.`), char classes (`[a-z]`, `[^abc]`), greedy quantifiers
+/// (`*`, `+`, `?`) and escapes (`\d`, `\w`, `\s`, `\.`). Sufficient for the
+/// validation patterns declared by community plugins. Returns `false` on
+/// malformed patterns rather than panicking.
+fn match_regex(pattern: &str, value: &str) -> bool {
+    let pat: Vec<char> = pattern.chars().collect();
+    let val: Vec<char> = value.chars().collect();
+
+    let (anchor_start, body) = if pat.first() == Some(&'^') {
+        (true, &pat[1..])
+    } else {
+        (false, &pat[..])
+    };
+    let (anchor_end, body) = if body.last() == Some(&'$') {
+        (true, &body[..body.len() - 1])
+    } else {
+        (false, body)
+    };
+
+    if anchor_start {
+        regex_match_from(body, &val, 0, anchor_end)
+    } else {
+        for start in 0..=val.len() {
+            if regex_match_from(body, &val, start, anchor_end) {
+                return true;
+            }
+        }
+        false
+    }
+}
+
+fn regex_match_from(pat: &[char], val: &[char], start: usize, anchor_end: bool) -> bool {
+    let mut pi = 0;
+    let mut vi = start;
+
+    while pi < pat.len() {
+        let (atom_pat, atom_len) = parse_atom(&pat[pi..]);
+        let next_pi = pi + atom_len;
+        let quantifier = pat.get(next_pi).copied();
+
+        match quantifier {
+            Some('*') => {
+                let mut matches = vi;
+                while matches < val.len() && atom_match(&atom_pat, val[matches]) {
+                    matches += 1;
+                }
+                loop {
+                    if regex_match_from(&pat[next_pi + 1..], val, matches, anchor_end) {
+                        return true;
+                    }
+                    if matches == vi {
+                        return false;
+                    }
+                    matches -= 1;
+                }
+            }
+            Some('+') => {
+                if vi >= val.len() || !atom_match(&atom_pat, val[vi]) {
+                    return false;
+                }
+                let mut matches = vi + 1;
+                while matches < val.len() && atom_match(&atom_pat, val[matches]) {
+                    matches += 1;
+                }
+                while matches > vi {
+                    if regex_match_from(&pat[next_pi + 1..], val, matches, anchor_end) {
+                        return true;
+                    }
+                    matches -= 1;
+                }
+                return false;
+            }
+            Some('?') => {
+                if vi < val.len()
+                    && atom_match(&atom_pat, val[vi])
+                    && regex_match_from(&pat[next_pi + 1..], val, vi + 1, anchor_end)
+                {
+                    return true;
+                }
+                return regex_match_from(&pat[next_pi + 1..], val, vi, anchor_end);
+            }
+            _ => {
+                if vi >= val.len() || !atom_match(&atom_pat, val[vi]) {
+                    return false;
+                }
+                vi += 1;
+                pi = next_pi;
+            }
+        }
+    }
+
+    if anchor_end { vi == val.len() } else { true }
+}
+
+#[derive(Debug, Clone)]
+enum Atom {
+    Any,
+    Literal(char),
+    Class(Vec<(char, char)>, bool),
+    Digit,
+    Word,
+    Space,
+}
+
+fn parse_atom(pat: &[char]) -> (Atom, usize) {
+    if pat.is_empty() {
+        return (Atom::Any, 0);
+    }
+    match pat[0] {
+        '.' => (Atom::Any, 1),
+        '\\' => {
+            if pat.len() < 2 {
+                return (Atom::Literal('\\'), 1);
+            }
+            let atom = match pat[1] {
+                'd' => Atom::Digit,
+                'w' => Atom::Word,
+                's' => Atom::Space,
+                c => Atom::Literal(c),
+            };
+            (atom, 2)
+        }
+        '[' => {
+            let mut i = 1;
+            let mut ranges = Vec::new();
+            let negate = pat.get(1) == Some(&'^');
+            if negate {
+                i = 2;
+            }
+            while i < pat.len() && pat[i] != ']' {
+                let start = pat[i];
+                if i + 2 < pat.len() && pat[i + 1] == '-' && pat[i + 2] != ']' {
+                    ranges.push((start, pat[i + 2]));
+                    i += 3;
+                } else {
+                    ranges.push((start, start));
+                    i += 1;
+                }
+            }
+            if i >= pat.len() || pat[i] != ']' {
+                return (Atom::Class(Vec::new(), false), pat.len());
+            }
+            (Atom::Class(ranges, negate), i + 1)
+        }
+        c => (Atom::Literal(c), 1),
+    }
+}
+
+fn atom_match(atom: &Atom, c: char) -> bool {
+    match atom {
+        Atom::Any => true,
+        Atom::Literal(l) => *l == c,
+        Atom::Class(ranges, negate) => {
+            let inside = ranges.iter().any(|(a, b)| c >= *a && c <= *b);
+            inside != *negate
+        }
+        Atom::Digit => c.is_ascii_digit(),
+        Atom::Word => c.is_ascii_alphanumeric() || c == '_',
+        Atom::Space => c.is_whitespace(),
     }
 }
 
@@ -242,5 +1013,319 @@ mod tests {
         assert_eq!(PluginCategory::Extractor.to_string(), "Extractor");
         assert_eq!(PluginCategory::Notifier.to_string(), "Notifier");
         assert_eq!(PluginCategory::Utility.to_string(), "Utility");
+    }
+
+    #[test]
+    fn test_config_field_type_from_str_known() {
+        assert_eq!(
+            "string".parse::<ConfigFieldType>().unwrap(),
+            ConfigFieldType::String
+        );
+        assert_eq!(
+            "boolean".parse::<ConfigFieldType>().unwrap(),
+            ConfigFieldType::Boolean
+        );
+        assert_eq!(
+            "integer".parse::<ConfigFieldType>().unwrap(),
+            ConfigFieldType::Integer
+        );
+        assert_eq!(
+            "float".parse::<ConfigFieldType>().unwrap(),
+            ConfigFieldType::Float
+        );
+        assert_eq!(
+            "url".parse::<ConfigFieldType>().unwrap(),
+            ConfigFieldType::Url
+        );
+        assert_eq!(
+            "enum".parse::<ConfigFieldType>().unwrap(),
+            ConfigFieldType::Enum
+        );
+    }
+
+    #[test]
+    fn test_config_field_type_from_str_unknown_returns_err() {
+        assert!("unknown".parse::<ConfigFieldType>().is_err());
+    }
+
+    #[test]
+    fn test_config_field_type_display_lowercase() {
+        assert_eq!(ConfigFieldType::String.to_string(), "string");
+        assert_eq!(ConfigFieldType::Boolean.to_string(), "boolean");
+        assert_eq!(ConfigFieldType::Integer.to_string(), "integer");
+    }
+
+    #[test]
+    fn test_config_field_validate_boolean_accepts_true_false() {
+        let f = ConfigField::new(ConfigFieldType::Boolean);
+        assert!(f.validate("true").is_ok());
+        assert!(f.validate("false").is_ok());
+    }
+
+    #[test]
+    fn test_config_field_validate_boolean_rejects_other() {
+        let f = ConfigField::new(ConfigFieldType::Boolean);
+        let err = f.validate("yes").unwrap_err();
+        assert!(matches!(err, DomainError::ValidationError(_)));
+    }
+
+    #[test]
+    fn test_config_field_validate_integer_parses_and_checks_bounds() {
+        let f = ConfigField::new(ConfigFieldType::Integer)
+            .with_min(1.0)
+            .with_max(10.0);
+        assert!(f.validate("5").is_ok());
+        assert!(matches!(
+            f.validate("abc").unwrap_err(),
+            DomainError::ValidationError(_)
+        ));
+        assert!(matches!(
+            f.validate("0").unwrap_err(),
+            DomainError::ValidationError(_)
+        ));
+        assert!(matches!(
+            f.validate("11").unwrap_err(),
+            DomainError::ValidationError(_)
+        ));
+    }
+
+    #[test]
+    fn test_config_field_validate_float_with_bounds() {
+        let f = ConfigField::new(ConfigFieldType::Float)
+            .with_min(0.0)
+            .with_max(1.0);
+        assert!(f.validate("0.5").is_ok());
+        assert!(f.validate("1.5").is_err());
+        assert!(f.validate("-0.5").is_err());
+    }
+
+    #[test]
+    fn test_config_field_validate_url_requires_http_scheme() {
+        let f = ConfigField::new(ConfigFieldType::Url);
+        assert!(f.validate("https://example.com").is_ok());
+        assert!(f.validate("http://example.com").is_ok());
+        assert!(f.validate("ftp://example.com").is_err());
+        assert!(f.validate("not-a-url").is_err());
+    }
+
+    #[test]
+    fn test_config_field_validate_enum_checks_options() {
+        let f = ConfigField::new(ConfigFieldType::Enum).with_options(vec![
+            "360p".to_string(),
+            "720p".to_string(),
+            "1080p".to_string(),
+        ]);
+        assert!(f.validate("720p").is_ok());
+        assert!(f.validate("4K").is_err());
+    }
+
+    #[test]
+    fn test_config_field_validate_string_with_options_acts_as_enum() {
+        let f = ConfigField::new(ConfigFieldType::String)
+            .with_options(vec!["fast".to_string(), "slow".to_string()]);
+        assert!(f.validate("fast").is_ok());
+        assert!(f.validate("medium").is_err());
+    }
+
+    #[test]
+    fn test_config_field_validate_string_without_options_accepts_anything() {
+        let f = ConfigField::new(ConfigFieldType::String);
+        assert!(f.validate("anything goes").is_ok());
+        assert!(f.validate("").is_ok());
+    }
+
+    #[test]
+    fn test_config_field_validate_regex_constrains_string() {
+        let f = ConfigField::new(ConfigFieldType::String).with_regex(r"^[a-z]+$");
+        assert!(f.validate("hello").is_ok());
+        assert!(f.validate("Hello").is_err());
+        assert!(f.validate("hello123").is_err());
+    }
+
+    #[test]
+    fn test_config_field_default_value_optional() {
+        let f = ConfigField::new(ConfigFieldType::String).with_default("hi");
+        assert_eq!(f.default_value(), Some("hi"));
+        let g = ConfigField::new(ConfigFieldType::Integer);
+        assert!(g.default_value().is_none());
+    }
+
+    #[test]
+    fn test_plugin_config_schema_insert_and_get() {
+        let mut schema = PluginConfigSchema::new();
+        assert!(schema.is_empty());
+        schema.insert(
+            "quality",
+            ConfigField::new(ConfigFieldType::Enum)
+                .with_options(vec!["360p".into(), "720p".into()])
+                .with_default("720p"),
+        );
+        assert!(!schema.is_empty());
+        assert_eq!(schema.len(), 1);
+        let field = schema.get("quality").unwrap();
+        assert_eq!(field.field_type(), ConfigFieldType::Enum);
+        assert_eq!(field.default_value(), Some("720p"));
+    }
+
+    #[test]
+    fn test_plugin_config_schema_validate_unknown_key_returns_not_found() {
+        let schema = PluginConfigSchema::new();
+        let err = schema.validate("ghost", "v").unwrap_err();
+        assert!(matches!(err, DomainError::NotFound(_)));
+    }
+
+    #[test]
+    fn test_plugin_config_schema_validate_delegates_to_field() {
+        let mut schema = PluginConfigSchema::new();
+        schema.insert("audio", ConfigField::new(ConfigFieldType::Boolean));
+        assert!(schema.validate("audio", "true").is_ok());
+        assert!(matches!(
+            schema.validate("audio", "yes").unwrap_err(),
+            DomainError::ValidationError(_)
+        ));
+    }
+
+    #[test]
+    fn test_plugin_manifest_with_config_schema() {
+        let info = make_info();
+        let mut schema = PluginConfigSchema::new();
+        schema.insert("foo", ConfigField::new(ConfigFieldType::String));
+        let manifest = PluginManifest::new(info).with_config_schema(schema);
+        assert_eq!(manifest.config_schema().len(), 1);
+        assert!(manifest.config_schema().get("foo").is_some());
+    }
+
+    #[test]
+    fn test_plugin_manifest_default_config_schema_empty() {
+        let manifest = PluginManifest::new(make_info());
+        assert!(manifest.config_schema().is_empty());
+    }
+
+    #[test]
+    fn test_parse_json_array_len_accepts_valid_arrays() {
+        assert_eq!(parse_json_array_len("[]"), Some(0));
+        assert_eq!(parse_json_array_len("[1]"), Some(1));
+        assert_eq!(parse_json_array_len(" [ 1 , 2 , 3 ] "), Some(3));
+        assert_eq!(parse_json_array_len("[\"a\", \"b\"]"), Some(2));
+        assert_eq!(parse_json_array_len("[null, true, false]"), Some(3));
+        assert_eq!(parse_json_array_len("[{\"k\": \"v\"}, [1, 2]]"), Some(2));
+        assert_eq!(parse_json_array_len("[-1.5e2]"), Some(1));
+    }
+
+    #[test]
+    fn test_parse_json_array_len_rejects_malformed() {
+        assert_eq!(parse_json_array_len("[1 2]"), None); // missing comma
+        assert_eq!(parse_json_array_len("[1,]"), None); // trailing comma
+        assert_eq!(parse_json_array_len("[tru]"), None); // partial keyword
+        assert_eq!(parse_json_array_len("[\"unterminated]"), None);
+        assert_eq!(parse_json_array_len("[1, 2"), None); // unclosed
+        assert_eq!(parse_json_array_len("[1] junk"), None); // trailing content
+        assert_eq!(parse_json_array_len("not an array"), None);
+        assert_eq!(parse_json_array_len("{\"k\":\"v\"}"), None); // object, not array
+    }
+
+    #[test]
+    fn test_config_field_validate_array_applies_min_max_count() {
+        let f = ConfigField::new(ConfigFieldType::Array)
+            .with_min(1.0)
+            .with_max(3.0);
+        assert!(f.validate("[1]").is_ok());
+        assert!(f.validate("[1, 2, 3]").is_ok());
+        assert!(matches!(
+            f.validate("[]").unwrap_err(),
+            DomainError::ValidationError(_)
+        ));
+        assert!(matches!(
+            f.validate("[1, 2, 3, 4]").unwrap_err(),
+            DomainError::ValidationError(_)
+        ));
+        assert!(matches!(
+            f.validate("[1,]").unwrap_err(),
+            DomainError::ValidationError(_)
+        ));
+    }
+
+    #[test]
+    fn test_unsupported_regex_feature_detects_unimplemented() {
+        assert_eq!(unsupported_regex_feature("^(foo|bar)$"), Some('('));
+        assert_eq!(unsupported_regex_feature("a|b"), Some('|'));
+        assert_eq!(unsupported_regex_feature("a{2,3}"), Some('{'));
+        assert_eq!(unsupported_regex_feature("^[a-z]+$"), None);
+        assert_eq!(unsupported_regex_feature(r"\d+"), None);
+        // Escaped versions are literal, allowed.
+        assert_eq!(unsupported_regex_feature(r"a\|b"), None);
+        // Inside character class these are literal too.
+        assert_eq!(unsupported_regex_feature("[|()]"), None);
+    }
+
+    #[test]
+    fn test_config_field_validate_regex_rejects_unsupported_syntax() {
+        let f = ConfigField::new(ConfigFieldType::String).with_regex("^(foo|bar)$");
+        let err = f.validate("foo").unwrap_err();
+        match err {
+            DomainError::ValidationError(msg) => assert!(
+                msg.contains("unsupported feature"),
+                "expected unsupported-feature message, got: {msg}"
+            ),
+            other => panic!("expected ValidationError, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_regex_syntax_error_detects_malformations() {
+        assert_eq!(regex_syntax_error("^[a-z]+$"), None);
+        assert_eq!(regex_syntax_error(r"\d+"), None);
+        assert!(regex_syntax_error("[abc").is_some()); // unclosed
+        assert!(regex_syntax_error("foo\\").is_some()); // trailing backslash
+        // Backslash inside class still requires a follow-up.
+        assert!(regex_syntax_error("[a\\").is_some());
+    }
+
+    #[test]
+    fn test_config_field_validate_regex_rejects_malformed_pattern() {
+        let f = ConfigField::new(ConfigFieldType::String).with_regex("[abc");
+        let err = f.validate("a").unwrap_err();
+        match err {
+            DomainError::ValidationError(msg) => assert!(
+                msg.contains("malformed"),
+                "expected malformed-pattern message, got: {msg}"
+            ),
+            other => panic!("expected ValidationError, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_json_array_len_rejects_invalid_string_escapes() {
+        // \q is not a valid JSON escape.
+        assert_eq!(parse_json_array_len(r#"["\q"]"#), None);
+        // Bare control characters (here U+000A newline) must be escaped.
+        assert_eq!(parse_json_array_len("[\"line\nbreak\"]"), None);
+        // Valid escapes still pass.
+        assert_eq!(parse_json_array_len(r#"["\n", "\t", "A"]"#), Some(3));
+    }
+
+    #[test]
+    fn test_parse_json_array_len_rejects_leading_zero_numbers() {
+        assert_eq!(parse_json_array_len("[01]"), None);
+        assert_eq!(parse_json_array_len("[001]"), None);
+        assert_eq!(parse_json_array_len("[-01]"), None);
+        // Single zero and decimals starting with zero are valid.
+        assert_eq!(parse_json_array_len("[0]"), Some(1));
+        assert_eq!(parse_json_array_len("[0.5]"), Some(1));
+        assert_eq!(parse_json_array_len("[-0.5]"), Some(1));
+    }
+
+    #[test]
+    fn test_config_field_validate_float_rejects_nan_and_infinity() {
+        let f = ConfigField::new(ConfigFieldType::Float);
+        for input in ["NaN", "nan", "inf", "Infinity", "-Infinity", "-inf"] {
+            let err = f.validate(input).unwrap_err();
+            assert!(
+                matches!(err, DomainError::ValidationError(_)),
+                "expected ValidationError for {input}"
+            );
+        }
+        assert!(f.validate("0.5").is_ok());
+        assert!(f.validate("-3.14").is_ok());
     }
 }

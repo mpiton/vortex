@@ -328,6 +328,7 @@
       "uninstall": "Uninstall",
       "update": "Update",
       "more": "More actions",
+      "configure": "Configure",
       "refresh": "Check updates",
       "browseRepo": "Browse repository"
     },
@@ -359,6 +360,17 @@
       "disableSuccess": "Plugin disabled",
       "enableSuccess": "Plugin enabled",
       "uninstallSuccess": "Plugin uninstalled"
+    },
+    "config": {
+      "title": "Configure {{name}}",
+      "description": "Settings declared by the plugin manifest. Values are validated before being saved.",
+      "loading": "Loading configuration…",
+      "error": "Failed to load configuration",
+      "noFields": "This plugin exposes no configuration fields.",
+      "toast": {
+        "saveSuccess": "Configuration saved",
+        "validationFailed": "Fix validation errors before saving"
+      }
     }
   },
   "clipboard": {

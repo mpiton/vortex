@@ -7,6 +7,7 @@ mod count_by_state;
 mod get_download_detail;
 mod get_downloads;
 mod get_history_entry;
+mod get_plugin_config;
 mod get_plugin_store;
 mod get_stats;
 mod list_archive_contents;
@@ -89,3 +90,12 @@ pub struct ListArchiveContentsQuery {
     pub password: Option<String>,
 }
 impl Query for ListArchiveContentsQuery {}
+
+/// Read the schema and current values for a single plugin's
+/// configuration. Powers the dynamic UI form rendered in the plugin
+/// row's "Configure" dialog.
+#[derive(Debug)]
+pub struct GetPluginConfigQuery {
+    pub plugin_name: String,
+}
+impl Query for GetPluginConfigQuery {}

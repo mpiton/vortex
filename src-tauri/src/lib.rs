@@ -65,10 +65,11 @@ pub use adapters::driving::tauri_ipc::{
     download_reorder_queue, download_resume, download_resume_all, download_retry,
     download_set_priority, download_start, download_verify_checksum, history_clear,
     history_delete_entry, history_export, history_get_by_id, history_list,
-    history_purge_older_than, history_search, link_resolve, plugin_disable, plugin_enable,
-    plugin_install, plugin_list, plugin_store_install, plugin_store_list, plugin_store_refresh,
-    plugin_store_update, plugin_uninstall, reveal_in_folder, settings_get, settings_update,
-    stats_get, stats_top_modules, status_bar_get,
+    history_purge_older_than, history_search, link_resolve, plugin_config_get,
+    plugin_config_update, plugin_disable, plugin_enable, plugin_install, plugin_list,
+    plugin_store_install, plugin_store_list, plugin_store_refresh, plugin_store_update,
+    plugin_uninstall, reveal_in_folder, settings_get, settings_update, stats_get,
+    stats_top_modules, status_bar_get,
 };
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -144,10 +145,42 @@ pub fn run() {
 
             // ── Plugin system ───────────────────────────────────────
             let shared_resources = Arc::new(SharedHostResources::new());
+            let plugin_config_store: Arc<
+                dyn crate::domain::ports::driven::PluginConfigStore,
+            > = Arc::new(
+                crate::adapters::driven::sqlite::plugin_config_repo::SqlitePluginConfigRepo::new(
+                    db.clone(),
+                ),
+            );
             let plugin_loader_impl = Arc::new(
-                ExtismPluginLoader::new(plugins_dir.clone(), shared_resources)
+                ExtismPluginLoader::new(plugins_dir.clone(), shared_resources.clone())
                     .map_err(|e| e.to_string())?,
             );
+
+            // Replay persisted plugin configs into the in-memory map so
+            // `get_config()` calls inside loaded plugins observe the user's
+            // last-saved values from the previous session, not just the
+            // manifest defaults seeded by `build_host_functions`. Values
+            // are inserted raw here — `build_host_functions` re-validates
+            // the per-plugin map against the current schema when each
+            // plugin loads (including hot-loads via the file watcher),
+            // so stale entries get pruned at the right moment without
+            // dropping overrides for plugins that load later in the
+            // session.
+            match plugin_config_store.list_all() {
+                Ok(all) => {
+                    for (plugin_name, kv) in all {
+                        let entry = shared_resources
+                            .plugin_configs()
+                            .entry(plugin_name)
+                            .or_default();
+                        for (k, v) in kv {
+                            entry.insert(k, v);
+                        }
+                    }
+                }
+                Err(e) => tracing::warn!(error = %e, "startup: failed to load plugin configs"),
+            }
 
             // Scan existing plugin directories and load them at startup.
             // The PluginWatcher reacts only to file-system events, so plugins
@@ -276,7 +309,7 @@ pub fn run() {
                     event_bus.clone(),
                     file_storage,
                     http_client,
-                    plugin_loader,
+                    plugin_loader.clone(),
                     config_store,
                     credential_store,
                     clipboard_observer,
@@ -285,16 +318,21 @@ pub fn run() {
                     Some(store_client),
                 )
                 .with_checksum_computer(checksum_computer)
-                .with_file_opener(file_opener),
+                .with_file_opener(file_opener)
+                .with_plugin_config_store(plugin_config_store.clone()),
             );
 
-            let query_bus = Arc::new(QueryBus::new(
-                download_read_repo,
-                history_repo,
-                stats_repo,
-                plugin_read_repo,
-                archive_extractor,
-            ));
+            let query_bus = Arc::new(
+                QueryBus::new(
+                    download_read_repo,
+                    history_repo,
+                    stats_repo,
+                    plugin_read_repo,
+                    archive_extractor,
+                )
+                .with_plugin_loader(plugin_loader.clone())
+                .with_plugin_config_store(plugin_config_store),
+            );
 
             // ── Register AppState ───────────────────────────────────
             let app_plugin_loader: Arc<dyn PluginLoader> = plugin_loader_impl.clone();
@@ -390,6 +428,8 @@ pub fn run() {
             plugin_store_refresh,
             plugin_store_install,
             plugin_store_update,
+            plugin_config_get,
+            plugin_config_update,
             link_resolve,
             clipboard_toggle,
             clipboard_state,
