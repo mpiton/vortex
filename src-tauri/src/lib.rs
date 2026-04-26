@@ -157,25 +157,6 @@ pub fn run() {
                     .map_err(|e| e.to_string())?,
             );
 
-            // Replay persisted plugin configs into the in-memory map so
-            // `get_config()` calls inside loaded plugins observe the user's
-            // last-saved values from the previous session, not just the
-            // manifest defaults seeded by `build_host_functions`.
-            match plugin_config_store.list_all() {
-                Ok(all) => {
-                    for (plugin_name, kv) in all {
-                        let entry = shared_resources
-                            .plugin_configs()
-                            .entry(plugin_name)
-                            .or_default();
-                        for (k, v) in kv {
-                            entry.insert(k, v);
-                        }
-                    }
-                }
-                Err(e) => tracing::warn!(error = %e, "startup: failed to load plugin configs"),
-            }
-
             // Scan existing plugin directories and load them at startup.
             // The PluginWatcher reacts only to file-system events, so plugins
             // already present on disk before the watcher starts would otherwise
@@ -198,6 +179,49 @@ pub fn run() {
                         }
                     }
                 }
+            }
+
+            // Replay persisted plugin configs into the in-memory map so
+            // `get_config()` calls inside loaded plugins observe the user's
+            // last-saved values from the previous session, not just the
+            // manifest defaults seeded by `build_host_functions`.
+            //
+            // Done after plugins load so we can validate each persisted
+            // value against the current schema and drop entries that no
+            // longer match (e.g. when a plugin update narrows an enum,
+            // tightens a regex, or removes a key).
+            match plugin_config_store.list_all() {
+                Ok(all) => {
+                    for (plugin_name, kv) in all {
+                        let manifest = match plugin_loader_impl.get_manifest(&plugin_name) {
+                            Ok(Some(m)) => m,
+                            _ => {
+                                tracing::debug!(
+                                    plugin = %plugin_name,
+                                    "startup: skipping persisted configs (plugin not loaded)"
+                                );
+                                continue;
+                            }
+                        };
+                        let schema = manifest.config_schema();
+                        let entry = shared_resources
+                            .plugin_configs()
+                            .entry(plugin_name.clone())
+                            .or_default();
+                        for (k, v) in kv {
+                            if schema.validate(&k, &v).is_ok() {
+                                entry.insert(k, v);
+                            } else {
+                                tracing::warn!(
+                                    plugin = %plugin_name,
+                                    key = %k,
+                                    "startup: dropping persisted config value that no longer matches schema"
+                                );
+                            }
+                        }
+                    }
+                }
+                Err(e) => tracing::warn!(error = %e, "startup: failed to load plugin configs"),
             }
 
             let plugin_read_repo: Arc<dyn PluginReadRepository> =
