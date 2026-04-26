@@ -19,10 +19,10 @@ use crate::application::commands::{
     ExportHistoryCommand, ExportHistoryFormat, InstallPluginCommand, MoveToBottomCommand,
     MoveToTopCommand, OpenDownloadFileCommand, OpenDownloadFolderCommand, PauseAllDownloadsCommand,
     PauseDownloadCommand, PurgeHistoryCommand, RedownloadCommand, RedownloadSource,
-    RemoveDownloadCommand, ReorderQueueCommand, ResolveLinksCommand, ResolvedLinkDto,
-    ResumeAllDownloadsCommand, ResumeDownloadCommand, RetryDownloadCommand, SetPriorityCommand,
-    StartDownloadCommand, UninstallPluginCommand, UpdateConfigCommand, UpdatePluginConfigCommand,
-    VerifyChecksumCommand, VerifyChecksumOutcome,
+    RemoveDownloadCommand, ReorderQueueCommand, ReportBrokenPluginCommand, ResolveLinksCommand,
+    ResolvedLinkDto, ResumeAllDownloadsCommand, ResumeDownloadCommand, RetryDownloadCommand,
+    SetPriorityCommand, StartDownloadCommand, UninstallPluginCommand, UpdateConfigCommand,
+    UpdatePluginConfigCommand, VerifyChecksumCommand, VerifyChecksumOutcome,
 };
 use crate::application::error::AppError;
 use crate::application::queries::{
@@ -604,6 +604,33 @@ pub async fn plugin_config_update(
             plugin_name: name,
             key,
             value,
+        })
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Open the user's browser at a pre-filled GitHub issue for a broken plugin.
+///
+/// `log_lines` is the (optional) tail of recent log lines the frontend
+/// has buffered for that plugin; `tested_url` is the URL the user was
+/// trying to download when the failure happened, when known. Returns the
+/// fully-encoded GitHub URL so the frontend can fall back to clipboard
+/// copy if the OS launcher is unavailable.
+#[tauri::command]
+pub async fn plugin_report_broken(
+    state: State<'_, AppState>,
+    plugin_name: String,
+    log_lines: Option<Vec<String>>,
+    tested_url: Option<String>,
+) -> Result<String, String> {
+    state
+        .command_bus
+        .handle_report_broken_plugin(ReportBrokenPluginCommand {
+            plugin_name,
+            log_lines: log_lines.unwrap_or_default(),
+            tested_url,
+            vortex_version: env!("CARGO_PKG_VERSION").to_string(),
+            os: std::env::consts::OS.to_string(),
         })
         .await
         .map_err(|e| e.to_string())

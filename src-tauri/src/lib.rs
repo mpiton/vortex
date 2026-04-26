@@ -21,7 +21,7 @@ pub use adapters::driven::event::TokioEventBus;
 pub use adapters::driven::event::spawn_tauri_event_bridge;
 pub use adapters::driven::extractor::VortexArchiveExtractor;
 pub use adapters::driven::filesystem::{
-    FsFileStorage, SystemFileOpener, resolve_system_download_dir,
+    FsFileStorage, SystemFileOpener, SystemUrlOpener, resolve_system_download_dir,
 };
 pub use adapters::driven::logging::download_log_bridge::spawn_download_log_bridge;
 pub use adapters::driven::logging::download_log_store::DownloadLogStore;
@@ -67,9 +67,9 @@ pub use adapters::driving::tauri_ipc::{
     history_delete_entry, history_export, history_get_by_id, history_list,
     history_purge_older_than, history_search, link_resolve, plugin_config_get,
     plugin_config_update, plugin_disable, plugin_enable, plugin_install, plugin_list,
-    plugin_store_install, plugin_store_list, plugin_store_refresh, plugin_store_update,
-    plugin_uninstall, reveal_in_folder, settings_get, settings_update, stats_get,
-    stats_top_modules, status_bar_get,
+    plugin_report_broken, plugin_store_install, plugin_store_list, plugin_store_refresh,
+    plugin_store_update, plugin_uninstall, reveal_in_folder, settings_get, settings_update,
+    stats_get, stats_top_modules, status_bar_get,
 };
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -298,6 +298,8 @@ pub fn run() {
                 Arc::new(crate::adapters::driven::network::StreamingChecksumComputer::new());
             let file_opener: Arc<dyn crate::domain::ports::driven::FileOpener> =
                 Arc::new(SystemFileOpener::new());
+            let url_opener: Arc<dyn crate::domain::ports::driven::UrlOpener> =
+                Arc::new(SystemUrlOpener::new());
             // Clone the Arcs the purge worker will need before the bus
             // takes ownership of `config_store`.
             let config_store_for_purge: Arc<dyn ConfigStore> = config_store.clone();
@@ -319,6 +321,7 @@ pub fn run() {
                 )
                 .with_checksum_computer(checksum_computer)
                 .with_file_opener(file_opener)
+                .with_url_opener(url_opener)
                 .with_plugin_config_store(plugin_config_store.clone()),
             );
 
@@ -430,6 +433,7 @@ pub fn run() {
             plugin_store_update,
             plugin_config_get,
             plugin_config_update,
+            plugin_report_broken,
             link_resolve,
             clipboard_toggle,
             clipboard_state,

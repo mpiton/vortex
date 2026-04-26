@@ -25,6 +25,12 @@ interface PluginStoreRowProps {
    * `hasConfig` from the parent's resolution of the schema query).
    */
   onConfigure?: (name: string) => void;
+  /**
+   * Open a pre-filled GitHub issue on the plugin repository. Hidden when
+   * omitted so the parent can short-circuit the action for plugins that
+   * declare no `repository_url` in their manifest.
+   */
+  onReportBroken?: (name: string) => void;
   hasConfig?: boolean;
   isInstalling: boolean;
   isUpdating: boolean;
@@ -50,6 +56,7 @@ export function PluginStoreRow({
   onEnable,
   onUninstall,
   onConfigure,
+  onReportBroken,
   hasConfig = false,
   isInstalling,
   isUpdating,
@@ -110,8 +117,7 @@ export function PluginStoreRow({
             disabled={isUpdating}
             className="h-7 text-[10px] px-2 gap-1 text-warning border-warning/50 hover:bg-warning/10 hover:text-warning"
           >
-            <ArrowUpCircle className="h-3 w-3" />
-            v{entry.version}
+            <ArrowUpCircle className="h-3 w-3" />v{entry.version}
           </Button>
         )}
 
@@ -145,7 +151,7 @@ export function PluginStoreRow({
           </Button>
         )}
 
-        {installed && (onDisable || onEnable || onUninstall) && (
+        {installed && (onDisable || onEnable || onUninstall || onReportBroken) && (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button
@@ -169,14 +175,16 @@ export function PluginStoreRow({
                       {t("plugins.action.disable")}
                     </DropdownMenuItem>
                   )}
-              {((isLocallyDisabled ? onEnable : onDisable) && onUninstall) && (
+              {onReportBroken && (
+                <DropdownMenuItem onSelect={() => onReportBroken(entry.name)}>
+                  {t("plugins.action.reportBroken")}
+                </DropdownMenuItem>
+              )}
+              {((isLocallyDisabled ? onEnable : onDisable) || onReportBroken) && onUninstall && (
                 <DropdownMenuSeparator />
               )}
               {onUninstall && (
-                <DropdownMenuItem
-                  variant="destructive"
-                  onSelect={() => onUninstall(entry.name)}
-                >
+                <DropdownMenuItem variant="destructive" onSelect={() => onUninstall(entry.name)}>
                   {t("plugins.action.uninstall")}
                 </DropdownMenuItem>
               )}

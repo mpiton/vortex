@@ -330,7 +330,8 @@
       "more": "Plus d'actions",
       "configure": "Configurer",
       "refresh": "Vérifier les mises à jour",
-      "browseRepo": "Parcourir le dépôt"
+      "browseRepo": "Parcourir le dépôt",
+      "reportBroken": "Signaler un plugin cassé"
     },
     "search": {
       "placeholder": "Rechercher un plugin…"
@@ -359,7 +360,10 @@
       "refreshSuccess": "Liste des plugins rafraîchie",
       "disableSuccess": "Plugin désactivé",
       "enableSuccess": "Plugin activé",
-      "uninstallSuccess": "Plugin désinstallé"
+      "uninstallSuccess": "Plugin désinstallé",
+      "reportBrokenSuccess": "Ouverture de l'issue GitHub pour « {{name}} »…",
+      "reportBrokenSuccessWithCopy": "Ouverture de l'issue GitHub pour « {{name}} »… (URL copiée dans le presse-papiers)",
+      "reportBrokenError": "Impossible de signaler « {{name}} » : {{reason}}"
     },
     "config": {
       "title": "Configurer {{name}}",

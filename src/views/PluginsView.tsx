@@ -12,6 +12,7 @@ import { useTauriMutation } from "@/api/hooks";
 import { toast } from "@/lib/toast";
 import { Button } from "@/components/ui/button";
 import type { PluginConfigView } from "@/types/plugin-config";
+import type { PluginStoreEntry } from "@/types/plugin-store";
 
 const CATEGORIES = [
   "all",
@@ -98,6 +99,55 @@ export function PluginsView() {
     },
   });
 
+  const reportBrokenMutation = useTauriMutation<
+    string,
+    { pluginName: string; logLines?: string[]; testedUrl?: string }
+  >("plugin_report_broken", {
+    onSuccess: (url, variables) => {
+      // Best-effort clipboard copy so the user always has the URL even
+      // if the OS launcher silently failed (no graphical session, broken
+      // `xdg-open`, etc.).
+      //
+      // `navigator.clipboard` itself is undefined in non-secure contexts
+      // and inside webviews that opt out of the API, so we must guard
+      // before the call — accessing `.writeText` on `undefined` would
+      // throw synchronously and break the success toast.
+      const clipboard = navigator.clipboard;
+      if (clipboard?.writeText) {
+        void clipboard
+          .writeText(url)
+          .then(() => {
+            toast.success(
+              t("plugins.toast.reportBrokenSuccessWithCopy", { name: variables.pluginName }),
+            );
+          })
+          .catch(() => {
+            toast.success(t("plugins.toast.reportBrokenSuccess", { name: variables.pluginName }));
+          });
+      } else {
+        toast.success(t("plugins.toast.reportBrokenSuccess", { name: variables.pluginName }));
+      }
+    },
+    onError: (error, variables) => {
+      toast.error(
+        t("plugins.toast.reportBrokenError", {
+          name: variables.pluginName,
+          reason: error.message,
+        }),
+      );
+    },
+  });
+
+  // The frontend short-circuits the action for plugins whose registry
+  // entry carries no GitHub repository: the backend would only return
+  // `Validation` and the menu item would advertise an action that
+  // never works. Limiting the test to `github.com` mirrors the domain
+  // validation in `parse_github_owner_repo`.
+  const canReportBroken = (entry: PluginStoreEntry): boolean => {
+    const repo = entry.repository ?? "";
+    return repo.startsWith("https://github.com/") || repo.startsWith("http://github.com/");
+  };
+
   const filtered = useMemo(() => {
     const query = search.trim().toLowerCase();
     return entries.filter((e) => {
@@ -112,8 +162,7 @@ export function PluginsView() {
   }, [entries, search, category]);
 
   const enabledCount = useMemo(
-    () =>
-      entries.filter((e) => isInstalled(e.status) && !locallyDisabled.has(e.name)).length,
+    () => entries.filter((e) => isInstalled(e.status) && !locallyDisabled.has(e.name)).length,
     [entries, locallyDisabled],
   );
 
@@ -213,6 +262,11 @@ export function PluginsView() {
                       onEnable={(name) => enableMutation.mutate({ name })}
                       onUninstall={(name) => uninstallMutation.mutate({ name })}
                       onConfigure={(name) => setConfigPluginName(name)}
+                      onReportBroken={
+                        canReportBroken(entry)
+                          ? (name) => reportBrokenMutation.mutate({ pluginName: name })
+                          : undefined
+                      }
                       hasConfig={hasConfig(entry.name)}
                       isInstalling={isInstalling(entry.name)}
                       isUpdating={isUpdating(entry.name)}

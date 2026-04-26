@@ -20,6 +20,7 @@ pub mod plugin_loader;
 pub mod plugin_read_repository;
 pub mod plugin_store_client;
 pub mod stats_repository;
+pub mod url_opener;
 
 pub use archive_extractor::ArchiveExtractor;
 pub use checksum_computer::ChecksumComputer;
@@ -40,3 +41,4 @@ pub use plugin_loader::PluginLoader;
 pub use plugin_read_repository::PluginReadRepository;
 pub use plugin_store_client::PluginStoreClient;
 pub use stats_repository::StatsRepository;
+pub use url_opener::UrlOpener;

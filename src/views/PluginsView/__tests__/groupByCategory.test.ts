@@ -12,6 +12,7 @@ function entry(name: string, category: string): PluginStoreEntry {
     category,
     official: true,
     status: "not_installed",
+    repository: "https://github.com/example/" + name,
   };
 }
 

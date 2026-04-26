@@ -58,6 +58,7 @@ pub struct PluginInfo {
     author: String,
     category: PluginCategory,
     enabled: bool,
+    repository_url: Option<String>,
 }
 
 impl PluginInfo {
@@ -75,7 +76,13 @@ impl PluginInfo {
             author,
             category,
             enabled: true,
+            repository_url: None,
         }
+    }
+
+    pub fn with_repository_url(mut self, url: impl Into<String>) -> Self {
+        self.repository_url = Some(url.into());
+        self
     }
 
     pub fn enable(&mut self) {
@@ -108,6 +115,13 @@ impl PluginInfo {
 
     pub fn category(&self) -> PluginCategory {
         self.category
+    }
+
+    /// URL of the source code repository as declared in `plugin.toml [plugin]`.
+    /// Required for the "Report broken plugin" feature; absent for plugins
+    /// that predate manifest schema v2.
+    pub fn repository_url(&self) -> Option<&str> {
+        self.repository_url.as_deref()
     }
 }
 
@@ -934,6 +948,131 @@ fn atom_match(atom: &Atom, c: char) -> bool {
     }
 }
 
+// ── Report-broken-plugin URL builder (task 16) ──────────────────
+
+/// Maximum number of trailing log lines included in the issue body.
+/// GitHub silently truncates issue URLs above ~8 KB; keeping the log
+/// budget conservative leaves room for the boilerplate metadata.
+const MAX_LOG_LINES: usize = 50;
+
+/// Construct the GitHub "new issue" URL for a broken plugin report.
+///
+/// Returns a fully encoded URL that the host can hand to a browser. The
+/// caller is responsible for collecting the metadata (versions, OS, recent
+/// log lines, optional URL the user was testing) — this function is pure
+/// transformation: extract `owner/repo` from `repository_url`, build the
+/// title and body, and percent-encode every component.
+///
+/// `repository_url` must point to `https://github.com/{owner}/{repo}` (a
+/// trailing `.git` is stripped). Any other host is rejected so we never
+/// hand the user a 404 issue page on the wrong forge.
+pub fn build_report_broken_url(
+    repository_url: &str,
+    plugin_name: &str,
+    plugin_version: &str,
+    vortex_version: &str,
+    os: &str,
+    log_lines: &[String],
+    tested_url: Option<&str>,
+) -> Result<String, DomainError> {
+    let (owner, repo) = parse_github_owner_repo(repository_url)?;
+
+    let title = format!("[Bug] {plugin_name} {plugin_version}");
+
+    let mut body = String::new();
+    body.push_str(&format!("Plugin: {plugin_name}\n"));
+    body.push_str(&format!("Plugin version: {plugin_version}\n"));
+    body.push_str(&format!("Vortex: {vortex_version}\n"));
+    body.push_str(&format!("OS: {os}\n"));
+    if let Some(url) = tested_url {
+        body.push_str(&format!("Tested URL: {url}\n"));
+    }
+
+    if !log_lines.is_empty() {
+        let start = log_lines.len().saturating_sub(MAX_LOG_LINES);
+        body.push_str("\nRecent logs:\n```\n");
+        for line in &log_lines[start..] {
+            body.push_str(line);
+            body.push('\n');
+        }
+        body.push_str("```\n");
+    }
+
+    Ok(format!(
+        "https://github.com/{owner}/{repo}/issues/new?labels=bug&template=plugin-broken.yml&title={}&body={}",
+        percent_encode(&title),
+        percent_encode(&body),
+    ))
+}
+
+/// Extract `(owner, repo)` from a `https://github.com/{owner}/{repo}` URL.
+/// Strips an optional trailing `.git` and tolerates a single trailing `/`.
+fn parse_github_owner_repo(url: &str) -> Result<(String, String), DomainError> {
+    let rest = url
+        .strip_prefix("https://github.com/")
+        .or_else(|| url.strip_prefix("http://github.com/"))
+        .ok_or_else(|| {
+            DomainError::ValidationError(format!(
+                "repository_url must point to github.com, got '{url}'"
+            ))
+        })?;
+
+    let trimmed = rest.trim_end_matches('/');
+    let mut parts = trimmed.splitn(2, '/');
+    let owner = parts
+        .next()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            DomainError::ValidationError(format!("repository_url missing owner: '{url}'"))
+        })?
+        .to_string();
+    let repo_raw = parts
+        .next()
+        .filter(|s| !s.is_empty() && !s.contains('/'))
+        .ok_or_else(|| {
+            DomainError::ValidationError(format!("repository_url missing repo: '{url}'"))
+        })?;
+    let repo = repo_raw
+        .strip_suffix(".git")
+        .unwrap_or(repo_raw)
+        .to_string();
+
+    if repo.is_empty() {
+        return Err(DomainError::ValidationError(format!(
+            "repository_url missing repo: '{url}'"
+        )));
+    }
+    Ok((owner, repo))
+}
+
+/// Percent-encode a string per RFC 3986 §2.3 unreserved set (ALPHA / DIGIT /
+/// `-` / `.` / `_` / `~`). Everything else becomes `%HH`. Hand-rolled because
+/// the domain layer cannot pull in `percent-encoding` or `url`.
+fn percent_encode(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    for byte in input.as_bytes() {
+        let b = *byte;
+        let is_unreserved =
+            b.is_ascii_alphanumeric() || b == b'-' || b == b'.' || b == b'_' || b == b'~';
+        if is_unreserved {
+            out.push(b as char);
+        } else {
+            out.push('%');
+            out.push(hex_upper(b >> 4));
+            out.push(hex_upper(b & 0x0f));
+        }
+    }
+    out
+}
+
+fn hex_upper(nibble: u8) -> char {
+    match nibble {
+        0..=9 => (b'0' + nibble) as char,
+        10..=15 => (b'A' + (nibble - 10)) as char,
+        _ => unreachable!("nibble must be 0..=15"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1327,5 +1466,150 @@ mod tests {
         }
         assert!(f.validate("0.5").is_ok());
         assert!(f.validate("-3.14").is_ok());
+    }
+
+    // ── repository_url + report-broken URL builder (task 16) ────────
+
+    #[test]
+    fn test_plugin_info_with_repository_url_records_value() {
+        let info = make_info().with_repository_url("https://github.com/foo/bar");
+        assert_eq!(info.repository_url(), Some("https://github.com/foo/bar"));
+    }
+
+    #[test]
+    fn test_plugin_info_without_repository_url_defaults_to_none() {
+        let info = make_info();
+        assert_eq!(info.repository_url(), None);
+    }
+
+    #[test]
+    fn test_build_report_broken_url_minimum_metadata_succeeds() {
+        let url = build_report_broken_url(
+            "https://github.com/mpiton/vortex-mod-youtube",
+            "vortex-mod-youtube",
+            "1.2.3",
+            "0.2.0",
+            "linux",
+            &[],
+            None,
+        )
+        .expect("valid input must produce a URL");
+
+        assert!(
+            url.starts_with("https://github.com/mpiton/vortex-mod-youtube/issues/new?"),
+            "URL prefix mismatch: {url}"
+        );
+        assert!(url.contains("labels=bug"), "missing labels: {url}");
+        assert!(
+            url.contains("template=plugin-broken.yml"),
+            "missing template: {url}"
+        );
+    }
+
+    #[test]
+    fn test_build_report_broken_url_encodes_body_metadata() {
+        let logs = vec![
+            "ERROR: failed to fetch https://example.com/?q=foo bar".to_string(),
+            "WARN: retrying & giving up".to_string(),
+        ];
+        let url = build_report_broken_url(
+            "https://github.com/mpiton/vortex-mod-youtube",
+            "vortex-mod-youtube",
+            "1.2.3",
+            "0.2.0",
+            "macos",
+            &logs,
+            Some("https://www.youtube.com/watch?v=dQw4w9WgXcQ"),
+        )
+        .unwrap();
+
+        // Title is URL-encoded (spaces → %20 or +, brackets → %5B/%5D)
+        assert!(
+            url.contains("title=%5BBug%5D%20vortex-mod-youtube%201.2.3"),
+            "encoded title missing: {url}"
+        );
+        // Body must include each metadata field, percent-encoded
+        // "Plugin: " encodes the colon and space the same way every time.
+        assert!(url.contains("Plugin%3A%20vortex-mod-youtube"), "{url}");
+        assert!(url.contains("Vortex%3A%200.2.0"), "{url}");
+        assert!(url.contains("OS%3A%20macos"), "{url}");
+        // Tested URL appears, with embedded `?` inside the body re-encoded
+        // so it does not collide with the outer query string.
+        assert!(url.contains("Tested%20URL%3A"), "{url}");
+        assert!(url.contains("dQw4w9WgXcQ"), "{url}");
+        // Log lines: "&" must become %26, " " must NOT remain raw inside body
+        assert!(url.contains("%26"), "ampersand not encoded: {url}");
+        assert!(!url.contains(" "), "raw space leaked: {url}");
+    }
+
+    #[test]
+    fn test_build_report_broken_url_truncates_logs_to_max() {
+        let logs: Vec<String> = (0..200).map(|i| format!("line {i}")).collect();
+        let url = build_report_broken_url(
+            "https://github.com/owner/repo",
+            "p",
+            "1",
+            "1",
+            "linux",
+            &logs,
+            None,
+        )
+        .unwrap();
+        // Only the *last* MAX_LOG_LINES entries should survive; earlier
+        // ones must be dropped so the URL stays under GitHub's 8 KB limit.
+        assert!(!url.contains("line%200"), "first line should be dropped");
+        assert!(url.contains("line%20199"), "last line should be present");
+    }
+
+    #[test]
+    fn test_build_report_broken_url_rejects_non_github_repo() {
+        let err = build_report_broken_url(
+            "https://gitlab.com/foo/bar",
+            "p",
+            "1",
+            "1",
+            "linux",
+            &[],
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, DomainError::ValidationError(_)),
+            "expected ValidationError, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_build_report_broken_url_rejects_missing_owner_repo() {
+        for bad in [
+            "https://github.com/",
+            "https://github.com/onlyowner",
+            "not a url",
+            "",
+        ] {
+            let err = build_report_broken_url(bad, "p", "1", "1", "linux", &[], None);
+            assert!(
+                matches!(err, Err(DomainError::ValidationError(_))),
+                "expected ValidationError for {bad:?}, got {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_build_report_broken_url_strips_trailing_dot_git() {
+        let url = build_report_broken_url(
+            "https://github.com/owner/repo.git",
+            "p",
+            "1",
+            "1",
+            "linux",
+            &[],
+            None,
+        )
+        .unwrap();
+        assert!(
+            url.starts_with("https://github.com/owner/repo/issues/new?"),
+            "trailing .git not stripped: {url}"
+        );
     }
 }

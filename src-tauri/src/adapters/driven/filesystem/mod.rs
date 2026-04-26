@@ -4,7 +4,9 @@ mod download_dir;
 mod file_opener;
 mod file_storage;
 mod meta_storage;
+mod url_opener;
 
 pub use download_dir::resolve_system_download_dir;
 pub use file_opener::SystemFileOpener;
 pub use file_storage::FsFileStorage;
+pub use url_opener::SystemUrlOpener;

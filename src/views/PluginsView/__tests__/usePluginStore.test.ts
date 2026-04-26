@@ -25,6 +25,7 @@ const mockEntries = [
     category: "crawler",
     official: true,
     status: "installed" as const,
+    repository: "https://github.com/mpiton/vortex-mod-youtube",
   },
   {
     name: "vortex-mod-gallery",
@@ -35,6 +36,7 @@ const mockEntries = [
     category: "hoster",
     official: false,
     status: "update_available" as const,
+    repository: "https://github.com/johndoe/vortex-mod-gallery",
   },
 ];
 

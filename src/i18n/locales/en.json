@@ -330,7 +330,8 @@
       "more": "More actions",
       "configure": "Configure",
       "refresh": "Check updates",
-      "browseRepo": "Browse repository"
+      "browseRepo": "Browse repository",
+      "reportBroken": "Report broken plugin"
     },
     "search": {
       "placeholder": "Search plugins…"
@@ -359,7 +360,10 @@
       "refreshSuccess": "Plugin list refreshed",
       "disableSuccess": "Plugin disabled",
       "enableSuccess": "Plugin enabled",
-      "uninstallSuccess": "Plugin uninstalled"
+      "uninstallSuccess": "Plugin uninstalled",
+      "reportBrokenSuccess": "Opening GitHub issue for \"{{name}}\"…",
+      "reportBrokenSuccessWithCopy": "Opening GitHub issue for \"{{name}}\"… (URL copied to clipboard)",
+      "reportBrokenError": "Cannot report \"{{name}}\": {{reason}}"
     },
     "config": {
       "title": "Configure {{name}}",

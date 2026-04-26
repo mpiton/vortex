@@ -28,6 +28,9 @@ struct RawPluginSection {
     description: String,
     _license: Option<String>,
     min_vortex_version: Option<String>,
+    /// Source repository URL surfaced to the host so the "Report broken
+    /// plugin" action knows where to file the issue.
+    repository: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -53,6 +56,18 @@ struct RawConfigEntry {
 ///
 /// Returns the domain manifest and the path to the `.wasm` file.
 pub fn parse_manifest(dir: &Path) -> Result<(PluginManifest, PathBuf), DomainError> {
+    let manifest = parse_manifest_metadata(dir)?;
+    let wasm_path = find_wasm_file(dir)?;
+    Ok((manifest, wasm_path))
+}
+
+/// Parse only the `plugin.toml` metadata, with no `.wasm` requirement.
+///
+/// Used by the "report broken plugin" flow: a plugin whose `.wasm` is
+/// missing or corrupted is precisely the case the user wants to file
+/// an issue for, so we must still surface its declared name, version,
+/// and `repository` even when the binary is unusable.
+pub fn parse_manifest_metadata(dir: &Path) -> Result<PluginManifest, DomainError> {
     let toml_path = dir.join("plugin.toml");
     let content = std::fs::read_to_string(&toml_path).map_err(|e| {
         DomainError::PluginError(format!(
@@ -79,13 +94,16 @@ pub fn parse_manifest(dir: &Path) -> Result<(PluginManifest, PathBuf), DomainErr
     }
 
     let category = parse_category(&raw.plugin.category)?;
-    let info = PluginInfo::new(
+    let mut info = PluginInfo::new(
         raw.plugin.name,
         raw.plugin.version,
         raw.plugin.description,
         raw.plugin.author,
         category,
     );
+    if let Some(repo) = raw.plugin.repository {
+        info = info.with_repository_url(repo);
+    }
 
     let caps = raw
         .capabilities
@@ -103,8 +121,7 @@ pub fn parse_manifest(dir: &Path) -> Result<(PluginManifest, PathBuf), DomainErr
         manifest = manifest.with_min_version(v);
     }
 
-    let wasm_path = find_wasm_file(dir)?;
-    Ok((manifest, wasm_path))
+    Ok(manifest)
 }
 
 fn parse_category(s: &str) -> Result<PluginCategory, DomainError> {
@@ -447,6 +464,37 @@ description = "No wasm file"
     }
 
     #[test]
+    fn test_parse_manifest_metadata_succeeds_without_wasm() {
+        // The "report broken plugin" flow leans on this: a plugin whose
+        // `.wasm` is missing or corrupted is exactly what we want to
+        // surface, so the metadata parser must not fail when the binary
+        // is absent.
+        let tmp = TempDir::new().unwrap();
+        let plugin_dir = tmp.path().join("metadata-only");
+        std::fs::create_dir_all(&plugin_dir).unwrap();
+        write_plugin_toml(
+            &plugin_dir,
+            r#"
+[plugin]
+name = "metadata-only"
+version = "0.3.1"
+category = "hoster"
+author = "Eve"
+description = "wasm intentionally missing"
+repository = "https://github.com/eve/metadata-only"
+"#,
+        );
+
+        let manifest = parse_manifest_metadata(&plugin_dir).unwrap();
+        assert_eq!(manifest.info().name(), "metadata-only");
+        assert_eq!(manifest.info().version(), "0.3.1");
+        assert_eq!(
+            manifest.info().repository_url(),
+            Some("https://github.com/eve/metadata-only")
+        );
+    }
+
+    #[test]
     fn test_parse_manifest_dir_name_mismatch() {
         let tmp = TempDir::new().unwrap();
         let plugin_dir = tmp.path().join("wrong-dir-name");
@@ -720,5 +768,53 @@ api_key = { type = "string", regex = "^[a-z0-9]+$" }
         let (manifest, _) = parse_manifest(&plugin_dir).unwrap();
         let f = manifest.config_schema().get("api_key").unwrap();
         assert_eq!(f.regex(), Some("^[a-z0-9]+$"));
+    }
+
+    #[test]
+    fn test_parse_manifest_extracts_repository_url() {
+        let tmp = TempDir::new().unwrap();
+        let plugin_dir = tmp.path().join("with-repo");
+        std::fs::create_dir_all(&plugin_dir).unwrap();
+        write_plugin_toml(
+            &plugin_dir,
+            r#"
+[plugin]
+name = "with-repo"
+version = "1.0.0"
+category = "crawler"
+author = "Alice"
+description = "Has repo URL"
+repository = "https://github.com/alice/with-repo"
+"#,
+        );
+        write_dummy_wasm(&plugin_dir, "with-repo.wasm");
+
+        let (manifest, _) = parse_manifest(&plugin_dir).unwrap();
+        assert_eq!(
+            manifest.info().repository_url(),
+            Some("https://github.com/alice/with-repo")
+        );
+    }
+
+    #[test]
+    fn test_parse_manifest_repository_url_optional() {
+        let tmp = TempDir::new().unwrap();
+        let plugin_dir = tmp.path().join("no-repo");
+        std::fs::create_dir_all(&plugin_dir).unwrap();
+        write_plugin_toml(
+            &plugin_dir,
+            r#"
+[plugin]
+name = "no-repo"
+version = "1.0.0"
+category = "crawler"
+author = "Alice"
+description = "No repo URL"
+"#,
+        );
+        write_dummy_wasm(&plugin_dir, "no-repo.wasm");
+
+        let (manifest, _) = parse_manifest(&plugin_dir).unwrap();
+        assert_eq!(manifest.info().repository_url(), None);
     }
 }

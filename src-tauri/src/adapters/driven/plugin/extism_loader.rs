@@ -12,7 +12,7 @@ use crate::domain::ports::driven::plugin_loader::DownloadedFileInfo;
 
 use super::builtin::HttpModule;
 use super::capabilities::{SharedHostResources, build_host_functions};
-use super::manifest::{find_wasm_file, parse_manifest};
+use super::manifest::{find_wasm_file, parse_manifest, parse_manifest_metadata};
 use super::registry::{LoadedPlugin, PluginRegistry};
 
 /// Per-plugin install coordination.
@@ -246,6 +246,55 @@ impl PluginLoader for ExtismPluginLoader {
 
     fn list_loaded(&self) -> Result<Vec<PluginInfo>, DomainError> {
         Ok(self.registry.list_info())
+    }
+
+    fn find_installed_manifest(&self, name: &str) -> Result<Option<PluginInfo>, DomainError> {
+        // Reject any name that could escape `plugins_dir/` so a hostile
+        // caller can't read foreign manifests by passing `../etc/passwd`.
+        if name.is_empty() || name.contains('/') || name.contains('\\') || name.contains("..") {
+            return Err(DomainError::ValidationError(format!(
+                "invalid plugin name: '{name}'"
+            )));
+        }
+        let dir = self.plugins_dir.join(name);
+        if !dir.is_dir() {
+            return Ok(None);
+        }
+
+        // Symlink containment: even though `name` itself is sanitized,
+        // `plugins_dir/<name>` could be a symlink pointing outside the
+        // root. We canonicalize both sides and require the resolved
+        // plugin directory to live inside the resolved plugins root
+        // before reading anything from it.
+        let canon_root = self.plugins_dir.canonicalize().map_err(|e| {
+            DomainError::PluginError(format!(
+                "failed to canonicalize plugins_dir '{}': {e}",
+                self.plugins_dir.display()
+            ))
+        })?;
+        let canon_dir = dir.canonicalize().map_err(|e| {
+            DomainError::PluginError(format!(
+                "failed to canonicalize plugin dir '{}': {e}",
+                dir.display()
+            ))
+        })?;
+        if !canon_dir.starts_with(&canon_root) {
+            return Err(DomainError::ValidationError(format!(
+                "invalid plugin path outside plugins_dir: '{}'",
+                dir.display()
+            )));
+        }
+
+        // Use the metadata-only parser so a missing/corrupt `.wasm`
+        // file doesn't hide the very plugin the user wants to report.
+        match parse_manifest_metadata(&canon_dir) {
+            Ok(manifest) => Ok(Some(manifest.info().clone())),
+            Err(DomainError::PluginError(msg)) => {
+                tracing::debug!("find_installed_manifest('{name}'): manifest unreadable: {msg}");
+                Ok(None)
+            }
+            Err(e) => Err(e),
+        }
     }
 
     fn set_enabled(&self, name: &str, enabled: bool) -> Result<(), DomainError> {
