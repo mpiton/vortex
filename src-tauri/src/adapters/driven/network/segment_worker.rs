@@ -21,6 +21,14 @@ pub(crate) enum SegmentError {
     PauseChannelClosed,
 }
 
+/// Read the watched end_byte. Returns `None` for the unbounded sentinel
+/// (`u64::MAX`, used when the server didn't advertise a length and we
+/// cannot send a Range header).
+fn bounded(end_rx: &watch::Receiver<u64>) -> Option<u64> {
+    let v = *end_rx.borrow();
+    if v == u64::MAX { None } else { Some(v) }
+}
+
 /// Parameters for a single segment download.
 pub(crate) struct SegmentParams {
     pub client: reqwest::Client,
@@ -30,8 +38,10 @@ pub(crate) struct SegmentParams {
     pub segment_index: u32,
     pub url: String,
     pub start_byte: u64,
-    /// Exclusive upper bound of this segment's byte range.
-    pub end_byte: u64,
+    /// Watchable exclusive upper bound. May be reduced mid-flight by the
+    /// engine to support PRD §7.1 dynamic splitting. `u64::MAX` means
+    /// "unbounded — no Range header" and must not be reduced after start.
+    pub end_byte_rx: watch::Receiver<u64>,
     pub already_downloaded: u64,
     /// Total size of the entire file (used in progress events).
     pub total_file_size: u64,
@@ -40,6 +50,9 @@ pub(crate) struct SegmentParams {
     pub cancel_token: CancellationToken,
     /// Shared atomic counter for aggregate progress across all segments.
     pub shared_downloaded: Arc<AtomicU64>,
+    /// Per-segment downloaded counter, observable by the engine to estimate
+    /// throughput when picking a split target.
+    pub segment_progress: Arc<AtomicU64>,
 }
 
 /// Downloads a single byte range and writes it to disk.
@@ -55,24 +68,26 @@ pub(crate) async fn download_segment(params: SegmentParams) -> Result<u64, Segme
         segment_index,
         url,
         start_byte,
-        end_byte,
+        end_byte_rx,
         already_downloaded,
         total_file_size,
         dest_path,
         mut pause_rx,
         cancel_token,
         shared_downloaded,
+        segment_progress,
     } = params;
+    let initial_end = *end_byte_rx.borrow();
     event_bus.publish(DomainEvent::SegmentStarted {
         download_id,
         segment_id: segment_index,
         start_byte,
-        end_byte,
+        end_byte: initial_end,
     });
 
     let effective_start = start_byte + already_downloaded;
 
-    if effective_start >= end_byte {
+    if effective_start >= initial_end {
         event_bus.publish(DomainEvent::SegmentCompleted {
             download_id,
             segment_id: segment_index,
@@ -82,8 +97,8 @@ pub(crate) async fn download_segment(params: SegmentParams) -> Result<u64, Segme
 
     // Build the request, conditionally adding Range header
     let mut req = client.get(&url);
-    if end_byte != u64::MAX {
-        let range_header = format!("bytes={}-{}", effective_start, end_byte - 1);
+    if initial_end != u64::MAX {
+        let range_header = format!("bytes={}-{}", effective_start, initial_end - 1);
         tracing::debug!(
             download_id = download_id.0,
             segment_id = segment_index,
@@ -141,6 +156,14 @@ pub(crate) async fn download_segment(params: SegmentParams) -> Result<u64, Segme
             return Err(SegmentError::Cancelled);
         }
 
+        // First end_byte read — used to bail out before fetching another
+        // chunk if the engine has already shrunk us past `offset`.
+        if let Some(current_end) = bounded(&end_byte_rx)
+            && offset >= current_end
+        {
+            break;
+        }
+
         // Check pause state — if paused, wait with cancellation support
         if *pause_rx.borrow() {
             loop {
@@ -191,13 +214,20 @@ pub(crate) async fn download_segment(params: SegmentParams) -> Result<u64, Segme
         let mut data = chunk.to_vec();
         let mut chunk_len = data.len() as u64;
 
-        // Clamp writes to segment boundary to prevent writing past end_byte
-        if end_byte != u64::MAX && offset + chunk_len > end_byte {
-            let allowed = end_byte.saturating_sub(offset) as usize;
-            data.truncate(allowed);
-            chunk_len = allowed as u64;
-            if chunk_len == 0 {
+        // Re-read end_byte AFTER chunk fetch so an engine-driven mid-flight
+        // shrink that landed during the network read is honored before we
+        // write past the new boundary.
+        if let Some(live_end) = bounded(&end_byte_rx) {
+            if offset >= live_end {
                 break;
+            }
+            if offset + chunk_len > live_end {
+                let allowed = live_end.saturating_sub(offset) as usize;
+                data.truncate(allowed);
+                chunk_len = allowed as u64;
+                if chunk_len == 0 {
+                    break;
+                }
             }
         }
 
@@ -216,6 +246,7 @@ pub(crate) async fn download_segment(params: SegmentParams) -> Result<u64, Segme
 
         offset += chunk_len;
         bytes_downloaded += chunk_len;
+        segment_progress.fetch_add(chunk_len, Ordering::Relaxed);
 
         let total_so_far = shared_downloaded.fetch_add(chunk_len, Ordering::Relaxed) + chunk_len;
 
@@ -229,11 +260,14 @@ pub(crate) async fn download_segment(params: SegmentParams) -> Result<u64, Segme
         }
     }
 
-    // Verify we received the expected number of bytes (for ranged segments)
-    let expected_bytes = end_byte
+    // Verify we received the expected number of bytes (for ranged segments).
+    // Compare against the *current* end_byte so mid-flight shrinks don't
+    // trigger spurious truncation errors.
+    let final_end = *end_byte_rx.borrow();
+    let expected_bytes = final_end
         .saturating_sub(start_byte)
         .saturating_sub(already_downloaded);
-    if end_byte != u64::MAX && bytes_downloaded < expected_bytes {
+    if final_end != u64::MAX && bytes_downloaded < expected_bytes {
         let msg =
             format!("truncated response: got {bytes_downloaded} bytes, expected {expected_bytes}");
         event_bus.publish(DomainEvent::SegmentFailed {
@@ -372,6 +406,7 @@ mod tests {
         let storage = Arc::new(MockFileStorage::new());
         let bus = Arc::new(CollectingEventBus::new());
         let (_, pause_rx) = watch::channel(false);
+        let (_end_tx, end_rx) = watch::channel(1000u64);
         let cancel = CancellationToken::new();
         let dest = PathBuf::from("/tmp/test_segment.bin");
 
@@ -383,13 +418,14 @@ mod tests {
             segment_index: 0,
             url: format!("{}/file", server.uri()),
             start_byte: 0,
-            end_byte: 1000,
+            end_byte_rx: end_rx,
             already_downloaded: 0,
             total_file_size: 0,
             dest_path: dest.clone(),
             pause_rx,
             cancel_token: cancel,
             shared_downloaded: Arc::new(AtomicU64::new(0)),
+            segment_progress: Arc::new(AtomicU64::new(0)),
         })
         .await;
 
@@ -421,6 +457,7 @@ mod tests {
         let storage = Arc::new(MockFileStorage::new());
         let bus = Arc::new(CollectingEventBus::new());
         let (_, pause_rx) = watch::channel(false);
+        let (_end_tx, end_rx) = watch::channel(100_000u64);
         let cancel = CancellationToken::new();
 
         // Cancel immediately
@@ -434,13 +471,14 @@ mod tests {
             segment_index: 0,
             url: format!("{}/file", server.uri()),
             start_byte: 0,
-            end_byte: 100_000,
+            end_byte_rx: end_rx,
             already_downloaded: 0,
             total_file_size: 0,
             dest_path: PathBuf::from("/tmp/cancel_test.bin"),
             pause_rx,
             cancel_token: cancel,
             shared_downloaded: Arc::new(AtomicU64::new(0)),
+            segment_progress: Arc::new(AtomicU64::new(0)),
         })
         .await;
 
@@ -462,6 +500,7 @@ mod tests {
         let storage = Arc::new(MockFileStorage::new());
         let bus = Arc::new(CollectingEventBus::new());
         let (pause_tx, pause_rx) = watch::channel(false);
+        let (_end_tx, end_rx) = watch::channel(1000u64);
         let cancel = CancellationToken::new();
 
         // Start paused, then resume after a short delay
@@ -485,13 +524,14 @@ mod tests {
             segment_index: 0,
             url: format!("{}/file", server.uri()),
             start_byte: 0,
-            end_byte: 1000,
+            end_byte_rx: end_rx,
             already_downloaded: 0,
             total_file_size: 0,
             dest_path: PathBuf::from("/tmp/pause_test.bin"),
             pause_rx,
             cancel_token: cancel,
             shared_downloaded: Arc::new(AtomicU64::new(0)),
+            segment_progress: Arc::new(AtomicU64::new(0)),
         })
         .await;
 
@@ -518,6 +558,7 @@ mod tests {
         let storage = Arc::new(MockFileStorage::new());
         let bus = Arc::new(CollectingEventBus::new());
         let (_, pause_rx) = watch::channel(false);
+        let (_end_tx, end_rx) = watch::channel(10_000u64);
         let cancel = CancellationToken::new();
 
         let _result = download_segment(SegmentParams {
@@ -528,13 +569,14 @@ mod tests {
             segment_index: 0,
             url: format!("{}/file", server.uri()),
             start_byte: 0,
-            end_byte: 10_000,
+            end_byte_rx: end_rx,
             already_downloaded: 0,
             total_file_size: 0,
             dest_path: PathBuf::from("/tmp/progress_test.bin"),
             pause_rx,
             cancel_token: cancel,
             shared_downloaded: Arc::new(AtomicU64::new(0)),
+            segment_progress: Arc::new(AtomicU64::new(0)),
         })
         .await;
 
@@ -578,6 +620,7 @@ mod tests {
         let storage = Arc::new(MockFileStorage::new());
         let bus = Arc::new(CollectingEventBus::new());
         let (_, pause_rx) = watch::channel(false);
+        let (_end_tx, end_rx) = watch::channel(512u64);
         let cancel = CancellationToken::new();
 
         let result = download_segment(SegmentParams {
@@ -588,13 +631,14 @@ mod tests {
             segment_index: 1,
             url: format!("{}/file", server.uri()),
             start_byte: 0,
-            end_byte: 512,
+            end_byte_rx: end_rx,
             already_downloaded: 0,
             total_file_size: 0,
             dest_path: PathBuf::from("/tmp/events_test.bin"),
             pause_rx,
             cancel_token: cancel,
             shared_downloaded: Arc::new(AtomicU64::new(0)),
+            segment_progress: Arc::new(AtomicU64::new(0)),
         })
         .await;
 
@@ -631,6 +675,7 @@ mod tests {
         let storage = Arc::new(MockFileStorage::new());
         let bus = Arc::new(CollectingEventBus::new());
         let (_, pause_rx) = watch::channel(false);
+        let (_end_tx, end_rx) = watch::channel(1000u64);
         let cancel = CancellationToken::new();
 
         let result = download_segment(SegmentParams {
@@ -641,13 +686,14 @@ mod tests {
             segment_index: 0,
             url: "http://unused.example.com/file".to_string(),
             start_byte: 0,
-            end_byte: 1000,
+            end_byte_rx: end_rx,
             already_downloaded: 1000, // already fully downloaded
             total_file_size: 1000,
             dest_path: PathBuf::from("/tmp/done_test.bin"),
             pause_rx,
             cancel_token: cancel,
             shared_downloaded: Arc::new(AtomicU64::new(0)),
+            segment_progress: Arc::new(AtomicU64::new(0)),
         })
         .await;
 
@@ -685,6 +731,69 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_segment_respects_mid_flight_end_byte_reduction() {
+        // Strategy: start paused so the worker has begun execution but is
+        // sleeping inside the pause loop. While paused, the engine reduces
+        // the watched end_byte. Then unpause — when the worker resumes,
+        // re-reads end_byte after the chunk fetch, and clamps writes
+        // to the new boundary.
+        let server = MockServer::start().await;
+        let body = vec![b'm'; 4096];
+
+        Mock::given(method("GET"))
+            .and(path("/midflight"))
+            .respond_with(ResponseTemplate::new(206).set_body_bytes(body))
+            .mount(&server)
+            .await;
+
+        let storage = Arc::new(MockFileStorage::new());
+        let bus = Arc::new(CollectingEventBus::new());
+        let (pause_tx, pause_rx) = watch::channel(true);
+        let (end_tx, end_rx) = watch::channel(4096u64);
+        let cancel = CancellationToken::new();
+        let segment_progress = Arc::new(AtomicU64::new(0));
+
+        let pause_tx_clone = pause_tx.clone();
+        tokio::spawn(async move {
+            // Wait for worker to enter the pause loop, then shrink + resume.
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            end_tx.send(1024).unwrap();
+            pause_tx_clone.send(false).unwrap();
+        });
+
+        let result = download_segment(SegmentParams {
+            client: make_client(),
+            file_storage: storage.clone(),
+            event_bus: bus.clone(),
+            download_id: DownloadId(77),
+            segment_index: 0,
+            url: format!("{}/midflight", server.uri()),
+            start_byte: 0,
+            end_byte_rx: end_rx,
+            already_downloaded: 0,
+            total_file_size: 4096,
+            dest_path: PathBuf::from("/tmp/midflight_test.bin"),
+            pause_rx,
+            cancel_token: cancel,
+            shared_downloaded: Arc::new(AtomicU64::new(0)),
+            segment_progress: segment_progress.clone(),
+        })
+        .await;
+
+        assert!(result.is_ok(), "expected truncated success, got {result:?}");
+        let bytes = result.unwrap();
+        assert!(
+            bytes <= 1024,
+            "expected worker to stop at reduced end_byte, got {bytes}"
+        );
+        assert_eq!(
+            segment_progress.load(Ordering::Relaxed),
+            bytes,
+            "segment_progress should mirror returned bytes"
+        );
+    }
+
+    #[tokio::test]
     async fn test_segment_emits_final_progress_before_segment_completed() {
         // Regression for YouTube CDN / fast downloads: when the file downloads in
         // < 500ms the 500ms throttle fires zero DownloadProgress events. The engine
@@ -702,6 +811,7 @@ mod tests {
         let storage = Arc::new(MockFileStorage::new());
         let bus = Arc::new(CollectingEventBus::new());
         let (_, pause_rx) = watch::channel(false);
+        let (_end_tx, end_rx) = watch::channel(u64::MAX);
         let cancel = CancellationToken::new();
         let shared_downloaded = Arc::new(AtomicU64::new(0));
 
@@ -713,13 +823,14 @@ mod tests {
             segment_index: 0,
             url: format!("{}/fast", server.uri()),
             start_byte: 0,
-            end_byte: u64::MAX, // no Content-Length sentinel
+            end_byte_rx: end_rx, // no Content-Length sentinel
             already_downloaded: 0,
             total_file_size: 0,
             dest_path: PathBuf::from("/tmp/final_progress_test.bin"),
             pause_rx,
             cancel_token: cancel,
             shared_downloaded: shared_downloaded.clone(),
+            segment_progress: Arc::new(AtomicU64::new(0)),
         })
         .await;
 

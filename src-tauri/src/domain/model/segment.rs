@@ -129,6 +129,43 @@ impl Segment {
         self.downloaded_bytes = bytes;
     }
 
+    /// Split a downloading segment in two: shrink self to `[start, at_byte)`
+    /// and return a new pending segment covering `[at_byte, original_end)`.
+    ///
+    /// Used by the runtime engine to re-balance a slow segment when a faster
+    /// peer finishes (PRD §7.1 dynamic split).
+    pub fn split(&mut self, at_byte: u64) -> Result<Segment, DomainError> {
+        if self.state != SegmentState::Downloading {
+            return Err(DomainError::ValidationError(format!(
+                "cannot split segment in state {:?}",
+                self.state
+            )));
+        }
+        let current_offset = self.start_byte + self.downloaded_bytes;
+        if at_byte <= current_offset {
+            return Err(DomainError::ValidationError(format!(
+                "split point {at_byte} must be strictly above current offset {current_offset}"
+            )));
+        }
+        if at_byte >= self.end_byte {
+            return Err(DomainError::ValidationError(format!(
+                "split point {at_byte} must be strictly below end_byte {}",
+                self.end_byte
+            )));
+        }
+        let upper = Segment {
+            id: self.id.wrapping_add(1_000_000),
+            download_id: self.download_id,
+            start_byte: at_byte,
+            end_byte: self.end_byte,
+            downloaded_bytes: 0,
+            state: SegmentState::Pending,
+            retry_count: 0,
+        };
+        self.end_byte = at_byte;
+        Ok(upper)
+    }
+
     // --- Getters ---
 
     pub fn id(&self) -> u32 {
@@ -299,6 +336,55 @@ mod tests {
                 end_byte: 1024,
             }
         );
+    }
+
+    #[test]
+    fn test_segment_split_returns_upper_half_and_shrinks_self() {
+        let mut s = Segment::new(1, DownloadId(10), 0, 1000);
+        s.start().unwrap();
+        s.update_progress(200);
+        let upper = s.split(600).unwrap();
+        // self keeps lower half
+        assert_eq!(s.start_byte(), 0);
+        assert_eq!(s.end_byte(), 600);
+        assert_eq!(s.downloaded_bytes(), 200);
+        assert_eq!(s.state(), SegmentState::Downloading);
+        // upper covers [600, 1000), pending
+        assert_eq!(upper.start_byte(), 600);
+        assert_eq!(upper.end_byte(), 1000);
+        assert_eq!(upper.downloaded_bytes(), 0);
+        assert_eq!(upper.state(), SegmentState::Pending);
+        assert_eq!(upper.download_id(), DownloadId(10));
+        assert_ne!(upper.id(), s.id());
+    }
+
+    #[test]
+    fn test_segment_split_rejects_at_or_below_current_offset() {
+        let mut s = Segment::new(1, DownloadId(10), 0, 1000);
+        s.start().unwrap();
+        s.update_progress(200);
+        assert!(matches!(s.split(200), Err(DomainError::ValidationError(_))));
+        assert!(matches!(s.split(100), Err(DomainError::ValidationError(_))));
+    }
+
+    #[test]
+    fn test_segment_split_rejects_at_or_above_end_byte() {
+        let mut s = Segment::new(1, DownloadId(10), 0, 1000);
+        s.start().unwrap();
+        assert!(matches!(
+            s.split(1000),
+            Err(DomainError::ValidationError(_))
+        ));
+        assert!(matches!(
+            s.split(1500),
+            Err(DomainError::ValidationError(_))
+        ));
+    }
+
+    #[test]
+    fn test_segment_split_rejects_when_not_downloading() {
+        let mut s = Segment::new(1, DownloadId(10), 0, 1000);
+        assert!(matches!(s.split(500), Err(DomainError::ValidationError(_))));
     }
 
     #[test]

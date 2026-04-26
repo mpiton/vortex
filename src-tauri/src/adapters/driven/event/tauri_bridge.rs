@@ -50,6 +50,7 @@ fn event_name(event: &DomainEvent) -> &'static str {
         DomainEvent::SegmentStarted { .. } => "segment-started",
         DomainEvent::SegmentCompleted { .. } => "segment-completed",
         DomainEvent::SegmentFailed { .. } => "segment-failed",
+        DomainEvent::SegmentSplit { .. } => "segment-split",
         DomainEvent::PluginLoaded { .. } => "plugin-loaded",
         DomainEvent::PluginUnloaded { .. } => "plugin-unloaded",
         DomainEvent::PackageCreated { .. } => "package-created",
@@ -115,6 +116,19 @@ fn event_payload(event: &DomainEvent) -> serde_json::Value {
             error,
         } => {
             json!({ "downloadId": download_id.0, "segmentId": segment_id, "error": error })
+        }
+        DomainEvent::SegmentSplit {
+            download_id,
+            original_segment_id,
+            new_segment_id,
+            split_at,
+        } => {
+            json!({
+                "downloadId": download_id.0,
+                "originalSegmentId": original_segment_id,
+                "newSegmentId": new_segment_id,
+                "splitAt": split_at,
+            })
         }
 
         DomainEvent::PluginLoaded { name, version } => {

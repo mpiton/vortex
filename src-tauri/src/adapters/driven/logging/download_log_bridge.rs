@@ -84,6 +84,19 @@ fn record_download_event(store: &DownloadLogStore, event: &DomainEvent) {
                 format!("[ERROR] Segment {segment_id} failed: {error}"),
             );
         }
+        DomainEvent::SegmentSplit {
+            download_id,
+            original_segment_id,
+            new_segment_id,
+            split_at,
+        } => {
+            store.push(
+                download_id.0,
+                format!(
+                    "[INFO] Segment {original_segment_id} split at byte {split_at}; new segment {new_segment_id} took the upper half"
+                ),
+            );
+        }
         DomainEvent::ChecksumVerified { id, algorithm, .. } => {
             store.push(id.0, format!("[INFO] {algorithm} checksum verified"));
         }

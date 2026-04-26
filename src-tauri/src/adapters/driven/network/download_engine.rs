@@ -1,6 +1,6 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
-use std::sync::atomic::AtomicU64;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use tokio::sync::watch;
@@ -10,6 +10,7 @@ use tokio_util::sync::CancellationToken;
 use crate::domain::error::DomainError;
 use crate::domain::event::DomainEvent;
 use crate::domain::model::download::{Download, DownloadId};
+use crate::domain::model::meta::{DownloadMeta, SegmentMeta};
 use crate::domain::ports::driven::{DownloadEngine, EventBus, FileStorage};
 
 use super::format_error_chain;
@@ -20,12 +21,124 @@ struct ActiveDownload {
     pause_sender: watch::Sender<bool>,
 }
 
+/// Runtime state of one in-flight segment, tracked by the engine so it can
+/// shrink the segment's range and observe its throughput for dynamic split.
+struct SegmentRuntimeState {
+    end_tx: watch::Sender<u64>,
+    progress: Arc<AtomicU64>,
+    started_at: std::time::Instant,
+    start_byte: u64,
+    initial_end: u64,
+}
+
+/// Pick the slowest active segment whose remaining range is large enough
+/// to benefit from a split. Returns the slot index and the byte at which
+/// to split (midpoint of the remaining range).
+fn pick_split_target(
+    segments: &[Option<SegmentRuntimeState>],
+    min_remaining_bytes: u64,
+) -> Option<(usize, u64)> {
+    let mut slowest: Option<(usize, f64, u64)> = None;
+    for (idx, slot) in segments.iter().enumerate() {
+        let Some(state) = slot else { continue };
+        if state.initial_end == u64::MAX {
+            continue; // unbounded segments cannot be split
+        }
+        let downloaded = state.progress.load(Ordering::Relaxed);
+        let current_offset = state.start_byte.saturating_add(downloaded);
+        if current_offset >= state.initial_end {
+            continue; // already at end — completion event will fire shortly
+        }
+        let remaining = state.initial_end - current_offset;
+        if remaining < min_remaining_bytes.max(1) {
+            continue;
+        }
+        let split_at = current_offset.saturating_add(remaining / 2);
+        if split_at <= current_offset || split_at >= state.initial_end {
+            continue;
+        }
+        let elapsed = state.started_at.elapsed().as_secs_f64().max(1e-3);
+        let bps = downloaded as f64 / elapsed;
+        match slowest {
+            None => slowest = Some((idx, bps, split_at)),
+            Some((_, prev_bps, _)) if bps < prev_bps => {
+                slowest = Some((idx, bps, split_at));
+            }
+            _ => {}
+        }
+    }
+    slowest.map(|(idx, _, split_at)| (idx, split_at))
+}
+
+/// Atomically rewrite `.vortex-meta` after a dynamic split so resume after a
+/// crash sees the updated segment topology. A failure here only logs — the
+/// in-memory split is still valid for the live download.
+async fn persist_split_meta(
+    file_storage: &Arc<dyn FileStorage>,
+    dest_path: &Path,
+    download_id: DownloadId,
+    url: &str,
+    total_size: u64,
+    active_segments: &[Option<SegmentRuntimeState>],
+) {
+    let segments_meta: Vec<SegmentMeta> = active_segments
+        .iter()
+        .enumerate()
+        .filter_map(|(i, slot)| {
+            slot.as_ref().map(|st| SegmentMeta {
+                id: i as u32,
+                start_byte: st.start_byte,
+                end_byte: st.initial_end,
+                downloaded_bytes: st.progress.load(Ordering::Relaxed),
+                completed: false,
+            })
+        })
+        .collect();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let file_name = dest_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("")
+        .to_string();
+    let snapshot = DownloadMeta {
+        download_id,
+        url: url.to_string(),
+        file_name,
+        total_bytes: Some(total_size),
+        segments: segments_meta,
+        checksum_expected: None,
+        created_at: now,
+        updated_at: now,
+    };
+    let storage = file_storage.clone();
+    let path = dest_path.to_path_buf();
+    let join = tokio::task::spawn_blocking(move || storage.write_meta(&path, &snapshot)).await;
+    match join {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => tracing::warn!(
+            download_id = download_id.0,
+            error = %e,
+            "persist meta after split failed (download still proceeds)"
+        ),
+        Err(e) => tracing::warn!(
+            download_id = download_id.0,
+            error = %e,
+            "persist meta after split task panicked"
+        ),
+    }
+}
+
 pub struct SegmentedDownloadEngine {
     client: reqwest::Client,
     file_storage: Arc<dyn FileStorage>,
     event_bus: Arc<dyn EventBus>,
     default_segments: u32,
     min_segment_bytes: u64,
+    dynamic_split_enabled: bool,
+    dynamic_split_min_remaining_bytes: u64,
     active_downloads: Arc<Mutex<HashMap<DownloadId, ActiveDownload>>>,
 }
 
@@ -42,12 +155,23 @@ impl SegmentedDownloadEngine {
             event_bus,
             default_segments: default_segments.max(1),
             min_segment_bytes: 64 * 1024,
+            dynamic_split_enabled: true,
+            dynamic_split_min_remaining_bytes: 4 * 1024 * 1024,
             active_downloads: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
     pub fn with_min_segment_bytes(mut self, min_bytes: u64) -> Self {
         self.min_segment_bytes = min_bytes.max(1);
+        self
+    }
+
+    /// Configure runtime re-splitting of slow segments. PRD §7.1.
+    /// `min_remaining_mb == 0` disables the size gate entirely; the engine
+    /// then only refuses to split if the candidate has 0 bytes left.
+    pub fn with_dynamic_split(mut self, enabled: bool, min_remaining_mb: u64) -> Self {
+        self.dynamic_split_enabled = enabled;
+        self.dynamic_split_min_remaining_bytes = min_remaining_mb.saturating_mul(1024 * 1024);
         self
     }
 
@@ -133,6 +257,8 @@ impl DownloadEngine for SegmentedDownloadEngine {
         let event_bus = self.event_bus.clone();
         let active_downloads = self.active_downloads.clone();
         let min_segment_bytes = self.min_segment_bytes;
+        let dynamic_split_enabled = self.dynamic_split_enabled;
+        let dynamic_split_min_remaining = self.dynamic_split_min_remaining_bytes;
 
         tokio::spawn(async move {
             let (total_size, supports_range) =
@@ -274,7 +400,17 @@ impl DownloadEngine for SegmentedDownloadEngine {
 
             let shared_downloaded = Arc::new(AtomicU64::new(0));
             let mut join_set = JoinSet::new();
+            let mut segment_state: Vec<SegmentRuntimeState> = Vec::with_capacity(segments.len());
             for (index, (start, end)) in segments.iter().enumerate() {
+                let (end_tx, end_rx) = watch::channel(*end);
+                let progress = Arc::new(AtomicU64::new(0));
+                segment_state.push(SegmentRuntimeState {
+                    end_tx,
+                    progress: progress.clone(),
+                    started_at: std::time::Instant::now(),
+                    start_byte: *start,
+                    initial_end: *end,
+                });
                 join_set.spawn(download_segment(SegmentParams {
                     client: client.clone(),
                     file_storage: file_storage.clone(),
@@ -283,22 +419,95 @@ impl DownloadEngine for SegmentedDownloadEngine {
                     segment_index: index as u32,
                     url: url.clone(),
                     start_byte: *start,
-                    end_byte: *end,
+                    end_byte_rx: end_rx,
                     already_downloaded: 0,
                     total_file_size: total_size,
                     dest_path: dest_path.clone(),
                     pause_rx: pause_rx.clone(),
                     cancel_token: cancel_token.clone(),
                     shared_downloaded: shared_downloaded.clone(),
+                    segment_progress: progress,
                 }));
             }
 
             let mut failed = false;
             let mut error_msg = String::new();
+            let mut next_segment_id: u32 = segments.len() as u32;
+            let mut active_segments: Vec<Option<SegmentRuntimeState>> =
+                segment_state.into_iter().map(Some).collect();
 
             while let Some(result) = join_set.join_next().await {
                 match result {
-                    Ok(Ok(_bytes)) => {}
+                    Ok(Ok(_bytes)) => {
+                        if dynamic_split_enabled
+                            && !cancel_token.is_cancelled()
+                            && let Some((idx, split_at)) =
+                                pick_split_target(&active_segments, dynamic_split_min_remaining)
+                        {
+                            let new_id = next_segment_id;
+                            next_segment_id += 1;
+                            // Capture state needed before we touch it again.
+                            let (initial_end, signal_sent) = {
+                                let old_state = active_segments[idx]
+                                    .as_ref()
+                                    .expect("slot present at split time");
+                                let initial_end = old_state.initial_end;
+                                let signal_sent = old_state.end_tx.send(split_at).is_ok();
+                                (initial_end, signal_sent)
+                            };
+                            if !signal_sent {
+                                tracing::warn!(
+                                    download_id = download_id.0,
+                                    original_segment_id = idx as u32,
+                                    "split skipped: target worker no longer listening"
+                                );
+                                continue;
+                            }
+                            event_bus.publish(DomainEvent::SegmentSplit {
+                                download_id,
+                                original_segment_id: idx as u32,
+                                new_segment_id: new_id,
+                                split_at,
+                            });
+
+                            let new_progress = Arc::new(AtomicU64::new(0));
+                            let (new_end_tx, new_end_rx) = watch::channel(initial_end);
+                            join_set.spawn(download_segment(SegmentParams {
+                                client: client.clone(),
+                                file_storage: file_storage.clone(),
+                                event_bus: event_bus.clone(),
+                                download_id,
+                                segment_index: new_id,
+                                url: url.clone(),
+                                start_byte: split_at,
+                                end_byte_rx: new_end_rx,
+                                already_downloaded: 0,
+                                total_file_size: total_size,
+                                dest_path: dest_path.clone(),
+                                pause_rx: pause_rx.clone(),
+                                cancel_token: cancel_token.clone(),
+                                shared_downloaded: shared_downloaded.clone(),
+                                segment_progress: new_progress.clone(),
+                            }));
+                            active_segments.push(Some(SegmentRuntimeState {
+                                end_tx: new_end_tx,
+                                progress: new_progress,
+                                started_at: std::time::Instant::now(),
+                                start_byte: split_at,
+                                initial_end,
+                            }));
+
+                            persist_split_meta(
+                                &file_storage,
+                                &dest_path,
+                                download_id,
+                                &url,
+                                total_size,
+                                &active_segments,
+                            )
+                            .await;
+                        }
+                    }
                     Ok(Err(e)) => match e {
                         SegmentError::Cancelled => {
                             cancel_token.cancel();
@@ -759,6 +968,153 @@ mod tests {
             cancel_again.is_ok(),
             "second cancel should succeed (idempotent)"
         );
+    }
+
+    #[tokio::test]
+    async fn test_dynamic_split_skipped_when_remaining_too_small() {
+        // 2 KiB total, 4 segments, min_remaining 4 MiB → split must NOT trigger.
+        let server = MockServer::start().await;
+        let body = vec![b'a'; 2048];
+
+        Mock::given(method("HEAD"))
+            .and(path("/small"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-length", "2048")
+                    .insert_header("accept-ranges", "bytes"),
+            )
+            .mount(&server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/small"))
+            .respond_with(ResponseTemplate::new(206).set_body_bytes(body))
+            .mount(&server)
+            .await;
+
+        let storage = Arc::new(MockFileStorage::new());
+        let bus = Arc::new(CollectingEventBus::new());
+        let engine = SegmentedDownloadEngine::new(reqwest::Client::new(), storage, bus.clone(), 4)
+            .with_min_segment_bytes(256)
+            .with_dynamic_split(true, 4); // 4 MiB threshold blocks 2 KiB file
+
+        let url = format!("{}/small", server.uri());
+        let download = make_download(70, &url);
+        engine.start(&download).unwrap();
+
+        let found = bus
+            .wait_for_event_async(
+                |e| matches!(e, DomainEvent::DownloadCompleted { id } if id.0 == 70),
+                Duration::from_secs(5),
+            )
+            .await;
+        assert!(found, "download did not complete");
+
+        let events = bus.collected();
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, DomainEvent::SegmentSplit { .. })),
+            "no split should fire when remaining < threshold; got {events:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_dynamic_split_disabled_via_config_does_not_split() {
+        let server = MockServer::start().await;
+        let body = vec![b'x'; 64 * 1024];
+
+        Mock::given(method("HEAD"))
+            .and(path("/disabled"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-length", "65536")
+                    .insert_header("accept-ranges", "bytes"),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/disabled"))
+            .respond_with(ResponseTemplate::new(206).set_body_bytes(body))
+            .mount(&server)
+            .await;
+
+        let storage = Arc::new(MockFileStorage::new());
+        let bus = Arc::new(CollectingEventBus::new());
+        let engine = SegmentedDownloadEngine::new(reqwest::Client::new(), storage, bus.clone(), 4)
+            .with_min_segment_bytes(1024)
+            .with_dynamic_split(false, 0);
+
+        let url = format!("{}/disabled", server.uri());
+        let download = make_download(71, &url);
+        engine.start(&download).unwrap();
+
+        let found = bus
+            .wait_for_event_async(
+                |e| matches!(e, DomainEvent::DownloadCompleted { id } if id.0 == 71),
+                Duration::from_secs(5),
+            )
+            .await;
+        assert!(found);
+        let events = bus.collected();
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, DomainEvent::SegmentSplit { .. })),
+            "split must not fire when disabled"
+        );
+    }
+
+    #[test]
+    fn test_pick_split_target_prefers_slowest_above_threshold() {
+        let make = |start: u64, end: u64, downloaded: u64, age_ms: u64| {
+            Some(SegmentRuntimeState {
+                end_tx: watch::channel(end).0,
+                progress: Arc::new(AtomicU64::new(downloaded)),
+                started_at: std::time::Instant::now() - std::time::Duration::from_millis(age_ms),
+                start_byte: start,
+                initial_end: end,
+            })
+        };
+        let segs = [
+            // fast: 1 MiB downloaded in 100 ms → 10 MiB/s
+            make(0, 16 * 1024 * 1024, 1024 * 1024, 100),
+            // slow: 100 KiB in 1000 ms → ~100 KiB/s, plenty of remaining
+            make(16 * 1024 * 1024, 32 * 1024 * 1024, 100 * 1024, 1000),
+            // tiny remaining → must be filtered
+            make(32 * 1024 * 1024, 32 * 1024 * 1024 + 1024, 512, 200),
+        ];
+        let pick = pick_split_target(&segs, 4 * 1024 * 1024);
+        assert_eq!(
+            pick.map(|(i, _)| i),
+            Some(1),
+            "expected slot 1 (slowest with enough remaining), got {pick:?}"
+        );
+        let (_, split_at) = pick.unwrap();
+        assert!(
+            split_at > 16 * 1024 * 1024 + 100 * 1024,
+            "split must be above current offset"
+        );
+        assert!(
+            split_at < 32 * 1024 * 1024,
+            "split must be below initial_end"
+        );
+    }
+
+    #[test]
+    fn test_pick_split_target_returns_none_when_all_below_threshold() {
+        let make = |start: u64, end: u64, downloaded: u64| {
+            Some(SegmentRuntimeState {
+                end_tx: watch::channel(end).0,
+                progress: Arc::new(AtomicU64::new(downloaded)),
+                started_at: std::time::Instant::now(),
+                start_byte: start,
+                initial_end: end,
+            })
+        };
+        let segs = [make(0, 1024, 100), make(1024, 2048, 0), make(2048, 3072, 0)];
+        let pick = pick_split_target(&segs, 4 * 1024 * 1024);
+        assert!(pick.is_none(), "got {pick:?}");
     }
 
     #[tokio::test]

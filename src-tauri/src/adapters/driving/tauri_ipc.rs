@@ -907,6 +907,8 @@ pub struct ConfigPatchDto {
     pub retry_delay_seconds: Option<u32>,
     pub verify_checksums: Option<bool>,
     pub pre_allocate_space: Option<bool>,
+    pub dynamic_split_enabled: Option<bool>,
+    pub dynamic_split_min_remaining_mb: Option<u64>,
 
     // History
     pub history_retention_days: Option<i64>,
@@ -955,6 +957,8 @@ impl From<ConfigPatchDto> for ConfigPatch {
             retry_delay_seconds: d.retry_delay_seconds,
             verify_checksums: d.verify_checksums,
             pre_allocate_space: d.pre_allocate_space,
+            dynamic_split_enabled: d.dynamic_split_enabled,
+            dynamic_split_min_remaining_mb: d.dynamic_split_min_remaining_mb,
             history_retention_days: d.history_retention_days,
             proxy_type: d.proxy_type,
             proxy_url: d.proxy_url,

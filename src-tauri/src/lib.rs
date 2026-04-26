@@ -211,12 +211,21 @@ pub fn run() {
             let plugin_loader: Arc<dyn PluginLoader> = plugin_loader_impl.clone();
 
             // ── Download engine ─────────────────────────────────────
-            let download_engine: Arc<dyn DownloadEngine> = Arc::new(SegmentedDownloadEngine::new(
-                reqwest_client,
-                file_storage.clone(),
-                event_bus.clone(),
-                4,
-            ));
+            let initial_engine_config = config_store
+                .get_config()
+                .unwrap_or_else(|_| crate::domain::model::config::AppConfig::default());
+            let download_engine: Arc<dyn DownloadEngine> = Arc::new(
+                SegmentedDownloadEngine::new(
+                    reqwest_client,
+                    file_storage.clone(),
+                    event_bus.clone(),
+                    4,
+                )
+                .with_dynamic_split(
+                    initial_engine_config.dynamic_split_enabled,
+                    initial_engine_config.dynamic_split_min_remaining_mb,
+                ),
+            );
 
             // ── Startup recovery ────────────────────────────────────
             // Orphaned downloads (Downloading/Waiting/Checking/Extracting

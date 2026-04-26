@@ -30,6 +30,13 @@ pub struct AppConfig {
     pub retry_delay_seconds: u32,
     pub verify_checksums: bool,
     pub pre_allocate_space: bool,
+    /// Enable runtime re-split of slow segments when a faster segment
+    /// finishes. PRD §7.1 (répartition dynamique).
+    pub dynamic_split_enabled: bool,
+    /// Minimum remaining bytes (in MiB) required before a segment is
+    /// eligible for re-split. Below this threshold, the parallelism gain
+    /// is dwarfed by HTTP request and rebalance overhead.
+    pub dynamic_split_min_remaining_mb: u64,
 
     // ── History ──────────────────────────────────────────────────────
     /// Number of days history entries are retained before automatic
@@ -96,6 +103,8 @@ impl Default for AppConfig {
             retry_delay_seconds: 10,
             verify_checksums: true,
             pre_allocate_space: true,
+            dynamic_split_enabled: true,
+            dynamic_split_min_remaining_mb: 4,
 
             // History
             history_retention_days: 30,
@@ -156,6 +165,8 @@ pub struct ConfigPatch {
     pub retry_delay_seconds: Option<u32>,
     pub verify_checksums: Option<bool>,
     pub pre_allocate_space: Option<bool>,
+    pub dynamic_split_enabled: Option<bool>,
+    pub dynamic_split_min_remaining_mb: Option<u64>,
 
     // History
     pub history_retention_days: Option<i64>,
@@ -267,6 +278,12 @@ pub fn apply_patch(config: &mut AppConfig, patch: &ConfigPatch) {
     if let Some(v) = patch.pre_allocate_space {
         config.pre_allocate_space = v;
     }
+    if let Some(v) = patch.dynamic_split_enabled {
+        config.dynamic_split_enabled = v;
+    }
+    if let Some(v) = patch.dynamic_split_min_remaining_mb {
+        config.dynamic_split_min_remaining_mb = v;
+    }
 
     // History
     if let Some(v) = patch.history_retention_days {
@@ -369,6 +386,29 @@ mod tests {
         assert!(config.rest_api_enabled);
         assert!(config.websocket_enabled);
         assert!(config.api_key.is_empty());
+    }
+
+    #[test]
+    fn test_default_dynamic_split_enabled_and_min_remaining() {
+        let c = AppConfig::default();
+        assert!(
+            c.dynamic_split_enabled,
+            "PRD §7.1: dynamic split on by default"
+        );
+        assert_eq!(c.dynamic_split_min_remaining_mb, 4);
+    }
+
+    #[test]
+    fn test_apply_patch_updates_dynamic_split_fields() {
+        let mut config = AppConfig::default();
+        let patch = ConfigPatch {
+            dynamic_split_enabled: Some(false),
+            dynamic_split_min_remaining_mb: Some(16),
+            ..Default::default()
+        };
+        apply_patch(&mut config, &patch);
+        assert!(!config.dynamic_split_enabled);
+        assert_eq!(config.dynamic_split_min_remaining_mb, 16);
     }
 
     #[test]
