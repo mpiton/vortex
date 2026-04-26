@@ -28,6 +28,8 @@ const baseConfig: AppConfig = {
   retryDelaySeconds: 10,
   verifyChecksums: true,
   preAllocateSpace: false,
+  dynamicSplitEnabled: true,
+  dynamicSplitMinRemainingMb: 4,
   proxyType: 'none',
   proxyUrl: null,
   userAgent: 'Vortex/1.0',

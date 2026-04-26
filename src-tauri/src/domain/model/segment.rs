@@ -132,13 +132,22 @@ impl Segment {
     /// Split a downloading segment in two: shrink self to `[start, at_byte)`
     /// and return a new pending segment covering `[at_byte, original_end)`.
     ///
+    /// `new_id` is supplied by the caller because segment IDs are allocated
+    /// by the engine's monotonic counter — the domain method must not invent
+    /// IDs that could collide with engine-assigned ones.
+    ///
     /// Used by the runtime engine to re-balance a slow segment when a faster
     /// peer finishes (PRD §7.1 dynamic split).
-    pub fn split(&mut self, at_byte: u64) -> Result<Segment, DomainError> {
+    pub fn split(&mut self, at_byte: u64, new_id: u32) -> Result<Segment, DomainError> {
         if self.state != SegmentState::Downloading {
             return Err(DomainError::ValidationError(format!(
                 "cannot split segment in state {:?}",
                 self.state
+            )));
+        }
+        if new_id == self.id {
+            return Err(DomainError::ValidationError(format!(
+                "split id {new_id} collides with original segment id"
             )));
         }
         let current_offset = self.start_byte + self.downloaded_bytes;
@@ -154,7 +163,7 @@ impl Segment {
             )));
         }
         let upper = Segment {
-            id: self.id.wrapping_add(1_000_000),
+            id: new_id,
             download_id: self.download_id,
             start_byte: at_byte,
             end_byte: self.end_byte,
@@ -343,19 +352,19 @@ mod tests {
         let mut s = Segment::new(1, DownloadId(10), 0, 1000);
         s.start().unwrap();
         s.update_progress(200);
-        let upper = s.split(600).unwrap();
+        let upper = s.split(600, 42).unwrap();
         // self keeps lower half
         assert_eq!(s.start_byte(), 0);
         assert_eq!(s.end_byte(), 600);
         assert_eq!(s.downloaded_bytes(), 200);
         assert_eq!(s.state(), SegmentState::Downloading);
-        // upper covers [600, 1000), pending
+        // upper covers [600, 1000), pending, with caller-provided id
         assert_eq!(upper.start_byte(), 600);
         assert_eq!(upper.end_byte(), 1000);
         assert_eq!(upper.downloaded_bytes(), 0);
         assert_eq!(upper.state(), SegmentState::Pending);
         assert_eq!(upper.download_id(), DownloadId(10));
-        assert_ne!(upper.id(), s.id());
+        assert_eq!(upper.id(), 42);
     }
 
     #[test]
@@ -363,8 +372,14 @@ mod tests {
         let mut s = Segment::new(1, DownloadId(10), 0, 1000);
         s.start().unwrap();
         s.update_progress(200);
-        assert!(matches!(s.split(200), Err(DomainError::ValidationError(_))));
-        assert!(matches!(s.split(100), Err(DomainError::ValidationError(_))));
+        assert!(matches!(
+            s.split(200, 42),
+            Err(DomainError::ValidationError(_))
+        ));
+        assert!(matches!(
+            s.split(100, 42),
+            Err(DomainError::ValidationError(_))
+        ));
     }
 
     #[test]
@@ -372,11 +387,11 @@ mod tests {
         let mut s = Segment::new(1, DownloadId(10), 0, 1000);
         s.start().unwrap();
         assert!(matches!(
-            s.split(1000),
+            s.split(1000, 42),
             Err(DomainError::ValidationError(_))
         ));
         assert!(matches!(
-            s.split(1500),
+            s.split(1500, 42),
             Err(DomainError::ValidationError(_))
         ));
     }
@@ -384,7 +399,20 @@ mod tests {
     #[test]
     fn test_segment_split_rejects_when_not_downloading() {
         let mut s = Segment::new(1, DownloadId(10), 0, 1000);
-        assert!(matches!(s.split(500), Err(DomainError::ValidationError(_))));
+        assert!(matches!(
+            s.split(500, 42),
+            Err(DomainError::ValidationError(_))
+        ));
+    }
+
+    #[test]
+    fn test_segment_split_rejects_id_collision_with_self() {
+        let mut s = Segment::new(7, DownloadId(10), 0, 1000);
+        s.start().unwrap();
+        assert!(matches!(
+            s.split(500, 7),
+            Err(DomainError::ValidationError(_))
+        ));
     }
 
     #[test]

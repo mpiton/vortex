@@ -44,6 +44,8 @@ const mockConfig: AppConfig = {
   retryDelaySeconds: 10,
   verifyChecksums: true,
   preAllocateSpace: true,
+  dynamicSplitEnabled: true,
+  dynamicSplitMinRemainingMb: 4,
   historyRetentionDays: 30,
   proxyType: "none",
   proxyUrl: null,

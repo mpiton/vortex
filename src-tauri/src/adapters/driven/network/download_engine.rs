@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use tokio::sync::watch;
@@ -137,8 +137,8 @@ pub struct SegmentedDownloadEngine {
     event_bus: Arc<dyn EventBus>,
     default_segments: u32,
     min_segment_bytes: u64,
-    dynamic_split_enabled: bool,
-    dynamic_split_min_remaining_bytes: u64,
+    dynamic_split_enabled: Arc<AtomicBool>,
+    dynamic_split_min_remaining_bytes: Arc<AtomicU64>,
     active_downloads: Arc<Mutex<HashMap<DownloadId, ActiveDownload>>>,
 }
 
@@ -155,8 +155,8 @@ impl SegmentedDownloadEngine {
             event_bus,
             default_segments: default_segments.max(1),
             min_segment_bytes: 64 * 1024,
-            dynamic_split_enabled: true,
-            dynamic_split_min_remaining_bytes: 4 * 1024 * 1024,
+            dynamic_split_enabled: Arc::new(AtomicBool::new(true)),
+            dynamic_split_min_remaining_bytes: Arc::new(AtomicU64::new(4 * 1024 * 1024)),
             active_downloads: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -169,10 +169,20 @@ impl SegmentedDownloadEngine {
     /// Configure runtime re-splitting of slow segments. PRD §7.1.
     /// `min_remaining_mb == 0` disables the size gate entirely; the engine
     /// then only refuses to split if the candidate has 0 bytes left.
-    pub fn with_dynamic_split(mut self, enabled: bool, min_remaining_mb: u64) -> Self {
-        self.dynamic_split_enabled = enabled;
-        self.dynamic_split_min_remaining_bytes = min_remaining_mb.saturating_mul(1024 * 1024);
+    pub fn with_dynamic_split(self, enabled: bool, min_remaining_mb: u64) -> Self {
+        self.set_dynamic_split(enabled, min_remaining_mb);
         self
+    }
+
+    /// Update dynamic-split runtime parameters live. Used by the engine
+    /// config bridge so settings changes from the UI take effect on
+    /// already-running and newly-started downloads without restart.
+    pub fn set_dynamic_split(&self, enabled: bool, min_remaining_mb: u64) {
+        self.dynamic_split_enabled.store(enabled, Ordering::Relaxed);
+        self.dynamic_split_min_remaining_bytes.store(
+            min_remaining_mb.saturating_mul(1024 * 1024),
+            Ordering::Relaxed,
+        );
     }
 
     async fn probe_remote_metadata(
@@ -257,8 +267,8 @@ impl DownloadEngine for SegmentedDownloadEngine {
         let event_bus = self.event_bus.clone();
         let active_downloads = self.active_downloads.clone();
         let min_segment_bytes = self.min_segment_bytes;
-        let dynamic_split_enabled = self.dynamic_split_enabled;
-        let dynamic_split_min_remaining = self.dynamic_split_min_remaining_bytes;
+        let dynamic_split_enabled = self.dynamic_split_enabled.clone();
+        let dynamic_split_min_remaining_bytes = self.dynamic_split_min_remaining_bytes.clone();
 
         tokio::spawn(async move {
             let (total_size, supports_range) =
@@ -399,7 +409,7 @@ impl DownloadEngine for SegmentedDownloadEngine {
             event_bus.publish(DomainEvent::DownloadStarted { id: download_id });
 
             let shared_downloaded = Arc::new(AtomicU64::new(0));
-            let mut join_set = JoinSet::new();
+            let mut join_set: JoinSet<(usize, Result<u64, SegmentError>)> = JoinSet::new();
             let mut segment_state: Vec<SegmentRuntimeState> = Vec::with_capacity(segments.len());
             for (index, (start, end)) in segments.iter().enumerate() {
                 let (end_tx, end_rx) = watch::channel(*end);
@@ -411,7 +421,7 @@ impl DownloadEngine for SegmentedDownloadEngine {
                     start_byte: *start,
                     initial_end: *end,
                 });
-                join_set.spawn(download_segment(SegmentParams {
+                let params = SegmentParams {
                     client: client.clone(),
                     file_storage: file_storage.clone(),
                     event_bus: event_bus.clone(),
@@ -427,7 +437,9 @@ impl DownloadEngine for SegmentedDownloadEngine {
                     cancel_token: cancel_token.clone(),
                     shared_downloaded: shared_downloaded.clone(),
                     segment_progress: progress,
-                }));
+                };
+                let slot_idx = index;
+                join_set.spawn(async move { (slot_idx, download_segment(params).await) });
             }
 
             let mut failed = false;
@@ -438,21 +450,35 @@ impl DownloadEngine for SegmentedDownloadEngine {
 
             while let Some(result) = join_set.join_next().await {
                 match result {
-                    Ok(Ok(_bytes)) => {
-                        if dynamic_split_enabled
+                    Ok((slot_idx, Ok(_bytes))) => {
+                        // Clear the completed slot so pick_split_target ignores it
+                        // and persist_split_meta reflects the live topology.
+                        if slot_idx < active_segments.len() {
+                            active_segments[slot_idx] = None;
+                        }
+
+                        if dynamic_split_enabled.load(Ordering::Relaxed)
                             && !cancel_token.is_cancelled()
-                            && let Some((idx, split_at)) =
-                                pick_split_target(&active_segments, dynamic_split_min_remaining)
+                            && let Some((idx, split_at)) = pick_split_target(
+                                &active_segments,
+                                dynamic_split_min_remaining_bytes.load(Ordering::Relaxed),
+                            )
                         {
                             let new_id = next_segment_id;
                             next_segment_id += 1;
-                            // Capture state needed before we touch it again.
+                            // Capture state and update initial_end on success so a
+                            // subsequent pick_split_target on the same slot — or a
+                            // crash recovery via persist_split_meta — observes the
+                            // shrunk range, not the pre-split end.
                             let (initial_end, signal_sent) = {
                                 let old_state = active_segments[idx]
-                                    .as_ref()
+                                    .as_mut()
                                     .expect("slot present at split time");
                                 let initial_end = old_state.initial_end;
                                 let signal_sent = old_state.end_tx.send(split_at).is_ok();
+                                if signal_sent {
+                                    old_state.initial_end = split_at;
+                                }
                                 (initial_end, signal_sent)
                             };
                             if !signal_sent {
@@ -472,7 +498,8 @@ impl DownloadEngine for SegmentedDownloadEngine {
 
                             let new_progress = Arc::new(AtomicU64::new(0));
                             let (new_end_tx, new_end_rx) = watch::channel(initial_end);
-                            join_set.spawn(download_segment(SegmentParams {
+                            let new_slot_idx = active_segments.len();
+                            let params = SegmentParams {
                                 client: client.clone(),
                                 file_storage: file_storage.clone(),
                                 event_bus: event_bus.clone(),
@@ -488,7 +515,10 @@ impl DownloadEngine for SegmentedDownloadEngine {
                                 cancel_token: cancel_token.clone(),
                                 shared_downloaded: shared_downloaded.clone(),
                                 segment_progress: new_progress.clone(),
-                            }));
+                            };
+                            join_set.spawn(async move {
+                                (new_slot_idx, download_segment(params).await)
+                            });
                             active_segments.push(Some(SegmentRuntimeState {
                                 end_tx: new_end_tx,
                                 progress: new_progress,
@@ -508,23 +538,28 @@ impl DownloadEngine for SegmentedDownloadEngine {
                             .await;
                         }
                     }
-                    Ok(Err(e)) => match e {
-                        SegmentError::Cancelled => {
-                            cancel_token.cancel();
+                    Ok((slot_idx, Err(e))) => {
+                        if slot_idx < active_segments.len() {
+                            active_segments[slot_idx] = None;
                         }
-                        _ => {
-                            if failed {
-                                tracing::warn!(
-                                    download_id = download_id.0,
-                                    previous_error = %error_msg,
-                                    "additional segment failure (overwriting previous error)"
-                                );
+                        match e {
+                            SegmentError::Cancelled => {
+                                cancel_token.cancel();
                             }
-                            error_msg = format!("{e:?}");
-                            failed = true;
-                            cancel_token.cancel();
+                            _ => {
+                                if failed {
+                                    tracing::warn!(
+                                        download_id = download_id.0,
+                                        previous_error = %error_msg,
+                                        "additional segment failure (overwriting previous error)"
+                                    );
+                                }
+                                error_msg = format!("{e:?}");
+                                failed = true;
+                                cancel_token.cancel();
+                            }
                         }
-                    },
+                    }
                     Err(e) => {
                         error_msg = format!("segment task panicked: {e}");
                         failed = true;

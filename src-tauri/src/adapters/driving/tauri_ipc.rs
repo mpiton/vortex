@@ -810,6 +810,8 @@ pub struct SettingsDto {
     pub retry_delay_seconds: u32,
     pub verify_checksums: bool,
     pub pre_allocate_space: bool,
+    pub dynamic_split_enabled: bool,
+    pub dynamic_split_min_remaining_mb: u64,
 
     // History
     pub history_retention_days: i64,
@@ -864,6 +866,8 @@ impl From<AppConfig> for SettingsDto {
             retry_delay_seconds: c.retry_delay_seconds,
             verify_checksums: c.verify_checksums,
             pre_allocate_space: c.pre_allocate_space,
+            dynamic_split_enabled: c.dynamic_split_enabled,
+            dynamic_split_min_remaining_mb: c.dynamic_split_min_remaining_mb,
             history_retention_days: c.history_retention_days,
             proxy_type: c.proxy_type,
             proxy_url: c.proxy_url,

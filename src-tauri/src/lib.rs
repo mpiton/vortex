@@ -214,7 +214,7 @@ pub fn run() {
             let initial_engine_config = config_store
                 .get_config()
                 .unwrap_or_else(|_| crate::domain::model::config::AppConfig::default());
-            let download_engine: Arc<dyn DownloadEngine> = Arc::new(
+            let segmented_engine = Arc::new(
                 SegmentedDownloadEngine::new(
                     reqwest_client,
                     file_storage.clone(),
@@ -226,6 +226,14 @@ pub fn run() {
                     initial_engine_config.dynamic_split_min_remaining_mb,
                 ),
             );
+            // Keep settings → engine bridge alive so UI changes to
+            // dynamic_split_* propagate without a restart.
+            application::services::subscribe_engine_to_config(
+                event_bus.as_ref(),
+                config_store.clone(),
+                segmented_engine.clone(),
+            );
+            let download_engine: Arc<dyn DownloadEngine> = segmented_engine;
 
             // ── Startup recovery ────────────────────────────────────
             // Orphaned downloads (Downloading/Waiting/Checking/Extracting
