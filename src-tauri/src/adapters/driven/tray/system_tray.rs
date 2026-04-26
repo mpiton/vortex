@@ -1,20 +1,21 @@
 use tauri::{
     AppHandle, Emitter, Manager,
     menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem},
-    tray::TrayIconBuilder,
+    tray::{TrayIcon, TrayIconBuilder},
 };
 use tracing::{info, warn};
 
 use crate::adapters::driving::tauri_ipc::AppState;
 
-/// Initializes the system tray with menu items.
+/// Initializes the system tray with menu items and returns the
+/// [`TrayIcon`] handle so callers can drive the animated icon.
 ///
 /// `clipboard_enabled` controls the initial checked state of the Clipboard
 /// Monitoring checkbox. Pass the value from persisted config when available.
 pub fn setup_system_tray(
     app: &tauri::App,
     clipboard_enabled: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<TrayIcon, Box<dyn std::error::Error>> {
     let pause_all = MenuItem::with_id(app, "pause-all", "Pause All", true, None::<&str>)?;
     let resume_all = MenuItem::with_id(app, "resume-all", "Resume All", true, None::<&str>)?;
     let sep1 = PredefinedMenuItem::separator(app)?;
@@ -43,7 +44,7 @@ pub fn setup_system_tray(
         ],
     )?;
 
-    let _tray = TrayIconBuilder::new()
+    let tray = TrayIconBuilder::new()
         .icon(
             app.default_window_icon()
                 .cloned()
@@ -74,7 +75,7 @@ pub fn setup_system_tray(
         .build(app)?;
 
     info!("System tray initialized");
-    Ok(())
+    Ok(tray)
 }
 
 fn handle_tray_menu_event(app: &AppHandle, menu_id: &str) {

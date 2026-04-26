@@ -40,7 +40,10 @@ pub use adapters::driven::sqlite::download_repo::SqliteDownloadRepo;
 pub use adapters::driven::sqlite::history_repo::SqliteHistoryRepo;
 pub use adapters::driven::sqlite::progress_bridge::spawn_sqlite_progress_bridge;
 pub use adapters::driven::sqlite::stats_repo::SqliteStatsRepo;
-pub use adapters::driven::tray::setup_system_tray;
+pub use adapters::driven::tray::{
+    DEFAULT_FRAME_INTERVAL, IconSwapper, TauriIconSwapper, pulse_frames, setup_system_tray,
+    spawn_tray_animator,
+};
 pub use application::command_bus::CommandBus;
 pub use application::commands::store_refresh::{read_cache, write_cache};
 pub use application::error::AppError;
@@ -364,8 +367,28 @@ pub fn run() {
             });
 
             // ── System tray ─────────────────────────────────────────
-            if let Err(e) = setup_system_tray(app, false) {
-                tracing::error!("Failed to setup system tray: {e}");
+            match setup_system_tray(app, false) {
+                Ok(tray) => {
+                    let static_icon = app
+                        .default_window_icon()
+                        .cloned()
+                        .map(|i| i.to_owned())
+                        .ok_or("default window icon missing")?;
+                    let frames = pulse_frames();
+                    if let Some(swapper) = TauriIconSwapper::new(tray, static_icon, frames) {
+                        let frame_count = swapper.frame_count();
+                        let swapper: Arc<dyn IconSwapper> = Arc::new(swapper);
+                        spawn_tray_animator(
+                            event_bus.as_ref(),
+                            swapper,
+                            frame_count,
+                            DEFAULT_FRAME_INTERVAL,
+                        );
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("Failed to setup system tray: {e}");
+                }
             }
 
             // ── Event bridges (domain events → frontend + desktop) ──
