@@ -18,6 +18,7 @@ pub use adapters::driven::config::TomlConfigStore;
 pub use adapters::driven::credential::KeyringCredentialStore;
 pub use adapters::driven::credential::NoopCredentialStore;
 pub use adapters::driven::event::TokioEventBus;
+pub use adapters::driven::event::spawn_stats_recorder_bridge;
 pub use adapters::driven::event::spawn_tauri_event_bridge;
 pub use adapters::driven::extractor::VortexArchiveExtractor;
 pub use adapters::driven::filesystem::{
@@ -324,6 +325,9 @@ pub fn run() {
             // takes ownership of `config_store`.
             let config_store_for_purge: Arc<dyn ConfigStore> = config_store.clone();
             let history_repo_for_purge: Arc<dyn HistoryRepository> = history_repo.clone();
+            // Stats recorder bridge needs the write repo (for `find_by_id`)
+            // before `CommandBus::new` takes ownership of it.
+            let download_repo_for_stats_bridge: Arc<dyn DownloadRepository> = download_repo.clone();
             let command_bus = Arc::new(
                 CommandBus::new(
                     download_repo,
@@ -345,6 +349,10 @@ pub fn run() {
                 .with_plugin_config_store(plugin_config_store.clone()),
             );
 
+            // Same pattern as the command-bus deps above: clone the stats
+            // repo so the recorder bridge keeps its own handle once the
+            // query bus takes ownership.
+            let stats_repo_for_bridge: Arc<dyn StatsRepository> = stats_repo.clone();
             let query_bus = Arc::new(
                 QueryBus::new(
                     download_read_repo.clone(),
@@ -404,6 +412,14 @@ pub fn run() {
             );
             spawn_download_log_bridge(event_bus.as_ref(), download_log_store);
             spawn_sqlite_progress_bridge(event_bus.as_ref(), db);
+            // Project DownloadCompletedPersisted into the `statistics` table
+            // so daily-volume / total-files / avg-speed KPIs match the
+            // downloads table (issue #114).
+            spawn_stats_recorder_bridge(
+                event_bus.as_ref(),
+                download_repo_for_stats_bridge,
+                stats_repo_for_bridge,
+            );
 
             // ── Queue manager event listener ────────────────────────
             queue_manager.clone().start_listening();
