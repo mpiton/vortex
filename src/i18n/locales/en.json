@@ -1,4 +1,7 @@
 {
+  "a11y": {
+    "skipToMain": "Skip to main content"
+  },
   "nav": {
     "downloads": "Downloads",
     "linkGrabber": "Link Grabber",

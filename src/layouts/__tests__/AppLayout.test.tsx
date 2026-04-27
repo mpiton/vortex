@@ -7,6 +7,7 @@ import { AppLayout } from "../AppLayout";
 import { useUiStore } from "@/stores/uiStore";
 import { useSettingsStore } from "@/stores/settingsStore";
 import type { AppConfig } from "@/types/settings";
+import enTranslations from "@/i18n/locales/en.json";
 
 const mockNavigate = vi.fn();
 const originalPlatform = navigator.platform;
@@ -318,5 +319,34 @@ describe("AppLayout", () => {
     expect(readText).not.toHaveBeenCalled();
     expect(mockNavigate).not.toHaveBeenCalled();
     document.body.removeChild(textarea);
+  });
+
+  it("should render a skip-link as the first focusable element", () => {
+    const { container } = renderAppLayout();
+    const focusables = container.querySelectorAll<HTMLElement>(
+      'a[href], button, input, select, textarea, [tabindex]:not([tabindex="-1"])',
+    );
+    expect(focusables.length).toBeGreaterThan(0);
+    expect(focusables[0]).toHaveAttribute("href", "#main-content");
+    expect(focusables[0]).toHaveTextContent(enTranslations.a11y.skipToMain);
+  });
+
+  it("should mark <main> with id=main-content and tabIndex=-1 for skip-link target", () => {
+    const { container } = renderAppLayout();
+    const main = container.querySelector("main");
+    expect(main).not.toBeNull();
+    expect(main).toHaveAttribute("id", "main-content");
+    expect(main).toHaveAttribute("tabindex", "-1");
+  });
+
+  it("should focus <main> when the skip-link is activated", () => {
+    const { container } = renderAppLayout();
+    const main = container.querySelector<HTMLElement>("main");
+    const skipLink = screen.getAllByRole("link")[0];
+    expect(main).not.toBeNull();
+
+    fireEvent.click(skipLink);
+
+    expect(document.activeElement).toBe(main);
   });
 });

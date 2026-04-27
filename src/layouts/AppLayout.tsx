@@ -3,6 +3,7 @@ import { Outlet, useLocation, useNavigate } from "react-router";
 import { useTranslation } from "react-i18next";
 import { Sidebar } from "./Sidebar";
 import { StatusBar } from "./StatusBar";
+import { SkipLink } from "@/components/a11y/SkipLink";
 import { ROUTES } from "@/types/layout";
 import { useDownloadProgress } from "@/hooks/useDownloadProgress";
 import { useDownloadEvents } from "@/hooks/useDownloadEvents";
@@ -185,9 +186,14 @@ export function AppLayout() {
 
   return (
     <div className="flex h-screen w-screen overflow-hidden font-mono text-[13px] leading-normal text-text">
+      <SkipLink />
       <Sidebar />
       <div className="flex min-w-0 flex-1 flex-col">
-        <main className="flex-1 overflow-y-auto bg-surface-alt">
+        <main
+          id="main-content"
+          tabIndex={-1}
+          className="flex-1 overflow-y-auto bg-surface-alt focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+        >
           <Outlet />
         </main>
         <StatusBar />
