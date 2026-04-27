@@ -709,12 +709,19 @@ pub async fn download_detail(
         .map_err(|e| e.to_string())
 }
 
+/// Default number of recent log lines returned by `download_logs` when the
+/// caller omits an explicit `limit`. Matches the per-download buffer cap
+/// configured for `DownloadLogStore` in `lib.rs` so a default request still
+/// surfaces every line currently retained.
+pub const DEFAULT_DOWNLOAD_LOG_LIMIT: usize = 256;
+
 #[tauri::command]
 pub async fn download_logs(
     state: State<'_, AppState>,
     id: u64,
-    limit: usize,
+    limit: Option<usize>,
 ) -> Result<Vec<String>, String> {
+    let limit = limit.unwrap_or(DEFAULT_DOWNLOAD_LOG_LIMIT);
     Ok(state.download_log_store.recent(id, limit))
 }
 
@@ -2579,12 +2586,13 @@ pub async fn history_purge_older_than(
 #[cfg(test)]
 mod tests {
     use super::{
-        StreamResolution, configured_download_destination, configured_status_bar_path,
-        extract_hostname_from_url, load_plugin_media_metadata, parse_plugin_video_metadata,
-        parse_soundcloud_metadata, parse_soundcloud_playlist_targets, parse_stats_period,
-        read_available_space, resolve_existing_disk_path, resolve_media_stream, sanitize_extension,
-        sanitize_filename, soundcloud_track_download_title, unique_destination,
+        DEFAULT_DOWNLOAD_LOG_LIMIT, StreamResolution, configured_download_destination,
+        configured_status_bar_path, extract_hostname_from_url, load_plugin_media_metadata,
+        parse_plugin_video_metadata, parse_soundcloud_metadata, parse_soundcloud_playlist_targets,
+        parse_stats_period, read_available_space, resolve_existing_disk_path, resolve_media_stream,
+        sanitize_extension, sanitize_filename, soundcloud_track_download_title, unique_destination,
     };
+    use crate::adapters::driven::logging::download_log_store::DownloadLogStore;
     use crate::domain::error::DomainError;
     use crate::domain::model::plugin::{PluginCategory, PluginInfo, PluginManifest};
     use crate::domain::model::views::StatsPeriod;
@@ -3614,5 +3622,43 @@ mod tests {
     fn test_parse_stats_period_rejects_unknown() {
         let err = parse_stats_period("1y").unwrap_err();
         assert!(err.contains("invalid period"));
+    }
+
+    /// `download_logs` accepts an optional `limit`; when omitted, the
+    /// IPC layer falls back to `DEFAULT_DOWNLOAD_LOG_LIMIT`. The default
+    /// must be large enough to surface every line currently retained by
+    /// `DownloadLogStore` (256 in `lib.rs`), otherwise an unspecified
+    /// `limit` would silently truncate the panel.
+    #[test]
+    fn default_download_log_limit_returns_full_retained_buffer() {
+        let store = DownloadLogStore::new(DEFAULT_DOWNLOAD_LOG_LIMIT);
+        for i in 0..DEFAULT_DOWNLOAD_LOG_LIMIT {
+            store.push(7, format!("[INFO] line {i}"));
+        }
+
+        let logs = store.recent(7, DEFAULT_DOWNLOAD_LOG_LIMIT);
+        assert_eq!(logs.len(), DEFAULT_DOWNLOAD_LOG_LIMIT);
+        assert_eq!(logs.first().expect("first line"), "[INFO] line 0");
+        assert_eq!(
+            logs.last().expect("last line"),
+            &format!("[INFO] line {}", DEFAULT_DOWNLOAD_LOG_LIMIT - 1),
+        );
+    }
+
+    /// Passing an explicit `limit` smaller than the retained buffer must
+    /// still trim from the head: only the `N` most-recent lines are
+    /// returned, mirroring the explicit-`limit` contract the frontend
+    /// relies on (`LogsSection.tsx` calls with `limit: 20`).
+    #[test]
+    fn explicit_limit_keeps_only_most_recent_lines() {
+        let store = DownloadLogStore::new(DEFAULT_DOWNLOAD_LOG_LIMIT);
+        for i in 0..50 {
+            store.push(7, format!("[INFO] line {i}"));
+        }
+
+        let logs = store.recent(7, 20);
+        assert_eq!(logs.len(), 20);
+        assert_eq!(logs.first().expect("first kept line"), "[INFO] line 30");
+        assert_eq!(logs.last().expect("last kept line"), "[INFO] line 49");
     }
 }
