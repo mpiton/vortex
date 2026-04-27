@@ -73,6 +73,14 @@ impl NotificationGrouper {
     /// Pure with respect to the supplied clock — the same input
     /// sequence yields the same decisions.
     pub fn record(&mut self, now_secs: u64) -> NotificationDecision {
+        // Wall-clock backwards jump (NTP step, manual time change):
+        // entries timestamped in the "future" would never be pruned by
+        // the new clock and would silently bias every burst decision.
+        // Drop them and start a fresh window from `now_secs`.
+        if self.timestamps.back().is_some_and(|&back| back > now_secs) {
+            self.timestamps.clear();
+            self.burst_aggregated = false;
+        }
         self.prune(now_secs);
         // Window completely drained → previous burst ends, reset flag.
         if self.timestamps.is_empty() {
@@ -219,5 +227,25 @@ mod tests {
         let g = NotificationGrouper::new();
         assert_eq!(g.window_secs, GROUPING_WINDOW_SECS);
         assert_eq!(g.threshold, GROUPING_THRESHOLD);
+    }
+
+    #[test]
+    fn test_backwards_clock_jump_resets_window_and_returns_show_single() {
+        let mut g = NotificationGrouper::new();
+        // Build up a burst at t=1000 — third event would be aggregated.
+        g.record(1000);
+        g.record(1001);
+        let agg = g.record(1002);
+        assert_eq!(agg, NotificationDecision::ShowAggregated { count: 3 });
+        // Clock steps backwards (NTP correction). Stale "future" entries
+        // must be dropped so the next event starts a fresh window.
+        let after_jump = g.record(500);
+        assert_eq!(after_jump, NotificationDecision::ShowSingle);
+        // And the burst flag must reset so a new burst can aggregate.
+        g.record(501);
+        assert_eq!(
+            g.record(502),
+            NotificationDecision::ShowAggregated { count: 3 }
+        );
     }
 }

@@ -2,8 +2,10 @@
 //!
 //! Reads the current `AppConfig.notifications_enabled` flag on every
 //! event so toggling the setting from the UI takes effect immediately,
-//! enriches the body with file name / size / speed / duration, and
-//! debounces bursts of completions through `NotificationGrouper`.
+//! enriches the body with file name and total size, and debounces
+//! bursts of completions through `NotificationGrouper`. Average speed
+//! and duration are deliberately omitted until the read model surfaces
+//! a dedicated transfer-start metric (see `complete_body` for context).
 //!
 //! ## Click action limitation
 //!
@@ -25,9 +27,7 @@ use tracing::warn;
 use crate::domain::error::DomainError;
 use crate::domain::event::DomainEvent;
 use crate::domain::model::views::DownloadDetailView;
-use crate::domain::notification::{
-    NotificationDecision, NotificationGrouper, format_duration, format_size, format_speed,
-};
+use crate::domain::notification::{NotificationDecision, NotificationGrouper, format_size};
 use crate::domain::ports::driven::{ConfigStore, DownloadReadRepository, EventBus};
 
 /// Cap error messages embedded in notification bodies. Long stack traces
@@ -75,7 +75,7 @@ pub fn spawn_notification_bridge(
                         send(
                             &app_handle,
                             "Download complete",
-                            &complete_body(id.0, detail.as_ref(), now),
+                            &complete_body(id.0, detail.as_ref()),
                         );
                     }
                 }
@@ -118,7 +118,7 @@ fn lookup_detail(read_repo: &dyn DownloadReadRepository, id: u64) -> Option<Down
     }
 }
 
-fn complete_body(id: u64, detail: Option<&DownloadDetailView>, now_secs: u64) -> String {
+fn complete_body(id: u64, detail: Option<&DownloadDetailView>) -> String {
     let Some(d) = detail else {
         return format!("Download #{id} finished successfully");
     };
@@ -126,13 +126,12 @@ fn complete_body(id: u64, detail: Option<&DownloadDetailView>, now_secs: u64) ->
     if let Some(total) = d.total_bytes {
         parts.push(format_size(total));
     }
-    let duration = now_secs.saturating_sub(d.created_at);
-    if duration > 0 {
-        if let Some(total) = d.total_bytes {
-            parts.push(format_speed(total / duration.max(1)));
-        }
-        parts.push(format_duration(duration));
-    }
+    // Speed + duration intentionally omitted: `DownloadDetailView`
+    // exposes `created_at` (queue admission) but no transfer-start
+    // marker, so any duration computed here would inflate by the time
+    // the download spent queued or paused. Re-introduce when the read
+    // model surfaces an active-transfer metric (e.g., via the history
+    // entry produced on completion).
     parts.join(" · ")
 }
 
@@ -152,7 +151,11 @@ fn truncate_error(error: &str) -> String {
     if error.chars().count() <= MAX_ERROR_BODY_CHARS {
         return error.to_string();
     }
-    let mut out: String = error.chars().take(MAX_ERROR_BODY_CHARS).collect();
+    // Reserve one slot for the ellipsis so the rendered string respects
+    // the configured cap exactly. `MAX_ERROR_BODY_CHARS` is a const ≥ 2
+    // so the saturating subtraction is here for defence-in-depth.
+    let payload_chars = MAX_ERROR_BODY_CHARS.saturating_sub(1);
+    let mut out: String = error.chars().take(payload_chars).collect();
     out.push('…');
     out
 }
@@ -212,31 +215,21 @@ mod tests {
     #[test]
     fn test_complete_body_falls_back_when_detail_missing() {
         assert_eq!(
-            complete_body(42, None, 100),
+            complete_body(42, None),
             "Download #42 finished successfully"
         );
     }
 
     #[test]
-    fn test_complete_body_combines_filename_size_speed_duration() {
-        // 10 MiB downloaded in 5 s → 2 MiB/s avg.
+    fn test_complete_body_combines_filename_and_size() {
         let d = detail("video.mp4", Some(10 * 1024 * 1024), 1_000);
-        let body = complete_body(7, Some(&d), 1_005);
-        assert_eq!(body, "video.mp4 · 10.0 MB · 2.0 MB/s · 5s");
+        assert_eq!(complete_body(7, Some(&d)), "video.mp4 · 10.0 MB");
     }
 
     #[test]
-    fn test_complete_body_omits_speed_when_duration_zero() {
-        let d = detail("instant.bin", Some(1024), 100);
-        let body = complete_body(1, Some(&d), 100);
-        assert_eq!(body, "instant.bin · 1.0 KB");
-    }
-
-    #[test]
-    fn test_complete_body_handles_unknown_size() {
+    fn test_complete_body_renders_filename_only_when_size_unknown() {
         let d = detail("stream.ts", None, 100);
-        let body = complete_body(1, Some(&d), 130);
-        assert_eq!(body, "stream.ts · 30s");
+        assert_eq!(complete_body(1, Some(&d)), "stream.ts");
     }
 
     #[test]
@@ -254,20 +247,17 @@ mod tests {
     }
 
     #[test]
-    fn test_failed_body_truncates_long_error_messages() {
+    fn test_truncate_error_keeps_short_strings_verbatim() {
+        let short = "x".repeat(MAX_ERROR_BODY_CHARS);
+        assert_eq!(truncate_error(&short), short);
+    }
+
+    #[test]
+    fn test_truncate_error_caps_at_max_chars_including_ellipsis() {
         let long = "x".repeat(MAX_ERROR_BODY_CHARS * 2);
-        let body = failed_body(1, None, &long);
-        // ASCII path: byte length == char count + ellipsis.
-        let chars: Vec<char> = body.chars().collect();
-        assert!(chars.last() == Some(&'…'));
-        // Body = "#1 · Error: " (12 chars) + cap chars + ellipsis.
-        let prefix = "#1 · Error: ";
-        let payload: String = chars
-            .iter()
-            .skip(prefix.chars().count())
-            .take(MAX_ERROR_BODY_CHARS)
-            .collect();
-        assert_eq!(payload.chars().count(), MAX_ERROR_BODY_CHARS);
+        let truncated = truncate_error(&long);
+        assert_eq!(truncated.chars().count(), MAX_ERROR_BODY_CHARS);
+        assert!(truncated.ends_with('…'));
     }
 
     #[test]

@@ -9,6 +9,11 @@
 ///
 /// Uses base 1024 (KB = 1024 B) and one decimal once the unit is at
 /// least KB. Bytes (`B`) stay integer. Always `≥ 0` (input is `u64`).
+///
+/// Rounding-aware unit promotion: a value like `1024 * 1024 - 1` would
+/// otherwise render as `1024.0 KB` (the rendered form rounds up across
+/// the unit boundary); after picking `value` we re-check the rounded
+/// representation and promote one more step if it crosses `1024.0`.
 pub fn format_size(bytes: u64) -> String {
     const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
     if bytes < 1024 {
@@ -17,6 +22,13 @@ pub fn format_size(bytes: u64) -> String {
     let mut value = bytes as f64;
     let mut idx = 0;
     while value >= 1024.0 && idx < UNITS.len() - 1 {
+        value /= 1024.0;
+        idx += 1;
+    }
+    // After rounding to one decimal, the displayed value can land on
+    // 1024.0; promote to the next unit so we never render "1024.0 KB".
+    let rounded = (value * 10.0).round() / 10.0;
+    if rounded >= 1024.0 && idx < UNITS.len() - 1 {
         value /= 1024.0;
         idx += 1;
     }
@@ -95,6 +107,14 @@ mod tests {
     fn test_format_size_huge_value_does_not_overflow_unit_index() {
         // Many petabytes — must stay capped at TB, not panic.
         assert!(format_size(u64::MAX).ends_with(" TB"));
+    }
+
+    #[test]
+    fn test_format_size_promotes_unit_when_rounding_crosses_boundary() {
+        // 1 MiB - 1 byte rounds to "1024.0 KB"; should display as "1.0 MB".
+        assert_eq!(format_size(1024 * 1024 - 1), "1.0 MB");
+        // 1 GiB - 1 byte rounds across the MB→GB boundary.
+        assert_eq!(format_size(1024_u64.pow(3) - 1), "1.0 GB");
     }
 
     #[test]
