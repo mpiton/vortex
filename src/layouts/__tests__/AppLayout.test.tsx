@@ -321,11 +321,13 @@ describe("AppLayout", () => {
   });
 
   it("should render a skip-link as the first focusable element", () => {
-    renderAppLayout();
-    const links = screen.getAllByRole("link");
-    expect(links.length).toBeGreaterThan(0);
-    expect(links[0]).toHaveAttribute("href", "#main-content");
-    expect(links[0]).toHaveTextContent("Skip to main content");
+    const { container } = renderAppLayout();
+    const focusables = container.querySelectorAll<HTMLElement>(
+      'a[href], button, input, select, textarea, [tabindex]:not([tabindex="-1"])',
+    );
+    expect(focusables.length).toBeGreaterThan(0);
+    expect(focusables[0]).toHaveAttribute("href", "#main-content");
+    expect(focusables[0]).toHaveTextContent("Skip to main content");
   });
 
   it("should mark <main> with id=main-content and tabIndex=-1 for skip-link target", () => {

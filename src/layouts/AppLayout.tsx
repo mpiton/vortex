@@ -192,7 +192,7 @@ export function AppLayout() {
         <main
           id="main-content"
           tabIndex={-1}
-          className="flex-1 overflow-y-auto bg-surface-alt focus:outline-none"
+          className="flex-1 overflow-y-auto bg-surface-alt focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
         >
           <Outlet />
         </main>

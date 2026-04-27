@@ -47,13 +47,15 @@ describe("SkipLink", () => {
     target.id = "main-content";
     target.tabIndex = -1;
     document.body.appendChild(target);
-    const initialHash = window.location.hash;
+    const previousHash = window.location.hash;
+    window.history.replaceState(null, "", "#before-skip-link");
 
     try {
       render(<SkipLink />);
       fireEvent.click(screen.getByRole("link"));
-      expect(window.location.hash).toBe(initialHash);
+      expect(window.location.hash).toBe("#before-skip-link");
     } finally {
+      window.history.replaceState(null, "", previousHash || window.location.pathname);
       document.body.removeChild(target);
     }
   });

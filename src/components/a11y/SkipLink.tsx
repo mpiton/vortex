@@ -7,9 +7,9 @@ export function SkipLink() {
   const { t } = useTranslation();
 
   function handleActivate(event: MouseEvent<HTMLAnchorElement>) {
+    event.preventDefault();
     const target = document.getElementById(TARGET_ID);
     if (!target) return;
-    event.preventDefault();
     target.focus();
   }
 
