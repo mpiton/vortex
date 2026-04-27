@@ -710,10 +710,19 @@ pub async fn download_detail(
 }
 
 /// Default number of recent log lines returned by `download_logs` when the
-/// caller omits an explicit `limit`. Matches the per-download buffer cap
-/// configured for `DownloadLogStore` in `lib.rs` so a default request still
-/// surfaces every line currently retained.
-pub const DEFAULT_DOWNLOAD_LOG_LIMIT: usize = 256;
+/// caller omits an explicit `limit`. Aliased to the shared
+/// `DEFAULT_MAX_ENTRIES_PER_DOWNLOAD` so the IPC default always matches the
+/// per-download buffer cap configured for `DownloadLogStore` in `lib.rs`.
+pub const DEFAULT_DOWNLOAD_LOG_LIMIT: usize =
+    crate::adapters::driven::logging::download_log_store::DEFAULT_MAX_ENTRIES_PER_DOWNLOAD;
+
+/// Resolve the effective log limit for a `download_logs` call: callers that
+/// omit `limit` fall back to `DEFAULT_DOWNLOAD_LOG_LIMIT`. Extracted so the
+/// `Option<usize>` defaulting branch can be exercised from unit tests without
+/// constructing a full Tauri `AppState`.
+fn resolve_download_log_limit(limit: Option<usize>) -> usize {
+    limit.unwrap_or(DEFAULT_DOWNLOAD_LOG_LIMIT)
+}
 
 #[tauri::command]
 pub async fn download_logs(
@@ -721,8 +730,9 @@ pub async fn download_logs(
     id: u64,
     limit: Option<usize>,
 ) -> Result<Vec<String>, String> {
-    let limit = limit.unwrap_or(DEFAULT_DOWNLOAD_LOG_LIMIT);
-    Ok(state.download_log_store.recent(id, limit))
+    Ok(state
+        .download_log_store
+        .recent(id, resolve_download_log_limit(limit)))
 }
 
 #[tauri::command]
@@ -2589,8 +2599,9 @@ mod tests {
         DEFAULT_DOWNLOAD_LOG_LIMIT, StreamResolution, configured_download_destination,
         configured_status_bar_path, extract_hostname_from_url, load_plugin_media_metadata,
         parse_plugin_video_metadata, parse_soundcloud_metadata, parse_soundcloud_playlist_targets,
-        parse_stats_period, read_available_space, resolve_existing_disk_path, resolve_media_stream,
-        sanitize_extension, sanitize_filename, soundcloud_track_download_title, unique_destination,
+        parse_stats_period, read_available_space, resolve_download_log_limit,
+        resolve_existing_disk_path, resolve_media_stream, sanitize_extension, sanitize_filename,
+        soundcloud_track_download_title, unique_destination,
     };
     use crate::adapters::driven::logging::download_log_store::DownloadLogStore;
     use crate::domain::error::DomainError;
@@ -3660,5 +3671,38 @@ mod tests {
         assert_eq!(logs.len(), 20);
         assert_eq!(logs.first().expect("first kept line"), "[INFO] line 30");
         assert_eq!(logs.last().expect("last kept line"), "[INFO] line 49");
+    }
+
+    /// Direct coverage for the IPC `unwrap_or` branch: a `None` limit must
+    /// resolve to `DEFAULT_DOWNLOAD_LOG_LIMIT`, while an explicit `Some(n)`
+    /// must pass through unchanged. This locks down the contract independently
+    /// of `DownloadLogStore::recent`, so future tweaks to either side fail
+    /// loudly.
+    #[test]
+    fn resolve_download_log_limit_defaults_when_none() {
+        assert_eq!(resolve_download_log_limit(None), DEFAULT_DOWNLOAD_LOG_LIMIT);
+        assert_eq!(resolve_download_log_limit(Some(20)), 20);
+        assert_eq!(resolve_download_log_limit(Some(0)), 0);
+    }
+
+    /// End-to-end check that a `None` limit, routed through the helper used
+    /// by the Tauri command, surfaces every line retained by the store. This
+    /// is the regression CodeRabbit flagged: the previous tests touched
+    /// `DownloadLogStore::recent` with the constant directly, never the
+    /// `Option` defaulting path.
+    #[test]
+    fn download_logs_returns_full_buffer_when_limit_is_none() {
+        let store = DownloadLogStore::new(DEFAULT_DOWNLOAD_LOG_LIMIT);
+        for i in 0..DEFAULT_DOWNLOAD_LOG_LIMIT {
+            store.push(7, format!("[INFO] line {i}"));
+        }
+
+        let logs = store.recent(7, resolve_download_log_limit(None));
+        assert_eq!(logs.len(), DEFAULT_DOWNLOAD_LOG_LIMIT);
+        assert_eq!(logs.first().expect("first line"), "[INFO] line 0");
+        assert_eq!(
+            logs.last().expect("last line"),
+            &format!("[INFO] line {}", DEFAULT_DOWNLOAD_LOG_LIMIT - 1),
+        );
     }
 }

@@ -25,7 +25,9 @@ pub use adapters::driven::filesystem::{
     FsFileStorage, SystemFileOpener, SystemUrlOpener, resolve_system_download_dir,
 };
 pub use adapters::driven::logging::download_log_bridge::spawn_download_log_bridge;
-pub use adapters::driven::logging::download_log_store::DownloadLogStore;
+pub use adapters::driven::logging::download_log_store::{
+    DEFAULT_MAX_ENTRIES_PER_DOWNLOAD, DownloadLogStore,
+};
 pub use adapters::driven::network::ReqwestHttpClient;
 pub use adapters::driven::network::SegmentedDownloadEngine;
 pub use adapters::driven::notification::spawn_notification_bridge;
@@ -136,7 +138,8 @@ pub fn run() {
                 Arc::new(TauriClipboardObserver::new(app_handle.clone()));
             let archive_extractor: Arc<dyn ArchiveExtractor> =
                 Arc::new(VortexArchiveExtractor::new(ExtractionConfig::default()));
-            let download_log_store = Arc::new(DownloadLogStore::new(256));
+            let download_log_store =
+                Arc::new(DownloadLogStore::new(DEFAULT_MAX_ENTRIES_PER_DOWNLOAD));
 
             // ── SQLite repositories ─────────────────────────────────
             let download_repo: Arc<dyn DownloadRepository> =
