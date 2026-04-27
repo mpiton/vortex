@@ -196,6 +196,11 @@ pub struct ReportBrokenPluginCommand {
     pub vortex_version: String,
     /// `std::env::consts::OS` (or equivalent) recorded by the caller.
     pub os: String,
+    /// Local path to the plugin store cache (`plugin-registry-cache.json`).
+    /// When the plugin's manifest does not surface a `repository` field,
+    /// the handler falls back to this cache so plugins installed before
+    /// the field was required keep working.
+    pub store_cache_path: Option<std::path::PathBuf>,
 }
 impl Command for ReportBrokenPluginCommand {}
 
