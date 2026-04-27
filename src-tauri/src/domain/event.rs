@@ -1,4 +1,90 @@
 use crate::domain::model::download::DownloadId;
+use crate::domain::model::views::HistoryEntry;
+
+/// Read-model projection inputs captured at the moment a `Download` is
+/// persisted as `Completed`. Travels on `DomainEvent::DownloadCompletedPersisted`
+/// so async subscribers (history/stats recorders) project from a frozen
+/// snapshot instead of re-reading the repository, which would race with
+/// later `clear` / `remove` / `change-directory` mutations.
+///
+/// All timestamps are Unix epoch milliseconds (matching `current_timestamp_ms`
+/// and the storage representation on `Download`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DownloadCompletedSnapshot {
+    pub id: DownloadId,
+    pub file_name: String,
+    pub url: String,
+    pub destination_path: String,
+    pub file_size_bytes: Option<u64>,
+    pub downloaded_bytes: u64,
+    pub created_at_ms: u64,
+    pub updated_at_ms: u64,
+}
+
+impl DownloadCompletedSnapshot {
+    /// Project the snapshot into a fresh `HistoryEntry`.
+    ///
+    /// `total_bytes` prefers the authoritative `file_size_bytes` (set when
+    /// the upstream announces a Content-Length) and falls back to the
+    /// running `downloaded_bytes` for streams of unknown size.
+    ///
+    /// `completed_at` (`HistoryEntry`'s Unix-seconds field) is derived
+    /// from `updated_at_ms / 1_000`. `duration_seconds` is clamped to a
+    /// `1`-second floor so very short transfers never divide by zero in
+    /// `avg_speed`.
+    pub fn to_history_entry(&self) -> HistoryEntry {
+        let total_bytes = self
+            .file_size_bytes
+            .filter(|n| *n > 0)
+            .unwrap_or(self.downloaded_bytes);
+        let elapsed_ms = self.updated_at_ms.saturating_sub(self.created_at_ms);
+        let duration_seconds = (elapsed_ms / 1_000).max(1);
+        let avg_speed = total_bytes / duration_seconds;
+        let completed_at = self.updated_at_ms / 1_000;
+        HistoryEntry {
+            id: 0,
+            download_id: self.id,
+            file_name: self.file_name.clone(),
+            url: self.url.clone(),
+            total_bytes,
+            completed_at,
+            duration_seconds,
+            avg_speed,
+            destination_path: self.destination_path.clone(),
+        }
+    }
+
+    /// Pull the byte count and average speed off this snapshot for the
+    /// `statistics` rollup.
+    pub fn to_stats_record(&self) -> (u64, u64) {
+        let bytes = self
+            .file_size_bytes
+            .filter(|n| *n > 0)
+            .unwrap_or(self.downloaded_bytes);
+        let elapsed_ms = self.updated_at_ms.saturating_sub(self.created_at_ms);
+        let elapsed_secs = (elapsed_ms / 1_000).max(1);
+        let avg_speed = bytes / elapsed_secs;
+        (bytes, avg_speed)
+    }
+
+    /// Minimal stub for tests that only need the carrier event without
+    /// caring about projection inputs. Production publish sites must use
+    /// `application::services::queue_manager::build_completed_snapshot`
+    /// to derive the snapshot from the persisted aggregate.
+    #[cfg(test)]
+    pub(crate) fn for_test(id: DownloadId) -> Self {
+        Self {
+            id,
+            file_name: String::new(),
+            url: String::new(),
+            destination_path: String::new(),
+            file_size_bytes: None,
+            downloaded_bytes: 0,
+            created_at_ms: 0,
+            updated_at_ms: 0,
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum DomainEvent {
@@ -25,8 +111,13 @@ pub enum DomainEvent {
     /// SQLite.  The Tauri bridge forwards this to the frontend so that the
     /// UI re-fetch that follows is guaranteed to read the correct state,
     /// regardless of how fast the download finished.
+    ///
+    /// Carries a `snapshot` of the projection inputs taken at publish time
+    /// so async subscribers (history/stats recorders) cannot race with a
+    /// later mutation of the persisted row (clear/remove/change-directory).
     DownloadCompletedPersisted {
         id: DownloadId,
+        snapshot: DownloadCompletedSnapshot,
     },
     DownloadFailed {
         id: DownloadId,

@@ -60,6 +60,7 @@ pub use application::read_models::{
     stats_view::{DailyVolumeDto, HostStatsDto, ModuleStatsDto, StatsViewDto},
 };
 pub use application::services::QueueManager;
+pub use application::services::backfill_history_for_completed_downloads;
 pub use domain::model::ExtractionConfig;
 
 pub use adapters::driving::tauri_ipc::{
@@ -332,12 +333,11 @@ pub fn run() {
             // History recorder bridge keeps its own handle so it survives
             // the move of `history_repo` into the query bus below.
             let history_repo_for_bridge: Arc<dyn HistoryRepository> = history_repo.clone();
-            // Stats recorder bridge needs the write repo (for `find_by_id`)
-            // before `CommandBus::new` takes ownership of it. Cloned twice
-            // because the history recorder bridge needs the same handle.
-            let download_repo_for_stats_bridge: Arc<dyn DownloadRepository> = download_repo.clone();
-            let download_repo_for_history_bridge: Arc<dyn DownloadRepository> =
-                download_repo.clone();
+            // History backfill needs to enumerate Completed downloads + look
+            // up existing history rows once at startup, before the buses
+            // take ownership of the write repo.
+            let download_repo_for_backfill: Arc<dyn DownloadRepository> = download_repo.clone();
+            let history_repo_for_backfill: Arc<dyn HistoryRepository> = history_repo.clone();
             let command_bus = Arc::new(
                 CommandBus::new(
                     download_repo,
@@ -359,9 +359,8 @@ pub fn run() {
                 .with_plugin_config_store(plugin_config_store.clone()),
             );
 
-            // Same pattern as the command-bus deps above: clone the stats
-            // repo so the recorder bridge keeps its own handle once the
-            // query bus takes ownership.
+            // Stats recorder bridge keeps its own handle once the query
+            // bus takes ownership of `stats_repo`.
             let stats_repo_for_bridge: Arc<dyn StatsRepository> = stats_repo.clone();
             let query_bus = Arc::new(
                 QueryBus::new(
@@ -425,20 +424,27 @@ pub fn run() {
             // Project DownloadCompletedPersisted into the `statistics` table
             // so daily-volume / total-files / avg-speed KPIs match the
             // downloads table (issue #114).
-            spawn_stats_recorder_bridge(
-                event_bus.as_ref(),
-                download_repo_for_stats_bridge,
-                stats_repo_for_bridge,
-            );
+            spawn_stats_recorder_bridge(event_bus.as_ref(), stats_repo_for_bridge);
             // Project DownloadCompletedPersisted into the `history` table
             // so the History view (PRD §6.8), redownload-from-history
             // (P0.9) and the retention purge worker (P0.14) all see
             // completed downloads.
-            spawn_history_recorder_bridge(
-                event_bus.as_ref(),
-                download_repo_for_history_bridge,
-                history_repo_for_bridge,
-            );
+            spawn_history_recorder_bridge(event_bus.as_ref(), history_repo_for_bridge);
+            // One-time startup backfill: users upgrading from the broken
+            // builds had completed downloads but no history rows. Walk
+            // every Completed download once, skip ones already projected,
+            // and synthesise the same `record` call the bridge would have
+            // performed at completion time.
+            let download_repo_backfill = download_repo_for_backfill.clone();
+            let history_repo_backfill = history_repo_for_backfill.clone();
+            tokio::spawn(async move {
+                if let Err(e) = backfill_history_for_completed_downloads(
+                    download_repo_backfill.as_ref(),
+                    history_repo_backfill.as_ref(),
+                ) {
+                    tracing::warn!(error = %e, "history backfill skipped due to repo error");
+                }
+            });
 
             // ── Queue manager event listener ────────────────────────
             queue_manager.clone().start_listening();

@@ -13,8 +13,8 @@ use tokio_util::sync::CancellationToken;
 use crate::application::error::AppError;
 use crate::application::services::checksum_validator::{ChecksumOutcome, ChecksumValidatorService};
 use crate::domain::error::DomainError;
-use crate::domain::event::DomainEvent;
-use crate::domain::model::download::{DownloadId, DownloadState};
+use crate::domain::event::{DomainEvent, DownloadCompletedSnapshot};
+use crate::domain::model::download::{Download, DownloadId, DownloadState};
 use crate::domain::ports::driven::checksum_computer::ChecksumComputer;
 use crate::domain::ports::driven::config_store::ConfigStore;
 use crate::domain::ports::driven::download_engine::DownloadEngine;
@@ -48,6 +48,23 @@ fn lock_map(
     match m.lock() {
         Ok(g) => g,
         Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+/// Build the read-model projection inputs from a freshly-saved
+/// `Completed` `Download`. Captured at publish time so async subscribers
+/// observe a stable view that cannot drift if the row is later
+/// removed/updated/relocated by a concurrent flow.
+pub(crate) fn build_completed_snapshot(download: &Download) -> DownloadCompletedSnapshot {
+    DownloadCompletedSnapshot {
+        id: download.id(),
+        file_name: download.file_name().to_string(),
+        url: download.url().as_str().to_string(),
+        destination_path: download.destination_path().to_string(),
+        file_size_bytes: download.file_size().map(|fs| fs.0),
+        downloaded_bytes: download.downloaded_bytes(),
+        created_at_ms: download.created_at(),
+        updated_at_ms: download.updated_at(),
     }
 }
 
@@ -265,8 +282,9 @@ impl QueueManager {
                 // Completed so that late events arriving after a cancel/fail
                 // don't mislead the UI.
                 if download.state() == DownloadState::Completed {
+                    let snapshot = build_completed_snapshot(&download);
                     self.event_bus
-                        .publish(DomainEvent::DownloadCompletedPersisted { id });
+                        .publish(DomainEvent::DownloadCompletedPersisted { id, snapshot });
                 }
                 was_active
             }
@@ -1189,7 +1207,7 @@ mod tests {
         assert!(
             events.iter().any(|e| matches!(
                 e,
-                DomainEvent::DownloadCompletedPersisted { id } if id.0 == 1
+                DomainEvent::DownloadCompletedPersisted { id, .. } if id.0 == 1
             )),
             "must publish DownloadCompletedPersisted after persisting Completed state, got {events:?}"
         );
@@ -1224,7 +1242,7 @@ mod tests {
         assert!(
             events.iter().any(|e| matches!(
                 e,
-                DomainEvent::DownloadCompletedPersisted { id } if id.0 == 1
+                DomainEvent::DownloadCompletedPersisted { id, .. } if id.0 == 1
             )),
             "must publish DownloadCompletedPersisted for pre-completed downloads (register_local_file flow)"
         );
