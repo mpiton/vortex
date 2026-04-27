@@ -2,6 +2,12 @@ use std::collections::VecDeque;
 
 use dashmap::DashMap;
 
+/// Per-download log buffer cap shared by the store's runtime configuration in
+/// `lib.rs` and the IPC defaulting branch in `tauri_ipc::download_logs`. Both
+/// must reference this constant so a default-limit request always surfaces
+/// every line currently retained.
+pub const DEFAULT_MAX_ENTRIES_PER_DOWNLOAD: usize = 256;
+
 #[derive(Debug)]
 pub struct DownloadLogStore {
     max_entries_per_download: usize,
