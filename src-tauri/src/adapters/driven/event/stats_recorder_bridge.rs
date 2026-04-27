@@ -73,18 +73,25 @@ fn record_for_event(
 /// announces a Content-Length) and falls back to the running
 /// `downloaded_bytes` for streams of unknown size.
 ///
-/// `avg_speed` is `bytes / elapsed_seconds` with a `1`-second floor so an
-/// instant completion (`updated_at == created_at`) does not divide by zero.
+/// `avg_speed` is `bytes / elapsed_seconds`. `created_at`/`updated_at` are
+/// stored in milliseconds (see `current_timestamp_ms`), so the difference is
+/// divided by `1_000` and clamped to a `1`-second floor — short transfers
+/// (`< 1s` elapsed) and instant completions (`updated_at == created_at`)
+/// therefore never divide by zero or by a misinterpreted unit.
+///
+/// Caveat: the elapsed window spans from queue admission (`created_at`) to
+/// completion (`updated_at`), so it includes time spent queued, paused or
+/// retrying. The `Download` aggregate doesn't currently expose a transfer-
+/// start timestamp; once it does, this should switch to `started_at` so the
+/// `avg_speed` aggregate reflects only the active transfer phase.
 fn derive_stats(download: &Download) -> (u64, u64) {
     let bytes = download
         .file_size()
         .map(|fs| fs.0)
         .filter(|n| *n > 0)
         .unwrap_or_else(|| download.downloaded_bytes());
-    let elapsed_secs = download
-        .updated_at()
-        .saturating_sub(download.created_at())
-        .max(1);
+    let elapsed_ms = download.updated_at().saturating_sub(download.created_at());
+    let elapsed_secs = (elapsed_ms / 1_000).max(1);
     let avg_speed = bytes / elapsed_secs;
     (bytes, avg_speed)
 }
@@ -222,7 +229,9 @@ mod tests {
 
     #[test]
     fn test_record_for_event_records_when_persisted_event_uses_file_size() {
-        let download = make_download(7, 100, 110, Some(2_000));
+        // Timestamps are in ms (see `current_timestamp_ms`):
+        // elapsed_ms = 110_000 - 100_000 = 10_000 → 10s.
+        let download = make_download(7, 100_000, 110_000, Some(2_000));
         let download_repo = StubDownloadRepo::returning(Ok(Some(download)));
         let stats_repo = Arc::new(RecordingStatsRepo::default());
 
@@ -232,13 +241,13 @@ mod tests {
             &DomainEvent::DownloadCompletedPersisted { id: DownloadId(7) },
         );
 
-        // bytes = file_size, avg_speed = 2000 / (110 - 100) = 200
+        // bytes = file_size, avg_speed = 2000 / 10s = 200
         assert_eq!(stats_repo.calls(), vec![(2_000, 200)]);
     }
 
     #[test]
     fn test_record_for_event_falls_back_to_downloaded_bytes_when_size_unknown() {
-        let mut download = make_download(8, 100, 110, None);
+        let mut download = make_download(8, 100_000, 110_000, None);
         download.update_progress(1_500);
         let download_repo = StubDownloadRepo::returning(Ok(Some(download)));
         let stats_repo = Arc::new(RecordingStatsRepo::default());
@@ -249,13 +258,13 @@ mod tests {
             &DomainEvent::DownloadCompletedPersisted { id: DownloadId(8) },
         );
 
-        // bytes = downloaded_bytes (file_size was None), avg_speed = 1500 / 10 = 150
+        // bytes = downloaded_bytes (file_size was None), avg_speed = 1500 / 10s = 150
         assert_eq!(stats_repo.calls(), vec![(1_500, 150)]);
     }
 
     #[test]
     fn test_record_for_event_avoids_division_by_zero_on_instant_completion() {
-        let download = make_download(9, 200, 200, Some(4_096));
+        let download = make_download(9, 200_000, 200_000, Some(4_096));
         let download_repo = StubDownloadRepo::returning(Ok(Some(download)));
         let stats_repo = Arc::new(RecordingStatsRepo::default());
 
@@ -265,8 +274,26 @@ mod tests {
             &DomainEvent::DownloadCompletedPersisted { id: DownloadId(9) },
         );
 
-        // elapsed clamped to 1s → avg_speed = bytes / 1
+        // elapsed_ms = 0 → elapsed_secs clamped to 1 → avg_speed = bytes / 1
         assert_eq!(stats_repo.calls(), vec![(4_096, 4_096)]);
+    }
+
+    #[test]
+    fn test_record_for_event_clamps_sub_second_elapsed_to_one_second() {
+        // 500 ms elapsed: elapsed_ms / 1_000 = 0, clamped to 1 second.
+        // Without the ms→s conversion, this would have produced a 1000×
+        // inflated avg_speed (cubic P2, PR #117).
+        let download = make_download(11, 0, 500, Some(2_048));
+        let download_repo = StubDownloadRepo::returning(Ok(Some(download)));
+        let stats_repo = Arc::new(RecordingStatsRepo::default());
+
+        record_for_event(
+            download_repo.as_ref(),
+            stats_repo.as_ref(),
+            &DomainEvent::DownloadCompletedPersisted { id: DownloadId(11) },
+        );
+
+        assert_eq!(stats_repo.calls(), vec![(2_048, 2_048)]);
     }
 
     #[test]
@@ -343,8 +370,13 @@ mod tests {
         use std::time::Duration;
 
         let bus = TokioEventBus::new(16);
-        let download_repo =
-            StubDownloadRepo::returning(Ok(Some(make_download(42, 1_000, 1_010, Some(20_000)))));
+        // 10s elapsed (1_010_000 - 1_000_000 = 10_000 ms).
+        let download_repo = StubDownloadRepo::returning(Ok(Some(make_download(
+            42,
+            1_000_000,
+            1_010_000,
+            Some(20_000),
+        ))));
         let stats_repo = Arc::new(RecordingStatsRepo::default());
 
         spawn_stats_recorder_bridge(&bus, download_repo, stats_repo.clone());
