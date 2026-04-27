@@ -72,12 +72,12 @@ fn event_payload(event: &DomainEvent) -> serde_json::Value {
         | DomainEvent::DownloadResumed { id }
         | DomainEvent::DownloadResumedFromWait { id }
         | DomainEvent::DownloadCompleted { id }
-        | DomainEvent::DownloadCompletedPersisted { id }
         | DomainEvent::DownloadCancelled { id }
         | DomainEvent::DownloadRemoved { id }
         | DomainEvent::DownloadWaiting { id }
         | DomainEvent::DownloadChecking { id }
         | DomainEvent::DownloadExtracting { id } => json!({ "id": id.0 }),
+        DomainEvent::DownloadCompletedPersisted { id, .. } => json!({ "id": id.0 }),
 
         DomainEvent::DownloadFailed { id, error } => json!({ "id": id.0, "error": error }),
         DomainEvent::DownloadRetrying { id, attempt } => {
@@ -180,11 +180,17 @@ mod tests {
     fn test_download_completed_persisted_is_the_frontend_completion_event() {
         // Post-persist event: must be forwarded and carry the `download-completed`
         // name the frontend listens to.
+        use crate::domain::event::DownloadCompletedSnapshot;
         assert!(should_forward_to_frontend(
-            &DomainEvent::DownloadCompletedPersisted { id: DownloadId(5) }
+            &DomainEvent::DownloadCompletedPersisted {
+                id: DownloadId(5),
+                snapshot: DownloadCompletedSnapshot::for_test(DownloadId(5)),
+            }
         ));
-        let (name, payload) =
-            to_tauri_event(&DomainEvent::DownloadCompletedPersisted { id: DownloadId(42) });
+        let (name, payload) = to_tauri_event(&DomainEvent::DownloadCompletedPersisted {
+            id: DownloadId(42),
+            snapshot: DownloadCompletedSnapshot::for_test(DownloadId(42)),
+        });
         assert_eq!(name, "download-completed");
         assert_eq!(payload["id"], 42);
     }

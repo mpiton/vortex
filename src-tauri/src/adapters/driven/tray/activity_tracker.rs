@@ -56,11 +56,13 @@ impl ActivityTracker {
             }
             DomainEvent::DownloadPaused { id }
             | DomainEvent::DownloadCompleted { id }
-            | DomainEvent::DownloadCompletedPersisted { id }
             | DomainEvent::DownloadFailed { id, .. }
             | DomainEvent::DownloadCancelled { id }
             | DomainEvent::DownloadRemoved { id }
             | DomainEvent::DownloadWaiting { id } => {
+                self.active.remove(id);
+            }
+            DomainEvent::DownloadCompletedPersisted { id, .. } => {
                 self.active.remove(id);
             }
             _ => {}
@@ -84,7 +86,11 @@ mod tests {
         DomainEvent::DownloadPaused { id: DownloadId(id) }
     }
     fn completed(id: u64) -> DomainEvent {
-        DomainEvent::DownloadCompletedPersisted { id: DownloadId(id) }
+        use crate::domain::event::DownloadCompletedSnapshot;
+        DomainEvent::DownloadCompletedPersisted {
+            id: DownloadId(id),
+            snapshot: DownloadCompletedSnapshot::for_test(DownloadId(id)),
+        }
     }
 
     #[test]
