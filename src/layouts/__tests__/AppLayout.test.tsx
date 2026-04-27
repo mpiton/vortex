@@ -319,4 +319,31 @@ describe("AppLayout", () => {
     expect(mockNavigate).not.toHaveBeenCalled();
     document.body.removeChild(textarea);
   });
+
+  it("should render a skip-link as the first focusable element", () => {
+    renderAppLayout();
+    const links = screen.getAllByRole("link");
+    expect(links.length).toBeGreaterThan(0);
+    expect(links[0]).toHaveAttribute("href", "#main-content");
+    expect(links[0]).toHaveTextContent("Skip to main content");
+  });
+
+  it("should mark <main> with id=main-content and tabIndex=-1 for skip-link target", () => {
+    const { container } = renderAppLayout();
+    const main = container.querySelector("main");
+    expect(main).not.toBeNull();
+    expect(main).toHaveAttribute("id", "main-content");
+    expect(main).toHaveAttribute("tabindex", "-1");
+  });
+
+  it("should focus <main> when the skip-link is activated", () => {
+    const { container } = renderAppLayout();
+    const main = container.querySelector<HTMLElement>("main");
+    const skipLink = screen.getAllByRole("link")[0];
+    expect(main).not.toBeNull();
+
+    fireEvent.click(skipLink);
+
+    expect(document.activeElement).toBe(main);
+  });
 });
