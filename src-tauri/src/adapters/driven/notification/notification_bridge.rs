@@ -51,6 +51,13 @@ pub fn spawn_notification_bridge(
     let grouper = Arc::new(Mutex::new(NotificationGrouper::new()));
 
     event_bus.subscribe(Box::new(move |event: &DomainEvent| {
+        // Side-effects that must run regardless of the user's
+        // notification preference (logs, observability) live before
+        // the gate so disabling toasts never silences error reporting.
+        if let DomainEvent::DownloadFailed { id, error } = event {
+            tracing::error!(download_id = id.0, error = %error, "download failed");
+        }
+
         if !is_notifications_enabled(config_store.as_ref()) {
             return;
         }
@@ -81,7 +88,6 @@ pub fn spawn_notification_bridge(
                 }
             }
             DomainEvent::DownloadFailed { id, error } => {
-                tracing::error!(download_id = id.0, error = %error, "download failed");
                 let detail = lookup_detail(read_repo.as_ref(), id.0);
                 send(
                     &app_handle,
