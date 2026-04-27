@@ -332,7 +332,7 @@ pub fn run() {
                     file_storage,
                     http_client,
                     plugin_loader.clone(),
-                    config_store,
+                    config_store.clone(),
                     credential_store,
                     clipboard_observer,
                     archive_extractor.clone(),
@@ -347,7 +347,7 @@ pub fn run() {
 
             let query_bus = Arc::new(
                 QueryBus::new(
-                    download_read_repo,
+                    download_read_repo.clone(),
                     history_repo,
                     stats_repo,
                     plugin_read_repo,
@@ -396,7 +396,12 @@ pub fn run() {
 
             // ── Event bridges (domain events → frontend + desktop) ──
             spawn_tauri_event_bridge(app_handle.clone(), event_bus.as_ref());
-            spawn_notification_bridge(app_handle, event_bus.as_ref());
+            spawn_notification_bridge(
+                app_handle,
+                event_bus.as_ref(),
+                config_store.clone(),
+                download_read_repo.clone(),
+            );
             spawn_download_log_bridge(event_bus.as_ref(), download_log_store);
             spawn_sqlite_progress_bridge(event_bus.as_ref(), db);
 

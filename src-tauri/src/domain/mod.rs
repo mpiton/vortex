@@ -6,6 +6,7 @@
 pub mod error;
 pub mod event;
 pub mod model;
+pub mod notification;
 pub mod ports;
 
 pub use error::DomainError;
