@@ -18,6 +18,7 @@ pub use adapters::driven::config::TomlConfigStore;
 pub use adapters::driven::credential::KeyringCredentialStore;
 pub use adapters::driven::credential::NoopCredentialStore;
 pub use adapters::driven::event::TokioEventBus;
+pub use adapters::driven::event::spawn_history_recorder_bridge;
 pub use adapters::driven::event::spawn_stats_recorder_bridge;
 pub use adapters::driven::event::spawn_tauri_event_bridge;
 pub use adapters::driven::extractor::VortexArchiveExtractor;
@@ -328,9 +329,15 @@ pub fn run() {
             // takes ownership of `config_store`.
             let config_store_for_purge: Arc<dyn ConfigStore> = config_store.clone();
             let history_repo_for_purge: Arc<dyn HistoryRepository> = history_repo.clone();
+            // History recorder bridge keeps its own handle so it survives
+            // the move of `history_repo` into the query bus below.
+            let history_repo_for_bridge: Arc<dyn HistoryRepository> = history_repo.clone();
             // Stats recorder bridge needs the write repo (for `find_by_id`)
-            // before `CommandBus::new` takes ownership of it.
+            // before `CommandBus::new` takes ownership of it. Cloned twice
+            // because the history recorder bridge needs the same handle.
             let download_repo_for_stats_bridge: Arc<dyn DownloadRepository> = download_repo.clone();
+            let download_repo_for_history_bridge: Arc<dyn DownloadRepository> =
+                download_repo.clone();
             let command_bus = Arc::new(
                 CommandBus::new(
                     download_repo,
@@ -422,6 +429,15 @@ pub fn run() {
                 event_bus.as_ref(),
                 download_repo_for_stats_bridge,
                 stats_repo_for_bridge,
+            );
+            // Project DownloadCompletedPersisted into the `history` table
+            // so the History view (PRD §6.8), redownload-from-history
+            // (P0.9) and the retention purge worker (P0.14) all see
+            // completed downloads.
+            spawn_history_recorder_bridge(
+                event_bus.as_ref(),
+                download_repo_for_history_bridge,
+                history_repo_for_bridge,
             );
 
             // ── Queue manager event listener ────────────────────────
