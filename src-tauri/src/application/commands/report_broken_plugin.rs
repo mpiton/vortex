@@ -113,7 +113,7 @@ fn read_repository_from_cache(path: &std::path::Path, plugin_name: &str) -> Opti
         if name != plugin_name {
             return None;
         }
-        let repo = entry.get("repository")?.as_str()?;
+        let repo = entry.get("repository")?.as_str()?.trim();
         if repo.is_empty() {
             None
         } else {
