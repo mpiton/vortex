@@ -623,6 +623,7 @@ pub async fn plugin_report_broken(
     log_lines: Option<Vec<String>>,
     tested_url: Option<String>,
 ) -> Result<String, String> {
+    let store_cache_path = store_cache_path().ok();
     state
         .command_bus
         .handle_report_broken_plugin(ReportBrokenPluginCommand {
@@ -631,6 +632,7 @@ pub async fn plugin_report_broken(
             tested_url,
             vortex_version: env!("CARGO_PKG_VERSION").to_string(),
             os: std::env::consts::OS.to_string(),
+            store_cache_path,
         })
         .await
         .map_err(|e| e.to_string())

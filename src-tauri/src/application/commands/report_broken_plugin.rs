@@ -2,9 +2,11 @@
 //!
 //! Builds a pre-filled GitHub "new issue" URL for the named plugin and
 //! hands it to the [`UrlOpener`](crate::domain::ports::driven::UrlOpener)
-//! port. The plugin must declare a `repository_url` in its manifest;
-//! otherwise the caller gets a [`AppError::Validation`] explaining what
-//! is missing.
+//! port. The plugin's `[plugin].repository` field in `plugin.toml` is the
+//! source of truth; when it is missing (e.g. the plugin was installed
+//! before the field was required), the handler falls back to the local
+//! plugin store cache. If neither has a repository URL, the caller gets
+//! a [`AppError::Validation`] pointing at the missing TOML field.
 //!
 //! Diagnostic context (versions, OS, recent logs, URL under test) is
 //! supplied by the driving adapter on every call. The handler stays free
@@ -41,15 +43,31 @@ impl CommandBus {
                 })?,
         };
 
-        let repo_url = manifest.repository_url().ok_or_else(|| {
-            AppError::Validation(format!(
-                "plugin '{}' has no repository_url in its manifest",
-                cmd.plugin_name
-            ))
-        })?;
+        // Plugin manifest is the source of truth for `repository`, but
+        // releases shipped before the field was required do not declare
+        // it. Fall back to the local plugin store cache so the feature
+        // remains usable until the user upgrades to a newer release.
+        let repo_url = manifest
+            .repository_url()
+            .map(str::to_string)
+            .or_else(|| {
+                cmd.store_cache_path
+                    .as_deref()
+                    .and_then(|path| read_repository_from_cache(path, &cmd.plugin_name))
+            })
+            .ok_or_else(|| {
+                AppError::Validation(format!(
+                    "plugin '{}' is missing the 'repository' field in plugin.toml \
+                     [plugin] section, and the local plugin store cache has no entry \
+                     for it. Add `repository = \"https://github.com/<owner>/<repo>\"` \
+                     to the plugin's plugin.toml and re-publish, or refresh the \
+                     plugin store cache.",
+                    cmd.plugin_name
+                ))
+            })?;
 
         let issue_url = build_report_broken_url(
-            repo_url,
+            &repo_url,
             manifest.name(),
             manifest.version(),
             &cmd.vortex_version,
@@ -80,6 +98,28 @@ impl CommandBus {
 
         Ok(issue_url)
     }
+}
+
+/// Lookup a plugin's `repository` URL in the local store cache JSON.
+///
+/// Returns `None` when the cache does not exist, cannot be read, or has
+/// no entry for the named plugin. The handler treats every failure mode
+/// the same way — fall back to the validation error — because the cache
+/// is a best-effort fallback, not a hard requirement.
+fn read_repository_from_cache(path: &std::path::Path, plugin_name: &str) -> Option<String> {
+    let entries = crate::application::commands::store_refresh::read_cache(path).ok()?;
+    entries.into_iter().find_map(|entry| {
+        let name = entry.get("name")?.as_str()?;
+        if name != plugin_name {
+            return None;
+        }
+        let repo = entry.get("repository")?.as_str()?;
+        if repo.is_empty() {
+            None
+        } else {
+            Some(repo.to_string())
+        }
+    })
 }
 
 #[cfg(test)]
@@ -339,12 +379,20 @@ mod tests {
     }
 
     fn cmd(plugin_name: &str) -> ReportBrokenPluginCommand {
+        cmd_with_cache(plugin_name, None)
+    }
+
+    fn cmd_with_cache(
+        plugin_name: &str,
+        store_cache_path: Option<std::path::PathBuf>,
+    ) -> ReportBrokenPluginCommand {
         ReportBrokenPluginCommand {
             plugin_name: plugin_name.to_string(),
             log_lines: vec!["ERROR: boom".to_string()],
             tested_url: Some("https://example.com/x".to_string()),
             vortex_version: "0.2.0".to_string(),
             os: "linux".to_string(),
+            store_cache_path,
         }
     }
 
@@ -435,6 +483,89 @@ mod tests {
 
         let err = bus
             .handle_report_broken_plugin(cmd("vortex-mod-foo"))
+            .await
+            .unwrap_err();
+        // Message must point users at the actual TOML field that is
+        // missing (`[plugin].repository`), not the internal struct field
+        // name `repository_url` — that one only exists in Rust.
+        match &err {
+            AppError::Validation(msg) => {
+                assert!(
+                    msg.contains("repository") && msg.contains("plugin.toml"),
+                    "unexpected validation message: {msg}"
+                );
+            }
+            other => panic!("expected Validation error, got {other:?}"),
+        }
+        assert!(opener.opened.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn handle_report_broken_plugin_falls_back_to_registry_when_manifest_missing_repo() {
+        // Plugins installed before `repository` was required ship a
+        // manifest without it. The handler must fall back to the local
+        // store cache so the feature works for already-installed plugins.
+        use crate::application::commands::store_refresh::write_cache;
+        use crate::domain::model::plugin_store::{PluginStoreEntry, PluginStoreStatus};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cache_path = tmp.path().join("plugin-registry-cache.json");
+        let entry = PluginStoreEntry {
+            name: "vortex-mod-legacy".into(),
+            description: "legacy".into(),
+            author: "auth".into(),
+            version: "1.0.0".into(),
+            category: PluginCategory::Crawler,
+            repository: "https://github.com/mpiton/vortex-mod-legacy".into(),
+            checksum_sha256: "abc".into(),
+            checksum_sha256_toml: None,
+            official: true,
+            min_vortex_version: None,
+            status: PluginStoreStatus::Installed,
+            installed_version: Some("1.0.0".into()),
+        };
+        write_cache(&cache_path, &[entry]).unwrap();
+
+        let loader = Arc::new(StaticLoader {
+            installed: vec![],
+            infos: vec![info_with_repo("vortex-mod-legacy", "1.0.0", None)],
+        });
+        let opener = RecordingUrlOpener::ok();
+        let bus = build_bus(loader, Some(opener.clone() as Arc<dyn UrlOpener>));
+
+        let url = bus
+            .handle_report_broken_plugin(cmd_with_cache("vortex-mod-legacy", Some(cache_path)))
+            .await
+            .unwrap();
+
+        assert!(
+            url.starts_with("https://github.com/mpiton/vortex-mod-legacy/issues/new?"),
+            "expected URL built from registry repository, got: {url}"
+        );
+        let opened = opener.opened.lock().unwrap();
+        assert_eq!(opened.len(), 1);
+        assert_eq!(opened[0], url);
+    }
+
+    #[tokio::test]
+    async fn handle_report_broken_plugin_validation_error_when_neither_manifest_nor_cache_have_repo()
+     {
+        // Cache exists but does not list the plugin → still no repo URL.
+        use crate::application::commands::store_refresh::write_cache;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cache_path = tmp.path().join("plugin-registry-cache.json");
+        write_cache(&cache_path, &[]).unwrap();
+
+        let loader = Arc::new(StaticLoader {
+            installed: vec![],
+            infos: vec![info_with_repo("vortex-mod-foo", "1.0.0", None)],
+        });
+        let opener = RecordingUrlOpener::ok();
+        let bus = build_bus(loader, Some(opener.clone() as Arc<dyn UrlOpener>));
+
+        let err = bus
+            .handle_report_broken_plugin(cmd_with_cache("vortex-mod-foo", Some(cache_path)))
             .await
             .unwrap_err();
         assert!(matches!(err, AppError::Validation(_)), "{err:?}");
