@@ -54,8 +54,14 @@ pub fn spawn_notification_bridge(
         // Side-effects that must run regardless of the user's
         // notification preference (logs, observability) live before
         // the gate so disabling toasts never silences error reporting.
-        if let DomainEvent::DownloadFailed { id, error } = event {
-            tracing::error!(download_id = id.0, error = %error, "download failed");
+        // We deliberately omit the raw error string from the structured
+        // tracing field: it can carry URLs, tokens or hoster response
+        // bodies and global tracing logs are persisted/aggregated. The
+        // per-download log bridge (`download_log_bridge`) already
+        // captures the full error against the download id for
+        // correlation.
+        if let DomainEvent::DownloadFailed { id, .. } = event {
+            tracing::error!(download_id = id.0, "download failed");
         }
 
         if !is_notifications_enabled(config_store.as_ref()) {
