@@ -47,7 +47,7 @@ describe("SkipLink", () => {
     target.id = "main-content";
     target.tabIndex = -1;
     document.body.appendChild(target);
-    const previousHash = window.location.hash;
+    const previousUrl = window.location.href;
     window.history.replaceState(null, "", "#before-skip-link");
 
     try {
@@ -55,7 +55,7 @@ describe("SkipLink", () => {
       fireEvent.click(screen.getByRole("link"));
       expect(window.location.hash).toBe("#before-skip-link");
     } finally {
-      window.history.replaceState(null, "", previousHash || window.location.pathname);
+      window.history.replaceState(null, "", previousUrl);
       document.body.removeChild(target);
     }
   });

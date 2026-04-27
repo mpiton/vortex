@@ -7,6 +7,7 @@ import { AppLayout } from "../AppLayout";
 import { useUiStore } from "@/stores/uiStore";
 import { useSettingsStore } from "@/stores/settingsStore";
 import type { AppConfig } from "@/types/settings";
+import enTranslations from "@/i18n/locales/en.json";
 
 const mockNavigate = vi.fn();
 const originalPlatform = navigator.platform;
@@ -327,7 +328,7 @@ describe("AppLayout", () => {
     );
     expect(focusables.length).toBeGreaterThan(0);
     expect(focusables[0]).toHaveAttribute("href", "#main-content");
-    expect(focusables[0]).toHaveTextContent("Skip to main content");
+    expect(focusables[0]).toHaveTextContent(enTranslations.a11y.skipToMain);
   });
 
   it("should mark <main> with id=main-content and tabIndex=-1 for skip-link target", () => {
