@@ -111,15 +111,45 @@ impl CommandBus {
 
         let path = cmd.path.clone();
         let bytes = ciphertext;
-        // Write the bundle to a sibling temp file and `rename` it into
-        // place so a mid-flight write/truncate failure can never
-        // corrupt an existing valid bundle. The temp file lives next to
-        // the destination so the rename stays on the same filesystem.
+        // Write the bundle to a sibling temp file, fsync the data, and
+        // `rename` it into place so a mid-flight write/truncate failure
+        // can never corrupt an existing valid bundle. The temp file
+        // lives next to the destination so the rename stays on the
+        // same filesystem.
+        //
+        // Without the `sync_all` call the bytes might still be in the
+        // page cache when the rename returns, so a system crash right
+        // after the call could leave the destination pointing at a
+        // truncated file.
+        //
+        // On POSIX `rename` overwrites the destination atomically. On
+        // Windows the same call uses FileRenameInfoEx with
+        // REPLACE_IF_EXISTS in modern Rust, but if the underlying
+        // toolchain rejects the rename because the destination exists
+        // we explicitly remove it and retry once. Any failure deletes
+        // the temp file so we never leak `*.vortexacc-tmp` on disk.
         tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+            use std::io::Write;
             let tmp_path = path.with_extension("vortexacc-tmp");
-            std::fs::write(&tmp_path, &bytes)?;
-            std::fs::rename(&tmp_path, &path)?;
-            Ok(())
+            let outcome = (|| -> std::io::Result<()> {
+                {
+                    let mut f = std::fs::File::create(&tmp_path)?;
+                    f.write_all(&bytes)?;
+                    f.sync_all()?;
+                }
+                match std::fs::rename(&tmp_path, &path) {
+                    Ok(()) => Ok(()),
+                    Err(_) if path.exists() => {
+                        std::fs::remove_file(&path)?;
+                        std::fs::rename(&tmp_path, &path)
+                    }
+                    Err(e) => Err(e),
+                }
+            })();
+            if outcome.is_err() {
+                let _ = std::fs::remove_file(&tmp_path);
+            }
+            outcome
         })
         .await
         .map_err(|e| AppError::Storage(format!("export write task failed: {e}")))?
@@ -238,6 +268,40 @@ mod tests {
             .await
             .expect_err("empty pass");
         assert!(matches!(err, AppError::Validation(_)));
+    }
+
+    #[tokio::test]
+    async fn test_export_accounts_overwrites_existing_destination() {
+        let repo = Arc::new(InMemoryAccountRepo::new());
+        let creds = Arc::new(FakeAccountCredentialStore::new());
+        let codec: Arc<dyn PassphraseCodec> = Arc::new(FakePassphraseCodec);
+        let events = Arc::new(CapturingEventBus::new());
+        let bus = build_account_bus(repo, creds, events, None, Some(codec));
+        bus.handle_add_account(add_command("real-debrid", "alice", "pw"))
+            .await
+            .unwrap();
+
+        let dir = TempDir::new().unwrap();
+        let bundle = dir.path().join("accounts.bin");
+        std::fs::write(&bundle, b"stale-bundle-content").unwrap();
+        let original_size = std::fs::metadata(&bundle).unwrap().len();
+
+        bus.handle_export_accounts(ExportAccountsCommand {
+            path: bundle.clone(),
+            passphrase: "k".into(),
+        })
+        .await
+        .expect("export must overwrite the existing file, not fail");
+
+        let new_size = std::fs::metadata(&bundle).unwrap().len();
+        assert_ne!(
+            new_size, original_size,
+            "destination must hold the freshly written bundle"
+        );
+        assert!(
+            !dir.path().join("accounts.vortexacc-tmp").exists(),
+            "temp file must not leak after a successful export"
+        );
     }
 
     #[tokio::test]
