@@ -1,3 +1,4 @@
+use crate::domain::model::account::AccountId;
 use crate::domain::model::download::DownloadId;
 use crate::domain::model::views::HistoryEntry;
 
@@ -234,6 +235,45 @@ pub enum DomainEvent {
 
     // Settings
     SettingsUpdated,
+
+    // Accounts
+    AccountAdded {
+        id: AccountId,
+        service_name: String,
+    },
+    AccountUpdated {
+        id: AccountId,
+    },
+    AccountDeleted {
+        id: AccountId,
+    },
+    /// Emitted by `validate_account` when the upstream service confirms
+    /// the credentials. Carries the freshly observed metadata so the
+    /// frontend can refresh traffic counters / expiry without round-
+    /// tripping back through `list_accounts`.
+    AccountValidated {
+        id: AccountId,
+        latency_ms: Option<u64>,
+        traffic_left: Option<u64>,
+        traffic_total: Option<u64>,
+        valid_until: Option<u64>,
+    },
+    /// Emitted by `validate_account` when the credentials are rejected
+    /// or the upstream service is unreachable.
+    AccountValidationFailed {
+        id: AccountId,
+        error: String,
+    },
+    /// Emitted after `import_accounts` decrypts the bundle and
+    /// successfully persists every entry it contained.
+    AccountsImported {
+        count: u32,
+    },
+    /// Emitted after `export_accounts` writes the encrypted bundle to
+    /// disk.
+    AccountsExported {
+        count: u32,
+    },
 }
 
 #[cfg(test)]

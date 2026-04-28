@@ -15,8 +15,10 @@ use domain::ports::driven::{
 // Public API — concrete types for app wiring (main.rs, Tauri setup, integration tests)
 pub use adapters::driven::clipboard::TauriClipboardObserver;
 pub use adapters::driven::config::TomlConfigStore;
+pub use adapters::driven::credential::KeyringAccountStore;
 pub use adapters::driven::credential::KeyringCredentialStore;
 pub use adapters::driven::credential::NoopCredentialStore;
+pub use adapters::driven::crypto::AesGcmPbkdf2Codec;
 pub use adapters::driven::event::TokioEventBus;
 pub use adapters::driven::event::spawn_history_recorder_bridge;
 pub use adapters::driven::event::spawn_stats_recorder_bridge;

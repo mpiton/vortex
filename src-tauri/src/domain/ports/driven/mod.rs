@@ -1,7 +1,9 @@
 #[cfg(test)]
 mod tests;
 
+pub mod account_credential_store;
 pub mod account_repository;
+pub mod account_validator;
 pub mod archive_extractor;
 pub mod checksum_computer;
 pub mod clipboard_observer;
@@ -16,6 +18,7 @@ pub mod file_opener;
 pub mod file_storage;
 pub mod history_repository;
 pub mod http_client;
+pub mod passphrase_codec;
 pub mod plugin_config_store;
 pub mod plugin_loader;
 pub mod plugin_read_repository;
@@ -23,7 +26,9 @@ pub mod plugin_store_client;
 pub mod stats_repository;
 pub mod url_opener;
 
+pub use account_credential_store::AccountCredentialStore;
 pub use account_repository::AccountRepository;
+pub use account_validator::{AccountValidator, ValidationOutcome};
 pub use archive_extractor::ArchiveExtractor;
 pub use checksum_computer::ChecksumComputer;
 pub use clipboard_observer::ClipboardObserver;
@@ -38,6 +43,7 @@ pub use file_opener::FileOpener;
 pub use file_storage::FileStorage;
 pub use history_repository::HistoryRepository;
 pub use http_client::HttpClient;
+pub use passphrase_codec::PassphraseCodec;
 pub use plugin_config_store::PluginConfigStore;
 pub use plugin_loader::PluginLoader;
 pub use plugin_read_repository::PluginReadRepository;

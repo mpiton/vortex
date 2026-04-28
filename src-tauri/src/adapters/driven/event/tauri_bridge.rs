@@ -61,6 +61,13 @@ fn event_name(event: &DomainEvent) -> &'static str {
         DomainEvent::DownloadPrioritySet { .. } => "download-priority-set",
         DomainEvent::QueueReordered { .. } => "queue-reordered",
         DomainEvent::DownloadDirectoryChanged { .. } => "download-directory-changed",
+        DomainEvent::AccountAdded { .. } => "account-added",
+        DomainEvent::AccountUpdated { .. } => "account-updated",
+        DomainEvent::AccountDeleted { .. } => "account-deleted",
+        DomainEvent::AccountValidated { .. } => "account-validated",
+        DomainEvent::AccountValidationFailed { .. } => "account-validation-failed",
+        DomainEvent::AccountsImported { .. } => "accounts-imported",
+        DomainEvent::AccountsExported { .. } => "accounts-exported",
     }
 }
 
@@ -164,6 +171,31 @@ fn event_payload(event: &DomainEvent) -> serde_json::Value {
         } => {
             json!({ "id": id.0, "newDestinationPath": new_destination_path })
         }
+        DomainEvent::AccountAdded { id, service_name } => {
+            json!({ "id": id.as_str(), "serviceName": service_name })
+        }
+        DomainEvent::AccountUpdated { id } => json!({ "id": id.as_str() }),
+        DomainEvent::AccountDeleted { id } => json!({ "id": id.as_str() }),
+        DomainEvent::AccountValidated {
+            id,
+            latency_ms,
+            traffic_left,
+            traffic_total,
+            valid_until,
+        } => {
+            json!({
+                "id": id.as_str(),
+                "latencyMs": latency_ms,
+                "trafficLeft": traffic_left,
+                "trafficTotal": traffic_total,
+                "validUntil": valid_until,
+            })
+        }
+        DomainEvent::AccountValidationFailed { id, error } => {
+            json!({ "id": id.as_str(), "error": error })
+        }
+        DomainEvent::AccountsImported { count } => json!({ "count": count }),
+        DomainEvent::AccountsExported { count } => json!({ "count": count }),
     }
 }
 

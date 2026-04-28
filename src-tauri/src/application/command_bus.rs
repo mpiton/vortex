@@ -6,9 +6,10 @@
 use std::sync::Arc;
 
 use crate::domain::ports::driven::{
-    ArchiveExtractor, ChecksumComputer, ClipboardObserver, ConfigStore, CredentialStore,
-    DownloadEngine, DownloadRepository, EventBus, FileOpener, FileStorage, HistoryRepository,
-    HttpClient, PluginConfigStore, PluginLoader, PluginStoreClient, UrlOpener,
+    AccountCredentialStore, AccountRepository, AccountValidator, ArchiveExtractor,
+    ChecksumComputer, ClipboardObserver, ConfigStore, CredentialStore, DownloadEngine,
+    DownloadRepository, EventBus, FileOpener, FileStorage, HistoryRepository, HttpClient,
+    PassphraseCodec, PluginConfigStore, PluginLoader, PluginStoreClient, UrlOpener,
 };
 
 /// Central dispatcher for CQRS commands.
@@ -32,6 +33,10 @@ pub struct CommandBus {
     file_opener: Option<Arc<dyn FileOpener>>,
     url_opener: Option<Arc<dyn UrlOpener>>,
     plugin_config_store: Option<Arc<dyn PluginConfigStore>>,
+    account_repo: Option<Arc<dyn AccountRepository>>,
+    account_credential_store: Option<Arc<dyn AccountCredentialStore>>,
+    account_validator: Option<Arc<dyn AccountValidator>>,
+    passphrase_codec: Option<Arc<dyn PassphraseCodec>>,
     /// Serializes queue-position allocation across handlers. Without this,
     /// two concurrent move-to-top/move-to-bottom/start-download calls can
     /// observe the same min/max and write colliding `queue_position`
@@ -72,8 +77,56 @@ impl CommandBus {
             file_opener: None,
             url_opener: None,
             plugin_config_store: None,
+            account_repo: None,
+            account_credential_store: None,
+            account_validator: None,
+            passphrase_codec: None,
             queue_position_lock: tokio::sync::Mutex::new(()),
         }
+    }
+
+    /// Builder-style setter for the account repository. Optional so
+    /// existing fixtures that never invoke account commands don't have
+    /// to provide a mock.
+    pub fn with_account_repo(mut self, repo: Arc<dyn AccountRepository>) -> Self {
+        self.account_repo = Some(repo);
+        self
+    }
+
+    /// Builder-style setter for the per-account keyring wrapper.
+    pub fn with_account_credential_store(mut self, store: Arc<dyn AccountCredentialStore>) -> Self {
+        self.account_credential_store = Some(store);
+        self
+    }
+
+    /// Builder-style setter for the account-validation port (delegates
+    /// to the matching hoster / debrid plugin).
+    pub fn with_account_validator(mut self, validator: Arc<dyn AccountValidator>) -> Self {
+        self.account_validator = Some(validator);
+        self
+    }
+
+    /// Builder-style setter for the passphrase codec used by the
+    /// import / export commands.
+    pub fn with_passphrase_codec(mut self, codec: Arc<dyn PassphraseCodec>) -> Self {
+        self.passphrase_codec = Some(codec);
+        self
+    }
+
+    pub fn account_repo(&self) -> Option<&dyn AccountRepository> {
+        self.account_repo.as_deref()
+    }
+
+    pub fn account_credential_store(&self) -> Option<&dyn AccountCredentialStore> {
+        self.account_credential_store.as_deref()
+    }
+
+    pub fn account_validator(&self) -> Option<&dyn AccountValidator> {
+        self.account_validator.as_deref()
+    }
+
+    pub fn passphrase_codec(&self) -> Option<&dyn PassphraseCodec> {
+        self.passphrase_codec.as_deref()
     }
 
     /// Builder-style setter for the plugin configuration persistence port.
