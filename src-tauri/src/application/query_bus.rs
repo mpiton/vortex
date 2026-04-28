@@ -6,8 +6,8 @@
 use std::sync::Arc;
 
 use crate::domain::ports::driven::{
-    ArchiveExtractor, DownloadReadRepository, HistoryRepository, PluginConfigStore, PluginLoader,
-    PluginReadRepository, StatsRepository,
+    AccountRepository, ArchiveExtractor, DownloadReadRepository, HistoryRepository,
+    PluginConfigStore, PluginLoader, PluginReadRepository, StatsRepository,
 };
 
 /// Central dispatcher for CQRS queries.
@@ -22,6 +22,7 @@ pub struct QueryBus {
     archive_extractor: Arc<dyn ArchiveExtractor>,
     plugin_loader: Option<Arc<dyn PluginLoader>>,
     plugin_config_store: Option<Arc<dyn PluginConfigStore>>,
+    account_repo: Option<Arc<dyn AccountRepository>>,
 }
 
 impl QueryBus {
@@ -40,6 +41,7 @@ impl QueryBus {
             archive_extractor,
             plugin_loader: None,
             plugin_config_store: None,
+            account_repo: None,
         }
     }
 
@@ -55,6 +57,18 @@ impl QueryBus {
     pub fn with_plugin_config_store(mut self, store: Arc<dyn PluginConfigStore>) -> Self {
         self.plugin_config_store = Some(store);
         self
+    }
+
+    /// Builder-style setter for the account repository. Optional so
+    /// existing fixtures that never query accounts don't have to
+    /// provide a mock.
+    pub fn with_account_repo(mut self, repo: Arc<dyn AccountRepository>) -> Self {
+        self.account_repo = Some(repo);
+        self
+    }
+
+    pub fn account_repo(&self) -> Option<&dyn AccountRepository> {
+        self.account_repo.as_deref()
     }
 
     pub fn download_read_repo(&self) -> &dyn DownloadReadRepository {

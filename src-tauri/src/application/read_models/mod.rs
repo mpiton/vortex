@@ -1,5 +1,6 @@
 //! Application-layer read model DTOs with serde serialization.
 
+pub mod account_view;
 pub mod download_detail_view;
 pub mod download_view;
 pub mod history_view;
