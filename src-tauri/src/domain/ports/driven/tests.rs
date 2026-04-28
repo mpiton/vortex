@@ -667,7 +667,27 @@ impl AccountRepository for InMemoryAccountRepository {
                 )));
             }
         }
-        guard.insert(account.id().clone(), account.clone());
+
+        // Mirror the SQLite adapter: `created_at` is insert-only. On re-save
+        // of the same id, keep the existing timestamp so the mock cannot
+        // diverge from production on list ordering or round-trip behavior.
+        let stored = match guard.get(account.id()) {
+            Some(existing) => Account::reconstruct(
+                account.id().clone(),
+                account.service_name().to_string(),
+                account.username().to_string(),
+                account.account_type(),
+                account.is_enabled(),
+                account.traffic_left(),
+                account.traffic_total(),
+                account.valid_until(),
+                account.last_validated(),
+                existing.created_at(),
+            ),
+            None => account.clone(),
+        };
+
+        guard.insert(account.id().clone(), stored);
         Ok(())
     }
 
@@ -729,6 +749,37 @@ fn in_memory_account_repository_round_trip_preserves_fields() {
         .expect("find")
         .expect("present");
     assert_eq!(found, account);
+}
+
+#[test]
+fn in_memory_account_repository_save_preserves_original_created_at() {
+    // Same divergence guard as the SQLite adapter: re-saving a known id
+    // must not rewrite created_at, otherwise list ordering becomes
+    // unstable across writes.
+    let repo = InMemoryAccountRepository::new();
+    let original = Account::new(
+        AccountId::new("acc-stable"),
+        "real-debrid".to_string(),
+        "alice".to_string(),
+        AccountType::Debrid,
+        1_700_000_000_000,
+    );
+    repo.save(&original).expect("first save");
+
+    let updated = Account::new(
+        AccountId::new("acc-stable"),
+        "real-debrid".to_string(),
+        "alice".to_string(),
+        AccountType::Debrid,
+        9_999_999_999_999,
+    );
+    repo.save(&updated).expect("upsert");
+
+    let found = repo
+        .find_by_id(&AccountId::new("acc-stable"))
+        .expect("find")
+        .expect("present");
+    assert_eq!(found.created_at(), 1_700_000_000_000);
 }
 
 #[test]
