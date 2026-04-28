@@ -9,6 +9,7 @@ use std::sync::Mutex;
 
 use crate::domain::error::DomainError;
 use crate::domain::event::DomainEvent;
+use crate::domain::model::account::{Account, AccountId, AccountType};
 use crate::domain::model::config::{AppConfig, ConfigPatch};
 use crate::domain::model::credential::Credential;
 use crate::domain::model::download::{Download, DownloadId, DownloadState};
@@ -632,6 +633,139 @@ impl FileOpener for RecordingFileOpener {
     }
 }
 
+// ── InMemoryAccountRepository ────────────────────────────────────
+
+struct InMemoryAccountRepository {
+    store: Mutex<HashMap<AccountId, Account>>,
+}
+
+impl InMemoryAccountRepository {
+    fn new() -> Self {
+        Self {
+            store: Mutex::new(HashMap::new()),
+        }
+    }
+}
+
+impl AccountRepository for InMemoryAccountRepository {
+    fn find_by_id(&self, id: &AccountId) -> Result<Option<Account>, DomainError> {
+        Ok(self.store.lock().unwrap().get(id).cloned())
+    }
+
+    fn save(&self, account: &Account) -> Result<(), DomainError> {
+        let mut guard = self.store.lock().unwrap();
+        // Detect (service, username) collision against another id
+        for (id, existing) in guard.iter() {
+            if id != account.id()
+                && existing.service_name() == account.service_name()
+                && existing.username() == account.username()
+            {
+                return Err(DomainError::AlreadyExists(format!(
+                    "{}::{}",
+                    account.service_name(),
+                    account.username()
+                )));
+            }
+        }
+        guard.insert(account.id().clone(), account.clone());
+        Ok(())
+    }
+
+    fn list(&self) -> Result<Vec<Account>, DomainError> {
+        let mut accounts: Vec<Account> = self.store.lock().unwrap().values().cloned().collect();
+        accounts.sort_by_key(|a| a.created_at());
+        Ok(accounts)
+    }
+
+    fn list_by_service(&self, service_name: &str) -> Result<Vec<Account>, DomainError> {
+        let mut accounts: Vec<Account> = self
+            .store
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|a| a.service_name() == service_name)
+            .cloned()
+            .collect();
+        accounts.sort_by_key(|a| a.created_at());
+        Ok(accounts)
+    }
+
+    fn delete(&self, id: &AccountId) -> Result<(), DomainError> {
+        self.store.lock().unwrap().remove(id);
+        Ok(())
+    }
+}
+
+#[test]
+fn in_memory_account_repository_round_trip_preserves_fields() {
+    let repo = InMemoryAccountRepository::new();
+    let mut account = Account::new(
+        AccountId::new("acc-rt"),
+        "real-debrid".to_string(),
+        "alice".to_string(),
+        AccountType::Debrid,
+        1_700_000_000_000,
+    );
+    account.set_traffic_left(10);
+    account.set_traffic_total(20);
+    account.set_valid_until(30);
+    account.set_last_validated(40);
+    account.disable();
+
+    repo.save(&account).expect("save");
+    let found = repo
+        .find_by_id(&AccountId::new("acc-rt"))
+        .expect("find")
+        .expect("present");
+    assert_eq!(found, account);
+}
+
+#[test]
+fn in_memory_account_repository_unique_constraint_rejects_duplicate_service_username() {
+    let repo = InMemoryAccountRepository::new();
+    let a = Account::new(
+        AccountId::new("acc-a"),
+        "real-debrid".to_string(),
+        "bob".to_string(),
+        AccountType::Debrid,
+        0,
+    );
+    let b = Account::new(
+        AccountId::new("acc-b"),
+        "real-debrid".to_string(),
+        "bob".to_string(),
+        AccountType::Debrid,
+        0,
+    );
+    repo.save(&a).expect("first save");
+    let err = repo.save(&b).expect_err("conflicting save must fail");
+    assert!(matches!(err, DomainError::AlreadyExists(_)));
+}
+
+#[test]
+fn in_memory_account_repository_list_by_service_filters_correctly() {
+    let repo = InMemoryAccountRepository::new();
+    let rd = Account::new(
+        AccountId::new("rd-1"),
+        "real-debrid".to_string(),
+        "alice".to_string(),
+        AccountType::Debrid,
+        1,
+    );
+    let ad = Account::new(
+        AccountId::new("ad-1"),
+        "alldebrid".to_string(),
+        "alice".to_string(),
+        AccountType::Debrid,
+        2,
+    );
+    repo.save(&rd).expect("save rd");
+    repo.save(&ad).expect("save ad");
+    let only_rd = repo.list_by_service("real-debrid").expect("filter");
+    assert_eq!(only_rd.len(), 1);
+    assert_eq!(only_rd[0].id().as_str(), "rd-1");
+}
+
 // ── Send + Sync compile-time assertions ─────────────────────────
 
 fn assert_send_sync<T: Send + Sync>() {}
@@ -652,6 +786,7 @@ fn all_driven_port_mocks_are_send_sync() {
     assert_send_sync::<FakeDownloadEngine>();
     assert_send_sync::<FakeArchiveExtractor>();
     assert_send_sync::<RecordingFileOpener>();
+    assert_send_sync::<InMemoryAccountRepository>();
 }
 
 #[test]
