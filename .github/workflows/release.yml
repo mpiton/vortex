@@ -120,6 +120,16 @@ jobs:
     runs-on: macos-latest
     permissions:
       contents: write
+    env:
+      MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+      MACOS_KEYCHAIN_PASSWD: ${{ secrets.MACOS_KEYCHAIN_PASSWD }}
+      MACOS_CERTIFICATE_PASSWD: ${{ secrets.MACOS_CERTIFICATE_PASSWD }}
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
 
@@ -140,11 +150,7 @@ jobs:
           workspaces: src-tauri
 
       - name: Import code signing certificate
-        if: ${{ secrets.MACOS_CERTIFICATE != '' }}
-        env:
-          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
-          MACOS_KEYCHAIN_PASSWD: ${{ secrets.MACOS_KEYCHAIN_PASSWD }}
-          MACOS_CERTIFICATE_PASSWD: ${{ secrets.MACOS_CERTIFICATE_PASSWD }}
+        if: env.MACOS_CERTIFICATE != ''
         run: |
           echo "$MACOS_CERTIFICATE" | base64 --decode > certificate.p12
           security create-keychain -p "$MACOS_KEYCHAIN_PASSWD" build.keychain
@@ -163,17 +169,10 @@ jobs:
         env:
           APPLE_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npx tauri build --target universal-apple-darwin
 
       - name: Notarize .dmg
-        if: ${{ secrets.APPLE_ID != '' }}
-        env:
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        if: env.APPLE_ID != ''
         run: |
           DMG=$(find src-tauri/target/universal-apple-darwin/release/bundle/dmg -name '*.dmg' | head -1)
           xcrun notarytool submit "$DMG" \
