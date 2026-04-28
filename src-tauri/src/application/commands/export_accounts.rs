@@ -41,6 +41,11 @@ pub(crate) struct ExportEntry {
     pub(crate) valid_until: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) last_validated: Option<u64>,
+    /// Original `created_at` of the source account so a round-trip
+    /// preserves chronology. Optional for backward compatibility with
+    /// bundles produced by earlier versions of this code.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) created_at: Option<u64>,
 }
 
 impl ExportEntry {
@@ -55,6 +60,7 @@ impl ExportEntry {
             traffic_total: account.traffic_total(),
             valid_until: account.valid_until(),
             last_validated: account.last_validated(),
+            created_at: Some(account.created_at()),
         }
     }
 

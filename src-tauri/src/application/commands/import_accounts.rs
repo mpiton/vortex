@@ -108,8 +108,13 @@ impl CommandBus {
             }
 
             let new_id = AccountId::new(Uuid::new_v4().to_string());
+            // Preserve the original `created_at` when the bundle
+            // carries one so an export → import round-trip keeps the
+            // chronology. Bundles produced by earlier versions omit
+            // the field; fall back to `cmd.now_ms` in that case.
+            let created_at = entry.created_at.unwrap_or(cmd.now_ms);
             let mut account =
-                Account::new(new_id.clone(), service_name, username, kind, cmd.now_ms);
+                Account::new(new_id.clone(), service_name, username, kind, created_at);
             if !entry.enabled {
                 account.disable();
             }
@@ -275,6 +280,17 @@ mod tests {
             assert!(pw.is_some(), "password missing for {}", acc.id().as_str());
         }
 
+        // The export bundle carries the source `created_at`, so the
+        // importer must preserve it instead of stamping `cmd.now_ms`
+        // (`2_000_000_000_000`) on every restored row.
+        for acc in &imported {
+            assert_eq!(
+                acc.created_at(),
+                1_700_000_000_000,
+                "created_at must round-trip; source was 1.7e12, now_ms was 2e12"
+            );
+        }
+
         assert!(
             dst_events
                 .snapshot()
@@ -420,6 +436,7 @@ mod tests {
                     traffic_total: None,
                     valid_until: None,
                     last_validated: None,
+                    created_at: None,
                 },
                 // Duplicate of the first entry — must be skipped.
                 ExportEntry {
@@ -432,6 +449,7 @@ mod tests {
                     traffic_total: None,
                     valid_until: None,
                     last_validated: None,
+                    created_at: None,
                 },
                 ExportEntry {
                     service_name: "alldebrid".into(),
@@ -443,6 +461,7 @@ mod tests {
                     traffic_total: None,
                     valid_until: None,
                     last_validated: None,
+                    created_at: None,
                 },
             ],
         };
@@ -503,6 +522,7 @@ mod tests {
                     traffic_total: None,
                     valid_until: None,
                     last_validated: None,
+                    created_at: None,
                 },
                 ExportEntry {
                     service_name: "alldebrid".into(),
@@ -514,6 +534,7 @@ mod tests {
                     traffic_total: None,
                     valid_until: None,
                     last_validated: None,
+                    created_at: None,
                 },
                 ExportEntry {
                     service_name: "uploaded".into(),
@@ -525,6 +546,7 @@ mod tests {
                     traffic_total: None,
                     valid_until: None,
                     last_validated: None,
+                    created_at: None,
                 },
             ],
         };
