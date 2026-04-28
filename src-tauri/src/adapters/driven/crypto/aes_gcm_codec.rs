@@ -211,8 +211,8 @@ mod tests {
     fn test_seal_open_round_trip_returns_original_plaintext() {
         let codec = AesGcmPbkdf2Codec::new();
         let plaintext = b"hello, world";
-        let ciphertext = codec.seal("passw0rd", plaintext).unwrap();
-        let recovered = codec.open("passw0rd", &ciphertext).unwrap();
+        let ciphertext = codec.seal("unit-test-passphrase", plaintext).unwrap();
+        let recovered = codec.open("unit-test-passphrase", &ciphertext).unwrap();
         assert_eq!(recovered, plaintext);
     }
 

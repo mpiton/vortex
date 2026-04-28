@@ -240,7 +240,7 @@ mod tests {
             .unwrap();
         src.handle_export_accounts(ExportAccountsCommand {
             path: bundle.clone(),
-            passphrase: "passw0rd".into(),
+            passphrase: "unit-test-passphrase".into(),
         })
         .await
         .unwrap();
@@ -260,7 +260,7 @@ mod tests {
         let outcome = dst
             .handle_import_accounts(ImportAccountsCommand {
                 path: bundle,
-                passphrase: "passw0rd".into(),
+                passphrase: "unit-test-passphrase".into(),
                 now_ms: 2_000_000_000_000,
             })
             .await
