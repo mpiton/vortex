@@ -1,7 +1,13 @@
 app-id: org.vortex.Vortex
-runtime: org.freedesktop.Platform
-runtime-version: '24.08'
-sdk: org.freedesktop.Sdk
+# GNOME Platform bundles WebKitGTK 4.1 + libsoup3 + javascriptcoregtk
+# out of the box, which `org.freedesktop.Platform` does not. Tauri 2's
+# webview hard-requires those libraries, so following the upstream
+# Tauri Flatpak guide we base on `org.gnome.Platform/47`. The
+# freedesktop node22 extension still works under the GNOME runtime
+# because GNOME's SDK is built on top of freedesktop's.
+runtime: org.gnome.Platform
+runtime-version: '47'
+sdk: org.gnome.Sdk
 # `rust-stable` extension on 24.08 currently ships rustc < 1.91, which
 # is below the toolchain MSRV the wasmtime/extism dependency tree
 # requires. We install the matching toolchain via rustup at build time
