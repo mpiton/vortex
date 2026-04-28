@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Accounts persistence** (PRD §6.4, PRD-v2 §P1.1, task 20): SQLite `accounts` table (migration `m20260428_000006`) with `id` / `service_name` / `username` / `account_type` / `enabled` / `traffic_left` / `traffic_total` / `valid_until` / `last_validated` / `created_at` columns and a UNIQUE `(service_name, username)` index. New `AccountRepository` driven port (`save` / `find_by_id` / `list` / `list_by_service` / `delete`) and `SqliteAccountRepo` adapter with sea-orm entity + `from_domain` / `into_domain` converters. UNIQUE violations surface as `DomainError::AlreadyExists` instead of leaking storage errors. Domain `Account` aggregate gained `traffic_total`, `last_validated`, `created_at` fields and switched its identifier to `AccountId(String)` so generated account ids match the spec's `TEXT PRIMARY KEY`. `Account::credential_ref()` returns the `keyring://{service}/{username}` URI used to look up the password/token in the OS keychain — credentials are never persisted to SQLite. Unblocks tasks 21-25, 38, 51-56, 75-76.
+
 ## [0.2.0-beta] - 2026-04-27
 
 First public beta of Vortex, completing **Phase 0** of the v2 roadmap (PRD-v2 §P0). Every placeholder view in the v0.1 Tauri scaffold ships as a real, wired-to-backend feature, the queue/scheduler now respects the persisted `max_concurrent_downloads` value, completed downloads project into the `history` and `statistics` read models for KPI dashboards and re-download flows, and the integrity pipeline can verify SHA-256 / MD5 checksums end-to-end. The plugin store gains dynamic per-plugin configuration UIs and a "report broken" action; the system tray pulses while transfers are active; desktop notifications surface filename + size on completion and the failure reason on errors. Targeted at testers — REST API, browser extension and headless CLI are deferred to v0.3+.

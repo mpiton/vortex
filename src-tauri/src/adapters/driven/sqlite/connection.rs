@@ -86,6 +86,107 @@ mod tests {
         assert!(names.contains(&"history".to_string()));
         assert!(names.contains(&"plugins".to_string()));
         assert!(names.contains(&"statistics".to_string()));
+        assert!(names.contains(&"accounts".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_accounts_migration_applies_cleanly_on_existing_db() {
+        // Stand up a DB at the schema state immediately before the
+        // accounts migration (5 migrations applied), seed prior tables,
+        // then run the remaining migrations and verify the new table
+        // exists and existing data is preserved.
+        let sqlite_opts = sea_orm::sqlx::sqlite::SqliteConnectOptions::from_str("sqlite::memory:")
+            .unwrap()
+            .pragma("foreign_keys", "ON");
+        let pool = sea_orm::sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(sqlite_opts)
+            .await
+            .unwrap();
+        let db = sea_orm::SqlxSqliteConnector::from_sqlx_sqlite_pool(pool);
+
+        Migrator::up(&db, Some(5))
+            .await
+            .expect("first 5 migrations");
+
+        let pre = db
+            .query_all(Statement::from_string(
+                sea_orm::DatabaseBackend::Sqlite,
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='accounts'".to_string(),
+            ))
+            .await
+            .unwrap();
+        assert!(
+            pre.is_empty(),
+            "accounts table must not exist before its migration"
+        );
+
+        // Seed a download row that must survive the migration.
+        db.execute(Statement::from_string(
+            sea_orm::DatabaseBackend::Sqlite,
+            "INSERT INTO downloads (id, url, file_name, state, priority, queue_position, downloaded_bytes, speed_bytes_per_sec, retry_count, max_retries, segments_count, source_hostname, protocol, resume_supported, destination_path, created_at, updated_at) VALUES (1, 'https://example.com/f.zip', 'f.zip', 'Queued', 5, 0, 0, 0, 0, 5, 1, 'example.com', 'https', 0, '/tmp', 1, 1)"
+                .to_string(),
+        ))
+        .await
+        .expect("seed download");
+
+        Migrator::up(&db, None).await.expect("remaining migrations");
+
+        let post = db
+            .query_all(Statement::from_string(
+                sea_orm::DatabaseBackend::Sqlite,
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='accounts'".to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(post.len(), 1, "accounts table created by migration");
+
+        let downloads = db
+            .query_all(Statement::from_string(
+                sea_orm::DatabaseBackend::Sqlite,
+                "SELECT id FROM downloads".to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(downloads.len(), 1, "existing data preserved");
+    }
+
+    #[tokio::test]
+    async fn test_accounts_table_enforces_unique_service_username() {
+        let db = setup_test_db().await.unwrap();
+        let now: i64 = 1_700_000_000_000;
+        db.execute(Statement::from_string(
+            sea_orm::DatabaseBackend::Sqlite,
+            format!(
+                "INSERT INTO accounts (id, service_name, username, account_type, enabled, created_at) VALUES ('a1', 'real-debrid', 'alice', 'debrid', 1, {now})"
+            ),
+        ))
+        .await
+        .expect("insert first");
+
+        let dup_err = db
+            .execute(Statement::from_string(
+                sea_orm::DatabaseBackend::Sqlite,
+                format!(
+                    "INSERT INTO accounts (id, service_name, username, account_type, enabled, created_at) VALUES ('a2', 'real-debrid', 'alice', 'debrid', 1, {now})"
+                ),
+            ))
+            .await
+            .expect_err("UNIQUE(service_name, username) must reject");
+        assert!(
+            dup_err.to_string().to_ascii_lowercase().contains("unique"),
+            "expected UNIQUE constraint error, got: {dup_err}"
+        );
+
+        let other = db
+            .execute(Statement::from_string(
+                sea_orm::DatabaseBackend::Sqlite,
+                format!(
+                    "INSERT INTO accounts (id, service_name, username, account_type, enabled, created_at) VALUES ('a2', 'alldebrid', 'alice', 'debrid', 1, {now})"
+                ),
+            ))
+            .await;
+        assert!(other.is_ok(), "different service must be allowed");
     }
 
     #[tokio::test]

@@ -38,6 +38,7 @@ pub use adapters::driven::plugin::{
     ExtismPluginLoader, GithubStoreClient, PluginRegistry, PluginWatcher,
 };
 pub use adapters::driven::scheduler::{HISTORY_PURGE_STATE_FILE, HistoryPurgeWorker, SystemClock};
+pub use adapters::driven::sqlite::account_repo::SqliteAccountRepo;
 pub use adapters::driven::sqlite::connection;
 pub use adapters::driven::sqlite::download_read_repo::SqliteDownloadReadRepo;
 pub use adapters::driven::sqlite::download_repo::SqliteDownloadRepo;
