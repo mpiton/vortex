@@ -45,20 +45,41 @@ impl Model {
 }
 
 impl ActiveModel {
-    pub fn from_domain(account: &Account) -> Self {
+    pub fn from_domain(account: &Account) -> Result<Self, DomainError> {
         use sea_orm::ActiveValue::Set;
 
-        Self {
-            id: Set(account.id().as_str().to_string()),
+        let id_str = account.id().as_str().to_string();
+
+        let traffic_left = checked_to_i64_opt(account.traffic_left(), "traffic_left", &id_str)?;
+        let traffic_total = checked_to_i64_opt(account.traffic_total(), "traffic_total", &id_str)?;
+        let valid_until = checked_to_i64_opt(account.valid_until(), "valid_until", &id_str)?;
+        let last_validated =
+            checked_to_i64_opt(account.last_validated(), "last_validated", &id_str)?;
+        let created_at = i64::try_from(account.created_at()).map_err(|_| {
+            DomainError::ValidationError(format!("account {id_str}: created_at exceeds i64::MAX"))
+        })?;
+
+        Ok(Self {
+            id: Set(id_str),
             service_name: Set(account.service_name().to_string()),
             username: Set(account.username().to_string()),
             account_type: Set(account.account_type().to_string()),
             enabled: Set(if account.is_enabled() { 1 } else { 0 }),
-            traffic_left: Set(account.traffic_left().map(|b| b as i64)),
-            traffic_total: Set(account.traffic_total().map(|b| b as i64)),
-            valid_until: Set(account.valid_until().map(|t| t as i64)),
-            last_validated: Set(account.last_validated().map(|t| t as i64)),
-            created_at: Set(account.created_at() as i64),
-        }
+            traffic_left: Set(traffic_left),
+            traffic_total: Set(traffic_total),
+            valid_until: Set(valid_until),
+            last_validated: Set(last_validated),
+            created_at: Set(created_at),
+        })
     }
+}
+
+fn checked_to_i64_opt(
+    value: Option<u64>,
+    field: &str,
+    account_id: &str,
+) -> Result<Option<i64>, DomainError> {
+    value.map(i64::try_from).transpose().map_err(|_| {
+        DomainError::ValidationError(format!("account {account_id}: {field} exceeds i64::MAX"))
+    })
 }

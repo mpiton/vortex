@@ -164,15 +164,19 @@ mod tests {
         .await
         .expect("insert first");
 
-        let dup = db
+        let dup_err = db
             .execute(Statement::from_string(
                 sea_orm::DatabaseBackend::Sqlite,
                 format!(
                     "INSERT INTO accounts (id, service_name, username, account_type, enabled, created_at) VALUES ('a2', 'real-debrid', 'alice', 'debrid', 1, {now})"
                 ),
             ))
-            .await;
-        assert!(dup.is_err(), "UNIQUE(service_name, username) must reject");
+            .await
+            .expect_err("UNIQUE(service_name, username) must reject");
+        assert!(
+            dup_err.to_string().to_ascii_lowercase().contains("unique"),
+            "expected UNIQUE constraint error, got: {dup_err}"
+        );
 
         let other = db
             .execute(Statement::from_string(

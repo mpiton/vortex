@@ -38,12 +38,14 @@ impl AccountRepository for SqliteAccountRepo {
     }
 
     fn save(&self, account: &Account) -> Result<(), DomainError> {
-        let active = account::ActiveModel::from_domain(account);
+        let active = account::ActiveModel::from_domain(account)?;
 
         block_on(async {
             // Upsert by primary key. The (service_name, username) UNIQUE
             // index lets the DB itself enforce the constraint and surface
-            // it as a uniqueness violation we translate below.
+            // it as a uniqueness violation we translate below. `created_at`
+            // is intentionally omitted so the original insertion timestamp
+            // stays stable across subsequent saves.
             let result = account::Entity::insert(active)
                 .on_conflict(
                     OnConflict::column(account::Column::Id)
@@ -56,7 +58,6 @@ impl AccountRepository for SqliteAccountRepo {
                             account::Column::TrafficTotal,
                             account::Column::ValidUntil,
                             account::Column::LastValidated,
-                            account::Column::CreatedAt,
                         ])
                         .to_owned(),
                 )
@@ -209,6 +210,44 @@ mod tests {
             .expect("present");
         assert!(!found.is_enabled());
         assert_eq!(found.traffic_left(), Some(999));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_save_upsert_preserves_original_created_at() {
+        let db = setup_test_db().await.expect("test db");
+        let repo = SqliteAccountRepo::new(db);
+
+        // First save with original timestamp.
+        let original = Account::new(
+            AccountId::new("acc-stable"),
+            "real-debrid".to_string(),
+            "alice".to_string(),
+            AccountType::Debrid,
+            1_700_000_000_000,
+        );
+        repo.save(&original).expect("first save");
+
+        // Re-save the same id with a different created_at. It must NOT
+        // overwrite the stored value, otherwise list ordering becomes
+        // unstable across writes.
+        let updated = Account::new(
+            AccountId::new("acc-stable"),
+            "real-debrid".to_string(),
+            "alice".to_string(),
+            AccountType::Debrid,
+            9_999_999_999_999,
+        );
+        repo.save(&updated).expect("upsert");
+
+        let found = repo
+            .find_by_id(&AccountId::new("acc-stable"))
+            .expect("find")
+            .expect("present");
+        assert_eq!(
+            found.created_at(),
+            1_700_000_000_000,
+            "upsert must not rewrite created_at"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

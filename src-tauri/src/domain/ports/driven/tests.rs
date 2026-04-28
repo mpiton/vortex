@@ -673,7 +673,14 @@ impl AccountRepository for InMemoryAccountRepository {
 
     fn list(&self) -> Result<Vec<Account>, DomainError> {
         let mut accounts: Vec<Account> = self.store.lock().unwrap().values().cloned().collect();
-        accounts.sort_by_key(|a| a.created_at());
+        // Secondary sort by id breaks ties from `HashMap` iteration order
+        // when multiple accounts share a `created_at`, mirroring the SQLite
+        // adapter which orders by (created_at, id).
+        accounts.sort_by(|a, b| {
+            a.created_at()
+                .cmp(&b.created_at())
+                .then_with(|| a.id().as_str().cmp(b.id().as_str()))
+        });
         Ok(accounts)
     }
 
@@ -686,7 +693,11 @@ impl AccountRepository for InMemoryAccountRepository {
             .filter(|a| a.service_name() == service_name)
             .cloned()
             .collect();
-        accounts.sort_by_key(|a| a.created_at());
+        accounts.sort_by(|a, b| {
+            a.created_at()
+                .cmp(&b.created_at())
+                .then_with(|| a.id().as_str().cmp(b.id().as_str()))
+        });
         Ok(accounts)
     }
 

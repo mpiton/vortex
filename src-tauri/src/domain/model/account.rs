@@ -161,9 +161,15 @@ impl Account {
     }
 
     /// Reference used to look up the credential in the system keyring.
-    /// Format: `keyring://{service_name}/{username}`.
+    /// Format: `keyring://{service_name}/{username}`. Both segments are
+    /// percent-encoded so reserved characters (`/`, `?`, `#`, `@`...) cannot
+    /// produce ambiguous refs that point at the wrong stored credential.
     pub fn credential_ref(&self) -> String {
-        format!("keyring://{}/{}", self.service_name, self.username)
+        format!(
+            "keyring://{}/{}",
+            percent_encode_segment(&self.service_name),
+            percent_encode_segment(&self.username)
+        )
     }
 
     pub fn id(&self) -> &AccountId {
@@ -201,6 +207,24 @@ impl Account {
     pub fn created_at(&self) -> u64 {
         self.created_at
     }
+}
+
+/// Percent-encode a string so it can be safely embedded as a path segment in
+/// `keyring://...` refs. Only RFC 3986 unreserved characters survive
+/// untouched; everything else is rendered as `%XX` per UTF-8 byte.
+fn percent_encode_segment(s: &str) -> String {
+    use std::fmt::Write;
+
+    let mut out = String::with_capacity(s.len());
+    for byte in s.bytes() {
+        let unreserved = byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~');
+        if unreserved {
+            out.push(byte as char);
+        } else {
+            let _ = write!(out, "%{byte:02X}");
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -302,10 +326,50 @@ mod tests {
     #[test]
     fn test_account_credential_ref_uses_keyring_scheme() {
         let acc = make_account();
+        // `@` in `user@example.com` is reserved → percent-encoded as %40.
         assert_eq!(
             acc.credential_ref(),
-            "keyring://ExampleHost/user@example.com"
+            "keyring://ExampleHost/user%40example.com"
         );
+    }
+
+    #[test]
+    fn test_account_credential_ref_percent_encodes_reserved_chars() {
+        // A `/` in the service or username could otherwise collide with the
+        // path separator and point two distinct accounts at the same ref.
+        let acc = Account::new(
+            AccountId::new("acc-collision"),
+            "real-debrid/eu".to_string(),
+            "alice/admin".to_string(),
+            AccountType::Debrid,
+            0,
+        );
+        assert_eq!(
+            acc.credential_ref(),
+            "keyring://real-debrid%2Feu/alice%2Fadmin"
+        );
+
+        let other = Account::new(
+            AccountId::new("acc-other"),
+            "real-debrid".to_string(),
+            "eu/alice/admin".to_string(),
+            AccountType::Debrid,
+            0,
+        );
+        assert_ne!(acc.credential_ref(), other.credential_ref());
+    }
+
+    #[test]
+    fn test_account_credential_ref_handles_unicode_username() {
+        let acc = Account::new(
+            AccountId::new("acc-utf8"),
+            "host".to_string(),
+            "café".to_string(),
+            AccountType::Free,
+            0,
+        );
+        // `é` is `0xC3 0xA9` in UTF-8.
+        assert_eq!(acc.credential_ref(), "keyring://host/caf%C3%A9");
     }
 
     #[test]
