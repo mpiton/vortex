@@ -2,8 +2,12 @@ app-id: org.vortex.Vortex
 runtime: org.freedesktop.Platform
 runtime-version: '24.08'
 sdk: org.freedesktop.Sdk
+# `rust-stable` extension on 24.08 currently ships rustc < 1.91, which
+# is below the toolchain MSRV the wasmtime/extism dependency tree
+# requires. We install the matching toolchain via rustup at build time
+# instead so the build always tracks the same Rust version pinned in
+# `src-tauri/rust-toolchain.toml` / Cargo.toml `rust-version`.
 sdk-extensions:
-  - org.freedesktop.Sdk.Extension.rust-stable
   - org.freedesktop.Sdk.Extension.node22
 
 command: vortex
@@ -19,9 +23,10 @@ finish-args:
   - --talk-name=org.kde.StatusNotifierWatcher
 
 build-options:
-  append-path: /usr/lib/sdk/rust-stable/bin:/usr/lib/sdk/node22/bin
+  append-path: /run/build/vortex/cargo/bin:/usr/lib/sdk/node22/bin
   env:
     CARGO_HOME: /run/build/vortex/cargo
+    RUSTUP_HOME: /run/build/vortex/rustup
     npm_config_cache: /run/build/vortex/npm-cache
 
 modules:
@@ -38,11 +43,15 @@ modules:
         # Flathub submission requires offline sources via
         # flatpak-node-generator + cargo-vendor; until that work lands,
         # the GitHub Actions Flatpak job needs network access during the
-        # build to fetch npm and crates.io dependencies.
+        # build to fetch npm, rustup and crates.io dependencies.
         - --share=network
       env:
         CARGO_TARGET_DIR: /run/build/vortex/cargo-target
     build-commands:
+      # Install the project-pinned Rust toolchain via rustup. The
+      # rust-stable SDK extension is too old to compile the wasmtime/
+      # extism crates that require rustc 1.91+.
+      - curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path --profile minimal --default-toolchain 1.95.0
       - npm ci
       - npm run build
       - cargo build --release --manifest-path src-tauri/Cargo.toml
