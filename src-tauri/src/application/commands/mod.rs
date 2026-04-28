@@ -3,12 +3,19 @@
 //! Each command represents an intent to mutate application state.
 //! Handler implementations live in submodules and add methods to `CommandBus`.
 
+#[cfg(test)]
+mod tests_support;
+
+mod add_account;
 mod cancel_download;
 mod change_directory;
 mod clear_downloads_by_state;
+mod delete_account;
 mod delete_history;
+mod export_accounts;
 mod export_history;
 mod extract_archive;
+mod import_accounts;
 mod install_plugin;
 mod move_queue;
 mod open_download_file;
@@ -31,12 +38,15 @@ pub mod store_refresh;
 mod toggle_clipboard;
 mod toggle_plugin;
 mod uninstall_plugin;
+mod update_account;
 mod update_config;
 mod update_plugin_config;
+mod validate_account;
 mod verify_checksum;
 
 use std::path::PathBuf;
 
+use crate::domain::model::account::{AccountId, AccountType};
 use crate::domain::model::config::ConfigPatch;
 use crate::domain::model::download::DownloadId;
 use crate::domain::ports::driving::Command;
@@ -333,6 +343,130 @@ pub struct ChangeDirectoryBulkCommand {
 impl Command for ChangeDirectoryBulkCommand {}
 
 pub use change_directory::{ChangeDirectoryBulkOutcome, ChangeDirectoryFailure};
+
+// ── Accounts ─────────────────────────────────────────────────────────
+
+/// Create a new persisted account and store its password in the
+/// account-keyring under the freshly generated [`AccountId`].
+///
+/// `created_at_ms` is supplied by the caller (Unix epoch milliseconds)
+/// so handlers stay deterministic in tests. The driving adapter passes
+/// `now()` from the host clock.
+#[derive(Debug, Clone)]
+pub struct AddAccountCommand {
+    pub service_name: String,
+    pub username: String,
+    pub password: String,
+    pub account_type: AccountType,
+    pub created_at_ms: u64,
+}
+impl Command for AddAccountCommand {}
+
+/// Partial-mutation payload for [`UpdateAccountCommand`]. All fields are
+/// optional; absent values keep the persisted account unchanged.
+///
+/// Setting `password = Some(_)` rotates the password in the keyring
+/// (the SQLite row never sees the secret). Setting `username = Some(_)`
+/// also rotates the keyring entry to keep it keyed by the new username.
+#[derive(Debug, Clone, Default)]
+pub struct AccountPatch {
+    pub username: Option<String>,
+    pub password: Option<String>,
+    pub account_type: Option<AccountType>,
+    pub enabled: Option<bool>,
+}
+
+#[derive(Debug, Clone)]
+pub struct UpdateAccountCommand {
+    pub id: AccountId,
+    pub patch: AccountPatch,
+}
+impl Command for UpdateAccountCommand {}
+
+/// Delete the account row and its keyring entry. Idempotent — succeeds
+/// even if neither exists.
+#[derive(Debug, Clone)]
+pub struct DeleteAccountCommand {
+    pub id: AccountId,
+}
+impl Command for DeleteAccountCommand {}
+
+/// Probe the upstream service for `id`'s credentials.
+///
+/// `now_ms` is supplied by the caller so the handler can deterministically
+/// stamp `last_validated` on the account row.
+#[derive(Debug, Clone)]
+pub struct ValidateAccountCommand {
+    pub id: AccountId,
+    pub now_ms: u64,
+}
+impl Command for ValidateAccountCommand {}
+
+/// Caller-friendly view of a [`ValidationOutcome`](
+/// crate::domain::ports::driven::ValidationOutcome). Same shape — kept
+/// in the application layer so IPC adapters don't have to import the
+/// domain port path.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ValidationOutcomeDto {
+    pub valid: bool,
+    pub latency_ms: Option<u64>,
+    pub traffic_left: Option<u64>,
+    pub traffic_total: Option<u64>,
+    pub valid_until: Option<u64>,
+    pub error_message: Option<String>,
+}
+
+impl From<crate::domain::ports::driven::ValidationOutcome> for ValidationOutcomeDto {
+    fn from(o: crate::domain::ports::driven::ValidationOutcome) -> Self {
+        Self {
+            valid: o.valid,
+            latency_ms: o.latency_ms,
+            traffic_left: o.traffic_left,
+            traffic_total: o.traffic_total,
+            valid_until: o.valid_until,
+            error_message: o.error_message,
+        }
+    }
+}
+
+/// Encrypt every persisted account into a single bundle and write it
+/// to `path`. The passphrase is fed to a PBKDF2 KDF; the resulting
+/// blob is opaque and unreadable without the same passphrase.
+#[derive(Debug, Clone)]
+pub struct ExportAccountsCommand {
+    pub path: PathBuf,
+    pub passphrase: String,
+}
+impl Command for ExportAccountsCommand {}
+
+/// Decrypt a bundle previously produced by [`ExportAccountsCommand`]
+/// and persist every account it contains. Wrong passphrase or any
+/// integrity-check failure aborts the import without inserting a
+/// single row.
+#[derive(Debug, Clone)]
+pub struct ImportAccountsCommand {
+    pub path: PathBuf,
+    pub passphrase: String,
+    pub now_ms: u64,
+}
+impl Command for ImportAccountsCommand {}
+
+/// Outcome of a successful [`ExportAccountsCommand`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExportAccountsOutcome {
+    pub path: PathBuf,
+    pub count: u32,
+}
+
+/// Outcome of a successful [`ImportAccountsCommand`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImportAccountsOutcome {
+    pub path: PathBuf,
+    pub imported: u32,
+    /// Entries skipped because a row with the same
+    /// `(service_name, username)` pair was already persisted.
+    pub skipped_duplicates: u32,
+}
 
 /// Register an already-downloaded local file as a Completed download.
 ///

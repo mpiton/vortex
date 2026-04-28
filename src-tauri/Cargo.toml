@@ -56,6 +56,10 @@ hex = "0.4.3"
 tauri-plugin-dialog = "2.7.0"
 md-5 = "0.11.0"
 digest = "0.11.2"
+aes-gcm = "0.10.3"
+pbkdf2 = "0.13.0"
+hmac = "0.13.0"
+rand = "0.10.1"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

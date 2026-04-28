@@ -130,7 +130,14 @@ fn record_download_event(store: &DownloadLogStore, event: &DomainEvent) {
         | DomainEvent::PluginUnloaded { .. }
         | DomainEvent::PackageCreated { .. }
         | DomainEvent::ClipboardUrlDetected { .. }
-        | DomainEvent::SettingsUpdated => {}
+        | DomainEvent::SettingsUpdated
+        | DomainEvent::AccountAdded { .. }
+        | DomainEvent::AccountUpdated { .. }
+        | DomainEvent::AccountDeleted { .. }
+        | DomainEvent::AccountValidated { .. }
+        | DomainEvent::AccountValidationFailed { .. }
+        | DomainEvent::AccountsImported { .. }
+        | DomainEvent::AccountsExported { .. } => {}
     }
 }
 

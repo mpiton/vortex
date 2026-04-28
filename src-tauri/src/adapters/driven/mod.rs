@@ -3,6 +3,7 @@
 pub mod clipboard;
 pub mod config;
 pub mod credential;
+pub mod crypto;
 pub mod event;
 pub mod extractor;
 pub mod filesystem;
