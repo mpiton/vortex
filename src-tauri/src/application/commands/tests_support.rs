@@ -115,6 +115,10 @@ pub(crate) struct FakeAccountCredentialStore {
     /// after that fails — used by the partial-import rollback test.
     fail_after: Option<usize>,
     write_count: Mutex<usize>,
+    /// Records every `store_password` call regardless of outcome so
+    /// tests can assert that a rollback / restore code path actually
+    /// re-issued the previous secret.
+    write_attempts: Mutex<Vec<(AccountId, String)>>,
 }
 
 impl FakeAccountCredentialStore {
@@ -124,7 +128,12 @@ impl FakeAccountCredentialStore {
             fail_on_write: false,
             fail_after: None,
             write_count: Mutex::new(0),
+            write_attempts: Mutex::new(Vec::new()),
         }
+    }
+
+    pub(crate) fn write_attempts(&self) -> Vec<(AccountId, String)> {
+        self.write_attempts.lock().unwrap().clone()
     }
 
     pub(crate) fn failing_on_write(mut self) -> Self {
@@ -156,6 +165,12 @@ impl FakeAccountCredentialStore {
 
 impl AccountCredentialStore for FakeAccountCredentialStore {
     fn store_password(&self, account_id: &AccountId, password: &str) -> Result<(), DomainError> {
+        // Record the attempt before honouring fail-modes so callers
+        // that try to re-store after a failure are still observable.
+        self.write_attempts
+            .lock()
+            .unwrap()
+            .push((account_id.clone(), password.to_string()));
         if self.fail_on_write {
             return Err(DomainError::StorageError(
                 "fake keyring write failure".into(),

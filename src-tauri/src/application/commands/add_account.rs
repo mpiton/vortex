@@ -46,6 +46,13 @@ impl CommandBus {
         // when the row exists. If the keyring step fails we roll back
         // by deleting the row so we never end up with a metadata-only
         // account whose password is missing.
+        //
+        // The `AccountCredentialStore` contract does not promise "no
+        // side effects on `Err`" — a backend that partially writes the
+        // secret before failing would leak a stale credential in the
+        // OS keyring even though account creation reports failure. We
+        // best-effort `delete_password` after the row rollback to keep
+        // retries deterministic.
         repo.save(&account)?;
         if let Err(e) = store.store_password(&id, &cmd.password) {
             if let Err(rollback_err) = repo.delete(&id) {
@@ -54,6 +61,14 @@ impl CommandBus {
                     keyring_error = %e,
                     rollback_error = %rollback_err,
                     "keyring write failed and account row rollback also failed; metadata is orphaned"
+                );
+            }
+            if let Err(cleanup_err) = store.delete_password(&id) {
+                tracing::warn!(
+                    account_id = %id.as_str(),
+                    keyring_error = %e,
+                    cleanup_error = %cleanup_err,
+                    "keyring write failed and the orphan-secret cleanup also failed; stale credential may linger"
                 );
             }
             return Err(e.into());

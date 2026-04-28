@@ -110,11 +110,20 @@ impl CommandBus {
         let ciphertext = codec.seal(&cmd.passphrase, &plaintext)?;
 
         let path = cmd.path.clone();
-        let bytes = ciphertext.clone();
-        tokio::task::spawn_blocking(move || std::fs::write(&path, &bytes))
-            .await
-            .map_err(|e| AppError::Storage(format!("export write task failed: {e}")))?
-            .map_err(|e| AppError::Storage(format!("export write failed: {e}")))?;
+        let bytes = ciphertext;
+        // Write the bundle to a sibling temp file and `rename` it into
+        // place so a mid-flight write/truncate failure can never
+        // corrupt an existing valid bundle. The temp file lives next to
+        // the destination so the rename stays on the same filesystem.
+        tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+            let tmp_path = path.with_extension("vortexacc-tmp");
+            std::fs::write(&tmp_path, &bytes)?;
+            std::fs::rename(&tmp_path, &path)?;
+            Ok(())
+        })
+        .await
+        .map_err(|e| AppError::Storage(format!("export write task failed: {e}")))?
+        .map_err(|e| AppError::Storage(format!("export write failed: {e}")))?;
 
         let count = accounts.len() as u32;
         self.event_bus()

@@ -61,6 +61,18 @@ impl CommandBus {
             account.last_validated(),
             account.created_at(),
         );
+        // Capture the previous password BEFORE persisting the new row
+        // so a keyring-rotation failure can restore it. The
+        // `AccountCredentialStore` contract does not promise "no side
+        // effects on `Err`" — a backend that partially writes the new
+        // secret before failing would leave the keyring out of sync
+        // with the row we just restored.
+        let previous_password = if cmd.patch.password.is_some() {
+            store.get_password(&cmd.id)?
+        } else {
+            None
+        };
+
         repo.save(&next)?;
 
         // Apply password rotation after the row is persisted. If the
@@ -76,6 +88,21 @@ impl CommandBus {
                     keyring_error = %e,
                     rollback_error = %rollback_err,
                     "keyring rotation failed and row rollback also failed; row metadata diverges from keyring"
+                );
+            }
+            // Restore the previous password (or wipe the entry if the
+            // account had none) so a partially-completed write doesn't
+            // leave a half-rotated credential in the keyring.
+            let restore_result = match previous_password {
+                Some(prev) => store.store_password(&cmd.id, &prev),
+                None => store.delete_password(&cmd.id),
+            };
+            if let Err(restore_err) = restore_result {
+                tracing::warn!(
+                    account_id = %cmd.id.as_str(),
+                    keyring_error = %e,
+                    restore_error = %restore_err,
+                    "keyring rotation failed and the password-restore step also failed; keyring may hold a partially rotated secret"
                 );
             }
             return Err(e.into());
@@ -178,6 +205,58 @@ mod tests {
             .await
             .expect_err("missing id");
         assert!(matches!(err, AppError::NotFound(_)));
+    }
+
+    #[tokio::test]
+    async fn test_update_account_restores_previous_password_when_rotation_fails() {
+        let repo = Arc::new(InMemoryAccountRepo::new());
+        // First write (add_account) succeeds; subsequent writes fail —
+        // covers both the rotation attempt and the rollback restore
+        // attempt the handler makes after the rotation fails.
+        let creds = Arc::new(FakeAccountCredentialStore::new().failing_after(1));
+        let events = Arc::new(CapturingEventBus::new());
+        let bus = build_account_bus(repo.clone(), creds.clone(), events, None, None);
+
+        let id = bus
+            .handle_add_account(add_command("real-debrid", "alice", "old-pw"))
+            .await
+            .unwrap();
+
+        let err = bus
+            .handle_update_account(UpdateAccountCommand {
+                id: id.clone(),
+                patch: AccountPatch {
+                    password: Some("new-pw".into()),
+                    enabled: Some(false),
+                    ..AccountPatch::default()
+                },
+            })
+            .await
+            .expect_err("rotation failure surfaces");
+        assert!(matches!(
+            err,
+            AppError::Domain(DomainError::StorageError(_))
+        ));
+
+        // Row metadata must be back to the original because the
+        // rotation failed.
+        let after = repo.find_by_id(&id).unwrap().unwrap();
+        assert!(
+            after.is_enabled(),
+            "row must be rolled back to enabled=true after failed rotation"
+        );
+
+        // The handler must have attempted to restore the previous
+        // password — the third write attempt carries the original
+        // secret.
+        let attempts = creds.write_attempts();
+        assert_eq!(attempts.len(), 3, "add + rotation + restore");
+        assert_eq!(attempts[0].1, "old-pw", "initial add");
+        assert_eq!(attempts[1].1, "new-pw", "failed rotation");
+        assert_eq!(
+            attempts[2].1, "old-pw",
+            "restore must replay the original password"
+        );
     }
 
     #[tokio::test]
