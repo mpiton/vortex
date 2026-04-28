@@ -4,6 +4,13 @@
 //! the keyring entry exists. Always emits
 //! [`DomainEvent::AccountDeleted`] so the queue manager and read-model
 //! caches can drop any state keyed by the id.
+//!
+//! The SQLite row is the canonical source of truth for "account
+//! exists". We delete it first; from the user's perspective the account
+//! is gone the moment that succeeds. The keyring secret is best-effort
+//! cleanup — if the OS keyring rejects the delete (locked keychain,
+//! permission denied) we log the orphan and still emit the deletion
+//! event so the rest of the system drops its state.
 
 use crate::application::command_bus::CommandBus;
 use crate::application::error::AppError;
@@ -22,7 +29,13 @@ impl CommandBus {
         })?;
 
         repo.delete(&cmd.id)?;
-        store.delete_password(&cmd.id)?;
+        if let Err(e) = store.delete_password(&cmd.id) {
+            tracing::warn!(
+                account_id = %cmd.id.as_str(),
+                error = %e,
+                "failed to delete keyring password for deleted account; orphan secret may remain"
+            );
+        }
 
         self.event_bus()
             .publish(DomainEvent::AccountDeleted { id: cmd.id });

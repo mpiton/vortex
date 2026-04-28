@@ -48,7 +48,14 @@ impl CommandBus {
         // account whose password is missing.
         repo.save(&account)?;
         if let Err(e) = store.store_password(&id, &cmd.password) {
-            let _ = repo.delete(&id);
+            if let Err(rollback_err) = repo.delete(&id) {
+                tracing::warn!(
+                    account_id = %id.as_str(),
+                    keyring_error = %e,
+                    rollback_error = %rollback_err,
+                    "keyring write failed and account row rollback also failed; metadata is orphaned"
+                );
+            }
             return Err(e.into());
         }
 

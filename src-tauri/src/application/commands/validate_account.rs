@@ -51,7 +51,20 @@ impl CommandBus {
                         });
                     return Err(AppError::NotFound(msg));
                 }
-                Err(other) => return Err(other.into()),
+                Err(other) => {
+                    // Network failures, keyring read errors, and any
+                    // other domain error coming back from the validator
+                    // are surfaced as `AccountValidationFailed` so the
+                    // UI can react identically whether the upstream
+                    // service rejected the credentials or was simply
+                    // unreachable.
+                    self.event_bus()
+                        .publish(DomainEvent::AccountValidationFailed {
+                            id: cmd.id.clone(),
+                            error: other.to_string(),
+                        });
+                    return Err(other.into());
+                }
             };
 
         let mut next = clone_account(&account);
@@ -248,6 +261,39 @@ mod tests {
                 .snapshot()
                 .iter()
                 .any(|e| matches!(e, DomainEvent::AccountValidationFailed { id: ev, error } if ev == &id && error == "wrong password"))
+        );
+    }
+
+    #[tokio::test]
+    async fn test_validate_account_storage_error_emits_validation_failed_event() {
+        let repo = Arc::new(InMemoryAccountRepo::new());
+        let creds = Arc::new(FakeAccountCredentialStore::new());
+        let validator = Arc::new(FakeAccountValidator::new());
+        validator.set(
+            "real-debrid",
+            ValidatorBehavior::Storage("upstream timeout".into()),
+        );
+        let events = Arc::new(CapturingEventBus::new());
+        let bus = build_account_bus(repo, creds, events.clone(), Some(validator), None);
+        let id = bus
+            .handle_add_account(add_command("real-debrid"))
+            .await
+            .unwrap();
+
+        let err = bus
+            .handle_validate_account(ValidateAccountCommand {
+                id: id.clone(),
+                now_ms: 1_900_000_000_000,
+            })
+            .await
+            .expect_err("storage error surfaces");
+        assert!(matches!(err, AppError::Domain(_)));
+        assert!(
+            events.snapshot().iter().any(|e| matches!(
+                e,
+                DomainEvent::AccountValidationFailed { id: ev, error } if ev == &id && error.contains("upstream timeout")
+            )),
+            "AccountValidationFailed must fire on validator storage errors too"
         );
     }
 

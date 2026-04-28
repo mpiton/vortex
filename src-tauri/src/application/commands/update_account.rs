@@ -63,8 +63,22 @@ impl CommandBus {
         );
         repo.save(&next)?;
 
-        if let Some(pw) = cmd.patch.password {
-            store.store_password(&cmd.id, &pw)?;
+        // Apply password rotation after the row is persisted. If the
+        // keyring write fails we roll the row back to the original so
+        // callers never observe a row that says "password rotated" while
+        // the keyring still holds the previous secret.
+        if let Some(pw) = cmd.patch.password
+            && let Err(e) = store.store_password(&cmd.id, &pw)
+        {
+            if let Err(rollback_err) = repo.save(&account) {
+                tracing::warn!(
+                    account_id = %cmd.id.as_str(),
+                    keyring_error = %e,
+                    rollback_error = %rollback_err,
+                    "keyring rotation failed and row rollback also failed; row metadata diverges from keyring"
+                );
+            }
+            return Err(e.into());
         }
 
         self.event_bus()

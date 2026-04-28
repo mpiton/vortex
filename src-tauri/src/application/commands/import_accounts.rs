@@ -10,6 +10,8 @@
 //! any row or keyring entry is written, so the keyring never ends up
 //! holding orphaned credentials.
 
+use std::collections::HashSet;
+
 use uuid::Uuid;
 
 use super::ImportAccountsOutcome;
@@ -54,15 +56,19 @@ impl CommandBus {
         }
 
         // Validate every entry up-front so a malformed row aborts
-        // before any side effects.
+        // before any side effects. Trim service / username so duplicate
+        // detection matches the same normalisation used when accounts
+        // are added through `add_account`.
         let mut prepared = Vec::with_capacity(envelope.accounts.len());
         for entry in &envelope.accounts {
-            if entry.service_name.trim().is_empty() {
+            let service_name = entry.service_name.trim().to_string();
+            let username = entry.username.trim().to_string();
+            if service_name.is_empty() {
                 return Err(AppError::Validation(
                     "import bundle has an account with empty service_name".into(),
                 ));
             }
-            if entry.username.trim().is_empty() {
+            if username.is_empty() {
                 return Err(AppError::Validation(
                     "import bundle has an account with empty username".into(),
                 ));
@@ -73,30 +79,30 @@ impl CommandBus {
                 ));
             }
             let kind = entry.parse_account_type()?;
-            prepared.push((entry, kind));
+            prepared.push((service_name, username, entry, kind));
         }
 
-        let existing = repo.list()?;
+        // Seed the dedup set with every `(service, username)` pair
+        // already in the repo so the first import iteration doesn't
+        // touch them, and grow the set as we insert each new entry so
+        // duplicates **inside the bundle itself** are also skipped.
+        let mut seen: HashSet<(String, String)> = repo
+            .list()?
+            .into_iter()
+            .map(|a| (a.service_name().to_string(), a.username().to_string()))
+            .collect();
         let mut imported = 0u32;
         let mut skipped = 0u32;
 
-        for (entry, kind) in prepared {
-            let already = existing
-                .iter()
-                .any(|a| a.service_name() == entry.service_name && a.username() == entry.username);
-            if already {
+        for (service_name, username, entry, kind) in prepared {
+            if !seen.insert((service_name.clone(), username.clone())) {
                 skipped += 1;
                 continue;
             }
 
             let new_id = AccountId::new(Uuid::new_v4().to_string());
-            let mut account = Account::new(
-                new_id.clone(),
-                entry.service_name.clone(),
-                entry.username.clone(),
-                kind,
-                cmd.now_ms,
-            );
+            let mut account =
+                Account::new(new_id.clone(), service_name, username, kind, cmd.now_ms);
             if !entry.enabled {
                 account.disable();
             }
@@ -344,6 +350,92 @@ mod tests {
         assert_eq!(outcome.imported, 0);
         assert_eq!(outcome.skipped_duplicates, 1);
         assert_eq!(dst_repo.list().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_import_accounts_skips_in_bundle_duplicates() {
+        use crate::application::commands::export_accounts::{
+            EXPORT_VERSION, ExportEntry, ExportEnvelope,
+        };
+        use crate::domain::ports::driven::PassphraseCodec;
+
+        // Hand-craft a bundle that contains two entries with the same
+        // (service, username) pair so the dedup logic can be exercised
+        // without going through `add_account`, which would refuse the
+        // second entry up-front.
+        let envelope = ExportEnvelope {
+            version: EXPORT_VERSION,
+            accounts: vec![
+                ExportEntry {
+                    service_name: "real-debrid".into(),
+                    username: "alice".into(),
+                    password: "pw1".into(),
+                    account_type: "premium".into(),
+                    enabled: true,
+                    traffic_left: None,
+                    traffic_total: None,
+                    valid_until: None,
+                    last_validated: None,
+                },
+                // Duplicate of the first entry — must be skipped.
+                ExportEntry {
+                    service_name: "  real-debrid  ".into(),
+                    username: " alice ".into(),
+                    password: "pw2".into(),
+                    account_type: "premium".into(),
+                    enabled: true,
+                    traffic_left: None,
+                    traffic_total: None,
+                    valid_until: None,
+                    last_validated: None,
+                },
+                ExportEntry {
+                    service_name: "alldebrid".into(),
+                    username: "bob".into(),
+                    password: "pw3".into(),
+                    account_type: "premium".into(),
+                    enabled: true,
+                    traffic_left: None,
+                    traffic_total: None,
+                    valid_until: None,
+                    last_validated: None,
+                },
+            ],
+        };
+        let plaintext = serde_json::to_vec(&envelope).unwrap();
+        let codec = FakePassphraseCodec;
+        let ciphertext = codec.seal("k", &plaintext).unwrap();
+
+        let dir = TempDir::new().unwrap();
+        let bundle = dir.path().join("dup.bin");
+        std::fs::write(&bundle, &ciphertext).unwrap();
+
+        let dst_repo = Arc::new(InMemoryAccountRepo::new());
+        let dst_creds = Arc::new(FakeAccountCredentialStore::new());
+        let dst_events = Arc::new(CapturingEventBus::new());
+        let dst = build_account_bus(
+            dst_repo.clone(),
+            dst_creds,
+            dst_events,
+            None,
+            Some(Arc::new(FakePassphraseCodec) as Arc<dyn PassphraseCodec>),
+        );
+
+        let outcome = dst
+            .handle_import_accounts(ImportAccountsCommand {
+                path: bundle,
+                passphrase: "k".into(),
+                now_ms: 0,
+            })
+            .await
+            .expect("import ok");
+
+        assert_eq!(outcome.imported, 2, "first occurrence + alldebrid land");
+        assert_eq!(
+            outcome.skipped_duplicates, 1,
+            "the second real-debrid/alice entry must be skipped"
+        );
+        assert_eq!(dst_repo.list().unwrap().len(), 2);
     }
 
     #[tokio::test]

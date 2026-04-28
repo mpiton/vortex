@@ -41,6 +41,12 @@ const ITER_LEN: usize = 4;
 /// fan. The value is stored alongside the ciphertext so future bumps
 /// remain backward-compatible.
 const PBKDF2_ITERATIONS: u32 = 200_000;
+/// Hard upper bound applied to the iteration count read from the
+/// import header. Without this, a crafted bundle could request an
+/// arbitrarily large count and pin the CPU for minutes during import.
+/// Generous enough that future stronger seal values (within an order of
+/// magnitude of OWASP's modern recommendations) still pass.
+const MAX_PBKDF2_ITERATIONS: u32 = 10_000_000;
 const HEADER_LEN: usize = MAGIC.len() + 1 + ITER_LEN + SALT_LEN + NONCE_LEN;
 
 #[derive(Debug, Clone, Default)]
@@ -140,6 +146,11 @@ impl PassphraseCodec for AesGcmPbkdf2Codec {
             return Err(DomainError::ValidationError(
                 "export header has implausibly low PBKDF2 iteration count".into(),
             ));
+        }
+        if iterations > MAX_PBKDF2_ITERATIONS {
+            return Err(DomainError::ValidationError(format!(
+                "export header has implausibly high PBKDF2 iteration count: {iterations}"
+            )));
         }
 
         let salt_start = MAGIC.len() + 1 + ITER_LEN;
@@ -266,6 +277,18 @@ mod tests {
         ct[iter_offset..iter_offset + ITER_LEN].copy_from_slice(&0u32.to_be_bytes());
         let err = codec.open("k", &ct).unwrap_err();
         assert!(matches!(err, DomainError::ValidationError(ref m) if m.contains("iteration")));
+    }
+
+    #[test]
+    fn test_open_rejects_excessive_iteration_header() {
+        let codec = AesGcmPbkdf2Codec::new();
+        let mut ct = codec.seal("k", b"hello").unwrap();
+        // Overwrite the iteration field with a value above the cap.
+        let iter_offset = MAGIC.len() + 1;
+        ct[iter_offset..iter_offset + ITER_LEN]
+            .copy_from_slice(&(MAX_PBKDF2_ITERATIONS + 1).to_be_bytes());
+        let err = codec.open("k", &ct).unwrap_err();
+        assert!(matches!(err, DomainError::ValidationError(ref m) if m.contains("high")));
     }
 
     #[test]
