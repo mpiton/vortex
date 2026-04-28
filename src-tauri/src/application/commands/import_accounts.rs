@@ -20,6 +20,7 @@ use crate::application::command_bus::CommandBus;
 use crate::application::error::AppError;
 use crate::domain::event::DomainEvent;
 use crate::domain::model::account::{Account, AccountId};
+use crate::domain::ports::driven::{AccountCredentialStore, AccountRepository};
 
 impl CommandBus {
     pub async fn handle_import_accounts(
@@ -91,7 +92,13 @@ impl CommandBus {
             .into_iter()
             .map(|a| (a.service_name().to_string(), a.username().to_string()))
             .collect();
-        let mut imported = 0u32;
+        // Track every entry we successfully persist so a later failure
+        // can roll the whole batch back. The reviewer specifically
+        // flagged that returning mid-loop after a `repo.save` or
+        // keyring failure left earlier accounts persisted, which made
+        // retries non-deterministic (later attempts saw the partial
+        // entries as duplicates).
+        let mut imported_ids: Vec<AccountId> = Vec::new();
         let mut skipped = 0u32;
 
         for (service_name, username, entry, kind) in prepared {
@@ -119,14 +126,25 @@ impl CommandBus {
                 account.set_last_validated(v);
             }
 
-            repo.save(&account)?;
-            if let Err(e) = store.store_password(&new_id, &entry.password) {
-                let _ = repo.delete(&new_id);
+            if let Err(e) = repo.save(&account) {
+                rollback_imports(repo, store, &imported_ids);
                 return Err(e.into());
             }
-            imported += 1;
+            if let Err(e) = store.store_password(&new_id, &entry.password) {
+                if let Err(rb) = repo.delete(&new_id) {
+                    tracing::warn!(
+                        account_id = %new_id.as_str(),
+                        error = %rb,
+                        "failed to roll back current import row after keyring write failure"
+                    );
+                }
+                rollback_imports(repo, store, &imported_ids);
+                return Err(e.into());
+            }
+            imported_ids.push(new_id);
         }
 
+        let imported = imported_ids.len() as u32;
         self.event_bus()
             .publish(DomainEvent::AccountsImported { count: imported });
 
@@ -135,6 +153,33 @@ impl CommandBus {
             imported,
             skipped_duplicates: skipped,
         })
+    }
+}
+
+/// Best-effort rollback of every account already imported in the
+/// current batch. Failures are logged but never propagated — the
+/// caller is already in an error path and we don't want a logging
+/// failure to mask the real cause.
+fn rollback_imports(
+    repo: &dyn AccountRepository,
+    store: &dyn AccountCredentialStore,
+    ids: &[AccountId],
+) {
+    for id in ids {
+        if let Err(e) = repo.delete(id) {
+            tracing::warn!(
+                account_id = %id.as_str(),
+                error = %e,
+                "failed to roll back imported account row after later import failure"
+            );
+        }
+        if let Err(e) = store.delete_password(id) {
+            tracing::warn!(
+                account_id = %id.as_str(),
+                error = %e,
+                "failed to roll back imported keyring entry after later import failure"
+            );
+        }
     }
 }
 
@@ -436,6 +481,104 @@ mod tests {
             "the second real-debrid/alice entry must be skipped"
         );
         assert_eq!(dst_repo.list().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_import_accounts_rolls_back_all_entries_on_partial_failure() {
+        use crate::application::commands::export_accounts::{
+            EXPORT_VERSION, ExportEntry, ExportEnvelope,
+        };
+        use crate::domain::ports::driven::PassphraseCodec;
+
+        // Build a bundle with three distinct (service, username) pairs.
+        let envelope = ExportEnvelope {
+            version: EXPORT_VERSION,
+            accounts: vec![
+                ExportEntry {
+                    service_name: "real-debrid".into(),
+                    username: "alice".into(),
+                    password: "pw1".into(),
+                    account_type: "premium".into(),
+                    enabled: true,
+                    traffic_left: None,
+                    traffic_total: None,
+                    valid_until: None,
+                    last_validated: None,
+                },
+                ExportEntry {
+                    service_name: "alldebrid".into(),
+                    username: "bob".into(),
+                    password: "pw2".into(),
+                    account_type: "premium".into(),
+                    enabled: true,
+                    traffic_left: None,
+                    traffic_total: None,
+                    valid_until: None,
+                    last_validated: None,
+                },
+                ExportEntry {
+                    service_name: "uploaded".into(),
+                    username: "carol".into(),
+                    password: "pw3".into(),
+                    account_type: "premium".into(),
+                    enabled: true,
+                    traffic_left: None,
+                    traffic_total: None,
+                    valid_until: None,
+                    last_validated: None,
+                },
+            ],
+        };
+        let plaintext = serde_json::to_vec(&envelope).unwrap();
+        let codec = FakePassphraseCodec;
+        let bytes = codec.seal("k", &plaintext).unwrap();
+
+        let dir = TempDir::new().unwrap();
+        let bundle = dir.path().join("partial.bin");
+        std::fs::write(&bundle, &bytes).unwrap();
+
+        // Keyring fails after the first successful write so entry 2's
+        // `store_password` call returns an error mid-loop.
+        let dst_repo = Arc::new(InMemoryAccountRepo::new());
+        let dst_creds = Arc::new(FakeAccountCredentialStore::new().failing_after(1));
+        let dst_events = Arc::new(CapturingEventBus::new());
+        let dst = build_account_bus(
+            dst_repo.clone(),
+            dst_creds.clone(),
+            dst_events.clone(),
+            None,
+            Some(Arc::new(FakePassphraseCodec) as Arc<dyn PassphraseCodec>),
+        );
+
+        let err = dst
+            .handle_import_accounts(ImportAccountsCommand {
+                path: bundle,
+                passphrase: "k".into(),
+                now_ms: 0,
+            })
+            .await
+            .expect_err("partial keyring failure must surface");
+        assert!(
+            matches!(err, AppError::Domain(_)),
+            "expected storage error, got {err:?}"
+        );
+
+        assert!(
+            dst_repo.list().unwrap().is_empty(),
+            "all imported rows must be rolled back when one entry fails"
+        );
+        assert_eq!(
+            dst_creds.entry_count(),
+            0,
+            "all imported keyring entries must be rolled back too"
+        );
+        assert!(
+            !dst_events
+                .snapshot()
+                .iter()
+                .any(|e| matches!(e, DomainEvent::AccountsImported { .. })),
+            "no AccountsImported event when the import fails atomically"
+        );
     }
 
     #[tokio::test]

@@ -111,6 +111,10 @@ impl AccountRepository for InMemoryAccountRepo {
 pub(crate) struct FakeAccountCredentialStore {
     entries: Mutex<HashMap<AccountId, String>>,
     fail_on_write: bool,
+    /// When `Some(n)`, the first `n` writes succeed and every write
+    /// after that fails — used by the partial-import rollback test.
+    fail_after: Option<usize>,
+    write_count: Mutex<usize>,
 }
 
 impl FakeAccountCredentialStore {
@@ -118,11 +122,18 @@ impl FakeAccountCredentialStore {
         Self {
             entries: Mutex::new(HashMap::new()),
             fail_on_write: false,
+            fail_after: None,
+            write_count: Mutex::new(0),
         }
     }
 
     pub(crate) fn failing_on_write(mut self) -> Self {
         self.fail_on_write = true;
+        self
+    }
+
+    pub(crate) fn failing_after(mut self, n: usize) -> Self {
+        self.fail_after = Some(n);
         self
     }
 
@@ -149,6 +160,15 @@ impl AccountCredentialStore for FakeAccountCredentialStore {
             return Err(DomainError::StorageError(
                 "fake keyring write failure".into(),
             ));
+        }
+        if let Some(limit) = self.fail_after {
+            let mut count = self.write_count.lock().unwrap();
+            if *count >= limit {
+                return Err(DomainError::StorageError(
+                    "fake keyring write failure (past fail_after limit)".into(),
+                ));
+            }
+            *count += 1;
         }
         self.entries
             .lock()
