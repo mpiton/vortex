@@ -12,10 +12,12 @@ use crate::domain::model::account::Account;
 
 /// Read model for the Accounts list and detail panels.
 ///
-/// Mirrors the persisted columns of the `accounts` table minus any
-/// credential reference. The frontend uses [`Self::credential_ref`] only
-/// to look up the keyring entry for the "test connection" surface — the
-/// actual password is fetched server-side.
+/// Mirrors the persisted columns of the `accounts` table, including the
+/// non-secret [`Self::credential_ref`] (an opaque keyring URI such as
+/// `keyring://service/user`). The reference itself is never a password
+/// or token — the actual secret is fetched server-side from the OS
+/// keyring when the "test connection" surface needs it. Passwords and
+/// raw credential material never appear on this DTO.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountViewDto {

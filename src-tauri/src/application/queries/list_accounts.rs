@@ -2,8 +2,10 @@
 //!
 //! Returns persisted accounts as [`AccountViewDto`] read models.
 //! Filters AND together — service + type + enabled all match. The DTO
-//! has no password field, so no credential can leak through this path
-//! by construction.
+//! carries no password or raw secret material, so no plaintext secret
+//! can leak through this read path. Non-secret identifiers (username,
+//! opaque `credential_ref`) are present and intentional — only the
+//! credential itself is fetched server-side via the keyring.
 
 use crate::application::error::AppError;
 use crate::application::query_bus::QueryBus;
