@@ -1,6 +1,6 @@
 [package]
 name = "vortex"
-version = "0.2.0"
+version = "0.2.0-beta"
 description = "A desktop download manager"
 authors = ["mpiton"]
 edition = "2024"
