@@ -36,3 +36,4 @@ tsconfig.tsbuildinfo
 # Nix
 result
 .direnv/
+actionlint

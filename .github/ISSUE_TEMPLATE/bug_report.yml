@@ -51,12 +51,24 @@ body:
       label: Screenshots / Logs
       description: If applicable, add screenshots or error logs.
 
-  - type: input
+  - type: dropdown
     id: version
     attributes:
-      label: Version
-      description: Which version are you using?
-      placeholder: e.g., v1.2.3
+      label: Vortex version
+      description: Pick the version you reproduced the bug on. `Settings → About` shows the exact version, or run `vortex --version` from the CLI.
+      options:
+        - v0.2.0-beta (latest beta)
+        - main / built from source
+        - older / unsure
+    validations:
+      required: true
+
+  - type: input
+    id: build
+    attributes:
+      label: Exact build / commit SHA
+      description: Optional — paste the commit SHA from `Settings → About` for built-from-source installs.
+      placeholder: e.g. 98f5124
 
   - type: dropdown
     id: os
