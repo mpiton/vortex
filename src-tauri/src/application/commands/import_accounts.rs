@@ -130,18 +130,17 @@ impl CommandBus {
                 rollback_imports(repo, store, &imported_ids);
                 return Err(e.into());
             }
+            // Track the id BEFORE attempting the keyring write so a
+            // backend that partially writes the secret before failing
+            // is still cleaned up by `rollback_imports`. The trait
+            // contract for `store_password` does not promise "no side
+            // effects on `Err`", so we treat any failed write as
+            // potentially having left a stale entry behind.
+            imported_ids.push(new_id.clone());
             if let Err(e) = store.store_password(&new_id, &entry.password) {
-                if let Err(rb) = repo.delete(&new_id) {
-                    tracing::warn!(
-                        account_id = %new_id.as_str(),
-                        error = %rb,
-                        "failed to roll back current import row after keyring write failure"
-                    );
-                }
                 rollback_imports(repo, store, &imported_ids);
                 return Err(e.into());
             }
-            imported_ids.push(new_id);
         }
 
         let imported = imported_ids.len() as u32;
