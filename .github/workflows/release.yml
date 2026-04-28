@@ -121,10 +121,16 @@ jobs:
     permissions:
       contents: write
     env:
+      # Repo-level signing secrets — empty when not configured (beta).
+      # The signing/notarize steps are gated behind `env.X != ''` and
+      # the APPLE_* vars Tauri actually consumes are only exported via
+      # $GITHUB_ENV when MACOS_CERTIFICATE is present, so an empty
+      # secret never triggers Tauri's `security import` codepath (which
+      # treats any non-null APPLE_CERTIFICATE as "I should sign").
       MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
       MACOS_KEYCHAIN_PASSWD: ${{ secrets.MACOS_KEYCHAIN_PASSWD }}
       MACOS_CERTIFICATE_PASSWD: ${{ secrets.MACOS_CERTIFICATE_PASSWD }}
-      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      APPLE_SIGNING_IDENTITY_SECRET: ${{ secrets.APPLE_SIGNING_IDENTITY }}
       APPLE_ID: ${{ secrets.APPLE_ID }}
       APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
       APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
@@ -165,10 +171,16 @@ jobs:
             -s -k "$MACOS_KEYCHAIN_PASSWD" build.keychain
           rm certificate.p12
 
+      - name: Configure Tauri signing env
+        if: env.MACOS_CERTIFICATE != ''
+        run: |
+          {
+            echo "APPLE_CERTIFICATE=$MACOS_CERTIFICATE"
+            echo "APPLE_CERTIFICATE_PASSWORD=$MACOS_CERTIFICATE_PASSWD"
+            echo "APPLE_SIGNING_IDENTITY=$APPLE_SIGNING_IDENTITY_SECRET"
+          } >> "$GITHUB_ENV"
+
       - name: Build Tauri app
-        env:
-          APPLE_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWD }}
         run: npx tauri build --target universal-apple-darwin
 
       - name: Notarize .dmg
