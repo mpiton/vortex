@@ -34,12 +34,16 @@ modules:
   - name: vortex
     buildsystem: simple
     build-options:
+      build-args:
+        # Flathub submission requires offline sources via
+        # flatpak-node-generator + cargo-vendor; until that work lands,
+        # the GitHub Actions Flatpak job needs network access during the
+        # build to fetch npm and crates.io dependencies.
+        - --share=network
       env:
         CARGO_TARGET_DIR: /run/build/vortex/cargo-target
     build-commands:
-      # NOTE: For Flathub submission, use flatpak-node-generator to create
-      # offline npm sources. Local builds can use --share=network instead.
-      - npm ci --offline
+      - npm ci
       - npm run build
       - cargo build --release --manifest-path src-tauri/Cargo.toml
       - install -Dm755 /run/build/vortex/cargo-target/release/vortex /app/bin/vortex
