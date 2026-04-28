@@ -117,17 +117,18 @@ impl CommandBus {
         // lives next to the destination so the rename stays on the
         // same filesystem.
         //
-        // Without the `sync_all` call the bytes might still be in the
-        // page cache when the rename returns, so a system crash right
-        // after the call could leave the destination pointing at a
-        // truncated file.
-        //
-        // On POSIX `rename` overwrites the destination atomically. On
-        // Windows the same call uses FileRenameInfoEx with
-        // REPLACE_IF_EXISTS in modern Rust, but if the underlying
-        // toolchain rejects the rename because the destination exists
-        // we explicitly remove it and retry once. Any failure deletes
-        // the temp file so we never leak `*.vortexacc-tmp` on disk.
+        // - Without `sync_all` the bytes might still be in the page
+        //   cache when the rename returns, so a system crash right
+        //   after the call could leave the destination pointing at a
+        //   truncated file.
+        // - `std::fs::rename` is an atomic replace on POSIX and on
+        //   Windows ≥ Rust 1.81 (which uses `MOVEFILE_REPLACE_EXISTING`),
+        //   so a single call covers the "destination already holds a
+        //   previous bundle" case without an unsafe two-step
+        //   remove-then-rename fallback that could leave the user
+        //   with no bundle at all if the second step fails.
+        // - On any failure inside the closure we delete the temp file
+        //   so `*.vortexacc-tmp` never leaks on disk.
         tokio::task::spawn_blocking(move || -> std::io::Result<()> {
             use std::io::Write;
             let tmp_path = path.with_extension("vortexacc-tmp");
@@ -137,14 +138,7 @@ impl CommandBus {
                     f.write_all(&bytes)?;
                     f.sync_all()?;
                 }
-                match std::fs::rename(&tmp_path, &path) {
-                    Ok(()) => Ok(()),
-                    Err(_) if path.exists() => {
-                        std::fs::remove_file(&path)?;
-                        std::fs::rename(&tmp_path, &path)
-                    }
-                    Err(e) => Err(e),
-                }
+                std::fs::rename(&tmp_path, &path)
             })();
             if outcome.is_err() {
                 let _ = std::fs::remove_file(&tmp_path);
