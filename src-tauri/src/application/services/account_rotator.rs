@@ -111,16 +111,16 @@ impl AccountRotator {
         strategy: AccountSelectionStrategy,
     ) -> Result<NextAccountOutcome, AppError> {
         let now_ms = self.now_ms();
-        let mut snapshot_baseline = self.snapshot_exhausted(now_ms)?;
-        let mut exhausted_ids = snapshot_baseline.clone();
+        let mut exhausted_ids = self.snapshot_exhausted(now_ms)?;
         // Linearise with concurrent `mark_exhausted` / `clear_exhausted`:
         // - On every pick, re-check the chosen id under the lock and
         //   retry with that id added to the exclude list when a
         //   parallel `mark_exhausted` landed in the gap.
         // - When the selector exhausts options, re-snapshot the
-        //   cooldown map and retry once more if a parallel clear (via
-        //   `clear_exhausted` or `record_traffic_refresh`) freed an id
-        //   that was in our snapshot baseline. Otherwise we'd return
+        //   cooldown map and retry once more if any id from the full
+        //   current exclude list (initial snapshot ∪ race-pushed ids)
+        //   has since been cleared via `clear_exhausted` or
+        //   `record_traffic_refresh`. Otherwise we'd return
         //   `AllExhausted` while a live account is in fact selectable.
         loop {
             let picked = self.selector.select_best_excluding_quiet(
@@ -151,15 +151,13 @@ impl AccountRotator {
                 continue;
             }
             // No pick under the current exclude list. Re-snapshot the
-            // cooldown map: if a parallel clear removed any id we were
-            // previously excluding, the selector may now find a live
-            // account.
+            // cooldown map and retry if any id we were previously
+            // excluding (including race-pushed ones) has been cleared.
             let fresh = self.snapshot_exhausted(now_ms)?;
-            let any_cleared = snapshot_baseline.iter().any(|id| !fresh.contains(id));
+            let any_cleared = exhausted_ids.iter().any(|id| !fresh.contains(id));
             if !any_cleared {
                 break;
             }
-            snapshot_baseline = fresh.clone();
             exhausted_ids = fresh;
         }
         // No pick after stable re-snapshot. Decide between NoneAvailable
