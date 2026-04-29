@@ -100,7 +100,7 @@ impl PackageRepository for SqlitePackageRepo {
                 .db
                 .query_all(Statement::from_sql_and_values(
                     sea_orm::DatabaseBackend::Sqlite,
-                    "SELECT id FROM downloads WHERE package_id = $1 ORDER BY queue_position ASC, id ASC",
+                    "SELECT id FROM downloads WHERE package_id = ? ORDER BY queue_position ASC, id ASC",
                     [id_value.into()],
                 ))
                 .await
