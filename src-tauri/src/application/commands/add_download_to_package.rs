@@ -167,6 +167,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_add_download_to_package_same_package_reattach_preserves_order() {
+        let repo = Arc::new(InMemoryPackageRepo::new());
+        let creds = Arc::new(InMemoryCredentialStore::new());
+        let dl_repo = Arc::new(InMemoryDownloadRepo::new());
+        let events = Arc::new(CapturingEventBus::new());
+        let bus = build_package_bus(repo.clone(), creds, events, dl_repo.clone());
+        let id = bus
+            .handle_create_package(CreatePackageCommand {
+                name: "P".into(),
+                source_type: PackageSourceType::Manual,
+                folder_path: None,
+                created_at_ms: 0,
+            })
+            .await
+            .unwrap();
+        dl_repo.seed(make_download(1));
+        dl_repo.seed(make_download(2));
+        for n in [1u64, 2] {
+            bus.handle_add_download_to_package(AddDownloadToPackageCommand {
+                package_id: id.clone(),
+                download_id: DownloadId(n),
+            })
+            .await
+            .unwrap();
+        }
+
+        // Re-attach the first member; the mock must not push it to the
+        // end of the bucket. Production SQLite is a no-op on
+        // `UPDATE downloads SET package_id = same`, the mock has to
+        // mirror that.
+        bus.handle_add_download_to_package(AddDownloadToPackageCommand {
+            package_id: id.clone(),
+            download_id: DownloadId(1),
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(
+            repo.list_downloads(&id).unwrap(),
+            vec![DownloadId(1), DownloadId(2)],
+            "same-package reattach must not reorder existing members"
+        );
+    }
+
+    #[tokio::test]
     async fn test_add_download_to_package_idempotent_does_not_double_emit() {
         let repo = Arc::new(InMemoryPackageRepo::new());
         let creds = Arc::new(InMemoryCredentialStore::new());

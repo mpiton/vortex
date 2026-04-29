@@ -6,6 +6,7 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::application::command_bus::CommandBus;
@@ -366,13 +367,26 @@ impl PackageRepository for InMemoryPackageRepo {
         download_id: DownloadId,
     ) -> Result<(), DomainError> {
         let mut guard = self.members.lock().unwrap();
-        for entries in guard.values_mut() {
-            entries.retain(|d| d != &download_id);
+        // Same-package reattach must be a true no-op so the mock matches
+        // the SQLite adapter (which never moves rows on `UPDATE ... WHERE
+        // package_id = same`). Detach from foreign packages first, then
+        // bail if the download already lives in the target bucket so its
+        // position is preserved.
+        let already_in_target = guard
+            .get(package_id)
+            .is_some_and(|entries| entries.contains(&download_id));
+        for (pkg, entries) in guard.iter_mut() {
+            if pkg != package_id {
+                entries.retain(|d| d != &download_id);
+            }
         }
-        let bucket = guard.entry(package_id.clone()).or_default();
-        if !bucket.contains(&download_id) {
-            bucket.push(download_id);
+        if already_in_target {
+            return Ok(());
         }
+        guard
+            .entry(package_id.clone())
+            .or_default()
+            .push(download_id);
         Ok(())
     }
 
@@ -653,17 +667,32 @@ impl DownloadRepository for InMemoryDownloadRepo {
 
 pub(crate) struct InMemoryCredentialStore {
     entries: Mutex<HashMap<String, Credential>>,
+    fail_store: AtomicBool,
+    fail_delete: AtomicBool,
 }
 
 impl InMemoryCredentialStore {
     pub(crate) fn new() -> Self {
         Self {
             entries: Mutex::new(HashMap::new()),
+            fail_store: AtomicBool::new(false),
+            fail_delete: AtomicBool::new(false),
         }
     }
 
     pub(crate) fn entry_count(&self) -> usize {
         self.entries.lock().unwrap().len()
+    }
+
+    /// Force every subsequent `store` call to return an error. Used by
+    /// rollback tests; resets when toggled back to `false`.
+    pub(crate) fn set_store_fails(&self, on: bool) {
+        self.fail_store.store(on, Ordering::SeqCst);
+    }
+
+    /// Force every subsequent `delete` call to return an error.
+    pub(crate) fn set_delete_fails(&self, on: bool) {
+        self.fail_delete.store(on, Ordering::SeqCst);
     }
 }
 
@@ -673,6 +702,11 @@ impl CredentialStore for InMemoryCredentialStore {
     }
 
     fn store(&self, service: &str, credential: &Credential) -> Result<(), DomainError> {
+        if self.fail_store.load(Ordering::SeqCst) {
+            return Err(DomainError::ValidationError(
+                "credential store: simulated failure".into(),
+            ));
+        }
         self.entries
             .lock()
             .unwrap()
@@ -681,6 +715,11 @@ impl CredentialStore for InMemoryCredentialStore {
     }
 
     fn delete(&self, service: &str) -> Result<(), DomainError> {
+        if self.fail_delete.load(Ordering::SeqCst) {
+            return Err(DomainError::ValidationError(
+                "credential store: simulated failure".into(),
+            ));
+        }
         self.entries.lock().unwrap().remove(service);
         Ok(())
     }

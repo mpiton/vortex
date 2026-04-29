@@ -7,6 +7,13 @@
 //!
 //! `password = None` clears both the keyring entry and the marker.
 //! Idempotent: clearing an already-empty entry is a no-op.
+//!
+//! Recovery on keyring failure: the marker is persisted first so a
+//! crash between SQLite and the keyring leaves the DB consistent. If
+//! the keyring write fails, the marker row is rolled back to its
+//! previous value and any partial keyring entry is best-effort
+//! cleared, so callers never observe a row claiming a secret that is
+//! not actually there.
 
 use crate::application::command_bus::CommandBus;
 use crate::application::error::AppError;
@@ -46,11 +53,9 @@ impl CommandBus {
             None => None,
         };
 
-        // Persist the marker BEFORE touching the keyring. If the keyring
-        // write fails the DB still describes a consistent state; on retry
-        // both sides converge because `store`/`delete` are idempotent. The
-        // reverse order would leave an orphaned keyring secret with no DB
-        // marker pointing at it.
+        // Persist the marker BEFORE touching the keyring so a crash between
+        // the two writes leaves the DB consistent. The reverse order would
+        // leave an orphan keyring secret with no DB marker pointing at it.
         let updated = Package::reconstruct(
             existing.id().clone(),
             existing.name().to_string(),
@@ -63,9 +68,33 @@ impl CommandBus {
         )?;
         repo.save(&updated)?;
 
-        match cmd.password.as_deref() {
-            Some(secret) => credentials.store(&key, &Credential::new(String::new(), secret))?,
-            None => credentials.delete(&key)?,
+        let keyring_op = match cmd.password.as_deref() {
+            Some(secret) => credentials.store(&key, &Credential::new(String::new(), secret)),
+            None => credentials.delete(&key),
+        };
+        if let Err(e) = keyring_op {
+            // Roll the marker back so the row never claims a secret the
+            // keyring does not have. Mirrors `update_account`'s recovery
+            // path; both rollback and partial-write cleanup are best
+            // effort because the keyring backend may have side-effects we
+            // cannot undo.
+            if let Err(rollback_err) = repo.save(&existing) {
+                tracing::warn!(
+                    package_id = %cmd.id,
+                    keyring_error = %e,
+                    rollback_error = %rollback_err,
+                    "package marker rollback failed after keyring error; row metadata diverges from keyring"
+                );
+            }
+            if let Err(cleanup_err) = credentials.delete(&key) {
+                tracing::warn!(
+                    package_id = %cmd.id,
+                    keyring_error = %e,
+                    cleanup_error = %cleanup_err,
+                    "best-effort keyring cleanup failed after rollback; keyring may hold a partially written secret"
+                );
+            }
+            return Err(e.into());
         }
 
         self.event_bus()
@@ -176,6 +205,79 @@ mod tests {
             .expect_err("empty rejected");
         assert!(matches!(err, AppError::Validation(_)));
         assert_eq!(creds.entry_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_set_package_password_keyring_failure_rolls_back_marker_on_set() {
+        let repo = Arc::new(InMemoryPackageRepo::new());
+        let creds = Arc::new(InMemoryCredentialStore::new());
+        let dl_repo = Arc::new(InMemoryDownloadRepo::new());
+        let events = Arc::new(CapturingEventBus::new());
+        let bus = build_package_bus(repo.clone(), creds.clone(), events.clone(), dl_repo);
+        let id = seed(&bus).await;
+
+        creds.set_store_fails(true);
+        let err = bus
+            .handle_set_package_password(SetPackagePasswordCommand {
+                id: id.clone(),
+                password: Some("never-lands".into()),
+            })
+            .await
+            .expect_err("keyring fail surfaces");
+        assert!(matches!(err, AppError::Domain(_)));
+
+        // DB marker rolled back to None (the original state) and keyring
+        // is empty — no event emitted because the command failed.
+        let stored = repo.find_by_id(&id).unwrap().unwrap();
+        assert!(
+            stored.password().is_none(),
+            "marker must roll back to original on keyring failure"
+        );
+        assert_eq!(creds.entry_count(), 0);
+        assert!(
+            !events
+                .snapshot()
+                .iter()
+                .any(|e| matches!(e, DomainEvent::PackageUpdated { id: x } if x == &id)),
+            "no PackageUpdated emitted for a failed command"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_set_package_password_keyring_failure_rolls_back_marker_on_clear() {
+        let repo = Arc::new(InMemoryPackageRepo::new());
+        let creds = Arc::new(InMemoryCredentialStore::new());
+        let dl_repo = Arc::new(InMemoryDownloadRepo::new());
+        let events = Arc::new(CapturingEventBus::new());
+        let bus = build_package_bus(repo.clone(), creds.clone(), events, dl_repo);
+        let id = seed(&bus).await;
+        bus.handle_set_package_password(SetPackagePasswordCommand {
+            id: id.clone(),
+            password: Some("seed".into()),
+        })
+        .await
+        .unwrap();
+        let key = format!("vortex.package.{}", id.as_str());
+
+        creds.set_delete_fails(true);
+        let err = bus
+            .handle_set_package_password(SetPackagePasswordCommand {
+                id: id.clone(),
+                password: None,
+            })
+            .await
+            .expect_err("delete fail surfaces");
+        assert!(matches!(err, AppError::Domain(_)));
+
+        // Marker preserved, secret remains in keyring — both sides
+        // unchanged so the next retry can converge.
+        let stored = repo.find_by_id(&id).unwrap().unwrap();
+        assert_eq!(stored.password(), Some(key.as_str()));
+        creds.set_delete_fails(false);
+        assert_eq!(
+            creds.get(&key).unwrap().expect("still present").password(),
+            "seed"
+        );
     }
 
     #[tokio::test]

@@ -817,15 +817,24 @@ impl PackageRepository for InMemoryPackageRepository {
         download_id: DownloadId,
     ) -> Result<(), DomainError> {
         let mut guard = self.members.lock().unwrap();
-        // Detach from any other package first so the in-memory repo
-        // mirrors the FK-singleton semantics of the SQL adapter.
-        for entries in guard.values_mut() {
-            entries.retain(|(_, id)| id != &download_id);
+        // Same-package reattach must be a true no-op so the mock mirrors
+        // the FK-singleton semantics of the SQL adapter (which never
+        // rewrites `queue_position` on `UPDATE ... WHERE package_id =
+        // same`). Detach from foreign packages first, bail if the
+        // download is already in the target bucket so its existing
+        // position survives.
+        let already_in_target = guard
+            .get(package_id)
+            .is_some_and(|entries| entries.iter().any(|(_, id)| id == &download_id));
+        for (pkg, entries) in guard.iter_mut() {
+            if pkg != package_id {
+                entries.retain(|(_, id)| id != &download_id);
+            }
         }
-        let bucket = guard.entry(package_id.clone()).or_default();
-        if bucket.iter().any(|(_, id)| id == &download_id) {
+        if already_in_target {
             return Ok(());
         }
+        let bucket = guard.entry(package_id.clone()).or_default();
         let next_position = bucket
             .iter()
             .map(|(p, _)| *p)
@@ -1185,6 +1194,32 @@ fn in_memory_package_repository_detach_download_removes_member() {
     assert!(repo.list_downloads(&pkg_id).unwrap().is_empty());
     // Idempotent: detaching again is a no-op.
     repo.detach_download(DownloadId(5)).unwrap();
+}
+
+#[test]
+fn in_memory_package_repository_attach_download_same_package_preserves_position() {
+    let repo = InMemoryPackageRepository::new();
+    let pkg_id = PackageId::new("pkg-stable");
+    repo.save(&Package::new(
+        pkg_id.clone(),
+        "Stable".to_string(),
+        PackageSourceType::Manual,
+        0,
+    ))
+    .unwrap();
+    repo.attach_download(&pkg_id, DownloadId(10)).unwrap();
+    repo.attach_download(&pkg_id, DownloadId(20)).unwrap();
+
+    // Re-attach the first download; without the no-op guard it would
+    // shift to the end of the bucket and inflate queue_position.
+    repo.attach_download(&pkg_id, DownloadId(10)).unwrap();
+
+    let members = repo.list_downloads(&pkg_id).unwrap();
+    assert_eq!(
+        members,
+        vec![DownloadId(10), DownloadId(20)],
+        "same-package reattach must not reorder existing members"
+    );
 }
 
 #[test]
