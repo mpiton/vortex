@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Dialog,
@@ -41,15 +41,18 @@ export function AddAccountDialog({
   const [accountType, setAccountType] = useState<AccountType>(defaultType);
   const [submitting, setSubmitting] = useState(false);
 
+  const defaultTypeRef = useRef(defaultType);
+  defaultTypeRef.current = defaultType;
+
   useEffect(() => {
     if (open) {
       setServiceName("");
       setUsername("");
       setPassword("");
-      setAccountType(defaultType);
+      setAccountType(defaultTypeRef.current);
       setSubmitting(false);
     }
-  }, [open, defaultType]);
+  }, [open]);
 
   const trimmedService = serviceName.trim();
   const trimmedUsername = username.trim();

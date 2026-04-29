@@ -5,10 +5,10 @@ import { AccountRow, type AccountRowActions } from "./AccountRow";
 interface AccountListProps {
   accounts: AccountView[];
   actions: AccountRowActions;
-  validatingId: string | null;
+  validatingIds: ReadonlySet<string>;
 }
 
-export function AccountList({ accounts, actions, validatingId }: AccountListProps) {
+export function AccountList({ accounts, actions, validatingIds }: AccountListProps) {
   const { t } = useTranslation();
 
   if (accounts.length === 0) {
@@ -43,7 +43,7 @@ export function AccountList({ accounts, actions, validatingId }: AccountListProp
               key={account.id}
               account={account}
               actions={actions}
-              validating={validatingId === account.id}
+              validating={validatingIds.has(account.id)}
             />
           ))}
         </tbody>

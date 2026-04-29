@@ -165,6 +165,7 @@ export function ImportAccountsDialog({
                 readOnly
                 value={path ?? ""}
                 placeholder="—"
+                aria-label={t("accounts.importDialog.filePath")}
                 data-testid="account-import-path"
               />
               <Button type="button" variant="outline" onClick={handleBrowse}>

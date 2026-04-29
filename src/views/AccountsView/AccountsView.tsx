@@ -37,7 +37,7 @@ export function AccountsView() {
   const [importOpen, setImportOpen] = useState(false);
   const [deleting, setDeleting] = useState<AccountView | null>(null);
   const [editing, setEditing] = useState<AccountView | null>(null);
-  const [validatingId, setValidatingId] = useState<string | null>(null);
+  const [validatingIds, setValidatingIds] = useState<ReadonlySet<string>>(() => new Set());
 
   const confirmBeforeDelete = useSettingsStore((s) => s.config?.confirmDelete ?? true);
   const queryClient = useQueryClient();
@@ -153,7 +153,11 @@ export function AccountsView() {
 
   const handleValidate = useCallback(
     async (account: AccountView) => {
-      setValidatingId(account.id);
+      setValidatingIds((prev) => {
+        const next = new Set(prev);
+        next.add(account.id);
+        return next;
+      });
       try {
         const outcome = await tauriInvoke<ValidationOutcome>("account_validate", {
           id: account.id,
@@ -171,10 +175,15 @@ export function AccountsView() {
         const message = err instanceof Error ? err.message : String(err);
         toast.error(`${t("accounts.toast.validateError")}: ${message}`);
       } finally {
-        setValidatingId(null);
+        invalidateAccountsList();
+        setValidatingIds((prev) => {
+          const next = new Set(prev);
+          next.delete(account.id);
+          return next;
+        });
       }
     },
-    [t],
+    [t, invalidateAccountsList],
   );
 
   const rowActions = useMemo<AccountRowActions>(
@@ -194,7 +203,6 @@ export function AccountsView() {
         filters: [{ name: "Vortex bundle", extensions: ["vxbundle"] }],
       }).catch(() => null);
       if (!picked) {
-        toast.error(t("accounts.toast.missingFile"));
         return;
       }
       try {
@@ -316,7 +324,7 @@ export function AccountsView() {
         <AccountList
           accounts={filteredAccounts}
           actions={rowActions}
-          validatingId={validatingId}
+          validatingIds={validatingIds}
         />
       )}
 

@@ -47,7 +47,9 @@ export function AccountRow({ account, actions, validating }: AccountRowProps) {
       <td className="px-3 py-2 align-middle text-sm text-muted-foreground">
         {account.username}
       </td>
-      <td className="px-3 py-2 align-middle text-sm capitalize">{account.accountType}</td>
+      <td className="px-3 py-2 align-middle text-sm">
+        {t(`accounts.filter.${account.accountType}`)}
+      </td>
       <td className="px-3 py-2 align-middle">
         <Badge variant={STATUS_VARIANT[status]}>
           {t(`accounts.status.${status}`)}
@@ -63,7 +65,7 @@ export function AccountRow({ account, actions, validating }: AccountRowProps) {
             />
             <span className="text-xs text-muted-foreground">
               {t("accounts.traffic.format", {
-                used: formatBytes(account.trafficTotal! - account.trafficLeft!),
+                used: formatBytes(Math.max(0, account.trafficTotal! - account.trafficLeft!)),
                 total: formatBytes(account.trafficTotal),
               })}
             </span>

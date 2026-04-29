@@ -2805,6 +2805,9 @@ pub async fn account_list(
     account_type: Option<String>,
     enabled: Option<bool>,
 ) -> Result<Vec<AccountViewDto>, String> {
+    let service_name = service_name
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
     let account_type = match account_type {
         Some(raw) => Some(parse_account_type_arg(&raw)?),
         None => None,
