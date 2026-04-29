@@ -4,18 +4,22 @@
 //! Handler implementations live in submodules and add methods to `QueryBus`.
 
 mod count_by_state;
+mod get_account;
+mod get_account_traffic;
 mod get_download_detail;
 mod get_downloads;
 mod get_history_entry;
 mod get_plugin_config;
 mod get_plugin_store;
 mod get_stats;
+mod list_accounts;
 mod list_archive_contents;
 mod list_history;
 mod list_plugins;
 mod search_history;
 mod top_modules;
 
+use crate::domain::model::account::{AccountId, AccountType};
 use crate::domain::model::download::DownloadId;
 use crate::domain::model::views::{
     DownloadFilter, HistoryFilter, HistorySort, SortOrder, StatsPeriod,
@@ -99,3 +103,36 @@ pub struct GetPluginConfigQuery {
     pub plugin_name: String,
 }
 impl Query for GetPluginConfigQuery {}
+
+/// Filter combinable on the `ListAccountsQuery`. Each field is
+/// optional; missing fields don't constrain the result. Multiple fields
+/// AND together (service `"real-debrid"` AND type `Premium` AND
+/// `enabled = true`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AccountFilter {
+    pub service_name: Option<String>,
+    pub account_type: Option<AccountType>,
+    pub enabled: Option<bool>,
+}
+
+/// List accounts, optionally filtered. Results are ordered by
+/// `created_at` ascending — same convention as the underlying repo.
+#[derive(Debug, Default)]
+pub struct ListAccountsQuery {
+    pub filter: Option<AccountFilter>,
+}
+impl Query for ListAccountsQuery {}
+
+/// Fetch a single account by id.
+#[derive(Debug)]
+pub struct GetAccountQuery {
+    pub id: AccountId,
+}
+impl Query for GetAccountQuery {}
+
+/// Fetch the persisted traffic counters for one account.
+#[derive(Debug)]
+pub struct GetAccountTrafficQuery {
+    pub id: AccountId,
+}
+impl Query for GetAccountTrafficQuery {}

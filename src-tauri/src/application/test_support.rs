@@ -13,6 +13,7 @@ use crate::application::command_bus::CommandBus;
 use crate::application::query_bus::QueryBus;
 use crate::domain::error::DomainError;
 use crate::domain::event::DomainEvent;
+use crate::domain::model::account::{Account, AccountId};
 use crate::domain::model::archive::{ArchiveEntry, ArchiveFormat, ExtractSummary};
 use crate::domain::model::config::{AppConfig, ConfigPatch};
 use crate::domain::model::credential::Credential;
@@ -28,9 +29,9 @@ use crate::domain::ports::driven::history_repository::{
     MAX_HISTORY_PAGE_SIZE, MAX_HISTORY_SEARCH_RESULTS,
 };
 use crate::domain::ports::driven::{
-    ArchiveExtractor, ClipboardObserver, ConfigStore, CredentialStore, DownloadEngine,
-    DownloadReadRepository, DownloadRepository, EventBus, FileStorage, HistoryRepository,
-    HttpClient, PluginLoader, PluginReadRepository, StatsRepository,
+    AccountRepository, ArchiveExtractor, ClipboardObserver, ConfigStore, CredentialStore,
+    DownloadEngine, DownloadReadRepository, DownloadRepository, EventBus, FileStorage,
+    HistoryRepository, HttpClient, PluginLoader, PluginReadRepository, StatsRepository,
 };
 
 fn host_component(url: &str) -> Option<&str> {
@@ -559,4 +560,87 @@ pub(crate) fn query_bus_with_stats(stats: Arc<dyn StatsRepository>) -> QueryBus 
         Arc::new(StubPluginReadRepo),
         Arc::new(StubQueryArchiveExtractor),
     )
+}
+
+/// In-memory account repository used by the query-handler tests.
+///
+/// Mirrors the production semantics: stable order by `created_at`
+/// ascending then by id, and the `(service_name, username)` UNIQUE
+/// constraint surfaced by the SQLite adapter.
+pub(crate) struct InMemoryAccountRepoForQueries {
+    store: Mutex<HashMap<AccountId, Account>>,
+}
+
+impl InMemoryAccountRepoForQueries {
+    pub(crate) fn new() -> Self {
+        Self {
+            store: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn snapshot(&self) -> Vec<Account> {
+        let mut accounts: Vec<Account> = self.store.lock().unwrap().values().cloned().collect();
+        accounts.sort_by(|a, b| {
+            a.created_at()
+                .cmp(&b.created_at())
+                .then_with(|| a.id().as_str().cmp(b.id().as_str()))
+        });
+        accounts
+    }
+}
+
+impl AccountRepository for InMemoryAccountRepoForQueries {
+    fn find_by_id(&self, id: &AccountId) -> Result<Option<Account>, DomainError> {
+        Ok(self.store.lock().unwrap().get(id).cloned())
+    }
+
+    fn save(&self, account: &Account) -> Result<(), DomainError> {
+        let mut guard = self.store.lock().unwrap();
+        for (id, existing) in guard.iter() {
+            if id != account.id()
+                && existing.service_name() == account.service_name()
+                && existing.username() == account.username()
+            {
+                return Err(DomainError::AlreadyExists(format!(
+                    "{}::{}",
+                    account.service_name(),
+                    account.username()
+                )));
+            }
+        }
+        guard.insert(account.id().clone(), account.clone());
+        Ok(())
+    }
+
+    fn list(&self) -> Result<Vec<Account>, DomainError> {
+        Ok(self.snapshot())
+    }
+
+    fn list_by_service(&self, service_name: &str) -> Result<Vec<Account>, DomainError> {
+        Ok(self
+            .snapshot()
+            .into_iter()
+            .filter(|a| a.service_name() == service_name)
+            .collect())
+    }
+
+    fn delete(&self, id: &AccountId) -> Result<(), DomainError> {
+        self.store.lock().unwrap().remove(id);
+        Ok(())
+    }
+}
+
+/// Build a [`QueryBus`] wired with the given account repository.
+///
+/// Other read ports return empty/default data — suitable for tests
+/// that only exercise account queries.
+pub(crate) fn query_bus_with_accounts(repo: Arc<dyn AccountRepository>) -> QueryBus {
+    QueryBus::new(
+        Arc::new(StubDownloadReadRepo),
+        Arc::new(NoopHistoryRepo),
+        Arc::new(StubStatsRepo),
+        Arc::new(StubPluginReadRepo),
+        Arc::new(StubQueryArchiveExtractor),
+    )
+    .with_account_repo(repo)
 }

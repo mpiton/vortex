@@ -6,8 +6,8 @@
 use std::sync::Arc;
 
 use crate::domain::ports::driven::{
-    ArchiveExtractor, DownloadReadRepository, HistoryRepository, PluginConfigStore, PluginLoader,
-    PluginReadRepository, StatsRepository,
+    AccountRepository, ArchiveExtractor, DownloadReadRepository, HistoryRepository,
+    PluginConfigStore, PluginLoader, PluginReadRepository, StatsRepository,
 };
 
 /// Central dispatcher for CQRS queries.
@@ -22,6 +22,7 @@ pub struct QueryBus {
     archive_extractor: Arc<dyn ArchiveExtractor>,
     plugin_loader: Option<Arc<dyn PluginLoader>>,
     plugin_config_store: Option<Arc<dyn PluginConfigStore>>,
+    account_repo: Option<Arc<dyn AccountRepository>>,
 }
 
 impl QueryBus {
@@ -40,6 +41,7 @@ impl QueryBus {
             archive_extractor,
             plugin_loader: None,
             plugin_config_store: None,
+            account_repo: None,
         }
     }
 
@@ -55,6 +57,18 @@ impl QueryBus {
     pub fn with_plugin_config_store(mut self, store: Arc<dyn PluginConfigStore>) -> Self {
         self.plugin_config_store = Some(store);
         self
+    }
+
+    /// Builder-style setter for the account repository. Optional so
+    /// existing fixtures that never query accounts don't have to
+    /// provide a mock.
+    pub fn with_account_repo(mut self, repo: Arc<dyn AccountRepository>) -> Self {
+        self.account_repo = Some(repo);
+        self
+    }
+
+    pub fn account_repo(&self) -> Option<&dyn AccountRepository> {
+        self.account_repo.as_deref()
     }
 
     pub fn download_read_repo(&self) -> &dyn DownloadReadRepository {
@@ -93,6 +107,7 @@ mod tests {
 
     use super::QueryBus;
     use crate::domain::error::DomainError;
+    use crate::domain::model::account::{Account, AccountId};
     use crate::domain::model::archive::ArchiveFormat;
     use crate::domain::model::download::DownloadId;
     use crate::domain::model::plugin::PluginInfo;
@@ -101,8 +116,8 @@ mod tests {
         ModuleStats, SortOrder, StateCountMap, StatsPeriod, StatsView,
     };
     use crate::domain::ports::driven::{
-        ArchiveExtractor, DownloadReadRepository, HistoryRepository, PluginReadRepository,
-        StatsRepository,
+        AccountRepository, ArchiveExtractor, DownloadReadRepository, HistoryRepository,
+        PluginReadRepository, StatsRepository,
     };
 
     struct FakeArchiveExtractor;
@@ -244,20 +259,82 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_query_bus_new_compiles() {
-        let _bus = QueryBus::new(
+    /// Mock repo whose `list()` returns a sentinel account; lets the
+    /// wiring test prove `account_repo()` returns the *same* instance
+    /// passed to `with_account_repo`, not a stub or a copy.
+    struct SentinelAccountRepo;
+    impl AccountRepository for SentinelAccountRepo {
+        fn find_by_id(&self, _id: &AccountId) -> Result<Option<Account>, DomainError> {
+            Ok(None)
+        }
+
+        fn save(&self, _account: &Account) -> Result<(), DomainError> {
+            Ok(())
+        }
+
+        fn list(&self) -> Result<Vec<Account>, DomainError> {
+            Ok(vec![Account::new(
+                AccountId::new("sentinel"),
+                "svc".to_string(),
+                "user".to_string(),
+                crate::domain::model::account::AccountType::Free,
+                42,
+            )])
+        }
+
+        fn list_by_service(&self, _service_name: &str) -> Result<Vec<Account>, DomainError> {
+            Ok(vec![])
+        }
+
+        fn delete(&self, _id: &AccountId) -> Result<(), DomainError> {
+            Ok(())
+        }
+    }
+
+    fn make_bus() -> QueryBus {
+        QueryBus::new(
             Arc::new(MockDownloadReadRepo),
             Arc::new(MockHistoryRepo),
             Arc::new(MockStatsRepo),
             Arc::new(MockPluginReadRepo),
             Arc::new(FakeArchiveExtractor),
-        );
+        )
+    }
+
+    #[test]
+    fn test_query_bus_new_compiles() {
+        let _bus = make_bus();
     }
 
     #[test]
     fn test_query_bus_is_send_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<QueryBus>();
+    }
+
+    #[test]
+    fn test_account_repo_is_none_by_default() {
+        let bus = make_bus();
+        assert!(bus.account_repo().is_none());
+    }
+
+    #[test]
+    fn test_with_account_repo_exposes_same_instance_through_accessor() {
+        let repo: Arc<dyn AccountRepository> = Arc::new(SentinelAccountRepo);
+        let strong_before = Arc::strong_count(&repo);
+
+        let bus = make_bus().with_account_repo(Arc::clone(&repo));
+
+        assert_eq!(
+            Arc::strong_count(&repo),
+            strong_before + 1,
+            "bus must hold its own strong reference"
+        );
+        let stored = bus
+            .account_repo()
+            .expect("with_account_repo wires the accessor");
+        let listed = stored.list().expect("sentinel list");
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id().as_str(), "sentinel");
     }
 }
