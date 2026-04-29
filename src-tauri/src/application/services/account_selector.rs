@@ -92,6 +92,34 @@ impl AccountSelector {
         strategy: AccountSelectionStrategy,
         exclude: &[AccountId],
     ) -> Result<Option<Account>, AppError> {
+        let account = self.select_best_excluding_quiet(service_name, strategy, exclude)?;
+        if let Some(ref acc) = account {
+            self.event_bus.publish(DomainEvent::AccountSelected {
+                id: acc.id().clone(),
+                service_name: service_name.to_string(),
+                strategy: strategy.to_string(),
+            });
+        }
+        Ok(account)
+    }
+
+    /// Same selection logic as [`Self::select_best_excluding`] but never
+    /// publishes [`DomainEvent::AccountSelected`]. Reserved for callers
+    /// (e.g. [`crate::application::services::AccountRotator`]) that
+    /// probe the selector inside a retry loop and only want the event
+    /// emitted once a pick is actually committed — otherwise discarded
+    /// probes leak misleading "selected" signals to UI/telemetry.
+    ///
+    /// `NoAccountAvailable` is still emitted under the same rules as
+    /// the public variant (pre-exclude eligible set empty), since that
+    /// signal is independent of whether a pick survives downstream
+    /// post-checks.
+    pub fn select_best_excluding_quiet(
+        &self,
+        service_name: &str,
+        strategy: AccountSelectionStrategy,
+        exclude: &[AccountId],
+    ) -> Result<Option<Account>, AppError> {
         let candidates = self.repo.list_by_service(service_name)?;
         let now_ms = self.now_ms();
         let base_eligible: Vec<&Account> = candidates
@@ -123,15 +151,7 @@ impl AccountSelector {
                 self.pick_round_robin(service_name, &eligible)?
             }
         };
-        let account = chosen.cloned();
-        if let Some(ref acc) = account {
-            self.event_bus.publish(DomainEvent::AccountSelected {
-                id: acc.id().clone(),
-                service_name: service_name.to_string(),
-                strategy: strategy.to_string(),
-            });
-        }
-        Ok(account)
+        Ok(chosen.cloned())
     }
 
     /// Returns the next round-robin candidate, or `None` when `eligible`
@@ -741,6 +761,32 @@ mod tests {
             e,
             DomainEvent::NoAccountAvailable { service_name } if service_name == "S"
         )));
+    }
+
+    #[test]
+    fn test_select_best_excluding_quiet_does_not_emit_account_selected() {
+        // The _quiet variant exists for the rotator's retry probes:
+        // it must return the same account as the public variant but
+        // never publish AccountSelected. Discarded probes would
+        // otherwise leak misleading "selected" telemetry.
+        let now_ms = 2_000_000_000_000;
+        let now_secs = now_ms / 1_000;
+        let a = account("a", "S", Some(50), Some(now_ms + 1), None, true);
+
+        let (selector, bus) = build_selector(vec![a], now_secs);
+
+        let chosen = selector
+            .select_best_excluding_quiet("S", AccountSelectionStrategy::BestTraffic, &[])
+            .unwrap();
+        assert!(chosen.is_some());
+
+        let events = bus.events();
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, DomainEvent::AccountSelected { .. })),
+            "_quiet variant must not emit AccountSelected"
+        );
     }
 
     #[test]

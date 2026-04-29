@@ -118,9 +118,11 @@ impl AccountRotator {
         // caller. Re-check under the lock after each pick and retry
         // with the offending id added to the exclude list.
         loop {
-            let picked =
-                self.selector
-                    .select_best_excluding(service_name, strategy, &exhausted_ids)?;
+            let picked = self.selector.select_best_excluding_quiet(
+                service_name,
+                strategy,
+                &exhausted_ids,
+            )?;
             let Some(account) = picked else {
                 break;
             };
@@ -131,6 +133,15 @@ impl AccountRotator {
                     .is_none_or(|deadline| now_ms >= *deadline)
             };
             if still_available {
+                // Emit AccountSelected only on the committed pick, not
+                // on probes that lose the race to a parallel
+                // `mark_exhausted`. Otherwise UI/telemetry would see
+                // "selected" for an account never returned to the caller.
+                self.event_bus.publish(DomainEvent::AccountSelected {
+                    id: account.id().clone(),
+                    service_name: service_name.to_string(),
+                    strategy: strategy.to_string(),
+                });
                 return Ok(NextAccountOutcome::Picked(account));
             }
             exhausted_ids.push(account.id().clone());
@@ -766,5 +777,51 @@ mod tests {
             }
             other => panic!("expected AllExhausted, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_next_account_emits_account_selected_exactly_once_on_picked() {
+        // Regression: rotator now drives `AccountSelected` emission
+        // itself (selector probes go via `_quiet`). The contract is
+        // "one Picked outcome = one AccountSelected event" — never
+        // zero, never several.
+        let a = account("only", "Uploaded", Some(1_000), true);
+        let (rotator, bus, _clock) = build_rotator(vec![a], 1_700_000_000);
+
+        let outcome = rotator
+            .next_account("Uploaded", AccountSelectionStrategy::BestTraffic)
+            .unwrap();
+        assert!(matches!(outcome, NextAccountOutcome::Picked(_)));
+
+        let selected_count = bus
+            .events()
+            .iter()
+            .filter(|e| matches!(e, DomainEvent::AccountSelected { .. }))
+            .count();
+        assert_eq!(
+            selected_count, 1,
+            "rotator must emit exactly one AccountSelected per Picked outcome"
+        );
+    }
+
+    #[test]
+    fn test_next_account_does_not_emit_account_selected_on_none() {
+        // No accounts configured. Path returns NoneAvailable and
+        // must not produce an AccountSelected event (it would only
+        // be possible via the selector's old emission point, which
+        // moved into the rotator's commit branch).
+        let (rotator, bus, _clock) = build_rotator(vec![], 1_700_000_000);
+
+        let outcome = rotator
+            .next_account("Uploaded", AccountSelectionStrategy::BestTraffic)
+            .unwrap();
+        assert!(matches!(outcome, NextAccountOutcome::NoneAvailable));
+
+        let selected_count = bus
+            .events()
+            .iter()
+            .filter(|e| matches!(e, DomainEvent::AccountSelected { .. }))
+            .count();
+        assert_eq!(selected_count, 0);
     }
 }
