@@ -68,6 +68,8 @@ fn event_name(event: &DomainEvent) -> &'static str {
         DomainEvent::AccountValidationFailed { .. } => "account-validation-failed",
         DomainEvent::AccountsImported { .. } => "accounts-imported",
         DomainEvent::AccountsExported { .. } => "accounts-exported",
+        DomainEvent::NoAccountAvailable { .. } => "no-account-available",
+        DomainEvent::AccountSelected { .. } => "account-selected",
     }
 }
 
@@ -196,6 +198,20 @@ fn event_payload(event: &DomainEvent) -> serde_json::Value {
         }
         DomainEvent::AccountsImported { count } => json!({ "count": count }),
         DomainEvent::AccountsExported { count } => json!({ "count": count }),
+        DomainEvent::NoAccountAvailable { service_name } => {
+            json!({ "serviceName": service_name })
+        }
+        DomainEvent::AccountSelected {
+            id,
+            service_name,
+            strategy,
+        } => {
+            json!({
+                "id": id.as_str(),
+                "serviceName": service_name,
+                "strategy": strategy,
+            })
+        }
     }
 }
 

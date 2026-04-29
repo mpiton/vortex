@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use crate::domain::error::DomainError;
+use crate::domain::model::account::AccountSelectionStrategy;
 use crate::domain::model::config::{
     AppConfig, ConfigPatch, apply_patch, normalize_history_retention_days,
 };
@@ -63,7 +64,9 @@ impl TomlConfigStore {
             .map_err(|e| DomainError::StorageError(format!("failed to read config: {e}")))?;
         let dto: ConfigDto = toml::from_str(&content)
             .map_err(|e| DomainError::StorageError(format!("failed to parse config: {e}")))?;
-        Ok(AppConfig::from(dto))
+        let config = AppConfig::try_from(dto)
+            .map_err(|e| DomainError::StorageError(format!("invalid config: {e}")))?;
+        Ok(config)
     }
 
     fn write_config(&self, config: &AppConfig) -> Result<(), DomainError> {
@@ -162,6 +165,9 @@ struct ConfigDto {
     // History
     history_retention_days: i64,
 
+    // Accounts
+    account_selection_strategy: String,
+
     // Network
     proxy_type: String,
     proxy_url: Option<String>,
@@ -216,6 +222,7 @@ impl From<AppConfig> for ConfigDto {
             dynamic_split_enabled: c.dynamic_split_enabled,
             dynamic_split_min_remaining_mb: c.dynamic_split_min_remaining_mb,
             history_retention_days: c.history_retention_days,
+            account_selection_strategy: c.account_selection_strategy.to_string(),
             proxy_type: c.proxy_type,
             proxy_url: c.proxy_url,
             user_agent: c.user_agent,
@@ -237,9 +244,22 @@ impl From<AppConfig> for ConfigDto {
     }
 }
 
-impl From<ConfigDto> for AppConfig {
-    fn from(d: ConfigDto) -> Self {
-        Self {
+impl TryFrom<ConfigDto> for AppConfig {
+    type Error = DomainError;
+
+    fn try_from(d: ConfigDto) -> Result<Self, Self::Error> {
+        // Backward compat: legacy `config.toml` files written before the
+        // `account_selection_strategy` field existed deserialize via
+        // `#[serde(default)]` as the empty string. Treat that as
+        // `DEFAULT` so an upgrade does not fail at startup; reject any
+        // non-empty unknown value as the typo / corruption it actually is.
+        let account_selection_strategy: AccountSelectionStrategy =
+            if d.account_selection_strategy.is_empty() {
+                AccountSelectionStrategy::DEFAULT
+            } else {
+                d.account_selection_strategy.parse()?
+            };
+        Ok(Self {
             download_dir: d.download_dir,
             start_minimized: d.start_minimized,
             notifications_enabled: d.notifications_enabled,
@@ -258,6 +278,7 @@ impl From<ConfigDto> for AppConfig {
             dynamic_split_enabled: d.dynamic_split_enabled,
             dynamic_split_min_remaining_mb: d.dynamic_split_min_remaining_mb,
             history_retention_days: normalize_history_retention_days(d.history_retention_days),
+            account_selection_strategy,
             proxy_type: d.proxy_type,
             proxy_url: d.proxy_url,
             user_agent: d.user_agent,
@@ -275,7 +296,7 @@ impl From<ConfigDto> for AppConfig {
             accent_color: d.accent_color,
             compact_mode: d.compact_mode,
             locale: d.locale,
-        }
+        })
     }
 }
 
@@ -577,6 +598,83 @@ mod tests {
         assert_eq!(
             config.api_key, "",
             "user-cleared api_key must not be overwritten on subsequent loads"
+        );
+    }
+
+    /// Codex-flagged regression: a hand-edited `config.toml` carrying an
+    /// unknown `account_selection_strategy` previously fell back silently
+    /// to `best_traffic`, masking config corruption. The fix surfaces a
+    /// `StorageError` so the runtime can refuse to start with an invalid
+    /// persisted strategy instead of running with the wrong policy.
+    #[test]
+    fn test_get_config_rejects_unknown_persisted_account_selection_strategy() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "api_key = \"key\"\naccount_selection_strategy = \"not_a_strategy\"\n",
+        )
+        .unwrap();
+
+        let store = TomlConfigStore::new(path, None, Some("default-key".to_string()));
+        let err = store
+            .get_config()
+            .expect_err("unknown persisted strategy must surface as a storage error");
+        match err {
+            DomainError::StorageError(msg) => {
+                assert!(
+                    msg.contains("invalid config")
+                        && msg.contains("invalid account selection strategy"),
+                    "unexpected storage error message: {msg}"
+                );
+            }
+            other => panic!("expected StorageError, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_get_config_accepts_known_persisted_account_selection_strategy() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "api_key = \"key\"\naccount_selection_strategy = \"round_robin\"\n",
+        )
+        .unwrap();
+
+        let store = TomlConfigStore::new(path, None, Some("default-key".to_string()));
+        let config = store
+            .get_config()
+            .expect("known strategy value must round-trip through TryFrom");
+        assert_eq!(
+            config.account_selection_strategy,
+            AccountSelectionStrategy::RoundRobin
+        );
+    }
+
+    /// Codex-flagged P1 regression: a legacy `config.toml` written before
+    /// the `account_selection_strategy` field existed has no key for it.
+    /// `#[serde(default)]` on `ConfigDto` makes the missing field
+    /// deserialize as the empty string. Without special-casing, the
+    /// strict `parse()` would fail and break startup for upgraded users.
+    /// The TOML store must surface `BestTraffic` for the empty-string
+    /// case while still rejecting non-empty typos.
+    #[test]
+    fn test_get_config_accepts_legacy_config_without_strategy_field() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        // Pre-task-24 file: every existing field is present except the
+        // brand-new `account_selection_strategy`.
+        std::fs::write(&path, "api_key = \"legacy-key\"\n").unwrap();
+
+        let store = TomlConfigStore::new(path, None, Some("default-key".to_string()));
+        let config = store
+            .get_config()
+            .expect("legacy config without strategy field must load");
+        assert_eq!(
+            config.account_selection_strategy,
+            AccountSelectionStrategy::DEFAULT,
+            "missing strategy field must hydrate as the default"
         );
     }
 }

@@ -3,6 +3,8 @@
 //! Used by `ConfigStore` port for reading and updating settings.
 //! These types live in the domain because the port traits reference them.
 
+use crate::domain::model::account::AccountSelectionStrategy;
+
 /// Application-wide configuration.
 ///
 /// Represents the full config as stored in `config.toml`.
@@ -43,6 +45,12 @@ pub struct AppConfig {
     /// hard-delete. `0` disables retention (entries are kept forever).
     /// PRD §6.8 / §7.9 — hard delete decision (privacy by default).
     pub history_retention_days: i64,
+
+    // ── Accounts ─────────────────────────────────────────────────────
+    /// Strategy used by `AccountSelector` when several accounts exist
+    /// for the same service. PRD §6.4 — "Auto-select du meilleur
+    /// compte disponible".
+    pub account_selection_strategy: AccountSelectionStrategy,
 
     // ── Network ──────────────────────────────────────────────────────
     /// `"none"`, `"http"`, or `"socks5"`.
@@ -109,6 +117,9 @@ impl Default for AppConfig {
             // History
             history_retention_days: 30,
 
+            // Accounts
+            account_selection_strategy: AccountSelectionStrategy::DEFAULT,
+
             // Network
             proxy_type: "none".to_string(),
             proxy_url: None,
@@ -170,6 +181,9 @@ pub struct ConfigPatch {
 
     // History
     pub history_retention_days: Option<i64>,
+
+    // Accounts
+    pub account_selection_strategy: Option<AccountSelectionStrategy>,
 
     // Network
     pub proxy_type: Option<String>,
@@ -288,6 +302,11 @@ pub fn apply_patch(config: &mut AppConfig, patch: &ConfigPatch) {
     // History
     if let Some(v) = patch.history_retention_days {
         config.history_retention_days = normalize_history_retention_days(v);
+    }
+
+    // Accounts
+    if let Some(v) = patch.account_selection_strategy {
+        config.account_selection_strategy = v;
     }
 
     // Network
@@ -488,6 +507,28 @@ mod tests {
     fn test_normalize_history_retention_days_clamps_negatives_to_zero() {
         assert_eq!(normalize_history_retention_days(-1), 0);
         assert_eq!(normalize_history_retention_days(i64::MIN), 0);
+    }
+
+    #[test]
+    fn test_default_account_selection_strategy_is_best_traffic() {
+        assert_eq!(
+            AppConfig::default().account_selection_strategy,
+            AccountSelectionStrategy::BestTraffic
+        );
+    }
+
+    #[test]
+    fn test_apply_patch_updates_account_selection_strategy() {
+        let mut config = AppConfig::default();
+        let patch = ConfigPatch {
+            account_selection_strategy: Some(AccountSelectionStrategy::RoundRobin),
+            ..Default::default()
+        };
+        apply_patch(&mut config, &patch);
+        assert_eq!(
+            config.account_selection_strategy,
+            AccountSelectionStrategy::RoundRobin
+        );
     }
 
     #[test]

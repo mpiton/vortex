@@ -55,6 +55,54 @@ impl FromStr for AccountType {
     }
 }
 
+/// Strategy used by `AccountSelector` to pick the next account when several
+/// exist for the same service. `BestTraffic` is the default.
+///
+/// PRD §6.4 — "Auto-select du meilleur compte disponible".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccountSelectionStrategy {
+    /// Pick the enabled, non-expired account with the most traffic left.
+    /// Unlimited traffic (`None`) ranks above any finite traffic value.
+    BestTraffic,
+    /// Round-robin across enabled, non-expired candidates ordered by id.
+    /// Each `select_best(service)` call advances the cursor for that service.
+    RoundRobin,
+    /// Defer to a user-pinned account; if none is pinned, fall back to
+    /// `BestTraffic`. Pinning UI is a future iteration; today this acts
+    /// as a no-op alias of `BestTraffic`.
+    Manual,
+}
+
+impl AccountSelectionStrategy {
+    pub const DEFAULT: Self = AccountSelectionStrategy::BestTraffic;
+}
+
+impl fmt::Display for AccountSelectionStrategy {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            AccountSelectionStrategy::BestTraffic => "best_traffic",
+            AccountSelectionStrategy::RoundRobin => "round_robin",
+            AccountSelectionStrategy::Manual => "manual",
+        };
+        f.write_str(s)
+    }
+}
+
+impl FromStr for AccountSelectionStrategy {
+    type Err = DomainError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "best_traffic" => Ok(AccountSelectionStrategy::BestTraffic),
+            "round_robin" => Ok(AccountSelectionStrategy::RoundRobin),
+            "manual" => Ok(AccountSelectionStrategy::Manual),
+            other => Err(DomainError::ValidationError(format!(
+                "invalid account selection strategy: {other}"
+            ))),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Account {
     id: AccountId,
@@ -392,6 +440,33 @@ mod tests {
         let id = AccountId::new("xyz-42");
         assert_eq!(id.to_string(), "xyz-42");
         assert_eq!(id.as_str(), "xyz-42");
+    }
+
+    #[test]
+    fn test_account_selection_strategy_round_trip_via_string() {
+        for s in [
+            AccountSelectionStrategy::BestTraffic,
+            AccountSelectionStrategy::RoundRobin,
+            AccountSelectionStrategy::Manual,
+        ] {
+            let rendered = s.to_string();
+            let parsed: AccountSelectionStrategy = rendered.parse().expect("round trip");
+            assert_eq!(parsed, s);
+        }
+    }
+
+    #[test]
+    fn test_account_selection_strategy_default_is_best_traffic() {
+        assert_eq!(
+            AccountSelectionStrategy::DEFAULT,
+            AccountSelectionStrategy::BestTraffic
+        );
+    }
+
+    #[test]
+    fn test_account_selection_strategy_from_str_rejects_unknown() {
+        let result: Result<AccountSelectionStrategy, _> = "best".parse();
+        assert!(matches!(result, Err(DomainError::ValidationError(_))));
     }
 
     #[test]
