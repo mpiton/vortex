@@ -166,7 +166,7 @@ mod tests {
         pkg.set_folder_path(Some("/tmp/holiday".to_string()));
         pkg.set_password(Some("keyring://pkg/holiday".to_string()));
         pkg.set_auto_extract(false);
-        pkg.set_priority(9);
+        pkg.set_priority(9).expect("valid priority");
 
         repo.save(&pkg).expect("save");
 
@@ -203,7 +203,8 @@ mod tests {
             2,
             // Different created_at — must NOT overwrite the stored value.
             9_999_999_999_999,
-        );
+        )
+        .expect("valid priority");
         repo.save(&pkg).expect("upsert");
 
         let found = repo
@@ -424,6 +425,42 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_find_by_id_rejects_priority_zero() {
+        let db = setup_test_db().await.expect("test db");
+        db.execute(Statement::from_string(
+            sea_orm::DatabaseBackend::Sqlite,
+            "INSERT INTO packages (id, name, source_type, auto_extract, priority, created_at) VALUES ('pkg-zero', 'Zero', 'manual', 1, 0, 0)"
+                .to_string(),
+        ))
+        .await
+        .expect("seed");
+
+        let repo = SqlitePackageRepo::new(db);
+        let err = repo
+            .find_by_id(&PackageId::new("pkg-zero"))
+            .expect_err("priority 0 must be rejected");
+        assert!(matches!(err, DomainError::ValidationError(_)));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_find_by_id_rejects_auto_extract_outside_zero_one() {
+        let db = setup_test_db().await.expect("test db");
+        db.execute(Statement::from_string(
+            sea_orm::DatabaseBackend::Sqlite,
+            "INSERT INTO packages (id, name, source_type, auto_extract, priority, created_at) VALUES ('pkg-ae', 'AE', 'manual', 7, 5, 0)"
+                .to_string(),
+        ))
+        .await
+        .expect("seed");
+
+        let repo = SqlitePackageRepo::new(db);
+        let err = repo
+            .find_by_id(&PackageId::new("pkg-ae"))
+            .expect_err("auto_extract=7 must be rejected");
+        assert!(matches!(err, DomainError::ValidationError(_)));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_save_returns_validation_error_when_created_at_overflows_i64() {
         let db = setup_test_db().await.expect("test db");
         let repo = SqlitePackageRepo::new(db);
@@ -438,7 +475,8 @@ mod tests {
             5,
             // Beyond i64::MAX → must be rejected at conversion.
             u64::MAX,
-        );
+        )
+        .expect("valid priority");
         let err = repo.save(&pkg).expect_err("created_at overflow must fail");
         assert!(
             matches!(err, DomainError::ValidationError(_)),

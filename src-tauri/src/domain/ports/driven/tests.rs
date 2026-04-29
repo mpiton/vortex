@@ -732,7 +732,10 @@ impl AccountRepository for InMemoryAccountRepository {
 
 struct InMemoryPackageRepository {
     store: Mutex<HashMap<PackageId, Package>>,
-    members: Mutex<HashMap<PackageId, Vec<DownloadId>>>,
+    /// Members are stored as `(queue_position, download_id)` so that
+    /// `list_downloads` can mirror the SQLite adapter's ordering
+    /// contract (asc by `queue_position`).
+    members: Mutex<HashMap<PackageId, Vec<(i64, DownloadId)>>>,
 }
 
 impl InMemoryPackageRepository {
@@ -743,13 +746,13 @@ impl InMemoryPackageRepository {
         }
     }
 
-    fn attach_download(&self, package_id: &PackageId, download: DownloadId) {
+    fn attach_download(&self, package_id: &PackageId, queue_position: i64, download: DownloadId) {
         self.members
             .lock()
             .unwrap()
             .entry(package_id.clone())
             .or_default()
-            .push(download);
+            .push((queue_position, download));
     }
 }
 
@@ -761,28 +764,20 @@ impl PackageRepository for InMemoryPackageRepository {
     fn save(&self, package: &Package) -> Result<(), DomainError> {
         let mut guard = self.store.lock().unwrap();
         // Mirror SQLite: created_at is insert-only.
-        let stored = match guard.get(package.id()) {
-            Some(existing) => Package::reconstruct(
-                package.id().clone(),
-                package.name().to_string(),
-                package.source_type(),
-                package.folder_path().map(str::to_string),
-                package.password().map(str::to_string),
-                package.auto_extract(),
-                package.priority(),
-                existing.created_at(),
-            ),
-            None => Package::reconstruct(
-                package.id().clone(),
-                package.name().to_string(),
-                package.source_type(),
-                package.folder_path().map(str::to_string),
-                package.password().map(str::to_string),
-                package.auto_extract(),
-                package.priority(),
-                package.created_at(),
-            ),
+        let created_at = match guard.get(package.id()) {
+            Some(existing) => existing.created_at(),
+            None => package.created_at(),
         };
+        let stored = Package::reconstruct(
+            package.id().clone(),
+            package.name().to_string(),
+            package.source_type(),
+            package.folder_path().map(str::to_string),
+            package.password().map(str::to_string),
+            package.auto_extract(),
+            package.priority(),
+            created_at,
+        )?;
         guard.insert(package.id().clone(), stored);
         Ok(())
     }
@@ -805,13 +800,15 @@ impl PackageRepository for InMemoryPackageRepository {
     }
 
     fn list_downloads(&self, id: &PackageId) -> Result<Vec<DownloadId>, DomainError> {
-        Ok(self
+        let mut members = self
             .members
             .lock()
             .unwrap()
             .get(id)
             .cloned()
-            .unwrap_or_default())
+            .unwrap_or_default();
+        members.sort_by(|(qa, da), (qb, db)| qa.cmp(qb).then_with(|| da.0.cmp(&db.0)));
+        Ok(members.into_iter().map(|(_, id)| id).collect())
     }
 }
 
@@ -952,7 +949,7 @@ fn in_memory_package_repository_round_trip_preserves_all_fields() {
     pkg.set_folder_path(Some("/tmp/holiday".to_string()));
     pkg.set_password(Some("keyring://pkg/holiday".to_string()));
     pkg.set_auto_extract(false);
-    pkg.set_priority(8);
+    pkg.set_priority(8).expect("valid priority");
 
     repo.save(&pkg).expect("save");
     let found = repo
@@ -1039,7 +1036,7 @@ fn in_memory_package_repository_delete_drops_member_attachments() {
         0,
     );
     repo.save(&pkg).unwrap();
-    repo.attach_download(&PackageId::new("pkg-del"), DownloadId(1));
+    repo.attach_download(&PackageId::new("pkg-del"), 0, DownloadId(1));
     assert_eq!(
         repo.list_downloads(&PackageId::new("pkg-del"))
             .unwrap()
@@ -1071,8 +1068,8 @@ fn in_memory_package_repository_list_downloads_returns_attached_ids() {
         0,
     ))
     .unwrap();
-    repo.attach_download(&pkg_id, DownloadId(7));
-    repo.attach_download(&pkg_id, DownloadId(11));
+    repo.attach_download(&pkg_id, 0, DownloadId(7));
+    repo.attach_download(&pkg_id, 1, DownloadId(11));
 
     let members = repo.list_downloads(&pkg_id).unwrap();
     assert_eq!(members, vec![DownloadId(7), DownloadId(11)]);
@@ -1081,6 +1078,33 @@ fn in_memory_package_repository_list_downloads_returns_attached_ids() {
         repo.list_downloads(&PackageId::new("ghost"))
             .unwrap()
             .is_empty()
+    );
+}
+
+#[test]
+fn in_memory_package_repository_list_downloads_orders_by_queue_position() {
+    // Mock must mirror the SQLite adapter's contract: members come back
+    // ordered by queue_position regardless of insertion order, otherwise
+    // port-level tests would let production diverge from the mock.
+    let repo = InMemoryPackageRepository::new();
+    let pkg_id = PackageId::new("pkg-order");
+    repo.save(&Package::new(
+        pkg_id.clone(),
+        "Ordered".to_string(),
+        PackageSourceType::Manual,
+        0,
+    ))
+    .unwrap();
+    // Insert out of order on purpose.
+    repo.attach_download(&pkg_id, 5, DownloadId(50));
+    repo.attach_download(&pkg_id, 1, DownloadId(10));
+    repo.attach_download(&pkg_id, 3, DownloadId(30));
+
+    let members = repo.list_downloads(&pkg_id).unwrap();
+    assert_eq!(
+        members,
+        vec![DownloadId(10), DownloadId(30), DownloadId(50)],
+        "list_downloads must sort by queue_position asc"
     );
 }
 

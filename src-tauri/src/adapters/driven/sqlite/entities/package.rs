@@ -26,22 +26,32 @@ impl ActiveModelBehavior for ActiveModel {}
 impl Model {
     pub fn into_domain(self) -> Result<Package, DomainError> {
         let source_type: PackageSourceType = self.source_type.parse()?;
+        let auto_extract = match self.auto_extract {
+            0 => false,
+            1 => true,
+            other => {
+                return Err(DomainError::ValidationError(format!(
+                    "package {}: auto_extract {other} out of bool range",
+                    self.id
+                )));
+            }
+        };
         let priority = u8::try_from(self.priority).map_err(|_| {
             DomainError::ValidationError(format!(
                 "package {}: priority {} out of u8 range",
                 self.id, self.priority
             ))
         })?;
-        Ok(Package::reconstruct(
+        Package::reconstruct(
             PackageId::new(self.id),
             self.name,
             source_type,
             self.folder_path,
             self.password,
-            self.auto_extract != 0,
+            auto_extract,
             priority,
             safe_u64(self.created_at),
-        ))
+        )
     }
 }
 

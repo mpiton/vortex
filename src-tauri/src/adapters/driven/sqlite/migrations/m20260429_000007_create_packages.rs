@@ -98,6 +98,25 @@ impl MigrationTrait for Migration {
 
         manager
             .drop_table(Table::drop().table(Packages::Table).to_owned())
+            .await?;
+
+        // Restore the legacy schema from migration 1 so rolling back
+        // leaves migration state 6 with the same shape it had before.
+        manager
+            .create_table(
+                Table::create()
+                    .table(Packages::Table)
+                    .if_not_exists()
+                    .col(
+                        ColumnDef::new(Packages::Id)
+                            .big_integer()
+                            .not_null()
+                            .primary_key(),
+                    )
+                    .col(ColumnDef::new(Packages::Name).string().not_null())
+                    .col(ColumnDef::new(Packages::CreatedAt).big_integer().not_null())
+                    .to_owned(),
+            )
             .await
     }
 }

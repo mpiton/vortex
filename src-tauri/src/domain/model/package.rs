@@ -45,7 +45,7 @@ impl fmt::Display for PackageSourceType {
             PackageSourceType::Container => "container",
             PackageSourceType::Playlist => "playlist",
             PackageSourceType::Manual => "manual",
-            PackageSourceType::SplitArchive => "split-archive",
+            PackageSourceType::SplitArchive => "split_archive",
         };
         f.write_str(s)
     }
@@ -59,7 +59,7 @@ impl FromStr for PackageSourceType {
             "container" => Ok(PackageSourceType::Container),
             "playlist" => Ok(PackageSourceType::Playlist),
             "manual" => Ok(PackageSourceType::Manual),
-            "split-archive" => Ok(PackageSourceType::SplitArchive),
+            "split_archive" => Ok(PackageSourceType::SplitArchive),
             other => Err(DomainError::ValidationError(format!(
                 "invalid package source type: {other}"
             ))),
@@ -69,6 +69,17 @@ impl FromStr for PackageSourceType {
 
 /// Default scheduling priority for a package (1..=10 scale, mid-range).
 pub const DEFAULT_PACKAGE_PRIORITY: u8 = 5;
+
+/// Validate a priority is inside the documented `1..=10` band.
+fn validate_package_priority(priority: u8) -> Result<u8, DomainError> {
+    if (1..=10).contains(&priority) {
+        Ok(priority)
+    } else {
+        Err(DomainError::ValidationError(format!(
+            "invalid package priority {priority}: must be between 1 and 10"
+        )))
+    }
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Package {
@@ -121,18 +132,18 @@ impl Package {
         auto_extract: bool,
         priority: u8,
         created_at: u64,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, DomainError> {
+        Ok(Self {
             id,
             name,
             source_type,
             folder_path,
             password,
             auto_extract,
-            priority,
+            priority: validate_package_priority(priority)?,
             created_at,
             download_ids: Vec::new(),
-        }
+        })
     }
 
     pub fn set_folder_path(&mut self, path: Option<String>) {
@@ -147,8 +158,9 @@ impl Package {
         self.auto_extract = enabled;
     }
 
-    pub fn set_priority(&mut self, priority: u8) {
-        self.priority = priority;
+    pub fn set_priority(&mut self, priority: u8) -> Result<(), DomainError> {
+        self.priority = validate_package_priority(priority)?;
+        Ok(())
     }
 
     pub fn add_download(&mut self, id: DownloadId) {
@@ -247,11 +259,36 @@ mod tests {
         p.set_folder_path(Some("/tmp/dl".to_string()));
         p.set_password(Some("keyring://pkg/secret".to_string()));
         p.set_auto_extract(false);
-        p.set_priority(9);
+        p.set_priority(9).expect("valid priority");
         assert_eq!(p.folder_path(), Some("/tmp/dl"));
         assert_eq!(p.password(), Some("keyring://pkg/secret"));
         assert!(!p.auto_extract());
         assert_eq!(p.priority(), 9);
+    }
+
+    #[test]
+    fn test_package_set_priority_rejects_zero() {
+        let mut p = make_package();
+        let err = p.set_priority(0).expect_err("zero is invalid");
+        assert!(matches!(err, DomainError::ValidationError(_)));
+        assert_eq!(p.priority(), DEFAULT_PACKAGE_PRIORITY);
+    }
+
+    #[test]
+    fn test_package_set_priority_rejects_above_ten() {
+        let mut p = make_package();
+        let err = p.set_priority(11).expect_err("11 is invalid");
+        assert!(matches!(err, DomainError::ValidationError(_)));
+        assert_eq!(p.priority(), DEFAULT_PACKAGE_PRIORITY);
+    }
+
+    #[test]
+    fn test_package_set_priority_accepts_boundaries() {
+        let mut p = make_package();
+        p.set_priority(1).expect("1 valid");
+        assert_eq!(p.priority(), 1);
+        p.set_priority(10).expect("10 valid");
+        assert_eq!(p.priority(), 10);
     }
 
     #[test]
@@ -328,7 +365,8 @@ mod tests {
             false,
             7,
             1_700_000_000_001,
-        );
+        )
+        .expect("valid priority");
         assert_eq!(p.id().as_str(), "pkg-r");
         assert_eq!(p.name(), "Reloaded");
         assert_eq!(p.source_type(), PackageSourceType::Container);
@@ -338,6 +376,24 @@ mod tests {
         assert_eq!(p.priority(), 7);
         assert_eq!(p.created_at(), 1_700_000_000_001);
         assert!(p.downloads().is_empty());
+    }
+
+    #[test]
+    fn test_package_reconstruct_rejects_priority_out_of_range() {
+        for bad in [0u8, 11, 99] {
+            let err = Package::reconstruct(
+                PackageId::new("pkg-r"),
+                "x".to_string(),
+                PackageSourceType::Manual,
+                None,
+                None,
+                true,
+                bad,
+                0,
+            )
+            .expect_err("priority must be rejected");
+            assert!(matches!(err, DomainError::ValidationError(_)));
+        }
     }
 
     #[test]
