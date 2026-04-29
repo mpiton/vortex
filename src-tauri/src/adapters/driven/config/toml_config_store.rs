@@ -64,7 +64,9 @@ impl TomlConfigStore {
             .map_err(|e| DomainError::StorageError(format!("failed to read config: {e}")))?;
         let dto: ConfigDto = toml::from_str(&content)
             .map_err(|e| DomainError::StorageError(format!("failed to parse config: {e}")))?;
-        Ok(AppConfig::from(dto))
+        let config = AppConfig::try_from(dto)
+            .map_err(|e| DomainError::StorageError(format!("invalid config: {e}")))?;
+        Ok(config)
     }
 
     fn write_config(&self, config: &AppConfig) -> Result<(), DomainError> {
@@ -242,9 +244,13 @@ impl From<AppConfig> for ConfigDto {
     }
 }
 
-impl From<ConfigDto> for AppConfig {
-    fn from(d: ConfigDto) -> Self {
-        Self {
+impl TryFrom<ConfigDto> for AppConfig {
+    type Error = DomainError;
+
+    fn try_from(d: ConfigDto) -> Result<Self, Self::Error> {
+        let account_selection_strategy: AccountSelectionStrategy =
+            d.account_selection_strategy.parse()?;
+        Ok(Self {
             download_dir: d.download_dir,
             start_minimized: d.start_minimized,
             notifications_enabled: d.notifications_enabled,
@@ -263,10 +269,7 @@ impl From<ConfigDto> for AppConfig {
             dynamic_split_enabled: d.dynamic_split_enabled,
             dynamic_split_min_remaining_mb: d.dynamic_split_min_remaining_mb,
             history_retention_days: normalize_history_retention_days(d.history_retention_days),
-            account_selection_strategy: d
-                .account_selection_strategy
-                .parse()
-                .unwrap_or(AccountSelectionStrategy::DEFAULT),
+            account_selection_strategy,
             proxy_type: d.proxy_type,
             proxy_url: d.proxy_url,
             user_agent: d.user_agent,
@@ -284,7 +287,7 @@ impl From<ConfigDto> for AppConfig {
             accent_color: d.accent_color,
             compact_mode: d.compact_mode,
             locale: d.locale,
-        }
+        })
     }
 }
 
@@ -586,6 +589,57 @@ mod tests {
         assert_eq!(
             config.api_key, "",
             "user-cleared api_key must not be overwritten on subsequent loads"
+        );
+    }
+
+    /// Codex-flagged regression: a hand-edited `config.toml` carrying an
+    /// unknown `account_selection_strategy` previously fell back silently
+    /// to `best_traffic`, masking config corruption. The fix surfaces a
+    /// `StorageError` so the runtime can refuse to start with an invalid
+    /// persisted strategy instead of running with the wrong policy.
+    #[test]
+    fn test_get_config_rejects_unknown_persisted_account_selection_strategy() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "api_key = \"key\"\naccount_selection_strategy = \"not_a_strategy\"\n",
+        )
+        .unwrap();
+
+        let store = TomlConfigStore::new(path, None, Some("default-key".to_string()));
+        let err = store
+            .get_config()
+            .expect_err("unknown persisted strategy must surface as a storage error");
+        match err {
+            DomainError::StorageError(msg) => {
+                assert!(
+                    msg.contains("invalid config")
+                        && msg.contains("invalid account selection strategy"),
+                    "unexpected storage error message: {msg}"
+                );
+            }
+            other => panic!("expected StorageError, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_get_config_accepts_known_persisted_account_selection_strategy() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "api_key = \"key\"\naccount_selection_strategy = \"round_robin\"\n",
+        )
+        .unwrap();
+
+        let store = TomlConfigStore::new(path, None, Some("default-key".to_string()));
+        let config = store
+            .get_config()
+            .expect("known strategy value must round-trip through TryFrom");
+        assert_eq!(
+            config.account_selection_strategy,
+            AccountSelectionStrategy::RoundRobin
         );
     }
 }

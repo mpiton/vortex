@@ -960,7 +960,7 @@ pub struct ConfigPatchDto {
 
     // Accounts
     /// Accepted values: `"best_traffic"`, `"round_robin"`, `"manual"`.
-    /// Unknown values are rejected by `ConfigPatch::from(ConfigPatchDto)`.
+    /// Unknown values are rejected by `ConfigPatch::try_from(ConfigPatchDto)`.
     pub account_selection_strategy: Option<String>,
 
     // Network
