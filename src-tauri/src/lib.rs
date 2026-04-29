@@ -7,9 +7,10 @@ use std::sync::Arc;
 use tauri::Manager;
 
 use domain::ports::driven::{
-    ArchiveExtractor, ClipboardObserver, Clock, ConfigStore, CredentialStore, DownloadEngine,
-    DownloadReadRepository, DownloadRepository, EventBus, FileStorage, HistoryRepository,
-    HttpClient, PluginLoader, PluginReadRepository, StatsRepository,
+    AccountCredentialStore, AccountRepository, ArchiveExtractor, ClipboardObserver, Clock,
+    ConfigStore, CredentialStore, DownloadEngine, DownloadReadRepository, DownloadRepository,
+    EventBus, FileStorage, HistoryRepository, HttpClient, PassphraseCodec, PluginLoader,
+    PluginReadRepository, StatsRepository,
 };
 
 // Public API — concrete types for app wiring (main.rs, Tauri setup, integration tests)
@@ -67,12 +68,13 @@ pub use application::services::backfill_history_for_completed_downloads;
 pub use domain::model::ExtractionConfig;
 
 pub use adapters::driving::tauri_ipc::{
-    self, AppState, browse_file, browse_folder, clipboard_state, clipboard_toggle,
-    command_get_media_metadata, download_cancel, download_change_directory,
-    download_change_directory_bulk, download_clear_completed, download_clear_failed,
-    download_count_by_state, download_detail, download_list, download_logs, download_media_start,
-    download_move_to_bottom, download_move_to_top, download_open_file, download_open_folder,
-    download_pause, download_pause_all, download_redownload, download_remove,
+    self, AppState, account_add, account_delete, account_export, account_get, account_import,
+    account_list, account_traffic_get, account_update, account_validate, browse_file,
+    browse_folder, clipboard_state, clipboard_toggle, command_get_media_metadata, download_cancel,
+    download_change_directory, download_change_directory_bulk, download_clear_completed,
+    download_clear_failed, download_count_by_state, download_detail, download_list, download_logs,
+    download_media_start, download_move_to_bottom, download_move_to_top, download_open_file,
+    download_open_folder, download_pause, download_pause_all, download_redownload, download_remove,
     download_reorder_queue, download_resume, download_resume_all, download_retry,
     download_set_priority, download_start, download_verify_checksum, history_clear,
     history_delete_entry, history_export, history_get_by_id, history_list,
@@ -139,6 +141,9 @@ pub fn run() {
                 Some(uuid::Uuid::new_v4().to_string()),
             ));
             let credential_store: Arc<dyn CredentialStore> = Arc::new(KeyringCredentialStore);
+            let account_credential_store: Arc<dyn AccountCredentialStore> =
+                Arc::new(KeyringAccountStore);
+            let passphrase_codec: Arc<dyn PassphraseCodec> = Arc::new(AesGcmPbkdf2Codec::new());
             let clipboard_observer: Arc<dyn ClipboardObserver> =
                 Arc::new(TauriClipboardObserver::new(app_handle.clone()));
             let archive_extractor: Arc<dyn ArchiveExtractor> =
@@ -154,6 +159,8 @@ pub fn run() {
             let history_repo: Arc<dyn HistoryRepository> =
                 Arc::new(SqliteHistoryRepo::new(db.clone()));
             let stats_repo: Arc<dyn StatsRepository> = Arc::new(SqliteStatsRepo::new(db.clone()));
+            let account_repo: Arc<dyn AccountRepository> =
+                Arc::new(SqliteAccountRepo::new(db.clone()));
 
             // ── Plugin system ───────────────────────────────────────
             let shared_resources = Arc::new(SharedHostResources::new());
@@ -359,7 +366,10 @@ pub fn run() {
                 .with_checksum_computer(checksum_computer)
                 .with_file_opener(file_opener)
                 .with_url_opener(url_opener)
-                .with_plugin_config_store(plugin_config_store.clone()),
+                .with_plugin_config_store(plugin_config_store.clone())
+                .with_account_repo(account_repo.clone())
+                .with_account_credential_store(account_credential_store)
+                .with_passphrase_codec(passphrase_codec),
             );
 
             // Stats recorder bridge keeps its own handle once the query
@@ -374,7 +384,8 @@ pub fn run() {
                     archive_extractor,
                 )
                 .with_plugin_loader(plugin_loader.clone())
-                .with_plugin_config_store(plugin_config_store),
+                .with_plugin_config_store(plugin_config_store)
+                .with_account_repo(account_repo),
             );
 
             // ── Register AppState ───────────────────────────────────
@@ -546,6 +557,15 @@ pub fn run() {
             stats_top_modules,
             browse_folder,
             browse_file,
+            account_add,
+            account_update,
+            account_delete,
+            account_validate,
+            account_export,
+            account_import,
+            account_list,
+            account_get,
+            account_traffic_get,
         ])
         .run(tauri::generate_context!())
         // Tauri's run() has no meaningful recovery path — panic is intentional here

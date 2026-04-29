@@ -13,24 +13,29 @@ use crate::adapters::driven::logging::download_log_store::DownloadLogStore;
 use crate::application::command_bus::CommandBus;
 use crate::application::commands::store_install::{StoreInstallCommand, StoreUpdateCommand};
 use crate::application::commands::{
-    CancelDownloadCommand, ChangeDirectoryBulkCommand, ChangeDirectoryBulkOutcome,
-    ChangeDirectoryCommand, ChangeDirectoryFailure, ClearDownloadsByStateCommand,
-    ClearHistoryCommand, DeleteHistoryEntryCommand, DisablePluginCommand, EnablePluginCommand,
-    ExportHistoryCommand, ExportHistoryFormat, InstallPluginCommand, MoveToBottomCommand,
-    MoveToTopCommand, OpenDownloadFileCommand, OpenDownloadFolderCommand, PauseAllDownloadsCommand,
+    AccountPatch, AddAccountCommand, CancelDownloadCommand, ChangeDirectoryBulkCommand,
+    ChangeDirectoryBulkOutcome, ChangeDirectoryCommand, ChangeDirectoryFailure,
+    ClearDownloadsByStateCommand, ClearHistoryCommand, DeleteAccountCommand,
+    DeleteHistoryEntryCommand, DisablePluginCommand, EnablePluginCommand, ExportAccountsCommand,
+    ExportAccountsOutcome, ExportHistoryCommand, ExportHistoryFormat, ImportAccountsCommand,
+    ImportAccountsOutcome, InstallPluginCommand, MoveToBottomCommand, MoveToTopCommand,
+    OpenDownloadFileCommand, OpenDownloadFolderCommand, PauseAllDownloadsCommand,
     PauseDownloadCommand, PurgeHistoryCommand, RedownloadCommand, RedownloadSource,
     RemoveDownloadCommand, ReorderQueueCommand, ReportBrokenPluginCommand, ResolveLinksCommand,
     ResolvedLinkDto, ResumeAllDownloadsCommand, ResumeDownloadCommand, RetryDownloadCommand,
-    SetPriorityCommand, StartDownloadCommand, UninstallPluginCommand, UpdateConfigCommand,
-    UpdatePluginConfigCommand, VerifyChecksumCommand, VerifyChecksumOutcome,
+    SetPriorityCommand, StartDownloadCommand, UninstallPluginCommand, UpdateAccountCommand,
+    UpdateConfigCommand, UpdatePluginConfigCommand, ValidateAccountCommand, ValidationOutcomeDto,
+    VerifyChecksumCommand, VerifyChecksumOutcome,
 };
 use crate::application::error::AppError;
 use crate::application::queries::{
-    CountDownloadsByStateQuery, GetDownloadDetailQuery, GetDownloadsQuery, GetHistoryEntryQuery,
-    GetPluginConfigQuery, GetStatsQuery, ListHistoryQuery, ListPluginsQuery, SearchHistoryQuery,
+    AccountFilter, CountDownloadsByStateQuery, GetAccountQuery, GetAccountTrafficQuery,
+    GetDownloadDetailQuery, GetDownloadsQuery, GetHistoryEntryQuery, GetPluginConfigQuery,
+    GetStatsQuery, ListAccountsQuery, ListHistoryQuery, ListPluginsQuery, SearchHistoryQuery,
     TopModulesQuery,
 };
 use crate::application::query_bus::QueryBus;
+use crate::application::read_models::account_view::{AccountTrafficDto, AccountViewDto};
 use crate::application::read_models::download_detail_view::DownloadDetailViewDto;
 use crate::application::read_models::download_view::DownloadViewDto;
 use crate::application::read_models::history_view::HistoryViewDto;
@@ -38,6 +43,7 @@ use crate::application::read_models::plugin_config_view::PluginConfigView;
 use crate::application::read_models::plugin_store_view::PluginStoreEntryDto;
 use crate::application::read_models::plugin_view::PluginViewDto;
 use crate::application::read_models::stats_view::{ModuleStatsDto, StatsViewDto};
+use crate::domain::model::account::{AccountId, AccountType};
 use crate::domain::model::config::{AppConfig, ConfigPatch};
 use crate::domain::model::download::{DownloadId, DownloadState};
 use crate::domain::model::views::{
@@ -2588,6 +2594,257 @@ pub async fn history_purge_older_than(
         .command_bus
         .handle_purge_history(PurgeHistoryCommand {
             before_timestamp: cutoff,
+        })
+        .await
+        .map_err(|e| e.to_string())
+}
+
+// ── Accounts ────────────────────────────────────────────────────────
+
+fn parse_account_type_arg(raw: &str) -> Result<AccountType, String> {
+    raw.parse::<AccountType>().map_err(|e| e.to_string())
+}
+
+fn now_unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Patch payload mirrored from the frontend. Each field is optional and
+/// `None` leaves the persisted account unchanged.
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountPatchDto {
+    pub username: Option<String>,
+    pub password: Option<String>,
+    pub account_type: Option<String>,
+    pub enabled: Option<bool>,
+}
+
+impl AccountPatchDto {
+    fn into_domain(self) -> Result<AccountPatch, String> {
+        let account_type = match self.account_type {
+            Some(raw) => Some(parse_account_type_arg(&raw)?),
+            None => None,
+        };
+        Ok(AccountPatch {
+            username: self.username,
+            password: self.password,
+            account_type,
+            enabled: self.enabled,
+        })
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ValidationOutcomeView {
+    pub valid: bool,
+    pub latency_ms: Option<u64>,
+    pub traffic_left: Option<u64>,
+    pub traffic_total: Option<u64>,
+    pub valid_until: Option<u64>,
+    pub error_message: Option<String>,
+}
+
+impl From<ValidationOutcomeDto> for ValidationOutcomeView {
+    fn from(o: ValidationOutcomeDto) -> Self {
+        Self {
+            valid: o.valid,
+            latency_ms: o.latency_ms,
+            traffic_left: o.traffic_left,
+            traffic_total: o.traffic_total,
+            valid_until: o.valid_until,
+            error_message: o.error_message,
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportAccountsView {
+    pub path: String,
+    pub count: u32,
+}
+
+impl From<ExportAccountsOutcome> for ExportAccountsView {
+    fn from(o: ExportAccountsOutcome) -> Self {
+        Self {
+            path: o.path.display().to_string(),
+            count: o.count,
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportAccountsView {
+    pub path: String,
+    pub imported: u32,
+    pub skipped_duplicates: u32,
+}
+
+impl From<ImportAccountsOutcome> for ImportAccountsView {
+    fn from(o: ImportAccountsOutcome) -> Self {
+        Self {
+            path: o.path.display().to_string(),
+            imported: o.imported,
+            skipped_duplicates: o.skipped_duplicates,
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn account_add(
+    state: State<'_, AppState>,
+    service_name: String,
+    username: String,
+    password: String,
+    account_type: String,
+) -> Result<String, String> {
+    let account_type = parse_account_type_arg(&account_type)?;
+    state
+        .command_bus
+        .handle_add_account(AddAccountCommand {
+            service_name,
+            username,
+            password,
+            account_type,
+            created_at_ms: now_unix_ms(),
+        })
+        .await
+        .map(|id| id.as_str().to_string())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn account_update(
+    state: State<'_, AppState>,
+    id: String,
+    patch: AccountPatchDto,
+) -> Result<(), String> {
+    let patch = patch.into_domain()?;
+    state
+        .command_bus
+        .handle_update_account(UpdateAccountCommand {
+            id: AccountId::new(id),
+            patch,
+        })
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn account_delete(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    state
+        .command_bus
+        .handle_delete_account(DeleteAccountCommand {
+            id: AccountId::new(id),
+        })
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn account_validate(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<ValidationOutcomeView, String> {
+    state
+        .command_bus
+        .handle_validate_account(ValidateAccountCommand {
+            id: AccountId::new(id),
+            now_ms: now_unix_ms(),
+        })
+        .await
+        .map(ValidationOutcomeView::from)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn account_export(
+    state: State<'_, AppState>,
+    path: String,
+    passphrase: String,
+) -> Result<ExportAccountsView, String> {
+    state
+        .command_bus
+        .handle_export_accounts(ExportAccountsCommand {
+            path: PathBuf::from(path),
+            passphrase,
+        })
+        .await
+        .map(ExportAccountsView::from)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn account_import(
+    state: State<'_, AppState>,
+    path: String,
+    passphrase: String,
+) -> Result<ImportAccountsView, String> {
+    state
+        .command_bus
+        .handle_import_accounts(ImportAccountsCommand {
+            path: PathBuf::from(path),
+            passphrase,
+            now_ms: now_unix_ms(),
+        })
+        .await
+        .map(ImportAccountsView::from)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn account_list(
+    state: State<'_, AppState>,
+    service_name: Option<String>,
+    account_type: Option<String>,
+    enabled: Option<bool>,
+) -> Result<Vec<AccountViewDto>, String> {
+    let account_type = match account_type {
+        Some(raw) => Some(parse_account_type_arg(&raw)?),
+        None => None,
+    };
+    let filter = if service_name.is_none() && account_type.is_none() && enabled.is_none() {
+        None
+    } else {
+        Some(AccountFilter {
+            service_name,
+            account_type,
+            enabled,
+        })
+    };
+    state
+        .query_bus
+        .handle_list_accounts(ListAccountsQuery { filter })
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn account_get(state: State<'_, AppState>, id: String) -> Result<AccountViewDto, String> {
+    state
+        .query_bus
+        .handle_get_account(GetAccountQuery {
+            id: AccountId::new(id),
+        })
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn account_traffic_get(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<AccountTrafficDto, String> {
+    state
+        .query_bus
+        .handle_get_account_traffic(GetAccountTrafficQuery {
+            id: AccountId::new(id),
         })
         .await
         .map_err(|e| e.to_string())

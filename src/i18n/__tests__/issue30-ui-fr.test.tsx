@@ -129,7 +129,6 @@ describe("issue #30 — French UI translations", () => {
   it("renders placeholder views in French", () => {
     const views = [
       { component: <PackagesView />, title: "Paquets" },
-      { component: <AccountsView />, title: "Comptes" },
       { component: <CaptchaView />, title: "Captcha" },
       { component: <SchedulerView />, title: "Planificateur" },
     ];
@@ -140,6 +139,12 @@ describe("issue #30 — French UI translations", () => {
       expect(screen.getByText("Bientôt disponible")).toBeInTheDocument();
       result.unmount();
     }
+  });
+
+  it("renders the Accounts view header in French", () => {
+    mockInvoke.mockResolvedValueOnce([]);
+    renderWithProviders(<AccountsView />);
+    expect(screen.getByRole("heading", { name: "Comptes" })).toBeInTheDocument();
   });
 
   it("renders plugin store catalogue shell in French", () => {
