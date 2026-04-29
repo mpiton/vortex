@@ -31,7 +31,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::application::error::AppError;
 use crate::domain::event::DomainEvent;
-use crate::domain::model::account::{Account, AccountSelectionStrategy};
+use crate::domain::model::account::{Account, AccountId, AccountSelectionStrategy};
 use crate::domain::ports::driven::AccountRepository;
 use crate::domain::ports::driven::clock::Clock;
 use crate::domain::ports::driven::event_bus::EventBus;
@@ -74,11 +74,31 @@ impl AccountSelector {
         service_name: &str,
         strategy: AccountSelectionStrategy,
     ) -> Result<Option<Account>, AppError> {
+        self.select_best_excluding(service_name, strategy, &[])
+    }
+
+    /// Same contract as `select_best` but skips any account whose id is
+    /// listed in `exclude`. Used by `AccountRotator` to filter out
+    /// quota-exhausted accounts without persisting transient state in
+    /// the repository.
+    ///
+    /// Emits `NoAccountAvailable` only when the *post-exclude* eligible
+    /// set is empty — that mirrors the caller-facing semantics: from
+    /// the rotator's point of view "all eligible accounts are
+    /// exhausted" is operationally equivalent to "no account left".
+    pub fn select_best_excluding(
+        &self,
+        service_name: &str,
+        strategy: AccountSelectionStrategy,
+        exclude: &[AccountId],
+    ) -> Result<Option<Account>, AppError> {
         let candidates = self.repo.list_by_service(service_name)?;
         let now_ms = self.now_ms();
         let eligible: Vec<&Account> = candidates
             .iter()
-            .filter(|a| a.is_enabled() && !a.is_expired(now_ms))
+            .filter(|a| {
+                a.is_enabled() && !a.is_expired(now_ms) && !exclude.iter().any(|id| id == a.id())
+            })
             .collect();
         if eligible.is_empty() {
             self.event_bus.publish(DomainEvent::NoAccountAvailable {
@@ -613,6 +633,101 @@ mod tests {
             .unwrap();
         assert_eq!(r1.id().as_str(), "a");
         assert!(r2.is_none(), "case-mismatched service name has no rows");
+    }
+
+    // --- Acceptance criterion: rotation-friendly exclude list ---
+    #[test]
+    fn test_select_best_excluding_skips_listed_ids_and_picks_next_best() {
+        let now_ms = 2_000_000_000_000;
+        let now_secs = now_ms / 1_000;
+        let a = account("a", "S", Some(50), Some(now_ms + 1), Some(now_ms - 1), true);
+        let b = account("b", "S", Some(40), Some(now_ms + 1), Some(now_ms - 1), true);
+        let c = account("c", "S", Some(30), Some(now_ms + 1), Some(now_ms - 1), true);
+
+        let (selector, _bus) = build_selector(vec![a, b, c], now_secs);
+
+        let p1 = selector
+            .select_best_excluding("S", AccountSelectionStrategy::BestTraffic, &[])
+            .unwrap()
+            .unwrap();
+        assert_eq!(p1.id().as_str(), "a", "no exclusion → top traffic wins");
+
+        let p2 = selector
+            .select_best_excluding(
+                "S",
+                AccountSelectionStrategy::BestTraffic,
+                &[AccountId::new("a")],
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(p2.id().as_str(), "b");
+
+        let p3 = selector
+            .select_best_excluding(
+                "S",
+                AccountSelectionStrategy::BestTraffic,
+                &[AccountId::new("a"), AccountId::new("b")],
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(p3.id().as_str(), "c");
+    }
+
+    #[test]
+    fn test_select_best_excluding_emits_no_account_when_all_excluded() {
+        let now_ms = 2_000_000_000_000;
+        let now_secs = now_ms / 1_000;
+        let a = account("a", "S", Some(50), Some(now_ms + 1), None, true);
+        let b = account("b", "S", Some(40), Some(now_ms + 1), None, true);
+
+        let (selector, bus) = build_selector(vec![a, b], now_secs);
+
+        let chosen = selector
+            .select_best_excluding(
+                "S",
+                AccountSelectionStrategy::BestTraffic,
+                &[AccountId::new("a"), AccountId::new("b")],
+            )
+            .unwrap();
+        assert!(chosen.is_none());
+
+        let events = bus.events();
+        assert!(events.iter().any(|e| matches!(
+            e,
+            DomainEvent::NoAccountAvailable { service_name } if service_name == "S"
+        )));
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, DomainEvent::AccountSelected { .. })),
+            "must NOT emit AccountSelected when nothing was picked"
+        );
+    }
+
+    #[test]
+    fn test_select_best_excluding_round_robin_skips_excluded_and_alternates() {
+        let now_ms = 2_000_000_000_000;
+        let now_secs = now_ms / 1_000;
+        let a = account("acc-1", "S", Some(100), Some(now_ms + 1), None, true);
+        let b = account("acc-2", "S", Some(100), Some(now_ms + 1), None, true);
+        let c = account("acc-3", "S", Some(100), Some(now_ms + 1), None, true);
+
+        let (selector, _bus) = build_selector(vec![a, b, c], now_secs);
+
+        let exclude = vec![AccountId::new("acc-2")];
+        let mut picked = Vec::new();
+        for _ in 0..4 {
+            let chosen = selector
+                .select_best_excluding("S", AccountSelectionStrategy::RoundRobin, &exclude)
+                .unwrap()
+                .unwrap();
+            picked.push(chosen.id().as_str().to_string());
+        }
+        assert_eq!(
+            picked,
+            vec!["acc-1", "acc-3", "acc-1", "acc-3"],
+            "round-robin must alternate over the un-excluded subset"
+        );
     }
 
     /// CodeRabbit / cubic-flagged regression: a poisoned `rr_cursor`

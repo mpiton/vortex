@@ -115,6 +115,12 @@ pub struct Account {
     valid_until: Option<u64>,
     last_validated: Option<u64>,
     created_at: u64,
+    /// Transient quota-exhaustion deadline (Unix epoch ms). Set by the
+    /// `AccountRotator` when the upstream signals quota exhaustion
+    /// (HTTP 429, traffic below threshold, …) and cleared when a
+    /// fresh traffic refresh confirms the account is usable again.
+    /// NOT persisted in SQLite — always `None` after `reconstruct`.
+    exhausted_until: Option<u64>,
 }
 
 impl Account {
@@ -136,6 +142,7 @@ impl Account {
             valid_until: None,
             last_validated: None,
             created_at,
+            exhausted_until: None,
         }
     }
 
@@ -163,6 +170,7 @@ impl Account {
             valid_until,
             last_validated,
             created_at,
+            exhausted_until: None,
         }
     }
 
@@ -204,6 +212,35 @@ impl Account {
     pub fn is_expired(&self, now: u64) -> bool {
         match self.valid_until {
             Some(expiry) => now > expiry,
+            None => false,
+        }
+    }
+
+    /// Mark this account as quota-exhausted until `until_ms` (Unix epoch
+    /// ms). Transient — never persisted in SQLite.
+    pub fn mark_exhausted(&mut self, until_ms: u64) {
+        self.exhausted_until = Some(until_ms);
+    }
+
+    /// Drop any pending quota-exhaustion marker, regardless of the
+    /// remaining cooldown.
+    pub fn clear_exhausted(&mut self) {
+        self.exhausted_until = None;
+    }
+
+    /// Active quota-exhaustion deadline (Unix epoch ms) when set, else
+    /// `None`. The marker is informational; expiration is decided by
+    /// `is_exhausted(now)`.
+    pub fn exhausted_until(&self) -> Option<u64> {
+        self.exhausted_until
+    }
+
+    /// `true` when the exhaustion marker is active at `now` (Unix epoch
+    /// ms). Mirrors `is_expired`: the deadline is exclusive — exactly
+    /// at `now == until` the cooldown is considered just elapsed.
+    pub fn is_exhausted(&self, now: u64) -> bool {
+        match self.exhausted_until {
+            Some(until) => now < until,
             None => false,
         }
     }
@@ -490,5 +527,56 @@ mod tests {
         assert_eq!(acc.valid_until(), Some(789));
         assert_eq!(acc.last_validated(), Some(101));
         assert_eq!(acc.created_at(), 42);
+    }
+
+    #[test]
+    fn test_account_new_has_no_exhaustion_marker() {
+        let acc = make_account();
+        assert!(acc.exhausted_until().is_none());
+        assert!(!acc.is_exhausted(0));
+        assert!(!acc.is_exhausted(u64::MAX));
+    }
+
+    #[test]
+    fn test_account_reconstruct_resets_exhausted_marker_to_none() {
+        // Transient state must NOT survive a reload from SQLite — the
+        // rotator owns the lifetime in memory.
+        let acc = Account::reconstruct(
+            AccountId::new("k"),
+            "Host".to_string(),
+            "u".to_string(),
+            AccountType::Premium,
+            true,
+            None,
+            None,
+            None,
+            None,
+            0,
+        );
+        assert!(acc.exhausted_until().is_none());
+    }
+
+    #[test]
+    fn test_mark_exhausted_records_deadline_and_flips_is_exhausted() {
+        let mut acc = make_account();
+        acc.mark_exhausted(1_000);
+        assert_eq!(acc.exhausted_until(), Some(1_000));
+        assert!(acc.is_exhausted(0));
+        assert!(acc.is_exhausted(999));
+        assert!(
+            !acc.is_exhausted(1_000),
+            "deadline is exclusive — at exact equality cooldown is over"
+        );
+        assert!(!acc.is_exhausted(1_001));
+    }
+
+    #[test]
+    fn test_clear_exhausted_drops_marker_regardless_of_clock() {
+        let mut acc = make_account();
+        acc.mark_exhausted(u64::MAX);
+        assert!(acc.is_exhausted(0));
+        acc.clear_exhausted();
+        assert!(acc.exhausted_until().is_none());
+        assert!(!acc.is_exhausted(0));
     }
 }

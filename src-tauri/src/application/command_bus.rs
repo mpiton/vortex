@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use crate::application::services::AccountSelector;
+use crate::application::services::{AccountRotator, AccountSelector};
 use crate::domain::ports::driven::{
     AccountCredentialStore, AccountRepository, AccountValidator, ArchiveExtractor,
     ChecksumComputer, ClipboardObserver, ConfigStore, CredentialStore, DownloadEngine,
@@ -38,6 +38,7 @@ pub struct CommandBus {
     account_credential_store: Option<Arc<dyn AccountCredentialStore>>,
     account_validator: Option<Arc<dyn AccountValidator>>,
     account_selector: Option<Arc<AccountSelector>>,
+    account_rotator: Option<Arc<AccountRotator>>,
     passphrase_codec: Option<Arc<dyn PassphraseCodec>>,
     /// Serializes queue-position allocation across handlers. Without this,
     /// two concurrent move-to-top/move-to-bottom/start-download calls can
@@ -83,6 +84,7 @@ impl CommandBus {
             account_credential_store: None,
             account_validator: None,
             account_selector: None,
+            account_rotator: None,
             passphrase_codec: None,
             queue_position_lock: tokio::sync::Mutex::new(()),
         }
@@ -116,6 +118,14 @@ impl CommandBus {
         self
     }
 
+    /// Builder-style setter for the quota-aware [`AccountRotator`].
+    /// Optional — when omitted, callers fall back to the plain
+    /// `account_selector()` (no rotation, no exhaustion tracking).
+    pub fn with_account_rotator(mut self, rotator: Arc<AccountRotator>) -> Self {
+        self.account_rotator = Some(rotator);
+        self
+    }
+
     /// Builder-style setter for the passphrase codec used by the
     /// import / export commands.
     pub fn with_passphrase_codec(mut self, codec: Arc<dyn PassphraseCodec>) -> Self {
@@ -137,6 +147,10 @@ impl CommandBus {
 
     pub fn account_selector(&self) -> Option<&AccountSelector> {
         self.account_selector.as_deref()
+    }
+
+    pub fn account_rotator(&self) -> Option<&AccountRotator> {
+        self.account_rotator.as_deref()
     }
 
     pub fn passphrase_codec(&self) -> Option<&dyn PassphraseCodec> {

@@ -139,7 +139,8 @@ fn record_download_event(store: &DownloadLogStore, event: &DomainEvent) {
         | DomainEvent::AccountsImported { .. }
         | DomainEvent::AccountsExported { .. }
         | DomainEvent::NoAccountAvailable { .. }
-        | DomainEvent::AccountSelected { .. } => {}
+        | DomainEvent::AccountSelected { .. }
+        | DomainEvent::AccountExhausted { .. } => {}
     }
 }
 

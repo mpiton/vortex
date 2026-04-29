@@ -1,3 +1,4 @@
+pub mod account_rotator;
 pub mod account_selector;
 pub mod checksum_validator;
 pub mod engine_config_bridge;
@@ -6,6 +7,7 @@ pub mod queue_config_bridge;
 pub mod queue_manager;
 pub mod startup_recovery;
 
+pub use account_rotator::AccountRotator;
 pub use account_selector::AccountSelector;
 pub use checksum_validator::{ChecksumOutcome, ChecksumValidatorService};
 pub use engine_config_bridge::subscribe_engine_to_config;

@@ -70,6 +70,7 @@ fn event_name(event: &DomainEvent) -> &'static str {
         DomainEvent::AccountsExported { .. } => "accounts-exported",
         DomainEvent::NoAccountAvailable { .. } => "no-account-available",
         DomainEvent::AccountSelected { .. } => "account-selected",
+        DomainEvent::AccountExhausted { .. } => "account-exhausted",
     }
 }
 
@@ -210,6 +211,17 @@ fn event_payload(event: &DomainEvent) -> serde_json::Value {
                 "id": id.as_str(),
                 "serviceName": service_name,
                 "strategy": strategy,
+            })
+        }
+        DomainEvent::AccountExhausted {
+            id,
+            service_name,
+            exhausted_until_ms,
+        } => {
+            json!({
+                "id": id.as_str(),
+                "serviceName": service_name,
+                "exhaustedUntilMs": exhausted_until_ms,
             })
         }
     }
