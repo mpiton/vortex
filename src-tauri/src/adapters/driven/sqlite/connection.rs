@@ -190,6 +190,110 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_packages_migration_applies_cleanly_on_existing_db() {
+        // Stand up a DB at the schema state immediately before the
+        // packages migration (6 migrations applied), seed prior tables,
+        // then run the remaining migrations and verify the new schema
+        // exists and existing data is preserved.
+        let sqlite_opts = sea_orm::sqlx::sqlite::SqliteConnectOptions::from_str("sqlite::memory:")
+            .unwrap()
+            .pragma("foreign_keys", "ON");
+        let pool = sea_orm::sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(sqlite_opts)
+            .await
+            .unwrap();
+        let db = sea_orm::SqlxSqliteConnector::from_sqlx_sqlite_pool(pool);
+
+        Migrator::up(&db, Some(6))
+            .await
+            .expect("first 6 migrations");
+
+        // Seed a download row that must survive the migration.
+        db.execute(Statement::from_string(
+            sea_orm::DatabaseBackend::Sqlite,
+            "INSERT INTO downloads (id, url, file_name, state, priority, queue_position, downloaded_bytes, speed_bytes_per_sec, retry_count, max_retries, segments_count, source_hostname, protocol, resume_supported, destination_path, created_at, updated_at) VALUES (1, 'https://example.com/f.zip', 'f.zip', 'Queued', 5, 0, 0, 0, 0, 5, 1, 'example.com', 'https', 0, '/tmp', 1, 1)"
+                .to_string(),
+        ))
+        .await
+        .expect("seed download");
+
+        Migrator::up(&db, None).await.expect("remaining migrations");
+
+        // packages table replaced with the new schema.
+        let cols = db
+            .query_all(Statement::from_string(
+                sea_orm::DatabaseBackend::Sqlite,
+                "PRAGMA table_info(packages)".to_string(),
+            ))
+            .await
+            .unwrap();
+        let names: Vec<String> = cols
+            .iter()
+            .map(|r| r.try_get_by_index::<String>(1).unwrap())
+            .collect();
+        for required in [
+            "id",
+            "name",
+            "source_type",
+            "folder_path",
+            "password",
+            "auto_extract",
+            "priority",
+            "created_at",
+        ] {
+            assert!(
+                names.iter().any(|n| n == required),
+                "packages must have column '{required}', got: {names:?}"
+            );
+        }
+
+        // downloads gained the package_id FK column and its index.
+        let dl_cols = db
+            .query_all(Statement::from_string(
+                sea_orm::DatabaseBackend::Sqlite,
+                "PRAGMA table_info(downloads)".to_string(),
+            ))
+            .await
+            .unwrap();
+        let dl_names: Vec<String> = dl_cols
+            .iter()
+            .map(|r| r.try_get_by_index::<String>(1).unwrap())
+            .collect();
+        assert!(
+            dl_names.iter().any(|n| n == "package_id"),
+            "downloads must expose 'package_id', got: {dl_names:?}"
+        );
+
+        let indexes = db
+            .query_all(Statement::from_string(
+                sea_orm::DatabaseBackend::Sqlite,
+                "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='downloads'"
+                    .to_string(),
+            ))
+            .await
+            .unwrap();
+        let idx_names: Vec<String> = indexes
+            .iter()
+            .map(|r| r.try_get_by_index::<String>(0).unwrap())
+            .collect();
+        assert!(
+            idx_names.iter().any(|n| n == "idx_downloads_package"),
+            "expected idx_downloads_package, got: {idx_names:?}"
+        );
+
+        // Existing data preserved.
+        let downloads = db
+            .query_all(Statement::from_string(
+                sea_orm::DatabaseBackend::Sqlite,
+                "SELECT id FROM downloads".to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(downloads.len(), 1, "existing download row preserved");
+    }
+
+    #[tokio::test]
     async fn test_wal_mode_enabled() {
         let test_id = std::process::id();
         let dir = std::env::temp_dir().join(format!("vortex_test_wal_{test_id}"));

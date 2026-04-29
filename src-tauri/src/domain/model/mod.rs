@@ -25,7 +25,7 @@ pub use download::{Download, DownloadId, DownloadState, FileSize, Speed, Url};
 pub use http::HttpResponse;
 pub use link::LinkStatus;
 pub use meta::{DownloadMeta, SegmentMeta};
-pub use package::Package;
+pub use package::{DEFAULT_PACKAGE_PRIORITY, Package, PackageId, PackageSourceType};
 pub use plugin::{PluginCategory, PluginInfo, PluginManifest};
 pub use queue::{Priority, QueuePosition};
 pub use segment::{Segment, SegmentState};

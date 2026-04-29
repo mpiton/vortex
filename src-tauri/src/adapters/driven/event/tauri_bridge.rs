@@ -389,13 +389,14 @@ mod tests {
             event_name(&DomainEvent::PluginUnloaded { name: "p".into() }),
             "plugin-unloaded"
         );
-        assert_eq!(
-            event_name(&DomainEvent::PackageCreated {
-                id: 1,
-                name: "pkg".into()
-            }),
-            "package-created"
-        );
+        let evt = DomainEvent::PackageCreated {
+            id: crate::domain::model::package::PackageId::new("pkg-1"),
+            name: "pkg".into(),
+        };
+        assert_eq!(event_name(&evt), "package-created");
+        let (_, payload) = to_tauri_event(&evt);
+        assert_eq!(payload["id"], "pkg-1");
+        assert_eq!(payload["name"], "pkg");
     }
 
     #[test]

@@ -46,6 +46,7 @@ pub use adapters::driven::sqlite::connection;
 pub use adapters::driven::sqlite::download_read_repo::SqliteDownloadReadRepo;
 pub use adapters::driven::sqlite::download_repo::SqliteDownloadRepo;
 pub use adapters::driven::sqlite::history_repo::SqliteHistoryRepo;
+pub use adapters::driven::sqlite::package_repo::SqlitePackageRepo;
 pub use adapters::driven::sqlite::progress_bridge::spawn_sqlite_progress_bridge;
 pub use adapters::driven::sqlite::stats_repo::SqliteStatsRepo;
 pub use adapters::driven::tray::{
