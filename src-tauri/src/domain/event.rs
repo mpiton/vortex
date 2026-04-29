@@ -1,5 +1,6 @@
 use crate::domain::model::account::AccountId;
 use crate::domain::model::download::DownloadId;
+use crate::domain::model::package::PackageId;
 use crate::domain::model::views::HistoryEntry;
 
 /// Read-model projection inputs captured at the moment a `Download` is
@@ -202,7 +203,7 @@ pub enum DomainEvent {
 
     // Packages
     PackageCreated {
-        id: u64,
+        id: PackageId,
         name: String,
     },
 
@@ -379,13 +380,13 @@ mod tests {
     #[test]
     fn test_package_created_event() {
         let event = DomainEvent::PackageCreated {
-            id: 99,
+            id: PackageId::new("pkg-99"),
             name: "My Package".to_string(),
         };
         assert_eq!(
             event,
             DomainEvent::PackageCreated {
-                id: 99,
+                id: PackageId::new("pkg-99"),
                 name: "My Package".to_string()
             }
         );

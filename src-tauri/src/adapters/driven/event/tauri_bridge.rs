@@ -391,7 +391,7 @@ mod tests {
         );
         assert_eq!(
             event_name(&DomainEvent::PackageCreated {
-                id: 1,
+                id: crate::domain::model::package::PackageId::new("pkg-1"),
                 name: "pkg".into()
             }),
             "package-created"
