@@ -111,12 +111,29 @@ impl AccountRotator {
         strategy: AccountSelectionStrategy,
     ) -> Result<NextAccountOutcome, AppError> {
         let now_ms = self.now_ms();
-        let exhausted_ids = self.snapshot_exhausted(now_ms)?;
-        let picked = self
-            .selector
-            .select_best_excluding(service_name, strategy, &exhausted_ids)?;
-        if let Some(account) = picked {
-            return Ok(NextAccountOutcome::Picked(account));
+        let mut exhausted_ids = self.snapshot_exhausted(now_ms)?;
+        // Linearise with concurrent `mark_exhausted`: snapshot is taken
+        // before the selector runs, so a parallel exhaustion landing in
+        // the gap could otherwise leak a stale account back to the
+        // caller. Re-check under the lock after each pick and retry
+        // with the offending id added to the exclude list.
+        loop {
+            let picked =
+                self.selector
+                    .select_best_excluding(service_name, strategy, &exhausted_ids)?;
+            let Some(account) = picked else {
+                break;
+            };
+            let still_available = {
+                let guard = self.lock_exhausted()?;
+                guard
+                    .get(account.id())
+                    .is_none_or(|deadline| now_ms >= *deadline)
+            };
+            if still_available {
+                return Ok(NextAccountOutcome::Picked(account));
+            }
+            exhausted_ids.push(account.id().clone());
         }
         // No pick. Decide between NoneAvailable and AllExhausted by
         // looking at the repo directly: if there's at least one

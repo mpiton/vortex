@@ -94,16 +94,25 @@ impl AccountSelector {
     ) -> Result<Option<Account>, AppError> {
         let candidates = self.repo.list_by_service(service_name)?;
         let now_ms = self.now_ms();
-        let eligible: Vec<&Account> = candidates
+        let base_eligible: Vec<&Account> = candidates
             .iter()
-            .filter(|a| {
-                a.is_enabled() && !a.is_expired(now_ms) && !exclude.iter().any(|id| id == a.id())
-            })
+            .filter(|a| a.is_enabled() && !a.is_expired(now_ms))
+            .collect();
+        let eligible: Vec<&Account> = base_eligible
+            .iter()
+            .copied()
+            .filter(|a| !exclude.iter().any(|id| id == a.id()))
             .collect();
         if eligible.is_empty() {
-            self.event_bus.publish(DomainEvent::NoAccountAvailable {
-                service_name: service_name.to_string(),
-            });
+            // Only emit NoAccountAvailable when the pre-exclude set is
+            // empty: rotator-driven exclusion of cooled-down accounts
+            // is reported as AllExhausted upstream and must not be
+            // collapsed into "no account configured".
+            if base_eligible.is_empty() {
+                self.event_bus.publish(DomainEvent::NoAccountAvailable {
+                    service_name: service_name.to_string(),
+                });
+            }
             return Ok(None);
         }
         let chosen = match strategy {
@@ -674,7 +683,12 @@ mod tests {
     }
 
     #[test]
-    fn test_select_best_excluding_emits_no_account_when_all_excluded() {
+    fn test_select_best_excluding_does_not_emit_no_account_when_only_exclusion_empties_set() {
+        // Pre-exclude eligible set is non-empty (a + b enabled,
+        // non-expired). Excluding both still yields Ok(None) but the
+        // event must NOT fire — that signal is reserved for "no
+        // configured/eligible account at all". Rotator path
+        // re-classifies as `AllExhausted`.
         let now_ms = 2_000_000_000_000;
         let now_secs = now_ms / 1_000;
         let a = account("a", "S", Some(50), Some(now_ms + 1), None, true);
@@ -692,16 +706,41 @@ mod tests {
         assert!(chosen.is_none());
 
         let events = bus.events();
-        assert!(events.iter().any(|e| matches!(
-            e,
-            DomainEvent::NoAccountAvailable { service_name } if service_name == "S"
-        )));
+        assert!(
+            !events.iter().any(|e| matches!(
+                e,
+                DomainEvent::NoAccountAvailable { service_name } if service_name == "S"
+            )),
+            "must NOT emit NoAccountAvailable when only exclusion emptied the set"
+        );
         assert!(
             !events
                 .iter()
                 .any(|e| matches!(e, DomainEvent::AccountSelected { .. })),
             "must NOT emit AccountSelected when nothing was picked"
         );
+    }
+
+    #[test]
+    fn test_select_best_excluding_emits_no_account_when_pre_exclude_set_is_empty() {
+        // No enabled, non-expired account exists at all. Even with an
+        // empty exclude list the selector must signal NoAccountAvailable.
+        let now_ms = 2_000_000_000_000;
+        let now_secs = now_ms / 1_000;
+        let disabled = account("d", "S", Some(50), Some(now_ms + 1), None, false);
+
+        let (selector, bus) = build_selector(vec![disabled], now_secs);
+
+        let chosen = selector
+            .select_best_excluding("S", AccountSelectionStrategy::BestTraffic, &[])
+            .unwrap();
+        assert!(chosen.is_none());
+
+        let events = bus.events();
+        assert!(events.iter().any(|e| matches!(
+            e,
+            DomainEvent::NoAccountAvailable { service_name } if service_name == "S"
+        )));
     }
 
     #[test]
