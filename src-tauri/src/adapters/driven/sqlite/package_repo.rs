@@ -443,6 +443,27 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_find_by_id_rejects_negative_created_at() {
+        // A corrupt row with a negative created_at must surface as
+        // ValidationError instead of being silently coerced to 0 and
+        // jumping to the front of the ordered list.
+        let db = setup_test_db().await.expect("test db");
+        db.execute(Statement::from_string(
+            sea_orm::DatabaseBackend::Sqlite,
+            "INSERT INTO packages (id, name, source_type, auto_extract, priority, created_at) VALUES ('pkg-neg', 'Neg', 'manual', 1, 5, -1)"
+                .to_string(),
+        ))
+        .await
+        .expect("seed");
+
+        let repo = SqlitePackageRepo::new(db);
+        let err = repo
+            .find_by_id(&PackageId::new("pkg-neg"))
+            .expect_err("negative created_at must be rejected");
+        assert!(matches!(err, DomainError::ValidationError(_)));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_find_by_id_rejects_auto_extract_outside_zero_one() {
         let db = setup_test_db().await.expect("test db");
         db.execute(Statement::from_string(

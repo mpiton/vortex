@@ -1,6 +1,5 @@
 use sea_orm::entity::prelude::*;
 
-use crate::adapters::driven::sqlite::util::safe_u64;
 use crate::domain::error::DomainError;
 use crate::domain::model::package::{Package, PackageId, PackageSourceType};
 
@@ -42,6 +41,12 @@ impl Model {
                 self.id, self.priority
             ))
         })?;
+        let created_at = u64::try_from(self.created_at).map_err(|_| {
+            DomainError::ValidationError(format!(
+                "package {}: created_at {} out of u64 range",
+                self.id, self.created_at
+            ))
+        })?;
         Package::reconstruct(
             PackageId::new(self.id),
             self.name,
@@ -50,7 +55,7 @@ impl Model {
             self.password,
             auto_extract,
             priority,
-            safe_u64(self.created_at),
+            created_at,
         )
     }
 }
