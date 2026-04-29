@@ -54,6 +54,8 @@ fn event_name(event: &DomainEvent) -> &'static str {
         DomainEvent::PluginLoaded { .. } => "plugin-loaded",
         DomainEvent::PluginUnloaded { .. } => "plugin-unloaded",
         DomainEvent::PackageCreated { .. } => "package-created",
+        DomainEvent::PackageUpdated { .. } => "package-updated",
+        DomainEvent::PackageDeleted { .. } => "package-deleted",
         DomainEvent::ClipboardUrlDetected { .. } => "clipboard-url-detected",
         DomainEvent::SettingsUpdated => "settings-updated",
         DomainEvent::ChecksumVerified { .. } => "checksum-verified",
@@ -146,6 +148,11 @@ fn event_payload(event: &DomainEvent) -> serde_json::Value {
         }
         DomainEvent::PluginUnloaded { name } => json!({ "name": name }),
         DomainEvent::PackageCreated { id, name } => json!({ "id": id.to_string(), "name": name }),
+        DomainEvent::PackageUpdated { id } => json!({ "id": id.to_string() }),
+        DomainEvent::PackageDeleted {
+            id,
+            delete_downloads,
+        } => json!({ "id": id.to_string(), "deleteDownloads": delete_downloads }),
         DomainEvent::ClipboardUrlDetected { urls } => json!({ "urls": urls }),
         DomainEvent::SettingsUpdated => json!({}),
         DomainEvent::ChecksumVerified {

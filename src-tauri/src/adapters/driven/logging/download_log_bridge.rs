@@ -129,6 +129,8 @@ fn record_download_event(store: &DownloadLogStore, event: &DomainEvent) {
         | DomainEvent::PluginLoaded { .. }
         | DomainEvent::PluginUnloaded { .. }
         | DomainEvent::PackageCreated { .. }
+        | DomainEvent::PackageUpdated { .. }
+        | DomainEvent::PackageDeleted { .. }
         | DomainEvent::ClipboardUrlDetected { .. }
         | DomainEvent::SettingsUpdated
         | DomainEvent::AccountAdded { .. }

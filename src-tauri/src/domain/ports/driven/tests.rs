@@ -746,7 +746,7 @@ impl InMemoryPackageRepository {
         }
     }
 
-    fn attach_download(&self, package_id: &PackageId, queue_position: i64, download: DownloadId) {
+    fn seed_member(&self, package_id: &PackageId, queue_position: i64, download: DownloadId) {
         self.members
             .lock()
             .unwrap()
@@ -809,6 +809,39 @@ impl PackageRepository for InMemoryPackageRepository {
             .unwrap_or_default();
         members.sort_by(|(qa, da), (qb, db)| qa.cmp(qb).then_with(|| da.0.cmp(&db.0)));
         Ok(members.into_iter().map(|(_, id)| id).collect())
+    }
+
+    fn attach_download(
+        &self,
+        package_id: &PackageId,
+        download_id: DownloadId,
+    ) -> Result<(), DomainError> {
+        let mut guard = self.members.lock().unwrap();
+        // Detach from any other package first so the in-memory repo
+        // mirrors the FK-singleton semantics of the SQL adapter.
+        for entries in guard.values_mut() {
+            entries.retain(|(_, id)| id != &download_id);
+        }
+        let bucket = guard.entry(package_id.clone()).or_default();
+        if bucket.iter().any(|(_, id)| id == &download_id) {
+            return Ok(());
+        }
+        let next_position = bucket
+            .iter()
+            .map(|(p, _)| *p)
+            .max()
+            .map(|m| m + 1)
+            .unwrap_or(0);
+        bucket.push((next_position, download_id));
+        Ok(())
+    }
+
+    fn detach_download(&self, download_id: DownloadId) -> Result<(), DomainError> {
+        let mut guard = self.members.lock().unwrap();
+        for entries in guard.values_mut() {
+            entries.retain(|(_, id)| id != &download_id);
+        }
+        Ok(())
     }
 }
 
@@ -1036,7 +1069,7 @@ fn in_memory_package_repository_delete_drops_member_attachments() {
         0,
     );
     repo.save(&pkg).unwrap();
-    repo.attach_download(&PackageId::new("pkg-del"), 0, DownloadId(1));
+    repo.seed_member(&PackageId::new("pkg-del"), 0, DownloadId(1));
     assert_eq!(
         repo.list_downloads(&PackageId::new("pkg-del"))
             .unwrap()
@@ -1068,8 +1101,8 @@ fn in_memory_package_repository_list_downloads_returns_attached_ids() {
         0,
     ))
     .unwrap();
-    repo.attach_download(&pkg_id, 0, DownloadId(7));
-    repo.attach_download(&pkg_id, 1, DownloadId(11));
+    repo.seed_member(&pkg_id, 0, DownloadId(7));
+    repo.seed_member(&pkg_id, 1, DownloadId(11));
 
     let members = repo.list_downloads(&pkg_id).unwrap();
     assert_eq!(members, vec![DownloadId(7), DownloadId(11)]);
@@ -1079,6 +1112,66 @@ fn in_memory_package_repository_list_downloads_returns_attached_ids() {
             .unwrap()
             .is_empty()
     );
+}
+
+#[test]
+fn in_memory_package_repository_attach_download_via_trait_adds_member() {
+    let repo = InMemoryPackageRepository::new();
+    let pkg_id = PackageId::new("pkg-att");
+    repo.save(&Package::new(
+        pkg_id.clone(),
+        "Att".to_string(),
+        PackageSourceType::Manual,
+        0,
+    ))
+    .unwrap();
+    repo.attach_download(&pkg_id, DownloadId(1)).unwrap();
+    repo.attach_download(&pkg_id, DownloadId(2)).unwrap();
+    let members = repo.list_downloads(&pkg_id).unwrap();
+    assert_eq!(members, vec![DownloadId(1), DownloadId(2)]);
+}
+
+#[test]
+fn in_memory_package_repository_attach_download_moves_from_other_package() {
+    let repo = InMemoryPackageRepository::new();
+    let a = PackageId::new("pkg-a");
+    let b = PackageId::new("pkg-b");
+    repo.save(&Package::new(
+        a.clone(),
+        "A".to_string(),
+        PackageSourceType::Manual,
+        0,
+    ))
+    .unwrap();
+    repo.save(&Package::new(
+        b.clone(),
+        "B".to_string(),
+        PackageSourceType::Manual,
+        0,
+    ))
+    .unwrap();
+    repo.attach_download(&a, DownloadId(99)).unwrap();
+    repo.attach_download(&b, DownloadId(99)).unwrap();
+    assert!(repo.list_downloads(&a).unwrap().is_empty());
+    assert_eq!(repo.list_downloads(&b).unwrap(), vec![DownloadId(99)]);
+}
+
+#[test]
+fn in_memory_package_repository_detach_download_removes_member() {
+    let repo = InMemoryPackageRepository::new();
+    let pkg_id = PackageId::new("pkg-det");
+    repo.save(&Package::new(
+        pkg_id.clone(),
+        "Det".to_string(),
+        PackageSourceType::Manual,
+        0,
+    ))
+    .unwrap();
+    repo.attach_download(&pkg_id, DownloadId(5)).unwrap();
+    repo.detach_download(DownloadId(5)).unwrap();
+    assert!(repo.list_downloads(&pkg_id).unwrap().is_empty());
+    // Idempotent: detaching again is a no-op.
+    repo.detach_download(DownloadId(5)).unwrap();
 }
 
 #[test]
@@ -1096,9 +1189,9 @@ fn in_memory_package_repository_list_downloads_orders_by_queue_position() {
     ))
     .unwrap();
     // Insert out of order on purpose.
-    repo.attach_download(&pkg_id, 5, DownloadId(50));
-    repo.attach_download(&pkg_id, 1, DownloadId(10));
-    repo.attach_download(&pkg_id, 3, DownloadId(30));
+    repo.seed_member(&pkg_id, 5, DownloadId(50));
+    repo.seed_member(&pkg_id, 1, DownloadId(10));
+    repo.seed_member(&pkg_id, 3, DownloadId(30));
 
     let members = repo.list_downloads(&pkg_id).unwrap();
     assert_eq!(

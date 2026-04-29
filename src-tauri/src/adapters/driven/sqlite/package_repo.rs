@@ -115,6 +115,52 @@ impl PackageRepository for SqlitePackageRepo {
                 .collect()
         })
     }
+
+    fn attach_download(
+        &self,
+        package_id: &PackageId,
+        download_id: DownloadId,
+    ) -> Result<(), DomainError> {
+        use sea_orm::{ConnectionTrait, Statement};
+
+        let pkg_id = package_id.as_str().to_string();
+        let dl_id = download_id.0 as i64;
+        block_on(async {
+            let result = self
+                .db
+                .execute(Statement::from_sql_and_values(
+                    sea_orm::DatabaseBackend::Sqlite,
+                    "UPDATE downloads SET package_id = ? WHERE id = ?",
+                    [pkg_id.into(), dl_id.into()],
+                ))
+                .await
+                .map_err(map_db_err)?;
+            if result.rows_affected() == 0 {
+                return Err(DomainError::NotFound(format!(
+                    "Download {} not found",
+                    download_id.0
+                )));
+            }
+            Ok(())
+        })
+    }
+
+    fn detach_download(&self, download_id: DownloadId) -> Result<(), DomainError> {
+        use sea_orm::{ConnectionTrait, Statement};
+
+        let dl_id = download_id.0 as i64;
+        block_on(async {
+            self.db
+                .execute(Statement::from_sql_and_values(
+                    sea_orm::DatabaseBackend::Sqlite,
+                    "UPDATE downloads SET package_id = NULL WHERE id = ?",
+                    [dl_id.into()],
+                ))
+                .await
+                .map_err(map_db_err)?;
+            Ok(())
+        })
+    }
 }
 
 #[cfg(test)]
@@ -503,6 +549,68 @@ mod tests {
             matches!(err, DomainError::ValidationError(_)),
             "expected ValidationError, got {err:?}"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_attach_download_sets_package_id_on_existing_row() {
+        let db = setup_test_db().await.expect("test db");
+        let repo = SqlitePackageRepo::new(db.clone());
+        repo.save(&make_package("pkg-att", "Att", PackageSourceType::Manual))
+            .expect("save");
+        // Seed a free-standing download (no package).
+        insert_download_in_package(&db, 42, 0, None).await;
+
+        repo.attach_download(&PackageId::new("pkg-att"), DownloadId(42))
+            .expect("attach");
+
+        let members = repo.list_downloads(&PackageId::new("pkg-att")).unwrap();
+        assert_eq!(members, vec![DownloadId(42)]);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_attach_download_returns_not_found_when_download_missing() {
+        let db = setup_test_db().await.expect("test db");
+        let repo = SqlitePackageRepo::new(db);
+        repo.save(&make_package("pkg-att", "Att", PackageSourceType::Manual))
+            .expect("save");
+        let err = repo
+            .attach_download(&PackageId::new("pkg-att"), DownloadId(999))
+            .expect_err("missing download must error");
+        assert!(matches!(err, DomainError::NotFound(_)));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_attach_download_idempotent_when_already_attached() {
+        let db = setup_test_db().await.expect("test db");
+        let repo = SqlitePackageRepo::new(db.clone());
+        repo.save(&make_package("pkg-att", "Att", PackageSourceType::Manual))
+            .expect("save");
+        insert_download_in_package(&db, 7, 0, Some("pkg-att")).await;
+        repo.attach_download(&PackageId::new("pkg-att"), DownloadId(7))
+            .expect("idempotent");
+        let members = repo.list_downloads(&PackageId::new("pkg-att")).unwrap();
+        assert_eq!(members, vec![DownloadId(7)]);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_detach_download_clears_package_id() {
+        let db = setup_test_db().await.expect("test db");
+        let repo = SqlitePackageRepo::new(db.clone());
+        repo.save(&make_package("pkg-det", "Det", PackageSourceType::Manual))
+            .expect("save");
+        insert_download_in_package(&db, 11, 0, Some("pkg-det")).await;
+        repo.detach_download(DownloadId(11)).expect("detach");
+        let members = repo.list_downloads(&PackageId::new("pkg-det")).unwrap();
+        assert!(members.is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_detach_download_unknown_id_is_noop() {
+        let db = setup_test_db().await.expect("test db");
+        let repo = SqlitePackageRepo::new(db);
+        // Unknown download id must succeed silently (idempotent).
+        repo.detach_download(DownloadId(9999))
+            .expect("noop on unknown");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

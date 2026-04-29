@@ -19,11 +19,12 @@ use crate::domain::model::credential::Credential;
 use crate::domain::model::download::{Download, DownloadId, DownloadState};
 use crate::domain::model::http::HttpResponse;
 use crate::domain::model::meta::DownloadMeta;
+use crate::domain::model::package::{Package, PackageId};
 use crate::domain::model::plugin::{PluginInfo, PluginManifest};
 use crate::domain::ports::driven::{
     AccountCredentialStore, AccountRepository, AccountValidator, ArchiveExtractor,
     ClipboardObserver, ConfigStore, CredentialStore, DownloadEngine, DownloadRepository, EventBus,
-    FileStorage, HttpClient, PassphraseCodec, PluginLoader, ValidationOutcome,
+    FileStorage, HttpClient, PackageRepository, PassphraseCodec, PluginLoader, ValidationOutcome,
 };
 
 // ── In-memory account repository ─────────────────────────────────────
@@ -148,18 +149,6 @@ impl FakeAccountCredentialStore {
 
     pub(crate) fn entry_count(&self) -> usize {
         self.entries.lock().unwrap().len()
-    }
-
-    pub(crate) fn snapshot(&self) -> Vec<(AccountId, String)> {
-        let mut entries: Vec<(AccountId, String)> = self
-            .entries
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
-        entries.sort_by(|a, b| a.0.as_str().cmp(b.0.as_str()));
-        entries
     }
 }
 
@@ -304,6 +293,98 @@ impl PassphraseCodec for FakePassphraseCodec {
     }
 }
 
+// ── In-memory package repository ─────────────────────────────────────
+
+pub(crate) struct InMemoryPackageRepo {
+    store: Mutex<HashMap<PackageId, Package>>,
+    members: Mutex<HashMap<PackageId, Vec<DownloadId>>>,
+}
+
+impl InMemoryPackageRepo {
+    pub(crate) fn new() -> Self {
+        Self {
+            store: Mutex::new(HashMap::new()),
+            members: Mutex::new(HashMap::new()),
+        }
+    }
+
+    pub(crate) fn snapshot(&self) -> Vec<Package> {
+        let mut packages: Vec<Package> = self.store.lock().unwrap().values().cloned().collect();
+        packages.sort_by(|a, b| a.id().as_str().cmp(b.id().as_str()));
+        packages
+    }
+}
+
+impl PackageRepository for InMemoryPackageRepo {
+    fn find_by_id(&self, id: &PackageId) -> Result<Option<Package>, DomainError> {
+        Ok(self.store.lock().unwrap().get(id).cloned())
+    }
+
+    fn save(&self, package: &Package) -> Result<(), DomainError> {
+        let mut guard = self.store.lock().unwrap();
+        let created_at = match guard.get(package.id()) {
+            Some(existing) => existing.created_at(),
+            None => package.created_at(),
+        };
+        let stored = Package::reconstruct(
+            package.id().clone(),
+            package.name().to_string(),
+            package.source_type(),
+            package.folder_path().map(str::to_string),
+            package.password().map(str::to_string),
+            package.auto_extract(),
+            package.priority(),
+            created_at,
+        )?;
+        guard.insert(package.id().clone(), stored);
+        Ok(())
+    }
+
+    fn list(&self) -> Result<Vec<Package>, DomainError> {
+        Ok(self.snapshot())
+    }
+
+    fn delete(&self, id: &PackageId) -> Result<(), DomainError> {
+        self.store.lock().unwrap().remove(id);
+        self.members.lock().unwrap().remove(id);
+        Ok(())
+    }
+
+    fn list_downloads(&self, id: &PackageId) -> Result<Vec<DownloadId>, DomainError> {
+        Ok(self
+            .members
+            .lock()
+            .unwrap()
+            .get(id)
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    fn attach_download(
+        &self,
+        package_id: &PackageId,
+        download_id: DownloadId,
+    ) -> Result<(), DomainError> {
+        let mut guard = self.members.lock().unwrap();
+        for entries in guard.values_mut() {
+            entries.retain(|d| d != &download_id);
+        }
+        let bucket = guard.entry(package_id.clone()).or_default();
+        if !bucket.contains(&download_id) {
+            bucket.push(download_id);
+        }
+        Ok(())
+    }
+
+    fn detach_download(&self, download_id: DownloadId) -> Result<(), DomainError> {
+        let mut guard = self.members.lock().unwrap();
+        for entries in guard.values_mut() {
+            entries.retain(|d| d != &download_id);
+        }
+        Ok(())
+    }
+}
+
 // ── Capturing event bus ──────────────────────────────────────────────
 
 pub(crate) struct CapturingEventBus {
@@ -379,6 +460,19 @@ impl FileStorage for StubFileStorage {
         Ok(())
     }
     fn delete_meta(&self, _path: &Path) -> Result<(), DomainError> {
+        Ok(())
+    }
+    // Stubbed to no-ops: package-handler tests exercise the move logic
+    // through `move_package_to_folder` and don't run a real filesystem.
+    // The default impls return errors which would mask the move-package
+    // tests' real assertions, so we override here.
+    fn file_exists(&self, _path: &Path) -> Result<bool, DomainError> {
+        Ok(false)
+    }
+    fn move_file(&self, _from: &Path, _to: &Path) -> Result<(), DomainError> {
+        Ok(())
+    }
+    fn move_meta(&self, _from: &Path, _to: &Path) -> Result<(), DomainError> {
         Ok(())
     }
 }
@@ -497,6 +591,88 @@ impl ArchiveExtractor for StubArchiveExtractor {
     }
 }
 
+// ── Seedable in-memory download repo (for package handler tests) ─────
+
+pub(crate) struct InMemoryDownloadRepo {
+    store: Mutex<HashMap<DownloadId, Download>>,
+}
+
+impl InMemoryDownloadRepo {
+    pub(crate) fn new() -> Self {
+        Self {
+            store: Mutex::new(HashMap::new()),
+        }
+    }
+
+    pub(crate) fn seed(&self, download: Download) {
+        self.store.lock().unwrap().insert(download.id(), download);
+    }
+}
+
+impl DownloadRepository for InMemoryDownloadRepo {
+    fn find_by_id(&self, id: DownloadId) -> Result<Option<Download>, DomainError> {
+        Ok(self.store.lock().unwrap().get(&id).cloned())
+    }
+
+    fn save(&self, d: &Download) -> Result<(), DomainError> {
+        self.store.lock().unwrap().insert(d.id(), d.clone());
+        Ok(())
+    }
+
+    fn delete(&self, id: DownloadId) -> Result<(), DomainError> {
+        self.store.lock().unwrap().remove(&id);
+        Ok(())
+    }
+
+    fn find_by_state(&self, state: DownloadState) -> Result<Vec<Download>, DomainError> {
+        Ok(self
+            .store
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|d| d.state() == state)
+            .cloned()
+            .collect())
+    }
+}
+
+// ── In-memory credential store ───────────────────────────────────────
+
+pub(crate) struct InMemoryCredentialStore {
+    entries: Mutex<HashMap<String, Credential>>,
+}
+
+impl InMemoryCredentialStore {
+    pub(crate) fn new() -> Self {
+        Self {
+            entries: Mutex::new(HashMap::new()),
+        }
+    }
+
+    pub(crate) fn entry_count(&self) -> usize {
+        self.entries.lock().unwrap().len()
+    }
+}
+
+impl CredentialStore for InMemoryCredentialStore {
+    fn get(&self, service: &str) -> Result<Option<Credential>, DomainError> {
+        Ok(self.entries.lock().unwrap().get(service).cloned())
+    }
+
+    fn store(&self, service: &str, credential: &Credential) -> Result<(), DomainError> {
+        self.entries
+            .lock()
+            .unwrap()
+            .insert(service.to_string(), credential.clone());
+        Ok(())
+    }
+
+    fn delete(&self, service: &str) -> Result<(), DomainError> {
+        self.entries.lock().unwrap().remove(service);
+        Ok(())
+    }
+}
+
 /// Build a [`CommandBus`] wired with the supplied account ports plus
 /// stubs for everything else.
 pub(crate) fn build_account_bus(
@@ -530,6 +706,32 @@ pub(crate) fn build_account_bus(
         bus = bus.with_passphrase_codec(c);
     }
     bus
+}
+
+/// Build a [`CommandBus`] wired with the package ports needed by the
+/// package-command handlers. The download write repo is supplied so
+/// `set_priority` and `move_to_folder` can read/save member downloads.
+pub(crate) fn build_package_bus(
+    package_repo: Arc<dyn PackageRepository>,
+    credential_store: Arc<dyn CredentialStore>,
+    event_bus: Arc<CapturingEventBus>,
+    download_repo: Arc<dyn DownloadRepository>,
+) -> CommandBus {
+    CommandBus::new(
+        download_repo,
+        Arc::new(StubDownloadEngine),
+        event_bus,
+        Arc::new(StubFileStorage),
+        Arc::new(StubHttpClient),
+        Arc::new(StubPluginLoader),
+        Arc::new(StubConfigStore),
+        credential_store,
+        Arc::new(StubClipboardObserver),
+        Arc::new(StubArchiveExtractor),
+        Arc::new(NoopHistoryRepo),
+        None,
+    )
+    .with_package_repo(package_repo)
 }
 
 /// Build a bus with no account ports — used to assert handlers refuse

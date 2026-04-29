@@ -79,7 +79,9 @@ pub use adapters::driving::tauri_ipc::{
     download_reorder_queue, download_resume, download_resume_all, download_retry,
     download_set_priority, download_start, download_verify_checksum, history_clear,
     history_delete_entry, history_export, history_get_by_id, history_list,
-    history_purge_older_than, history_search, link_resolve, plugin_config_get,
+    history_purge_older_than, history_search, link_resolve, package_add_download, package_create,
+    package_delete, package_move_to_folder, package_remove_download, package_set_password,
+    package_set_priority, package_toggle_auto_extract, package_update, plugin_config_get,
     plugin_config_update, plugin_disable, plugin_enable, plugin_install, plugin_list,
     plugin_report_broken, plugin_store_install, plugin_store_list, plugin_store_refresh,
     plugin_store_update, plugin_uninstall, reveal_in_folder, settings_get, settings_update,
@@ -162,6 +164,8 @@ pub fn run() {
             let stats_repo: Arc<dyn StatsRepository> = Arc::new(SqliteStatsRepo::new(db.clone()));
             let account_repo: Arc<dyn AccountRepository> =
                 Arc::new(SqliteAccountRepo::new(db.clone()));
+            let package_repo: Arc<dyn crate::domain::ports::driven::PackageRepository> =
+                Arc::new(SqlitePackageRepo::new(db.clone()));
 
             // ── Plugin system ───────────────────────────────────────
             let shared_resources = Arc::new(SharedHostResources::new());
@@ -370,6 +374,7 @@ pub fn run() {
                 .with_plugin_config_store(plugin_config_store.clone())
                 .with_account_repo(account_repo.clone())
                 .with_account_credential_store(account_credential_store)
+                .with_package_repo(package_repo.clone())
                 .with_passphrase_codec(passphrase_codec),
             );
 
@@ -567,6 +572,15 @@ pub fn run() {
             account_list,
             account_get,
             account_traffic_get,
+            package_create,
+            package_update,
+            package_delete,
+            package_set_password,
+            package_set_priority,
+            package_move_to_folder,
+            package_toggle_auto_extract,
+            package_add_download,
+            package_remove_download,
         ])
         .run(tauri::generate_context!())
         // Tauri's run() has no meaningful recovery path — panic is intentional here

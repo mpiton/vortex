@@ -10,7 +10,8 @@ use crate::domain::ports::driven::{
     AccountCredentialStore, AccountRepository, AccountValidator, ArchiveExtractor,
     ChecksumComputer, ClipboardObserver, ConfigStore, CredentialStore, DownloadEngine,
     DownloadRepository, EventBus, FileOpener, FileStorage, HistoryRepository, HttpClient,
-    PassphraseCodec, PluginConfigStore, PluginLoader, PluginStoreClient, UrlOpener,
+    PackageRepository, PassphraseCodec, PluginConfigStore, PluginLoader, PluginStoreClient,
+    UrlOpener,
 };
 
 /// Central dispatcher for CQRS commands.
@@ -36,6 +37,7 @@ pub struct CommandBus {
     plugin_config_store: Option<Arc<dyn PluginConfigStore>>,
     account_repo: Option<Arc<dyn AccountRepository>>,
     account_credential_store: Option<Arc<dyn AccountCredentialStore>>,
+    package_repo: Option<Arc<dyn PackageRepository>>,
     account_validator: Option<Arc<dyn AccountValidator>>,
     account_selector: Option<Arc<AccountSelector>>,
     account_rotator: Option<Arc<AccountRotator>>,
@@ -82,6 +84,7 @@ impl CommandBus {
             plugin_config_store: None,
             account_repo: None,
             account_credential_store: None,
+            package_repo: None,
             account_validator: None,
             account_selector: None,
             account_rotator: None,
@@ -102,6 +105,18 @@ impl CommandBus {
     pub fn with_account_credential_store(mut self, store: Arc<dyn AccountCredentialStore>) -> Self {
         self.account_credential_store = Some(store);
         self
+    }
+
+    /// Builder-style setter for the package write repository. Optional
+    /// so test fixtures that never invoke package commands don't have
+    /// to provide a mock.
+    pub fn with_package_repo(mut self, repo: Arc<dyn PackageRepository>) -> Self {
+        self.package_repo = Some(repo);
+        self
+    }
+
+    pub fn package_repo(&self) -> Option<&dyn PackageRepository> {
+        self.package_repo.as_deref()
     }
 
     /// Builder-style setter for the account-validation port (delegates
