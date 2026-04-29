@@ -292,11 +292,7 @@ impl CommandBus {
             Some(s) => s,
             None => return Ok(None),
         };
-        let strategy = self
-            .config_store
-            .get_config()
-            .map(|c| c.account_selection_strategy)
-            .unwrap_or(crate::domain::model::account::AccountSelectionStrategy::DEFAULT);
+        let strategy = self.config_store.get_config()?.account_selection_strategy;
         selector.select_best(service_name, strategy)
     }
 }
@@ -696,5 +692,95 @@ mod tests {
     fn test_command_bus_is_send_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<CommandBus>();
+    }
+
+    /// `resolve_account_for` must propagate `ConfigStore::get_config()`
+    /// failures instead of silently falling back to the default strategy.
+    /// A corrupt or unreadable config previously forced `BestTraffic`
+    /// even when the user had picked `RoundRobin` / `Manual`. The fix:
+    /// surface the error to the caller via `?`.
+    #[test]
+    fn test_resolve_account_for_propagates_config_store_failure() {
+        use crate::application::services::AccountSelector;
+        use crate::domain::model::account::{Account, AccountId, AccountSelectionStrategy};
+        use crate::domain::ports::driven::AccountRepository;
+        use crate::domain::ports::driven::clock::Clock;
+        use crate::domain::ports::driven::event_bus::EventBus;
+
+        // Bus + clock + repo stand-ins — none of them are exercised
+        // because the failing config store short-circuits the call.
+        struct StubBus;
+        impl EventBus for StubBus {
+            fn publish(&self, _: DomainEvent) {}
+            fn subscribe(&self, _: Box<dyn Fn(&DomainEvent) + Send + Sync + 'static>) {}
+        }
+        struct ZeroClock;
+        impl Clock for ZeroClock {
+            fn now_unix_secs(&self) -> u64 {
+                0
+            }
+        }
+        struct EmptyRepo;
+        impl AccountRepository for EmptyRepo {
+            fn find_by_id(&self, _: &AccountId) -> Result<Option<Account>, DomainError> {
+                Ok(None)
+            }
+            fn save(&self, _: &Account) -> Result<(), DomainError> {
+                Ok(())
+            }
+            fn list(&self) -> Result<Vec<Account>, DomainError> {
+                Ok(vec![])
+            }
+            fn list_by_service(&self, _: &str) -> Result<Vec<Account>, DomainError> {
+                Ok(vec![])
+            }
+            fn delete(&self, _: &AccountId) -> Result<(), DomainError> {
+                Ok(())
+            }
+        }
+
+        struct FailingConfigStore;
+        impl ConfigStore for FailingConfigStore {
+            fn get_config(&self) -> Result<AppConfig, DomainError> {
+                Err(DomainError::ValidationError("config corrupted".into()))
+            }
+            fn update_config(&self, _: ConfigPatch) -> Result<AppConfig, DomainError> {
+                Err(DomainError::ValidationError("config corrupted".into()))
+            }
+        }
+
+        let bus: Arc<dyn EventBus> = Arc::new(StubBus);
+        let clock: Arc<dyn Clock> = Arc::new(ZeroClock);
+        let repo: Arc<dyn AccountRepository> = Arc::new(EmptyRepo);
+        let selector = AccountSelector::new(repo, bus, clock);
+
+        let command_bus = CommandBus::new(
+            Arc::new(MockDownloadRepo::new()),
+            Arc::new(MockDownloadEngine::new()),
+            Arc::new(MockEventBus::new()),
+            Arc::new(MockFileStorage::new()),
+            Arc::new(MockHttpClient),
+            Arc::new(MockPluginLoader::new()),
+            Arc::new(FailingConfigStore),
+            Arc::new(MockCredentialStore::new()),
+            Arc::new(MockClipboardObserver::new()),
+            Arc::new(FakeArchiveExtractor),
+            Arc::new(crate::application::test_support::NoopHistoryRepo),
+            None,
+        )
+        .with_account_selector(selector);
+
+        // `_` keeps the strategy enum in scope for the contract proof —
+        // even when the user picked anything, the failing store must
+        // bubble up before the strategy is read.
+        let _ = AccountSelectionStrategy::RoundRobin;
+
+        let err = command_bus
+            .resolve_account_for("Uploaded")
+            .expect_err("config-store failure must propagate");
+        assert!(matches!(
+            err,
+            crate::application::error::AppError::Domain(DomainError::ValidationError(_))
+        ));
     }
 }

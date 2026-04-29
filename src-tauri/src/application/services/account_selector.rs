@@ -77,13 +77,13 @@ impl AccountSelector {
     fn subscribe_invalidations(self: &Arc<Self>) {
         let weak_state = Arc::downgrade(&self.state);
         self.event_bus.subscribe(Box::new(move |event| {
-            if !is_invalidating(event) {
+            let Some(target) = invalidation_target(event) else {
                 return;
-            }
+            };
             if let Some(state) = weak_state.upgrade()
                 && let Ok(mut guard) = state.lock()
             {
-                guard.cache.clear();
+                apply_invalidation(&mut guard.cache, target);
             }
         }));
     }
@@ -162,16 +162,46 @@ impl AccountSelector {
     }
 }
 
-fn is_invalidating(event: &DomainEvent) -> bool {
-    matches!(
-        event,
-        DomainEvent::AccountAdded { .. }
-            | DomainEvent::AccountUpdated { .. }
-            | DomainEvent::AccountDeleted { .. }
-            | DomainEvent::AccountValidated { .. }
-            | DomainEvent::AccountValidationFailed { .. }
-            | DomainEvent::AccountsImported { .. }
-    )
+/// What slice of the cache an account-touching event invalidates.
+///
+/// `AccountAdded` carries the affected `service_name`, so we can drop just
+/// that slot. `AccountUpdated` / `AccountDeleted` / `AccountValidated` /
+/// `AccountValidationFailed` only know an `id`, so we walk the cache and
+/// drop the slots whose snapshot already contained that account — every
+/// other service stays warm. `AccountsImported` is bulk and intentionally
+/// nukes everything.
+enum InvalidationTarget<'a> {
+    Service(&'a str),
+    AccountId(&'a crate::domain::model::account::AccountId),
+    All,
+}
+
+fn invalidation_target(event: &DomainEvent) -> Option<InvalidationTarget<'_>> {
+    match event {
+        DomainEvent::AccountAdded { service_name, .. } => {
+            Some(InvalidationTarget::Service(service_name))
+        }
+        DomainEvent::AccountUpdated { id }
+        | DomainEvent::AccountDeleted { id }
+        | DomainEvent::AccountValidated { id, .. }
+        | DomainEvent::AccountValidationFailed { id, .. } => {
+            Some(InvalidationTarget::AccountId(id))
+        }
+        DomainEvent::AccountsImported { .. } => Some(InvalidationTarget::All),
+        _ => None,
+    }
+}
+
+fn apply_invalidation(cache: &mut HashMap<String, Vec<Account>>, target: InvalidationTarget<'_>) {
+    match target {
+        InvalidationTarget::Service(name) => {
+            cache.remove(name);
+        }
+        InvalidationTarget::AccountId(id) => {
+            cache.retain(|_, accounts| !accounts.iter().any(|a| a.id() == id));
+        }
+        InvalidationTarget::All => cache.clear(),
+    }
 }
 
 /// Rank rule for `BestTraffic`:
@@ -681,5 +711,150 @@ mod tests {
             .unwrap();
         assert_eq!(r1.id().as_str(), "a");
         assert!(r2.is_none(), "case-mismatched service name has no rows");
+    }
+
+    // --- Per-service invalidation: account event for service A must NOT
+    // evict the cache slot of unrelated service B ---
+    #[test]
+    fn test_account_event_invalidates_only_touched_service() {
+        let now_ms = 2_000_000_000_000;
+        let now_secs = now_ms / 1_000;
+        let a_in_s1 = account("a", "S1", Some(10), Some(now_ms + 1), None, true);
+        let b_in_s2 = account("b", "S2", Some(20), Some(now_ms + 1), None, true);
+
+        let repo = Arc::new(InMemoryRepo::new(vec![a_in_s1, b_in_s2]));
+        let bus = Arc::new(CollectingBus::new());
+        let clock = Arc::new(FixedClock(now_secs));
+        let selector = AccountSelector::new(repo.clone(), bus.clone(), clock);
+
+        // Warm both service caches.
+        selector
+            .select_best("S1", AccountSelectionStrategy::BestTraffic)
+            .unwrap();
+        selector
+            .select_best("S2", AccountSelectionStrategy::BestTraffic)
+            .unwrap();
+
+        // Mutate the underlying S2 row but only after asserting cache for
+        // S1 stays untouched on an S2-targeted event.
+        let mutated_b = account("b", "S2", Some(9_999_999), Some(now_ms + 1), None, true);
+        repo.save(&mutated_b).unwrap();
+        bus.publish(DomainEvent::AccountUpdated {
+            id: AccountId::new("b"),
+        });
+
+        // Replace S1's row in the repo. If the cache for S1 had been
+        // wrongly evicted by the S2 event, the next lookup would see this
+        // change. The contract is: it does NOT.
+        let stale_decoy = account("a", "S1", Some(0), Some(now_ms + 1), None, true);
+        repo.save(&stale_decoy).unwrap();
+
+        let s1_after = selector
+            .select_best("S1", AccountSelectionStrategy::BestTraffic)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            s1_after.traffic_left(),
+            Some(10),
+            "S1 cache must survive an event targeting an account in S2"
+        );
+
+        // S2 cache MUST have been invalidated by the AccountUpdated for `b`.
+        let s2_after = selector
+            .select_best("S2", AccountSelectionStrategy::BestTraffic)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            s2_after.traffic_left(),
+            Some(9_999_999),
+            "S2 cache must be invalidated by AccountUpdated targeting its account"
+        );
+    }
+
+    #[test]
+    fn test_account_added_invalidates_only_target_service_cache() {
+        let now_ms = 2_000_000_000_000;
+        let now_secs = now_ms / 1_000;
+        let initial_s1 = account("a", "S1", Some(10), Some(now_ms + 1), None, true);
+        let initial_s2 = account("b", "S2", Some(20), Some(now_ms + 1), None, true);
+
+        let repo = Arc::new(InMemoryRepo::new(vec![initial_s1, initial_s2]));
+        let bus = Arc::new(CollectingBus::new());
+        let clock = Arc::new(FixedClock(now_secs));
+        let selector = AccountSelector::new(repo.clone(), bus.clone(), clock);
+
+        selector
+            .select_best("S1", AccountSelectionStrategy::BestTraffic)
+            .unwrap();
+        selector
+            .select_best("S2", AccountSelectionStrategy::BestTraffic)
+            .unwrap();
+
+        // Decoy mutation on S1 BEFORE the S2-targeted event. If S1 was
+        // wrongly invalidated, this decoy would surface on the next pick.
+        let s1_decoy = account("a", "S1", Some(0), Some(now_ms + 1), None, true);
+        repo.save(&s1_decoy).unwrap();
+
+        let new_s2 = account("c", "S2", Some(99), Some(now_ms + 1), None, true);
+        repo.save(&new_s2).unwrap();
+        bus.publish(DomainEvent::AccountAdded {
+            id: AccountId::new("c"),
+            service_name: "S2".to_string(),
+        });
+
+        let s1_after = selector
+            .select_best("S1", AccountSelectionStrategy::BestTraffic)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            s1_after.traffic_left(),
+            Some(10),
+            "AccountAdded on S2 must not invalidate S1 cache"
+        );
+
+        // S2 cache rebuilt from repo, so the new account `c` is now visible.
+        let s2_after = selector
+            .select_best("S2", AccountSelectionStrategy::BestTraffic)
+            .unwrap()
+            .unwrap();
+        assert_eq!(s2_after.id().as_str(), "c");
+    }
+
+    #[test]
+    fn test_accounts_imported_invalidates_every_cache_slot() {
+        let now_ms = 2_000_000_000_000;
+        let now_secs = now_ms / 1_000;
+        let a = account("a", "S1", Some(10), Some(now_ms + 1), None, true);
+        let b = account("b", "S2", Some(20), Some(now_ms + 1), None, true);
+
+        let repo = Arc::new(InMemoryRepo::new(vec![a, b]));
+        let bus = Arc::new(CollectingBus::new());
+        let clock = Arc::new(FixedClock(now_secs));
+        let selector = AccountSelector::new(repo.clone(), bus.clone(), clock);
+
+        selector
+            .select_best("S1", AccountSelectionStrategy::BestTraffic)
+            .unwrap();
+        selector
+            .select_best("S2", AccountSelectionStrategy::BestTraffic)
+            .unwrap();
+
+        // After import, both rows are mutated.
+        repo.save(&account("a", "S1", Some(7), Some(now_ms + 1), None, true))
+            .unwrap();
+        repo.save(&account("b", "S2", Some(8), Some(now_ms + 1), None, true))
+            .unwrap();
+        bus.publish(DomainEvent::AccountsImported { count: 2 });
+
+        let s1 = selector
+            .select_best("S1", AccountSelectionStrategy::BestTraffic)
+            .unwrap()
+            .unwrap();
+        let s2 = selector
+            .select_best("S2", AccountSelectionStrategy::BestTraffic)
+            .unwrap()
+            .unwrap();
+        assert_eq!(s1.traffic_left(), Some(7));
+        assert_eq!(s2.traffic_left(), Some(8));
     }
 }

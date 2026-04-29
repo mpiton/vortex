@@ -43,6 +43,7 @@ use crate::application::read_models::plugin_config_view::PluginConfigView;
 use crate::application::read_models::plugin_store_view::PluginStoreEntryDto;
 use crate::application::read_models::plugin_view::PluginViewDto;
 use crate::application::read_models::stats_view::{ModuleStatsDto, StatsViewDto};
+use crate::domain::error::DomainError;
 use crate::domain::model::account::{AccountId, AccountType};
 use crate::domain::model::config::{AppConfig, ConfigPatch};
 use crate::domain::model::download::{DownloadId, DownloadState};
@@ -930,7 +931,7 @@ impl From<AppConfig> for SettingsDto {
     }
 }
 
-#[derive(Debug, Clone, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConfigPatchDto {
     // General
@@ -988,9 +989,15 @@ pub struct ConfigPatchDto {
     pub locale: Option<String>,
 }
 
-impl From<ConfigPatchDto> for ConfigPatch {
-    fn from(d: ConfigPatchDto) -> Self {
-        Self {
+impl TryFrom<ConfigPatchDto> for ConfigPatch {
+    type Error = String;
+
+    fn try_from(d: ConfigPatchDto) -> Result<Self, Self::Error> {
+        let account_selection_strategy = match d.account_selection_strategy.as_deref() {
+            Some(raw) => Some(raw.parse().map_err(|e: DomainError| e.to_string())?),
+            None => None,
+        };
+        Ok(Self {
             download_dir: d.download_dir,
             start_minimized: d.start_minimized,
             notifications_enabled: d.notifications_enabled,
@@ -1009,10 +1016,7 @@ impl From<ConfigPatchDto> for ConfigPatch {
             dynamic_split_enabled: d.dynamic_split_enabled,
             dynamic_split_min_remaining_mb: d.dynamic_split_min_remaining_mb,
             history_retention_days: d.history_retention_days,
-            account_selection_strategy: d
-                .account_selection_strategy
-                .as_deref()
-                .and_then(|s| s.parse().ok()),
+            account_selection_strategy,
             proxy_type: d.proxy_type,
             proxy_url: d.proxy_url,
             user_agent: d.user_agent,
@@ -1030,7 +1034,7 @@ impl From<ConfigPatchDto> for ConfigPatch {
             accent_color: d.accent_color,
             compact_mode: d.compact_mode,
             locale: d.locale,
-        }
+        })
     }
 }
 
@@ -1071,7 +1075,7 @@ pub async fn settings_update(
     patch: ConfigPatchDto,
 ) -> Result<SettingsDto, String> {
     let cmd = UpdateConfigCommand {
-        patch: patch.into(),
+        patch: patch.try_into()?,
     };
     state
         .command_bus
@@ -3979,5 +3983,56 @@ mod tests {
             logs.last().expect("last line"),
             &format!("[INFO] line {}", DEFAULT_DOWNLOAD_LOG_LIMIT - 1),
         );
+    }
+
+    /// `settings_update` must surface a validation error for unknown
+    /// `accountSelectionStrategy` values instead of silently dropping
+    /// them. Pinning the IPC contract: a typo from the UI can be
+    /// detected and surfaced to the user.
+    #[test]
+    fn test_config_patch_dto_rejects_unknown_account_selection_strategy() {
+        use super::{ConfigPatch, ConfigPatchDto};
+
+        let dto = ConfigPatchDto {
+            account_selection_strategy: Some("not_a_real_strategy".to_string()),
+            ..Default::default()
+        };
+
+        let result: Result<ConfigPatch, String> = dto.try_into();
+        let err = result.expect_err("unknown strategy must be rejected");
+        assert!(
+            err.contains("invalid account selection strategy"),
+            "error message must mention the strategy validation: got {err}"
+        );
+    }
+
+    #[test]
+    fn test_config_patch_dto_accepts_known_account_selection_strategy() {
+        use super::{ConfigPatch, ConfigPatchDto};
+        use crate::domain::model::account::AccountSelectionStrategy;
+
+        let dto = ConfigPatchDto {
+            account_selection_strategy: Some("round_robin".to_string()),
+            ..Default::default()
+        };
+
+        let patch: ConfigPatch = dto.try_into().expect("known strategy must parse");
+        assert_eq!(
+            patch.account_selection_strategy,
+            Some(AccountSelectionStrategy::RoundRobin)
+        );
+    }
+
+    #[test]
+    fn test_config_patch_dto_passes_through_when_strategy_is_none() {
+        use super::{ConfigPatch, ConfigPatchDto};
+
+        let dto = ConfigPatchDto {
+            account_selection_strategy: None,
+            ..Default::default()
+        };
+
+        let patch: ConfigPatch = dto.try_into().expect("None strategy is valid");
+        assert!(patch.account_selection_strategy.is_none());
     }
 }
