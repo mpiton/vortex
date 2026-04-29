@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use crate::domain::error::DomainError;
+use crate::domain::model::account::AccountSelectionStrategy;
 use crate::domain::model::config::{
     AppConfig, ConfigPatch, apply_patch, normalize_history_retention_days,
 };
@@ -162,6 +163,9 @@ struct ConfigDto {
     // History
     history_retention_days: i64,
 
+    // Accounts
+    account_selection_strategy: String,
+
     // Network
     proxy_type: String,
     proxy_url: Option<String>,
@@ -216,6 +220,7 @@ impl From<AppConfig> for ConfigDto {
             dynamic_split_enabled: c.dynamic_split_enabled,
             dynamic_split_min_remaining_mb: c.dynamic_split_min_remaining_mb,
             history_retention_days: c.history_retention_days,
+            account_selection_strategy: c.account_selection_strategy.to_string(),
             proxy_type: c.proxy_type,
             proxy_url: c.proxy_url,
             user_agent: c.user_agent,
@@ -258,6 +263,10 @@ impl From<ConfigDto> for AppConfig {
             dynamic_split_enabled: d.dynamic_split_enabled,
             dynamic_split_min_remaining_mb: d.dynamic_split_min_remaining_mb,
             history_retention_days: normalize_history_retention_days(d.history_retention_days),
+            account_selection_strategy: d
+                .account_selection_strategy
+                .parse()
+                .unwrap_or(AccountSelectionStrategy::DEFAULT),
             proxy_type: d.proxy_type,
             proxy_url: d.proxy_url,
             user_agent: d.user_agent,

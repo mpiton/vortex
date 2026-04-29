@@ -850,6 +850,11 @@ pub struct SettingsDto {
     // History
     pub history_retention_days: i64,
 
+    // Accounts
+    /// Serialized as `"best_traffic" | "round_robin" | "manual"` to mirror
+    /// the snake_case enum convention used elsewhere in IPC payloads.
+    pub account_selection_strategy: String,
+
     // Network
     pub proxy_type: String,
     pub proxy_url: Option<String>,
@@ -903,6 +908,7 @@ impl From<AppConfig> for SettingsDto {
             dynamic_split_enabled: c.dynamic_split_enabled,
             dynamic_split_min_remaining_mb: c.dynamic_split_min_remaining_mb,
             history_retention_days: c.history_retention_days,
+            account_selection_strategy: c.account_selection_strategy.to_string(),
             proxy_type: c.proxy_type,
             proxy_url: c.proxy_url,
             user_agent: c.user_agent,
@@ -951,6 +957,11 @@ pub struct ConfigPatchDto {
     // History
     pub history_retention_days: Option<i64>,
 
+    // Accounts
+    /// Accepted values: `"best_traffic"`, `"round_robin"`, `"manual"`.
+    /// Unknown values are rejected by `ConfigPatch::from(ConfigPatchDto)`.
+    pub account_selection_strategy: Option<String>,
+
     // Network
     pub proxy_type: Option<String>,
     pub proxy_url: Option<Option<String>>,
@@ -998,6 +1009,10 @@ impl From<ConfigPatchDto> for ConfigPatch {
             dynamic_split_enabled: d.dynamic_split_enabled,
             dynamic_split_min_remaining_mb: d.dynamic_split_min_remaining_mb,
             history_retention_days: d.history_retention_days,
+            account_selection_strategy: d
+                .account_selection_strategy
+                .as_deref()
+                .and_then(|s| s.parse().ok()),
             proxy_type: d.proxy_type,
             proxy_url: d.proxy_url,
             user_agent: d.user_agent,

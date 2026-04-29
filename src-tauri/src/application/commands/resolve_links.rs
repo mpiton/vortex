@@ -88,6 +88,12 @@ impl CommandBus {
                 Ok(Some(info)) => info.name().to_string(),
                 _ => "core-http".to_string(),
             };
+            // Account dispatcher hook (task 24): plugins that need
+            // credentials must request them via
+            // `CommandBus::resolve_account_for(service_name)` so the
+            // selector strategy from `AppConfig` is honoured. Resolve
+            // is best-effort metadata only — no account is fetched here
+            // to avoid emitting `AccountSelected` once per probed URL.
 
             let is_media = is_media_url(url);
             let media_type = if is_media {

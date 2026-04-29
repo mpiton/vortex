@@ -5,6 +5,7 @@
 
 use std::sync::Arc;
 
+use crate::application::services::AccountSelector;
 use crate::domain::ports::driven::{
     AccountCredentialStore, AccountRepository, AccountValidator, ArchiveExtractor,
     ChecksumComputer, ClipboardObserver, ConfigStore, CredentialStore, DownloadEngine,
@@ -36,6 +37,7 @@ pub struct CommandBus {
     account_repo: Option<Arc<dyn AccountRepository>>,
     account_credential_store: Option<Arc<dyn AccountCredentialStore>>,
     account_validator: Option<Arc<dyn AccountValidator>>,
+    account_selector: Option<Arc<AccountSelector>>,
     passphrase_codec: Option<Arc<dyn PassphraseCodec>>,
     /// Serializes queue-position allocation across handlers. Without this,
     /// two concurrent move-to-top/move-to-bottom/start-download calls can
@@ -80,6 +82,7 @@ impl CommandBus {
             account_repo: None,
             account_credential_store: None,
             account_validator: None,
+            account_selector: None,
             passphrase_codec: None,
             queue_position_lock: tokio::sync::Mutex::new(()),
         }
@@ -106,6 +109,13 @@ impl CommandBus {
         self
     }
 
+    /// Builder-style setter for the auto-selecting account dispatcher.
+    /// Optional so tests that don't exercise the dispatcher can omit it.
+    pub fn with_account_selector(mut self, selector: Arc<AccountSelector>) -> Self {
+        self.account_selector = Some(selector);
+        self
+    }
+
     /// Builder-style setter for the passphrase codec used by the
     /// import / export commands.
     pub fn with_passphrase_codec(mut self, codec: Arc<dyn PassphraseCodec>) -> Self {
@@ -123,6 +133,10 @@ impl CommandBus {
 
     pub fn account_validator(&self) -> Option<&dyn AccountValidator> {
         self.account_validator.as_deref()
+    }
+
+    pub fn account_selector(&self) -> Option<&AccountSelector> {
+        self.account_selector.as_deref()
     }
 
     pub fn passphrase_codec(&self) -> Option<&dyn PassphraseCodec> {
@@ -259,6 +273,31 @@ impl CommandBus {
 
     pub(crate) fn url_opener_arc(&self) -> Option<Arc<dyn UrlOpener>> {
         self.url_opener.clone()
+    }
+
+    /// Convenience entry-point for the link-grabber and download flows.
+    ///
+    /// When an `AccountSelector` is wired AND the configured strategy is
+    /// honoured, returns the chosen account for `service_name`. When no
+    /// selector is wired (e.g. test fixtures) returns `Ok(None)`. PRD
+    /// §6.4 — the strategy is read from the live `AppConfig` at every
+    /// call so a runtime change to `account_selection_strategy` is
+    /// honoured without restart.
+    pub fn resolve_account_for(
+        &self,
+        service_name: &str,
+    ) -> Result<Option<crate::domain::model::account::Account>, crate::application::error::AppError>
+    {
+        let selector = match self.account_selector() {
+            Some(s) => s,
+            None => return Ok(None),
+        };
+        let strategy = self
+            .config_store
+            .get_config()
+            .map(|c| c.account_selection_strategy)
+            .unwrap_or(crate::domain::model::account::AccountSelectionStrategy::DEFAULT);
+        selector.select_best(service_name, strategy)
     }
 }
 

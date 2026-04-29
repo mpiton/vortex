@@ -274,6 +274,23 @@ pub enum DomainEvent {
     AccountsExported {
         count: u32,
     },
+    /// Emitted by `AccountSelector::select_best` when no enabled,
+    /// non-expired account exists for the requested service. The
+    /// scheduler / link-grabber can react by falling back to a free
+    /// hoster path or surfacing a UI hint.
+    NoAccountAvailable {
+        service_name: String,
+    },
+    /// Emitted by `AccountSelector::select_best` whenever it picks an
+    /// account. Carries the strategy name so the audit / telemetry
+    /// layer can detect if a deployment is using anything other than
+    /// the default `BestTraffic`.
+    AccountSelected {
+        id: AccountId,
+        service_name: String,
+        /// One of `"best_traffic"`, `"round_robin"`, `"manual"`.
+        strategy: String,
+    },
 }
 
 #[cfg(test)]
