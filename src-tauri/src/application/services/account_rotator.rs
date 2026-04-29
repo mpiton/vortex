@@ -181,7 +181,13 @@ impl AccountRotator {
     /// Mark `account_id` as quota-exhausted for `ttl_secs` seconds.
     /// Callers pass a hoster-specific cooldown (typical range: a few
     /// hundred seconds for free plans, longer for daily caps). Emits
-    /// [`DomainEvent::AccountExhausted`].
+    /// [`DomainEvent::AccountExhausted`] carrying the committed deadline.
+    ///
+    /// If a cooldown entry already exists and its deadline is further
+    /// in the future than the proposed one, the existing deadline
+    /// wins. This prevents a short retry-driven TTL from accidentally
+    /// shortening a longer daily-cap cooldown set by a previous
+    /// signal.
     pub fn mark_exhausted(
         &self,
         account_id: &AccountId,
@@ -189,15 +195,20 @@ impl AccountRotator {
         ttl_secs: u64,
     ) -> Result<(), AppError> {
         let now_ms = self.now_ms();
-        let until_ms = now_ms.saturating_add(ttl_secs.saturating_mul(1_000));
-        {
+        let proposed = now_ms.saturating_add(ttl_secs.saturating_mul(1_000));
+        let committed = {
             let mut guard = self.lock_exhausted()?;
-            guard.insert(account_id.clone(), until_ms);
-        }
+            let final_deadline = match guard.get(account_id) {
+                Some(existing) if *existing > proposed => *existing,
+                _ => proposed,
+            };
+            guard.insert(account_id.clone(), final_deadline);
+            final_deadline
+        };
         self.event_bus.publish(DomainEvent::AccountExhausted {
             id: account_id.clone(),
             service_name: service_name.to_string(),
-            exhausted_until_ms: until_ms,
+            exhausted_until_ms: committed,
         });
         Ok(())
     }
@@ -729,6 +740,52 @@ mod tests {
         assert!(
             !rotator.is_exhausted(&AccountId::new("a")).unwrap(),
             "ttl=0 means the cooldown has already expired at now"
+        );
+    }
+
+    #[test]
+    fn test_mark_exhausted_keeps_existing_longer_deadline() {
+        // A long cooldown (daily cap) followed by a short retry signal
+        // must not shrink the active cooldown. The committed deadline
+        // wins, and the AccountExhausted event publishes it verbatim
+        // so subscribers don't see a phantom shorter window.
+        let a = account("a", "S", Some(50), true);
+        let (rotator, bus, clock) = build_rotator(vec![a], 1_700_000_000);
+        let now_ms = 1_700_000_000_u64 * 1_000;
+
+        rotator
+            .mark_exhausted(&AccountId::new("a"), "S", 600)
+            .unwrap();
+        let long_deadline = now_ms + 600 * 1_000;
+
+        rotator
+            .mark_exhausted(&AccountId::new("a"), "S", 60)
+            .unwrap();
+
+        // The shorter retry signal would expire after 60s. Advance
+        // past that and confirm the cooldown is still active —
+        // proving the longer (600s) deadline stuck.
+        clock.advance_secs(120);
+        assert!(rotator.is_exhausted(&AccountId::new("a")).unwrap());
+
+        // Advance past the long deadline; cooldown finally clears.
+        clock.advance_secs(600);
+        assert!(!rotator.is_exhausted(&AccountId::new("a")).unwrap());
+
+        let payloads: Vec<u64> = bus
+            .events()
+            .iter()
+            .filter_map(|e| match e {
+                DomainEvent::AccountExhausted {
+                    exhausted_until_ms, ..
+                } => Some(*exhausted_until_ms),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            payloads,
+            vec![long_deadline, long_deadline],
+            "second AccountExhausted must republish the still-active longer deadline, not the shorter proposed one"
         );
     }
 
