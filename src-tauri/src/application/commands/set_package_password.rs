@@ -53,6 +53,13 @@ impl CommandBus {
             None => None,
         };
 
+        // Capture the existing credential BEFORE persisting the new row so
+        // a keyring rotation failure can restore exactly what was there
+        // before. Without this snapshot the cleanup branch below would
+        // unconditionally `delete(&key)` and erase a previously valid
+        // secret on a transient backend error.
+        let previous_credential = credentials.get(&key)?;
+
         // Persist the marker BEFORE touching the keyring so a crash between
         // the two writes leaves the DB consistent. The reverse order would
         // leave an orphan keyring secret with no DB marker pointing at it.
@@ -86,12 +93,19 @@ impl CommandBus {
                     "package marker rollback failed after keyring error; row metadata diverges from keyring"
                 );
             }
-            if let Err(cleanup_err) = credentials.delete(&key) {
+            // Restore the prior keyring entry (or wipe if there was none)
+            // so a transient store failure cannot destroy an
+            // already-configured password while the command was rotating.
+            let restore_result = match previous_credential {
+                Some(prev) => credentials.store(&key, &prev),
+                None => credentials.delete(&key),
+            };
+            if let Err(restore_err) = restore_result {
                 tracing::warn!(
                     package_id = %cmd.id,
                     keyring_error = %e,
-                    cleanup_error = %cleanup_err,
-                    "best-effort keyring cleanup failed after rollback; keyring may hold a partially written secret"
+                    restore_error = %restore_err,
+                    "keyring restore failed after rollback; keyring may hold a partially written secret"
                 );
             }
             return Err(e.into());
@@ -240,6 +254,51 @@ mod tests {
                 .iter()
                 .any(|e| matches!(e, DomainEvent::PackageUpdated { id: x } if x == &id)),
             "no PackageUpdated emitted for a failed command"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_set_package_password_failed_rotation_preserves_previous_secret() {
+        let repo = Arc::new(InMemoryPackageRepo::new());
+        let creds = Arc::new(InMemoryCredentialStore::new());
+        let dl_repo = Arc::new(InMemoryDownloadRepo::new());
+        let events = Arc::new(CapturingEventBus::new());
+        let bus = build_package_bus(repo.clone(), creds.clone(), events, dl_repo);
+        let id = seed(&bus).await;
+        bus.handle_set_package_password(SetPackagePasswordCommand {
+            id: id.clone(),
+            password: Some("original".into()),
+        })
+        .await
+        .unwrap();
+        let key = format!("vortex.package.{}", id.as_str());
+        assert_eq!(creds.get(&key).unwrap().unwrap().password(), "original");
+
+        // Rotation fails partway: the new write errors but the previous
+        // secret must NOT be destroyed by the cleanup branch. The current
+        // marker should also be back to pointing at the (still valid)
+        // existing key.
+        creds.set_store_fails(true);
+        let err = bus
+            .handle_set_package_password(SetPackagePasswordCommand {
+                id: id.clone(),
+                password: Some("rotated".into()),
+            })
+            .await
+            .expect_err("rotate fail surfaces");
+        assert!(matches!(err, AppError::Domain(_)));
+        creds.set_store_fails(false);
+
+        let stored = repo.find_by_id(&id).unwrap().unwrap();
+        assert_eq!(
+            stored.password(),
+            Some(key.as_str()),
+            "marker rolled back to previous keyring pointer"
+        );
+        assert_eq!(
+            creds.get(&key).unwrap().expect("survives").password(),
+            "original",
+            "failed rotation must not erase the prior valid secret"
         );
     }
 
