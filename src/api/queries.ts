@@ -1,3 +1,4 @@
+import type { AccountListFilter } from '@/types/account';
 import type { DownloadFilter } from '@/types/download';
 
 export const downloadQueries = {
@@ -25,4 +26,14 @@ export const historyQueries = {
 export const statsQueries = {
   all: () => ['stats'] as const,
   overview: () => [...statsQueries.all(), 'overview'] as const,
+};
+
+export const accountQueries = {
+  all: () => ['accounts'] as const,
+  lists: () => [...accountQueries.all(), 'list'] as const,
+  list: (filter?: AccountListFilter) =>
+    filter ? ([...accountQueries.lists(), filter] as const) : (accountQueries.lists() as readonly unknown[]),
+  details: () => [...accountQueries.all(), 'detail'] as const,
+  detail: (id: string) => [...accountQueries.details(), id] as const,
+  traffic: (id: string) => [...accountQueries.all(), 'traffic', id] as const,
 };

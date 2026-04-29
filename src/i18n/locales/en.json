@@ -502,5 +502,106 @@
       "countLabel": "downloads",
       "hint": "Top 5 modules ranked by download count, independent of the selected period"
     }
+  },
+  "accounts": {
+    "title": "Accounts",
+    "loading": "Loading accounts…",
+    "empty": "No accounts configured yet",
+    "filter": {
+      "all": "All",
+      "debrid": "Debrid",
+      "premium": "Premium",
+      "free": "Free"
+    },
+    "columns": {
+      "service": "Service",
+      "username": "Username",
+      "type": "Type",
+      "status": "Status",
+      "traffic": "Traffic",
+      "validUntil": "Valid until",
+      "lastValidated": "Last validated",
+      "actions": "Actions"
+    },
+    "status": {
+      "active": "Active",
+      "expired": "Expired",
+      "disabled": "Disabled",
+      "unverified": "Unverified"
+    },
+    "traffic": {
+      "ariaLabel": "Traffic remaining",
+      "format": "{{used}} / {{total}}",
+      "unknown": "Unknown"
+    },
+    "validUntil": {
+      "never": "—"
+    },
+    "actions": {
+      "add": "Add account",
+      "validate": "Validate",
+      "edit": "Edit",
+      "delete": "Delete",
+      "more": "More actions",
+      "import": "Import…",
+      "export": "Export…"
+    },
+    "addDialog": {
+      "title": "Add account",
+      "description": "Credentials are stored in your OS keyring, never in plain text on disk.",
+      "service": "Service",
+      "servicePlaceholder": "real-debrid",
+      "username": "Username",
+      "password": "Password",
+      "type": "Type",
+      "typeHint": "Pick a category to surface it in the right tab.",
+      "submit": "Add",
+      "cancel": "Cancel"
+    },
+    "deleteDialog": {
+      "title": "Delete account?",
+      "description": "{{username}} on {{service}} will be removed and the keyring credential wiped. This cannot be undone.",
+      "confirm": "Delete",
+      "cancel": "Cancel"
+    },
+    "importDialog": {
+      "title": "Import accounts",
+      "description": "Pick the encrypted bundle and enter the passphrase used at export time.",
+      "filePath": "File",
+      "browse": "Browse…",
+      "passphrase": "Passphrase",
+      "submit": "Import",
+      "cancel": "Cancel"
+    },
+    "exportDialog": {
+      "title": "Export accounts",
+      "description": "Choose where to save the encrypted bundle and a passphrase to protect it.",
+      "passphrase": "Passphrase",
+      "passphraseConfirm": "Confirm passphrase",
+      "passphraseMismatch": "Passphrases do not match",
+      "submit": "Export",
+      "cancel": "Cancel"
+    },
+    "toast": {
+      "addSuccess": "Account added",
+      "addError": "Failed to add account",
+      "updateSuccess": "Account updated",
+      "updateError": "Failed to update account",
+      "deleteSuccess": "Account deleted",
+      "deleteError": "Failed to delete account",
+      "validateSuccess": "Account is valid",
+      "validateInvalid": "Validation failed: {{reason}}",
+      "validateError": "Validation request failed",
+      "exportSuccess_one": "{{count}} account exported",
+      "exportSuccess_other": "{{count}} accounts exported",
+      "exportError": "Export failed",
+      "importSuccess_one": "{{count}} account imported",
+      "importSuccess_other": "{{count}} accounts imported",
+      "importSkipped_one": "{{count}} duplicate skipped",
+      "importSkipped_other": "{{count}} duplicates skipped",
+      "importError": "Import failed",
+      "missingFile": "Pick a file first",
+      "missingPassphrase": "Passphrase required"
+    }
   }
 }

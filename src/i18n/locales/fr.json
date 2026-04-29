@@ -502,5 +502,106 @@
       "countLabel": "téléchargements",
       "hint": "Top 5 modules par nombre d'utilisations, indépendant de la période sélectionnée"
     }
+  },
+  "accounts": {
+    "title": "Comptes",
+    "loading": "Chargement des comptes…",
+    "empty": "Aucun compte configuré pour le moment",
+    "filter": {
+      "all": "Tous",
+      "debrid": "Debrid",
+      "premium": "Premium",
+      "free": "Gratuit"
+    },
+    "columns": {
+      "service": "Service",
+      "username": "Identifiant",
+      "type": "Type",
+      "status": "Statut",
+      "traffic": "Trafic",
+      "validUntil": "Valide jusqu'au",
+      "lastValidated": "Dernière validation",
+      "actions": "Actions"
+    },
+    "status": {
+      "active": "Actif",
+      "expired": "Expiré",
+      "disabled": "Désactivé",
+      "unverified": "Non vérifié"
+    },
+    "traffic": {
+      "ariaLabel": "Trafic restant",
+      "format": "{{used}} / {{total}}",
+      "unknown": "Inconnu"
+    },
+    "validUntil": {
+      "never": "—"
+    },
+    "actions": {
+      "add": "Ajouter un compte",
+      "validate": "Valider",
+      "edit": "Modifier",
+      "delete": "Supprimer",
+      "more": "Autres actions",
+      "import": "Importer…",
+      "export": "Exporter…"
+    },
+    "addDialog": {
+      "title": "Ajouter un compte",
+      "description": "Les identifiants sont stockés dans le trousseau de l'OS, jamais en clair sur le disque.",
+      "service": "Service",
+      "servicePlaceholder": "real-debrid",
+      "username": "Identifiant",
+      "password": "Mot de passe",
+      "type": "Type",
+      "typeHint": "Choisissez la catégorie pour le ranger dans le bon onglet.",
+      "submit": "Ajouter",
+      "cancel": "Annuler"
+    },
+    "deleteDialog": {
+      "title": "Supprimer le compte ?",
+      "description": "{{username}} sur {{service}} sera retiré et l'identifiant trousseau effacé. Action irréversible.",
+      "confirm": "Supprimer",
+      "cancel": "Annuler"
+    },
+    "importDialog": {
+      "title": "Importer des comptes",
+      "description": "Sélectionnez le bundle chiffré et entrez la passphrase utilisée à l'export.",
+      "filePath": "Fichier",
+      "browse": "Parcourir…",
+      "passphrase": "Passphrase",
+      "submit": "Importer",
+      "cancel": "Annuler"
+    },
+    "exportDialog": {
+      "title": "Exporter les comptes",
+      "description": "Choisissez la destination du bundle chiffré et une passphrase pour le protéger.",
+      "passphrase": "Passphrase",
+      "passphraseConfirm": "Confirmer la passphrase",
+      "passphraseMismatch": "Les passphrases ne correspondent pas",
+      "submit": "Exporter",
+      "cancel": "Annuler"
+    },
+    "toast": {
+      "addSuccess": "Compte ajouté",
+      "addError": "Échec de l'ajout du compte",
+      "updateSuccess": "Compte mis à jour",
+      "updateError": "Échec de la mise à jour",
+      "deleteSuccess": "Compte supprimé",
+      "deleteError": "Échec de la suppression",
+      "validateSuccess": "Compte valide",
+      "validateInvalid": "Validation échouée : {{reason}}",
+      "validateError": "La requête de validation a échoué",
+      "exportSuccess_one": "{{count}} compte exporté",
+      "exportSuccess_other": "{{count}} comptes exportés",
+      "exportError": "L'export a échoué",
+      "importSuccess_one": "{{count}} compte importé",
+      "importSuccess_other": "{{count}} comptes importés",
+      "importSkipped_one": "{{count}} doublon ignoré",
+      "importSkipped_other": "{{count}} doublons ignorés",
+      "importError": "L'import a échoué",
+      "missingFile": "Sélectionnez un fichier",
+      "missingPassphrase": "Passphrase requise"
+    }
   }
 }
