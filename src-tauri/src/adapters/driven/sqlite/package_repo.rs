@@ -161,6 +161,33 @@ impl PackageRepository for SqlitePackageRepo {
             Ok(())
         })
     }
+
+    fn find_package_of_download(
+        &self,
+        download_id: DownloadId,
+    ) -> Result<Option<PackageId>, DomainError> {
+        use sea_orm::{ConnectionTrait, Statement};
+
+        let dl_id = download_id.0 as i64;
+        block_on(async {
+            let row = self
+                .db
+                .query_one(Statement::from_sql_and_values(
+                    sea_orm::DatabaseBackend::Sqlite,
+                    "SELECT package_id FROM downloads WHERE id = ?",
+                    [dl_id.into()],
+                ))
+                .await
+                .map_err(map_db_err)?;
+            match row {
+                None => Ok(None),
+                Some(row) => {
+                    let raw: Option<String> = row.try_get("", "package_id").map_err(map_db_err)?;
+                    Ok(raw.map(PackageId::new))
+                }
+            }
+        })
+    }
 }
 
 #[cfg(test)]
@@ -611,6 +638,42 @@ mod tests {
         // Unknown download id must succeed silently (idempotent).
         repo.detach_download(DownloadId(9999))
             .expect("noop on unknown");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_find_package_of_download_returns_owner_when_attached() {
+        let db = setup_test_db().await.expect("test db");
+        let repo = SqlitePackageRepo::new(db.clone());
+        repo.save(&make_package("pkg-find", "F", PackageSourceType::Manual))
+            .expect("save");
+        insert_download_in_package(&db, 21, 0, Some("pkg-find")).await;
+
+        let owner = repo
+            .find_package_of_download(DownloadId(21))
+            .expect("query");
+        assert_eq!(owner, Some(PackageId::new("pkg-find")));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_find_package_of_download_returns_none_when_loose() {
+        let db = setup_test_db().await.expect("test db");
+        let repo = SqlitePackageRepo::new(db.clone());
+        insert_download_in_package(&db, 22, 0, None).await;
+
+        let owner = repo
+            .find_package_of_download(DownloadId(22))
+            .expect("query");
+        assert!(owner.is_none(), "loose download has no owning package");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_find_package_of_download_returns_none_when_row_missing() {
+        let db = setup_test_db().await.expect("test db");
+        let repo = SqlitePackageRepo::new(db);
+        let owner = repo
+            .find_package_of_download(DownloadId(404))
+            .expect("query");
+        assert!(owner.is_none(), "missing download row treated as loose");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -37,6 +37,14 @@ impl CommandBus {
                 "destination folder must not be empty".into(),
             ));
         }
+        // Reject relative paths so a crafted IPC payload (e.g. "../") cannot
+        // walk outside the working directory before the per-download move
+        // routines run.
+        if !cmd.new_folder.is_absolute() {
+            return Err(AppError::Validation(
+                "destination folder must be an absolute path".into(),
+            ));
+        }
 
         let updated = Package::reconstruct(
             existing.id().clone(),
@@ -169,6 +177,32 @@ mod tests {
             .await
             .expect_err("empty path rejected");
         assert!(matches!(err, AppError::Validation(_)));
+        let stored = repo.find_by_id(&id).unwrap().unwrap();
+        assert!(stored.folder_path().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_move_package_relative_path_rejected() {
+        let repo = Arc::new(InMemoryPackageRepo::new());
+        let creds = Arc::new(InMemoryCredentialStore::new());
+        let dl_repo = Arc::new(InMemoryDownloadRepo::new());
+        let events = Arc::new(CapturingEventBus::new());
+        let bus = build_package_bus(repo.clone(), creds, events, dl_repo.clone());
+        let id = seed(&bus, &repo, &dl_repo, &[]).await;
+
+        for relative in ["../escape", "./local", "relative/sub"] {
+            let err = bus
+                .handle_move_package_to_folder(MovePackageToFolderCommand {
+                    id: id.clone(),
+                    new_folder: PathBuf::from(relative),
+                })
+                .await
+                .expect_err("relative rejected");
+            assert!(
+                matches!(err, AppError::Validation(_)),
+                "expected validation error for {relative:?}"
+            );
+        }
         let stored = repo.find_by_id(&id).unwrap().unwrap();
         assert!(stored.folder_path().is_none());
     }

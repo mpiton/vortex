@@ -37,21 +37,20 @@ impl CommandBus {
 
         let key = package_credential_service_key(&cmd.id);
         let marker = match cmd.password.as_deref() {
-            Some(secret) => {
-                if secret.is_empty() {
-                    return Err(AppError::Validation(
-                        "package password must not be empty (pass None to clear)".into(),
-                    ));
-                }
-                credentials.store(&key, &Credential::new(String::new(), secret))?;
-                Some(key.clone())
+            Some("") => {
+                return Err(AppError::Validation(
+                    "package password must not be empty (pass None to clear)".into(),
+                ));
             }
-            None => {
-                credentials.delete(&key)?;
-                None
-            }
+            Some(_) => Some(key.clone()),
+            None => None,
         };
 
+        // Persist the marker BEFORE touching the keyring. If the keyring
+        // write fails the DB still describes a consistent state; on retry
+        // both sides converge because `store`/`delete` are idempotent. The
+        // reverse order would leave an orphaned keyring secret with no DB
+        // marker pointing at it.
         let updated = Package::reconstruct(
             existing.id().clone(),
             existing.name().to_string(),
@@ -63,6 +62,11 @@ impl CommandBus {
             existing.created_at(),
         )?;
         repo.save(&updated)?;
+
+        match cmd.password.as_deref() {
+            Some(secret) => credentials.store(&key, &Credential::new(String::new(), secret))?,
+            None => credentials.delete(&key)?,
+        }
 
         self.event_bus()
             .publish(DomainEvent::PackageUpdated { id: cmd.id.clone() });

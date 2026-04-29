@@ -50,4 +50,15 @@ pub trait PackageRepository: Send + Sync {
     /// Set `downloads.package_id = NULL` for the given download. Idempotent
     /// — succeeds silently when the row is missing or already detached.
     fn detach_download(&self, download_id: DownloadId) -> Result<(), DomainError>;
+
+    /// Return the package id currently owning the given download (FK
+    /// `downloads.package_id`). Returns `Ok(None)` when the download is
+    /// loose, when its row is missing, or when the download row predates
+    /// the package_id column — callers must treat all three as "no
+    /// owning package" so membership checks stay decoupled from row
+    /// existence checks.
+    fn find_package_of_download(
+        &self,
+        download_id: DownloadId,
+    ) -> Result<Option<PackageId>, DomainError>;
 }

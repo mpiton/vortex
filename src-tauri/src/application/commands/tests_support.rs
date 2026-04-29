@@ -383,6 +383,19 @@ impl PackageRepository for InMemoryPackageRepo {
         }
         Ok(())
     }
+
+    fn find_package_of_download(
+        &self,
+        download_id: DownloadId,
+    ) -> Result<Option<PackageId>, DomainError> {
+        let guard = self.members.lock().unwrap();
+        for (pkg, members) in guard.iter() {
+            if members.iter().any(|d| d == &download_id) {
+                return Ok(Some(pkg.clone()));
+            }
+        }
+        Ok(None)
+    }
 }
 
 // ── Capturing event bus ──────────────────────────────────────────────

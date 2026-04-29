@@ -843,6 +843,19 @@ impl PackageRepository for InMemoryPackageRepository {
         }
         Ok(())
     }
+
+    fn find_package_of_download(
+        &self,
+        download_id: DownloadId,
+    ) -> Result<Option<PackageId>, DomainError> {
+        let guard = self.members.lock().unwrap();
+        for (pkg, entries) in guard.iter() {
+            if entries.iter().any(|(_, id)| id == &download_id) {
+                return Ok(Some(pkg.clone()));
+            }
+        }
+        Ok(None)
+    }
 }
 
 #[test]
@@ -1172,6 +1185,29 @@ fn in_memory_package_repository_detach_download_removes_member() {
     assert!(repo.list_downloads(&pkg_id).unwrap().is_empty());
     // Idempotent: detaching again is a no-op.
     repo.detach_download(DownloadId(5)).unwrap();
+}
+
+#[test]
+fn in_memory_package_repository_find_package_of_download_returns_owner() {
+    let repo = InMemoryPackageRepository::new();
+    let pkg_id = PackageId::new("pkg-find");
+    repo.save(&Package::new(
+        pkg_id.clone(),
+        "Find".to_string(),
+        PackageSourceType::Manual,
+        0,
+    ))
+    .unwrap();
+    repo.attach_download(&pkg_id, DownloadId(42)).unwrap();
+
+    let owner = repo.find_package_of_download(DownloadId(42)).unwrap();
+    assert_eq!(owner, Some(pkg_id));
+    assert!(
+        repo.find_package_of_download(DownloadId(404))
+            .unwrap()
+            .is_none(),
+        "missing or loose downloads return None"
+    );
 }
 
 #[test]

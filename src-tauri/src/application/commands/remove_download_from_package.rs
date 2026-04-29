@@ -1,10 +1,12 @@
 //! Handler for [`RemoveDownloadFromPackageCommand`](super::RemoveDownloadFromPackageCommand).
 //!
-//! Detaches the download from any package (the FK is a singleton —
-//! package_id is either set or NULL). Idempotent: detaching an
-//! already-loose download is a no-op. We still surface a NotFound
-//! when the package does not exist so the IPC layer can flag the
-//! caller's stale state.
+//! Detaches the download from `cmd.package_id` only when the FK
+//! actually points there. The FK is a singleton — package_id is either
+//! set or NULL — so a stale `package_id` paired with a real
+//! `download_id` could otherwise silently strip the download from a
+//! different package. Idempotent for already-loose downloads (no-op,
+//! no event); rejects the operation when the download belongs to a
+//! different package so the UI can refresh its stale state.
 
 use crate::application::command_bus::CommandBus;
 use crate::application::error::AppError;
@@ -24,6 +26,17 @@ impl CommandBus {
                 "Package {} not found",
                 cmd.package_id
             )));
+        }
+
+        match repo.find_package_of_download(cmd.download_id)? {
+            None => return Ok(()),
+            Some(owner) if owner != cmd.package_id => {
+                return Err(AppError::Validation(format!(
+                    "Download {} is not a member of package {}",
+                    cmd.download_id.0, cmd.package_id
+                )));
+            }
+            Some(_) => {}
         }
 
         repo.detach_download(cmd.download_id)?;
@@ -115,6 +128,51 @@ mod tests {
         })
         .await
         .expect("idempotent");
+    }
+
+    #[tokio::test]
+    async fn test_remove_download_from_package_rejected_when_member_of_other_package() {
+        let repo = Arc::new(InMemoryPackageRepo::new());
+        let creds = Arc::new(InMemoryCredentialStore::new());
+        let dl_repo = Arc::new(InMemoryDownloadRepo::new());
+        let events = Arc::new(CapturingEventBus::new());
+        let bus = build_package_bus(repo.clone(), creds, events, dl_repo.clone());
+        let owning = bus
+            .handle_create_package(CreatePackageCommand {
+                name: "Owns".into(),
+                source_type: PackageSourceType::Manual,
+                folder_path: None,
+                created_at_ms: 0,
+            })
+            .await
+            .unwrap();
+        let other = bus
+            .handle_create_package(CreatePackageCommand {
+                name: "Other".into(),
+                source_type: PackageSourceType::Manual,
+                folder_path: None,
+                created_at_ms: 1,
+            })
+            .await
+            .unwrap();
+        dl_repo.seed(make_download(42));
+        repo.attach_download(&owning, DownloadId(42)).unwrap();
+
+        let err = bus
+            .handle_remove_download_from_package(RemoveDownloadFromPackageCommand {
+                package_id: other.clone(),
+                download_id: DownloadId(42),
+            })
+            .await
+            .expect_err("wrong package rejected");
+        assert!(matches!(err, AppError::Validation(_)));
+
+        // Membership untouched on the rightful owner.
+        assert_eq!(
+            repo.list_downloads(&owning).unwrap(),
+            vec![DownloadId(42)],
+            "download stays attached to its real owner"
+        );
     }
 
     #[tokio::test]
