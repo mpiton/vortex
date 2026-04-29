@@ -248,8 +248,17 @@ impl TryFrom<ConfigDto> for AppConfig {
     type Error = DomainError;
 
     fn try_from(d: ConfigDto) -> Result<Self, Self::Error> {
+        // Backward compat: legacy `config.toml` files written before the
+        // `account_selection_strategy` field existed deserialize via
+        // `#[serde(default)]` as the empty string. Treat that as
+        // `DEFAULT` so an upgrade does not fail at startup; reject any
+        // non-empty unknown value as the typo / corruption it actually is.
         let account_selection_strategy: AccountSelectionStrategy =
-            d.account_selection_strategy.parse()?;
+            if d.account_selection_strategy.is_empty() {
+                AccountSelectionStrategy::DEFAULT
+            } else {
+                d.account_selection_strategy.parse()?
+            };
         Ok(Self {
             download_dir: d.download_dir,
             start_minimized: d.start_minimized,
@@ -640,6 +649,32 @@ mod tests {
         assert_eq!(
             config.account_selection_strategy,
             AccountSelectionStrategy::RoundRobin
+        );
+    }
+
+    /// Codex-flagged P1 regression: a legacy `config.toml` written before
+    /// the `account_selection_strategy` field existed has no key for it.
+    /// `#[serde(default)]` on `ConfigDto` makes the missing field
+    /// deserialize as the empty string. Without special-casing, the
+    /// strict `parse()` would fail and break startup for upgraded users.
+    /// The TOML store must surface `BestTraffic` for the empty-string
+    /// case while still rejecting non-empty typos.
+    #[test]
+    fn test_get_config_accepts_legacy_config_without_strategy_field() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        // Pre-task-24 file: every existing field is present except the
+        // brand-new `account_selection_strategy`.
+        std::fs::write(&path, "api_key = \"legacy-key\"\n").unwrap();
+
+        let store = TomlConfigStore::new(path, None, Some("default-key".to_string()));
+        let config = store
+            .get_config()
+            .expect("legacy config without strategy field must load");
+        assert_eq!(
+            config.account_selection_strategy,
+            AccountSelectionStrategy::DEFAULT,
+            "missing strategy field must hydrate as the default"
         );
     }
 }
