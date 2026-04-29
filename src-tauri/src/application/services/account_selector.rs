@@ -90,7 +90,9 @@ impl AccountSelector {
             AccountSelectionStrategy::BestTraffic | AccountSelectionStrategy::Manual => {
                 pick_best_traffic(&eligible)
             }
-            AccountSelectionStrategy::RoundRobin => self.pick_round_robin(service_name, &eligible),
+            AccountSelectionStrategy::RoundRobin => {
+                self.pick_round_robin(service_name, &eligible)?
+            }
         };
         let account = chosen.cloned();
         if let Some(ref acc) = account {
@@ -103,17 +105,29 @@ impl AccountSelector {
         Ok(account)
     }
 
-    fn pick_round_robin<'a>(&self, key: &str, eligible: &[&'a Account]) -> Option<&'a Account> {
+    /// Returns the next round-robin candidate, or `None` when `eligible`
+    /// is empty. Surfaces a poisoned cursor mutex as `AppError::Validation`
+    /// instead of folding it into `Ok(None)`: that variant of `select_best`
+    /// is reserved for "zero eligible accounts" and must stay distinguishable
+    /// from internal-state corruption so callers can react to a real failure.
+    fn pick_round_robin<'a>(
+        &self,
+        key: &str,
+        eligible: &[&'a Account],
+    ) -> Result<Option<&'a Account>, AppError> {
         if eligible.is_empty() {
-            return None;
+            return Ok(None);
         }
         let mut sorted = eligible.to_vec();
         sorted.sort_by(|a, b| a.id().as_str().cmp(b.id().as_str()));
-        let mut guard = self.rr_cursor.lock().ok()?;
+        let mut guard = self
+            .rr_cursor
+            .lock()
+            .map_err(|_| AppError::Validation("round-robin cursor mutex poisoned".to_string()))?;
         let cursor = guard.entry(key.to_string()).or_insert(0);
         let pick = sorted[*cursor % sorted.len()];
         *cursor = cursor.wrapping_add(1);
-        Some(pick)
+        Ok(Some(pick))
     }
 
     fn now_ms(&self) -> u64 {
@@ -599,5 +613,46 @@ mod tests {
             .unwrap();
         assert_eq!(r1.id().as_str(), "a");
         assert!(r2.is_none(), "case-mismatched service name has no rows");
+    }
+
+    /// CodeRabbit / cubic-flagged regression: a poisoned `rr_cursor`
+    /// mutex used to fold into `Ok(None)` because `lock().ok()?` swallowed
+    /// the `PoisonError`. The contract reserves `Ok(None)` for
+    /// "zero eligible accounts", so we must surface the failure as
+    /// `AppError::Validation` instead — otherwise callers cannot tell
+    /// "no candidate" from "internal state corrupted" and miss the
+    /// `NoAccountAvailable` code path that should never have fired.
+    #[test]
+    fn test_pick_round_robin_returns_err_on_poisoned_cursor() {
+        use std::thread;
+
+        let now_ms = 2_000_000_000_000;
+        let now_secs = now_ms / 1_000;
+        let a = account("a", "S", Some(1), Some(now_ms + 1), None, true);
+        let b = account("b", "S", Some(1), Some(now_ms + 1), None, true);
+
+        let (selector, _bus) = build_selector(vec![a, b], now_secs);
+
+        // Poison the rr_cursor mutex by panicking inside a held guard.
+        let selector_clone = selector.clone();
+        let _ = thread::spawn(move || {
+            let _guard = selector_clone
+                .rr_cursor
+                .lock()
+                .expect("first lock cannot be poisoned");
+            panic!("intentional panic to poison the cursor");
+        })
+        .join();
+
+        let result = selector.select_best("S", AccountSelectionStrategy::RoundRobin);
+        match result {
+            Err(AppError::Validation(msg)) => {
+                assert!(
+                    msg.contains("round-robin cursor mutex poisoned"),
+                    "unexpected error message: {msg}"
+                );
+            }
+            other => panic!("poisoned cursor must surface as AppError::Validation, got {other:?}"),
+        }
     }
 }
