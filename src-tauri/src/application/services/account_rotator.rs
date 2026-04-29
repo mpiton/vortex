@@ -111,45 +111,61 @@ impl AccountRotator {
         strategy: AccountSelectionStrategy,
     ) -> Result<NextAccountOutcome, AppError> {
         let now_ms = self.now_ms();
-        let mut exhausted_ids = self.snapshot_exhausted(now_ms)?;
-        // Linearise with concurrent `mark_exhausted`: snapshot is taken
-        // before the selector runs, so a parallel exhaustion landing in
-        // the gap could otherwise leak a stale account back to the
-        // caller. Re-check under the lock after each pick and retry
-        // with the offending id added to the exclude list.
+        let mut snapshot_baseline = self.snapshot_exhausted(now_ms)?;
+        let mut exhausted_ids = snapshot_baseline.clone();
+        // Linearise with concurrent `mark_exhausted` / `clear_exhausted`:
+        // - On every pick, re-check the chosen id under the lock and
+        //   retry with that id added to the exclude list when a
+        //   parallel `mark_exhausted` landed in the gap.
+        // - When the selector exhausts options, re-snapshot the
+        //   cooldown map and retry once more if a parallel clear (via
+        //   `clear_exhausted` or `record_traffic_refresh`) freed an id
+        //   that was in our snapshot baseline. Otherwise we'd return
+        //   `AllExhausted` while a live account is in fact selectable.
         loop {
             let picked = self.selector.select_best_excluding_quiet(
                 service_name,
                 strategy,
                 &exhausted_ids,
             )?;
-            let Some(account) = picked else {
-                break;
-            };
-            let still_available = {
-                let guard = self.lock_exhausted()?;
-                guard
-                    .get(account.id())
-                    .is_none_or(|deadline| now_ms >= *deadline)
-            };
-            if still_available {
-                // Emit AccountSelected only on the committed pick, not
-                // on probes that lose the race to a parallel
-                // `mark_exhausted`. Otherwise UI/telemetry would see
-                // "selected" for an account never returned to the caller.
-                self.event_bus.publish(DomainEvent::AccountSelected {
-                    id: account.id().clone(),
-                    service_name: service_name.to_string(),
-                    strategy: strategy.to_string(),
-                });
-                return Ok(NextAccountOutcome::Picked(account));
+            if let Some(account) = picked {
+                let still_available = {
+                    let guard = self.lock_exhausted()?;
+                    guard
+                        .get(account.id())
+                        .is_none_or(|deadline| now_ms >= *deadline)
+                };
+                if still_available {
+                    // Emit AccountSelected only on the committed pick, not
+                    // on probes that lose the race to a parallel
+                    // `mark_exhausted`. Otherwise UI/telemetry would see
+                    // "selected" for an account never returned to the caller.
+                    self.event_bus.publish(DomainEvent::AccountSelected {
+                        id: account.id().clone(),
+                        service_name: service_name.to_string(),
+                        strategy: strategy.to_string(),
+                    });
+                    return Ok(NextAccountOutcome::Picked(account));
+                }
+                exhausted_ids.push(account.id().clone());
+                continue;
             }
-            exhausted_ids.push(account.id().clone());
+            // No pick under the current exclude list. Re-snapshot the
+            // cooldown map: if a parallel clear removed any id we were
+            // previously excluding, the selector may now find a live
+            // account.
+            let fresh = self.snapshot_exhausted(now_ms)?;
+            let any_cleared = snapshot_baseline.iter().any(|id| !fresh.contains(id));
+            if !any_cleared {
+                break;
+            }
+            snapshot_baseline = fresh.clone();
+            exhausted_ids = fresh;
         }
-        // No pick. Decide between NoneAvailable and AllExhausted by
-        // looking at the repo directly: if there's at least one
-        // enabled, non-expired account for this service, the rotation
-        // is what is blocking the caller, not the absence of credentials.
+        // No pick after stable re-snapshot. Decide between NoneAvailable
+        // and AllExhausted by looking at the repo directly: if there's
+        // at least one enabled, non-expired account for this service,
+        // the rotation is the blocker, not the absence of credentials.
         let candidates = self.repo.list_by_service(service_name)?;
         let live: Vec<&Account> = candidates
             .iter()
