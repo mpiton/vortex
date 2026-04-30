@@ -206,6 +206,22 @@ pub enum DomainEvent {
         id: PackageId,
         name: String,
     },
+    /// Emitted whenever a package's metadata (name / folder / priority /
+    /// auto-extract / password / membership) changes. Fine-grained per-
+    /// child events (e.g. `DownloadPrioritySet`, `DownloadDirectoryChanged`)
+    /// are still emitted alongside this carrier so the queue manager
+    /// re-schedules normally.
+    PackageUpdated {
+        id: PackageId,
+    },
+    /// Emitted after a `DeletePackageCommand` removed the package row.
+    /// `delete_downloads` mirrors the command flag so subscribers can
+    /// distinguish "package detached, downloads kept" from "everything
+    /// gone" without re-reading the repo.
+    PackageDeleted {
+        id: PackageId,
+        delete_downloads: bool,
+    },
 
     // Clipboard
     ClipboardUrlDetected {
@@ -390,6 +406,32 @@ mod tests {
                 name: "My Package".to_string()
             }
         );
+    }
+
+    #[test]
+    fn test_package_updated_event_carries_id() {
+        let event = DomainEvent::PackageUpdated {
+            id: PackageId::new("pkg-up"),
+        };
+        let s = format!("{event:?}");
+        assert!(s.contains("PackageUpdated"));
+        assert!(s.contains("pkg-up"));
+    }
+
+    #[test]
+    fn test_package_deleted_event_carries_id_and_cascade_flag() {
+        let cascade = DomainEvent::PackageDeleted {
+            id: PackageId::new("pkg-del"),
+            delete_downloads: true,
+        };
+        let detach = DomainEvent::PackageDeleted {
+            id: PackageId::new("pkg-del"),
+            delete_downloads: false,
+        };
+        assert_ne!(cascade, detach);
+        let s = format!("{cascade:?}");
+        assert!(s.contains("PackageDeleted"));
+        assert!(s.contains("pkg-del"));
     }
 
     #[test]

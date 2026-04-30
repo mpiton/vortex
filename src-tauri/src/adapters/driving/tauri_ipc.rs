@@ -13,19 +13,22 @@ use crate::adapters::driven::logging::download_log_store::DownloadLogStore;
 use crate::application::command_bus::CommandBus;
 use crate::application::commands::store_install::{StoreInstallCommand, StoreUpdateCommand};
 use crate::application::commands::{
-    AccountPatch, AddAccountCommand, CancelDownloadCommand, ChangeDirectoryBulkCommand,
-    ChangeDirectoryBulkOutcome, ChangeDirectoryCommand, ChangeDirectoryFailure,
-    ClearDownloadsByStateCommand, ClearHistoryCommand, DeleteAccountCommand,
-    DeleteHistoryEntryCommand, DisablePluginCommand, EnablePluginCommand, ExportAccountsCommand,
-    ExportAccountsOutcome, ExportHistoryCommand, ExportHistoryFormat, ImportAccountsCommand,
-    ImportAccountsOutcome, InstallPluginCommand, MoveToBottomCommand, MoveToTopCommand,
-    OpenDownloadFileCommand, OpenDownloadFolderCommand, PauseAllDownloadsCommand,
-    PauseDownloadCommand, PurgeHistoryCommand, RedownloadCommand, RedownloadSource,
-    RemoveDownloadCommand, ReorderQueueCommand, ReportBrokenPluginCommand, ResolveLinksCommand,
-    ResolvedLinkDto, ResumeAllDownloadsCommand, ResumeDownloadCommand, RetryDownloadCommand,
-    SetPriorityCommand, StartDownloadCommand, UninstallPluginCommand, UpdateAccountCommand,
-    UpdateConfigCommand, UpdatePluginConfigCommand, ValidateAccountCommand, ValidationOutcomeDto,
-    VerifyChecksumCommand, VerifyChecksumOutcome,
+    AccountPatch, AddAccountCommand, AddDownloadToPackageCommand, CancelDownloadCommand,
+    ChangeDirectoryBulkCommand, ChangeDirectoryBulkOutcome, ChangeDirectoryCommand,
+    ChangeDirectoryFailure, ClearDownloadsByStateCommand, ClearHistoryCommand,
+    CreatePackageCommand, DeleteAccountCommand, DeleteHistoryEntryCommand, DeletePackageCommand,
+    DisablePluginCommand, EnablePluginCommand, ExportAccountsCommand, ExportAccountsOutcome,
+    ExportHistoryCommand, ExportHistoryFormat, ImportAccountsCommand, ImportAccountsOutcome,
+    InstallPluginCommand, MovePackageToFolderCommand, MoveToBottomCommand, MoveToTopCommand,
+    OpenDownloadFileCommand, OpenDownloadFolderCommand, PackageMoveOutcome, PackagePatch,
+    PauseAllDownloadsCommand, PauseDownloadCommand, PurgeHistoryCommand, RedownloadCommand,
+    RedownloadSource, RemoveDownloadCommand, RemoveDownloadFromPackageCommand, ReorderQueueCommand,
+    ReportBrokenPluginCommand, ResolveLinksCommand, ResolvedLinkDto, ResumeAllDownloadsCommand,
+    ResumeDownloadCommand, RetryDownloadCommand, SetPackagePasswordCommand,
+    SetPackagePriorityCommand, SetPriorityCommand, StartDownloadCommand,
+    TogglePackageAutoExtractCommand, UninstallPluginCommand, UpdateAccountCommand,
+    UpdateConfigCommand, UpdatePackageCommand, UpdatePluginConfigCommand, ValidateAccountCommand,
+    ValidationOutcomeDto, VerifyChecksumCommand, VerifyChecksumOutcome,
 };
 use crate::application::error::AppError;
 use crate::application::queries::{
@@ -47,6 +50,7 @@ use crate::domain::error::DomainError;
 use crate::domain::model::account::{AccountId, AccountType};
 use crate::domain::model::config::{AppConfig, ConfigPatch};
 use crate::domain::model::download::{DownloadId, DownloadState};
+use crate::domain::model::package::{PackageId, PackageSourceType};
 use crate::domain::model::views::{
     DownloadFilter, HistoryFilter, HistorySort, HistorySortField, SortDirection, SortField,
     SortOrder, StatsPeriod,
@@ -2867,6 +2871,199 @@ pub async fn account_traffic_get(
         .query_bus
         .handle_get_account_traffic(GetAccountTrafficQuery {
             id: AccountId::new(id),
+        })
+        .await
+        .map_err(|e| e.to_string())
+}
+
+// ── Packages ────────────────────────────────────────────────────────
+
+fn parse_package_source_type(raw: &str) -> Result<PackageSourceType, String> {
+    raw.parse::<PackageSourceType>().map_err(|e| e.to_string())
+}
+
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PackagePatchDto {
+    pub name: Option<String>,
+    /// `Some(Some(_))` sets, `Some(None)` clears, `None` leaves unchanged.
+    /// We accept the inner value verbatim from the frontend so it can
+    /// distinguish "set to empty" from "unchanged".
+    pub folder_path: Option<Option<String>>,
+    pub priority: Option<u8>,
+    pub auto_extract: Option<bool>,
+}
+
+impl PackagePatchDto {
+    fn into_domain(self) -> PackagePatch {
+        PackagePatch {
+            name: self.name,
+            folder_path: self.folder_path,
+            priority: self.priority,
+            auto_extract: self.auto_extract,
+        }
+    }
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PackageMoveOutcomeDto {
+    pub moved: Vec<u64>,
+    pub failed: Vec<ChangeDirectoryFailureDto>,
+}
+
+impl From<PackageMoveOutcome> for PackageMoveOutcomeDto {
+    fn from(o: PackageMoveOutcome) -> Self {
+        Self {
+            moved: o.moved.into_iter().map(|d| d.0).collect(),
+            failed: o.failed.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn package_create(
+    state: State<'_, AppState>,
+    name: String,
+    source_type: String,
+    folder_path: Option<String>,
+) -> Result<String, String> {
+    let source_type = parse_package_source_type(&source_type)?;
+    state
+        .command_bus
+        .handle_create_package(CreatePackageCommand {
+            name,
+            source_type,
+            folder_path,
+            created_at_ms: now_unix_ms(),
+        })
+        .await
+        .map(|id| id.as_str().to_string())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn package_update(
+    state: State<'_, AppState>,
+    id: String,
+    patch: PackagePatchDto,
+) -> Result<(), String> {
+    state
+        .command_bus
+        .handle_update_package(UpdatePackageCommand {
+            id: PackageId::new(id),
+            patch: patch.into_domain(),
+        })
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn package_delete(
+    state: State<'_, AppState>,
+    id: String,
+    delete_downloads: bool,
+) -> Result<(), String> {
+    state
+        .command_bus
+        .handle_delete_package(DeletePackageCommand {
+            id: PackageId::new(id),
+            delete_downloads,
+        })
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn package_set_password(
+    state: State<'_, AppState>,
+    id: String,
+    password: Option<String>,
+) -> Result<(), String> {
+    state
+        .command_bus
+        .handle_set_package_password(SetPackagePasswordCommand {
+            id: PackageId::new(id),
+            password,
+        })
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn package_set_priority(
+    state: State<'_, AppState>,
+    id: String,
+    priority: u8,
+) -> Result<(), String> {
+    state
+        .command_bus
+        .handle_set_package_priority(SetPackagePriorityCommand {
+            id: PackageId::new(id),
+            priority,
+        })
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn package_move_to_folder(
+    state: State<'_, AppState>,
+    id: String,
+    new_folder: String,
+) -> Result<PackageMoveOutcomeDto, String> {
+    state
+        .command_bus
+        .handle_move_package_to_folder(MovePackageToFolderCommand {
+            id: PackageId::new(id),
+            new_folder: PathBuf::from(new_folder),
+        })
+        .await
+        .map(PackageMoveOutcomeDto::from)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn package_toggle_auto_extract(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<bool, String> {
+    state
+        .command_bus
+        .handle_toggle_package_auto_extract(TogglePackageAutoExtractCommand {
+            id: PackageId::new(id),
+        })
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn package_add_download(
+    state: State<'_, AppState>,
+    package_id: String,
+    download_id: u64,
+) -> Result<(), String> {
+    state
+        .command_bus
+        .handle_add_download_to_package(AddDownloadToPackageCommand {
+            package_id: PackageId::new(package_id),
+            download_id: DownloadId(download_id),
+        })
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn package_remove_download(
+    state: State<'_, AppState>,
+    package_id: String,
+    download_id: u64,
+) -> Result<(), String> {
+    state
+        .command_bus
+        .handle_remove_download_from_package(RemoveDownloadFromPackageCommand {
+            package_id: PackageId::new(package_id),
+            download_id: DownloadId(download_id),
         })
         .await
         .map_err(|e| e.to_string())

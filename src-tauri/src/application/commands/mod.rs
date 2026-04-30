@@ -7,16 +7,20 @@
 mod tests_support;
 
 mod add_account;
+mod add_download_to_package;
 mod cancel_download;
 mod change_directory;
 mod clear_downloads_by_state;
+mod create_package;
 mod delete_account;
 mod delete_history;
+mod delete_package;
 mod export_accounts;
 mod export_history;
 mod extract_archive;
 mod import_accounts;
 mod install_plugin;
+mod move_package_to_folder;
 mod move_queue;
 mod open_download_file;
 mod open_download_folder;
@@ -26,20 +30,25 @@ mod purge_history;
 mod redownload;
 mod register_local_file;
 mod remove_download;
+mod remove_download_from_package;
 mod report_broken_plugin;
 mod resolve_links;
 mod resume_all;
 mod resume_download;
 mod retry_download;
+mod set_package_password;
+mod set_package_priority;
 mod set_priority;
 mod start_download;
 pub mod store_install;
 pub mod store_refresh;
 mod toggle_clipboard;
+mod toggle_package_auto_extract;
 mod toggle_plugin;
 mod uninstall_plugin;
 mod update_account;
 mod update_config;
+mod update_package;
 mod update_plugin_config;
 mod validate_account;
 mod verify_checksum;
@@ -49,6 +58,7 @@ use std::path::PathBuf;
 use crate::domain::model::account::{AccountId, AccountType};
 use crate::domain::model::config::ConfigPatch;
 use crate::domain::model::download::DownloadId;
+use crate::domain::model::package::{PackageId, PackageSourceType};
 use crate::domain::ports::driving::Command;
 
 #[derive(Debug)]
@@ -466,6 +476,117 @@ pub struct ImportAccountsOutcome {
     /// Entries skipped because a row with the same
     /// `(service_name, username)` pair was already persisted.
     pub skipped_duplicates: u32,
+}
+
+// ── Packages ─────────────────────────────────────────────────────────
+
+/// Build and persist a fresh `Package` aggregate. The handler generates
+/// a UUID v4 for the new id so callers don't have to coordinate ids
+/// across processes.
+#[derive(Debug, Clone)]
+pub struct CreatePackageCommand {
+    pub name: String,
+    pub source_type: PackageSourceType,
+    pub folder_path: Option<String>,
+    pub created_at_ms: u64,
+}
+impl Command for CreatePackageCommand {}
+
+/// Partial-mutation payload for [`UpdatePackageCommand`]. Every field is
+/// optional; absent values keep the persisted package unchanged. Use
+/// [`SetPackagePasswordCommand`] to rotate the keyring secret — the
+/// password column itself is not in this patch.
+#[derive(Debug, Clone, Default)]
+pub struct PackagePatch {
+    pub name: Option<String>,
+    pub folder_path: Option<Option<String>>,
+    pub priority: Option<u8>,
+    pub auto_extract: Option<bool>,
+}
+
+#[derive(Debug, Clone)]
+pub struct UpdatePackageCommand {
+    pub id: PackageId,
+    pub patch: PackagePatch,
+}
+impl Command for UpdatePackageCommand {}
+
+/// Delete a package. When `delete_downloads` is `false`, the FK on
+/// each member download is cleared (downloads survive); when `true`,
+/// each member is removed via [`RemoveDownloadCommand`] before the
+/// package row is dropped.
+#[derive(Debug, Clone)]
+pub struct DeletePackageCommand {
+    pub id: PackageId,
+    pub delete_downloads: bool,
+}
+impl Command for DeletePackageCommand {}
+
+/// Set or clear the archive password for a package. The secret is
+/// persisted in the OS keyring; the SQLite column only stores the
+/// keyring service key as a marker — never the plaintext password.
+#[derive(Debug, Clone)]
+pub struct SetPackagePasswordCommand {
+    pub id: PackageId,
+    /// `Some(secret)` rotates the keyring entry, `None` clears it.
+    pub password: Option<String>,
+}
+impl Command for SetPackagePasswordCommand {}
+
+/// Set the package's scheduling priority and propagate the value to
+/// every member download. Each impacted download triggers a
+/// `DownloadPrioritySet` event so the queue manager re-evaluates
+/// scheduling immediately.
+#[derive(Debug, Clone)]
+pub struct SetPackagePriorityCommand {
+    pub id: PackageId,
+    pub priority: u8,
+}
+impl Command for SetPackagePriorityCommand {}
+
+/// Move every member download to `new_folder` and persist the new
+/// folder path on the package itself. Re-uses the per-download move
+/// logic so each child emits `DownloadDirectoryChanged`.
+#[derive(Debug, Clone)]
+pub struct MovePackageToFolderCommand {
+    pub id: PackageId,
+    pub new_folder: PathBuf,
+}
+impl Command for MovePackageToFolderCommand {}
+
+/// Toggle the package's `auto_extract` flag.
+#[derive(Debug, Clone)]
+pub struct TogglePackageAutoExtractCommand {
+    pub id: PackageId,
+}
+impl Command for TogglePackageAutoExtractCommand {}
+
+/// Attach a download to a package (sets the FK on the download row).
+/// Idempotent — re-attaching a download already in the package is a
+/// no-op.
+#[derive(Debug, Clone)]
+pub struct AddDownloadToPackageCommand {
+    pub package_id: PackageId,
+    pub download_id: DownloadId,
+}
+impl Command for AddDownloadToPackageCommand {}
+
+/// Detach a download from a package (clears the FK on the download
+/// row). Idempotent.
+#[derive(Debug, Clone)]
+pub struct RemoveDownloadFromPackageCommand {
+    pub package_id: PackageId,
+    pub download_id: DownloadId,
+}
+impl Command for RemoveDownloadFromPackageCommand {}
+
+/// Per-child move outcome surfaced by `move_package_to_folder` so the
+/// frontend can show partial failures alongside successes (mirrors
+/// `ChangeDirectoryBulkOutcome`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PackageMoveOutcome {
+    pub moved: Vec<DownloadId>,
+    pub failed: Vec<change_directory::ChangeDirectoryFailure>,
 }
 
 /// Register an already-downloaded local file as a Completed download.

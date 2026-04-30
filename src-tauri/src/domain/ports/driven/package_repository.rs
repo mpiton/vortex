@@ -35,4 +35,30 @@ pub trait PackageRepository: Send + Sync {
     /// surface them in scheduling order. Returns an empty vector when
     /// no download references the package.
     fn list_downloads(&self, id: &PackageId) -> Result<Vec<DownloadId>, DomainError>;
+
+    /// Set `downloads.package_id = package_id` for the given download.
+    /// Idempotent — re-attaching a download already in the package is a
+    /// no-op. Implementations must surface a [`DomainError::NotFound`]
+    /// when the download row does not exist so handlers can surface a
+    /// clean validation error to the IPC layer.
+    fn attach_download(
+        &self,
+        package_id: &PackageId,
+        download_id: DownloadId,
+    ) -> Result<(), DomainError>;
+
+    /// Set `downloads.package_id = NULL` for the given download. Idempotent
+    /// — succeeds silently when the row is missing or already detached.
+    fn detach_download(&self, download_id: DownloadId) -> Result<(), DomainError>;
+
+    /// Return the package id currently owning the given download (FK
+    /// `downloads.package_id`). Returns `Ok(None)` when the download is
+    /// loose, when its row is missing, or when the download row predates
+    /// the package_id column — callers must treat all three as "no
+    /// owning package" so membership checks stay decoupled from row
+    /// existence checks.
+    fn find_package_of_download(
+        &self,
+        download_id: DownloadId,
+    ) -> Result<Option<PackageId>, DomainError>;
 }
