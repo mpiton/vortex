@@ -144,12 +144,12 @@ export function PackagesView() {
   );
 
   const pauseMut = useTauriMutation<unknown, { id: number }>("download_pause", {
-    invalidateKeys: [downloadQueries.all()] as const,
+    invalidateKeys: INVALIDATE_KEYS_WITH_DOWNLOADS,
     silentError: true,
   });
 
   const resumeMut = useTauriMutation<unknown, { id: number }>("download_resume", {
-    invalidateKeys: [downloadQueries.all()] as const,
+    invalidateKeys: INVALIDATE_KEYS_WITH_DOWNLOADS,
     silentError: true,
   });
 
@@ -204,9 +204,12 @@ export function PackagesView() {
     async (deleteDownloads: boolean) => {
       if (!deleting) return;
       await deleteMut.mutateAsync({ id: deleting.id, deleteDownloads });
+      if (expandedId === deleting.id) {
+        setExpandedId(null);
+      }
       toast.success(t("packages.toast.deleteSuccess"));
     },
-    [deleting, deleteMut, t],
+    [deleting, deleteMut, expandedId, t],
   );
 
   const pickFolder = useCallback(async () => {
