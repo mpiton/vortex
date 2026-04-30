@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use crate::domain::ports::driven::{
     AccountRepository, ArchiveExtractor, DownloadReadRepository, HistoryRepository,
-    PluginConfigStore, PluginLoader, PluginReadRepository, StatsRepository,
+    PackageReadRepository, PluginConfigStore, PluginLoader, PluginReadRepository, StatsRepository,
 };
 
 /// Central dispatcher for CQRS queries.
@@ -23,6 +23,7 @@ pub struct QueryBus {
     plugin_loader: Option<Arc<dyn PluginLoader>>,
     plugin_config_store: Option<Arc<dyn PluginConfigStore>>,
     account_repo: Option<Arc<dyn AccountRepository>>,
+    package_read_repo: Option<Arc<dyn PackageReadRepository>>,
 }
 
 impl QueryBus {
@@ -42,6 +43,7 @@ impl QueryBus {
             plugin_loader: None,
             plugin_config_store: None,
             account_repo: None,
+            package_read_repo: None,
         }
     }
 
@@ -69,6 +71,17 @@ impl QueryBus {
 
     pub fn account_repo(&self) -> Option<&dyn AccountRepository> {
         self.account_repo.as_deref()
+    }
+
+    /// Builder-style setter for the package read repository. Optional so
+    /// fixtures that never query packages don't have to provide one.
+    pub fn with_package_read_repo(mut self, repo: Arc<dyn PackageReadRepository>) -> Self {
+        self.package_read_repo = Some(repo);
+        self
+    }
+
+    pub fn package_read_repo(&self) -> Option<&dyn PackageReadRepository> {
+        self.package_read_repo.as_deref()
     }
 
     pub fn download_read_repo(&self) -> &dyn DownloadReadRepository {

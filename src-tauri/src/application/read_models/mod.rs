@@ -4,6 +4,7 @@ pub mod account_view;
 pub mod download_detail_view;
 pub mod download_view;
 pub mod history_view;
+pub mod package_view;
 pub mod plugin_config_view;
 pub mod plugin_store_view;
 pub mod plugin_view;

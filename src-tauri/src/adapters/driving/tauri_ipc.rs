@@ -33,8 +33,9 @@ use crate::application::commands::{
 use crate::application::error::AppError;
 use crate::application::queries::{
     AccountFilter, CountDownloadsByStateQuery, GetAccountQuery, GetAccountTrafficQuery,
-    GetDownloadDetailQuery, GetDownloadsQuery, GetHistoryEntryQuery, GetPluginConfigQuery,
-    GetStatsQuery, ListAccountsQuery, ListHistoryQuery, ListPluginsQuery, SearchHistoryQuery,
+    GetDownloadDetailQuery, GetDownloadsQuery, GetHistoryEntryQuery, GetPackageQuery,
+    GetPluginConfigQuery, GetStatsQuery, ListAccountsQuery, ListHistoryQuery,
+    ListPackageDownloadsQuery, ListPackagesQuery, ListPluginsQuery, SearchHistoryQuery,
     TopModulesQuery,
 };
 use crate::application::query_bus::QueryBus;
@@ -42,6 +43,7 @@ use crate::application::read_models::account_view::{AccountTrafficDto, AccountVi
 use crate::application::read_models::download_detail_view::DownloadDetailViewDto;
 use crate::application::read_models::download_view::DownloadViewDto;
 use crate::application::read_models::history_view::HistoryViewDto;
+use crate::application::read_models::package_view::PackageViewDto;
 use crate::application::read_models::plugin_config_view::PluginConfigView;
 use crate::application::read_models::plugin_store_view::PluginStoreEntryDto;
 use crate::application::read_models::plugin_view::PluginViewDto;
@@ -52,8 +54,8 @@ use crate::domain::model::config::{AppConfig, ConfigPatch};
 use crate::domain::model::download::{DownloadId, DownloadState};
 use crate::domain::model::package::{PackageId, PackageSourceType};
 use crate::domain::model::views::{
-    DownloadFilter, HistoryFilter, HistorySort, HistorySortField, SortDirection, SortField,
-    SortOrder, StatsPeriod,
+    DownloadFilter, HistoryFilter, HistorySort, HistorySortField, PackageFilter, SortDirection,
+    SortField, SortOrder, StatsPeriod,
 };
 use crate::domain::ports::driven::PluginLoader;
 
@@ -3066,6 +3068,64 @@ pub async fn package_remove_download(
             download_id: DownloadId(download_id),
         })
         .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn package_list(
+    state: State<'_, AppState>,
+    source_type: Option<String>,
+    name_q: Option<String>,
+) -> Result<Vec<PackageViewDto>, String> {
+    let source_type = source_type
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    if let Some(ref raw) = source_type {
+        // Validate eagerly so callers see "invalid source type" instead
+        // of an empty result set.
+        parse_package_source_type(raw)?;
+    }
+    let name_q = name_q
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let filter = if source_type.is_none() && name_q.is_none() {
+        None
+    } else {
+        Some(PackageFilter {
+            source_type,
+            name_q,
+        })
+    };
+    state
+        .query_bus
+        .handle_list_packages(ListPackagesQuery { filter })
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn package_get(state: State<'_, AppState>, id: String) -> Result<PackageViewDto, String> {
+    state
+        .query_bus
+        .handle_get_package(GetPackageQuery {
+            id: PackageId::new(id),
+        })
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn package_list_downloads(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<Vec<DownloadViewDto>, String> {
+    state
+        .query_bus
+        .handle_list_package_downloads(ListPackageDownloadsQuery {
+            id: PackageId::new(id),
+        })
+        .await
+        .map(|views| views.into_iter().map(DownloadViewDto::from).collect())
         .map_err(|e| e.to_string())
 }
 

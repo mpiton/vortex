@@ -20,10 +20,12 @@ use crate::domain::model::credential::Credential;
 use crate::domain::model::download::{Download, DownloadId, DownloadState};
 use crate::domain::model::http::HttpResponse;
 use crate::domain::model::meta::DownloadMeta;
+use crate::domain::model::package::PackageId;
 use crate::domain::model::plugin::{PluginInfo, PluginManifest};
 use crate::domain::model::views::{
     DownloadDetailView, DownloadFilter, DownloadView, HistoryEntry, HistoryFilter, HistorySort,
-    HistorySortField, SortDirection, SortOrder, StateCountMap, StatsView,
+    HistorySortField, PackageFilter, PackageView, SortDirection, SortOrder, StateCountMap,
+    StatsView,
 };
 use crate::domain::ports::driven::history_repository::{
     MAX_HISTORY_PAGE_SIZE, MAX_HISTORY_SEARCH_RESULTS,
@@ -31,7 +33,8 @@ use crate::domain::ports::driven::history_repository::{
 use crate::domain::ports::driven::{
     AccountRepository, ArchiveExtractor, ClipboardObserver, ConfigStore, CredentialStore,
     DownloadEngine, DownloadReadRepository, DownloadRepository, EventBus, FileStorage,
-    HistoryRepository, HttpClient, PluginLoader, PluginReadRepository, StatsRepository,
+    HistoryRepository, HttpClient, PackageReadRepository, PluginLoader, PluginReadRepository,
+    StatsRepository,
 };
 
 fn host_component(url: &str) -> Option<&str> {
@@ -643,4 +646,143 @@ pub(crate) fn query_bus_with_accounts(repo: Arc<dyn AccountRepository>) -> Query
         Arc::new(StubQueryArchiveExtractor),
     )
     .with_account_repo(repo)
+}
+
+/// In-memory `PackageReadRepository` used by query-handler tests. Filter
+/// semantics mirror the SQLite adapter so behavioural assertions written
+/// against this fake also catch regressions in the real implementation.
+pub(crate) struct InMemoryPackageReadRepo {
+    packages: Mutex<Vec<PackageView>>,
+    downloads_by_package: Mutex<HashMap<String, Vec<DownloadView>>>,
+}
+
+impl InMemoryPackageReadRepo {
+    pub(crate) fn new() -> Self {
+        Self {
+            packages: Mutex::new(Vec::new()),
+            downloads_by_package: Mutex::new(HashMap::new()),
+        }
+    }
+
+    pub(crate) fn insert(&self, view: PackageView) {
+        self.packages.lock().unwrap().push(view);
+    }
+
+    pub(crate) fn attach_downloads(&self, package_id: &str, downloads: Vec<DownloadView>) {
+        self.downloads_by_package
+            .lock()
+            .unwrap()
+            .insert(package_id.to_string(), downloads);
+    }
+}
+
+impl PackageReadRepository for InMemoryPackageReadRepo {
+    fn find_packages(
+        &self,
+        filter: Option<PackageFilter>,
+    ) -> Result<Vec<PackageView>, DomainError> {
+        let mut snapshot: Vec<PackageView> = self.packages.lock().unwrap().clone();
+        snapshot.sort_by(|a, b| {
+            a.created_at
+                .cmp(&b.created_at)
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        if let Some(f) = filter {
+            if let Some(source) = f.source_type {
+                snapshot.retain(|p| p.source_type == source);
+            }
+            if let Some(needle) = f.name_q {
+                let trimmed = needle.trim().to_lowercase();
+                if !trimmed.is_empty() {
+                    snapshot.retain(|p| p.name.to_lowercase().contains(&trimmed));
+                }
+            }
+        }
+        Ok(snapshot)
+    }
+
+    fn find_package_by_id(&self, id: &PackageId) -> Result<Option<PackageView>, DomainError> {
+        Ok(self
+            .packages
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|p| p.id == id.as_str())
+            .cloned())
+    }
+
+    fn find_package_downloads(&self, id: &PackageId) -> Result<Vec<DownloadView>, DomainError> {
+        Ok(self
+            .downloads_by_package
+            .lock()
+            .unwrap()
+            .get(id.as_str())
+            .cloned()
+            .unwrap_or_default())
+    }
+}
+
+/// Build a [`QueryBus`] wired with the given package read repository.
+///
+/// Other read ports return empty/default data — suitable for tests that
+/// only exercise package queries.
+pub(crate) fn query_bus_with_packages(repo: Arc<dyn PackageReadRepository>) -> QueryBus {
+    QueryBus::new(
+        Arc::new(StubDownloadReadRepo),
+        Arc::new(NoopHistoryRepo),
+        Arc::new(StubStatsRepo),
+        Arc::new(StubPluginReadRepo),
+        Arc::new(StubQueryArchiveExtractor),
+    )
+    .with_package_read_repo(repo)
+}
+
+/// Convenience builder for tests that only care about identity, name,
+/// source type, and ordering. All numeric stats default to zero.
+pub(crate) fn sample_package_view(
+    id: &str,
+    name: &str,
+    source_type: &str,
+    created_at: u64,
+) -> PackageView {
+    PackageView {
+        id: id.to_string(),
+        name: name.to_string(),
+        source_type: source_type.to_string(),
+        folder_path: None,
+        auto_extract: true,
+        priority: 5,
+        created_at,
+        downloads_count: 0,
+        total_bytes: 0,
+        downloaded_bytes: 0,
+        progress_percent: 0.0,
+        all_completed: false,
+    }
+}
+
+/// Convenience builder for download view fixtures used by the package
+/// queries tests. Sets only the discriminating fields (id, file_name,
+/// queue_position) and defaults everything else.
+pub(crate) fn sample_download_view(id: u64, file_name: &str, queue_position: i64) -> DownloadView {
+    DownloadView {
+        id: DownloadId(id),
+        file_name: file_name.to_string(),
+        url: format!("https://example.com/{file_name}"),
+        source_hostname: "example.com".to_string(),
+        state: DownloadState::Queued,
+        progress_percent: 0.0,
+        speed_bytes_per_sec: 0,
+        downloaded_bytes: 0,
+        total_bytes: None,
+        eta_seconds: None,
+        segments_active: 0,
+        segments_total: 0,
+        module_name: None,
+        account_name: None,
+        error_message: None,
+        priority: 5,
+        queue_position,
+        created_at: 0,
+    }
 }
