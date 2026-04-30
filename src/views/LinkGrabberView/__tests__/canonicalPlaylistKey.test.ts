@@ -35,6 +35,16 @@ describe("canonicalPlaylistKey", () => {
     expect(canonicalPlaylistKey(scUrl)).toBe(scUrl);
   });
 
+  it("collapses youtu.be short-share URLs to the same canonical token", () => {
+    expect(canonicalPlaylistKey("https://youtu.be/abc123?list=PL12345")).toBe(
+      "youtube:playlist:PL12345",
+    );
+    // Equivalence with the long-form URL.
+    expect(canonicalPlaylistKey("https://youtu.be/xyz?list=PL12345")).toBe(
+      canonicalPlaylistKey("https://www.youtube.com/playlist?list=PL12345"),
+    );
+  });
+
   it("returns the raw input on malformed URLs without throwing", () => {
     expect(canonicalPlaylistKey("not a url")).toBe("not a url");
     expect(canonicalPlaylistKey("")).toBe("");

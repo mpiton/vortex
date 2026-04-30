@@ -109,8 +109,31 @@ export function LinkGrabberView() {
     const isPlaylistDownload =
       options.isPlaylist === true || options.playlistItems.length > 0;
 
+    // Step 1 — start the downloads first. Creating / reusing the package
+    // before this would leave an empty package behind on every failed
+    // start (network, plugin, backend), accumulating clutter in the UI.
+    let result: MediaDownloadResult;
+    try {
+      result = await startMediaDownloadAsync({
+        url,
+        quality: options.quality,
+        format: options.format,
+        audioOnly: options.audioOnly,
+        title: options.title,
+        playlistItems: options.playlistItems,
+      });
+    } catch {
+      // `useTauriMutation` already surfaces a default error toast on
+      // rejection; emitting one here would double-report the same
+      // failure. Just bail out so we skip the success path.
+      return;
+    }
+
+    // Step 2 — only now create / reuse the playlist package. A grouping
+    // failure is non-fatal: the downloads themselves are running, the
+    // package just won't auto-collect them.
     let packageId: string | undefined;
-    if (isPlaylistDownload) {
+    if (isPlaylistDownload && result.downloadIds.length > 0) {
       try {
         const groupItemCount =
           options.playlistItems.length > 0
@@ -133,34 +156,16 @@ export function LinkGrabberView() {
         });
         packageId = grouped[0]?.packageId;
       } catch (err) {
-        // Non-fatal: still kick off downloads, just without auto-grouping.
-        // The user can retry by re-resolving the playlist later.
+        // Non-fatal: downloads already run; the user can retry by
+        // re-resolving the playlist later.
         toast.error(t("linkGrabber.toast.playlistGroupingFailed", { defaultValue: String(err) }));
       }
     }
 
-    let result: MediaDownloadResult;
-    try {
-      result = await startMediaDownloadAsync({
-        url,
-        quality: options.quality,
-        format: options.format,
-        audioOnly: options.audioOnly,
-        title: options.title,
-        playlistItems: options.playlistItems,
-      });
-    } catch {
-      // `useTauriMutation` already surfaces a default error toast on
-      // rejection; emitting one here would double-report the same
-      // failure. Just bail out so we skip the success path.
-      return;
-    }
-
+    // Step 3 — attach the newly-created downloads to the auto-package.
+    // Failures here are non-fatal but must not be silent: surface a
+    // single toast when any attachment rejects so the user can retry.
     if (packageId && result.downloadIds.length > 0) {
-      // Attach each newly-created download to the auto-package. Failures
-      // here are non-fatal (downloads still run; only the grouping is
-      // missed) but they must not be silent: surface a single toast when
-      // any attachment rejects so the user can retry.
       const attachOutcomes = await Promise.allSettled(
         result.downloadIds.map((downloadId) =>
           invoke<void>("package_add_download", {

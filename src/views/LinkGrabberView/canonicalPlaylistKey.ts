@@ -3,6 +3,9 @@ const YOUTUBE_HOSTS = new Set([
   "www.youtube.com",
   "m.youtube.com",
   "music.youtube.com",
+  // Short-share host for YouTube. Surfaced when users paste links from
+  // the YouTube mobile share sheet (`https://youtu.be/<video>?list=PL…`).
+  "youtu.be",
 ]);
 
 /**
