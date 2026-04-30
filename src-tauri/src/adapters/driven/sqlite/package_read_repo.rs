@@ -109,11 +109,18 @@ fn row_to_view(row: &sea_orm::QueryResult) -> Result<PackageView, DomainError> {
     })
 }
 
+// `downloaded_bytes_sum` matches the per-download progress semantics:
+// `compute_progress_percent_for_download` treats `state = 'Completed'`
+// as 100% regardless of the persisted `downloaded_bytes`. The CASE
+// branch below mirrors that — completed members contribute their full
+// `total_bytes` (or fall back to `downloaded_bytes` when total is
+// unknown) so a package with mixed Completed + active members never
+// reports a lower aggregate than the sum of its per-row progress.
 const PACKAGE_AGG_SELECT: &str = "SELECT \
     p.id, p.name, p.source_type, p.folder_path, p.auto_extract, p.priority, p.created_at, \
     COUNT(d.id) AS downloads_count, \
     COALESCE(SUM(COALESCE(d.total_bytes, 0)), 0) AS total_bytes_sum, \
-    COALESCE(SUM(d.downloaded_bytes), 0) AS downloaded_bytes_sum, \
+    COALESCE(SUM(CASE WHEN d.state = 'Completed' THEN COALESCE(d.total_bytes, d.downloaded_bytes) ELSE d.downloaded_bytes END), 0) AS downloaded_bytes_sum, \
     COALESCE(SUM(CASE WHEN d.state = 'Completed' THEN 1 ELSE 0 END), 0) AS completed_count \
     FROM packages p LEFT JOIN downloads d ON d.package_id = p.id";
 
@@ -412,6 +419,91 @@ mod tests {
             v.progress_percent
         );
         assert!(!v.all_completed, "one member still Downloading");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_find_packages_completed_member_with_drift_counts_full_total() {
+        // Regression: a Completed download whose persisted
+        // `downloaded_bytes` lags behind `total_bytes` (e.g. last-segment
+        // commit drift) is rendered as 100% by the per-row view; the
+        // package aggregate must agree, otherwise the UI shows a member
+        // at 100% sitting inside a package stuck below 100%.
+        let db = setup_test_db().await.expect("test db");
+        let write = SqlitePackageRepo::new(db.clone());
+        let read = SqlitePackageReadRepo::new(db.clone());
+
+        write
+            .save(&make_package(
+                "drift",
+                "Drift",
+                PackageSourceType::Manual,
+                1,
+            ))
+            .unwrap();
+
+        // 2 members:
+        //  - id=20: Completed but downloaded_bytes (300) < total_bytes (1000)
+        //  - id=21: Downloading at 250 / 1000
+        // Old aggregate: SUM(downloaded_bytes) = 550, total = 2000 → 27.5%
+        // Fixed aggregate: 1000 (completed contributes total) + 250 = 1250 → 62.5%
+        insert_download(&db, 20, Some("drift"), "Completed", Some(1000), 300, 0).await;
+        insert_download(&db, 21, Some("drift"), "Downloading", Some(1000), 250, 1).await;
+
+        let v = &read.find_packages(None).unwrap()[0];
+        assert_eq!(v.downloads_count, 2);
+        assert_eq!(v.total_bytes, 2000);
+        assert_eq!(
+            v.downloaded_bytes, 1250,
+            "completed member must contribute full total_bytes, not stale downloaded_bytes",
+        );
+        assert!(
+            (v.progress_percent - 62.5).abs() < 0.01,
+            "progress_percent = {}",
+            v.progress_percent,
+        );
+        assert!(!v.all_completed);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_find_packages_completed_member_without_total_falls_back_to_downloaded() {
+        // Edge case: a Completed download with total_bytes = NULL
+        // (extractor could not announce a size). The aggregate should
+        // fall back to `downloaded_bytes` so we still credit the member,
+        // matching `compute_progress_percent_for_download`'s behavior of
+        // returning 100% for any Completed row regardless of total.
+        let db = setup_test_db().await.expect("test db");
+        let write = SqlitePackageRepo::new(db.clone());
+        let read = SqlitePackageReadRepo::new(db.clone());
+
+        write
+            .save(&make_package(
+                "no-total-completed",
+                "Untracked done",
+                PackageSourceType::Manual,
+                1,
+            ))
+            .unwrap();
+        insert_download(
+            &db,
+            30,
+            Some("no-total-completed"),
+            "Completed",
+            None,
+            777,
+            0,
+        )
+        .await;
+
+        let v = &read.find_packages(None).unwrap()[0];
+        assert_eq!(v.downloads_count, 1);
+        assert_eq!(v.total_bytes, 0, "no known total stays 0 in the sum");
+        assert_eq!(
+            v.downloaded_bytes, 777,
+            "completed member with NULL total falls back to downloaded_bytes",
+        );
+        // Single member, all_completed → 100% via the existing branch.
+        assert!(v.all_completed);
+        assert_eq!(v.progress_percent, 100.0);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
