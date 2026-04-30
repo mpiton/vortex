@@ -119,6 +119,10 @@ impl CommandBus {
         self.package_repo.as_deref()
     }
 
+    pub(crate) fn package_repo_arc(&self) -> Option<Arc<dyn PackageRepository>> {
+        self.package_repo.clone()
+    }
+
     /// Builder-style setter for the account-validation port (delegates
     /// to the matching hoster / debrid plugin).
     pub fn with_account_validator(mut self, validator: Arc<dyn AccountValidator>) -> Self {

@@ -279,6 +279,9 @@
       "resolveSuccess_one": "{{count}} link resolved",
       "resolveSuccess_other": "{{count}} links resolved",
       "downloadStarted": "Download started",
+      "playlistGroupingFailed": "Could not auto-group playlist into a package",
+      "playlistAttachFailed_one": "{{count}} download could not be attached to the playlist package",
+      "playlistAttachFailed_other": "{{count}} downloads could not be attached to the playlist package",
       "clipboardReadFailed": "Could not read clipboard"
     }
   },
@@ -297,7 +300,14 @@
     "noMetadata": "No metadata available for this link",
     "retry": "Retry",
     "cancel": "Cancel",
-    "download": "Download"
+    "download": "Download",
+    "playlistBanner": {
+      "defaultName": "Playlist",
+      "willCreate_one": "Will create package \"{{name}}\" with {{count}} item",
+      "willCreate_other": "Will create package \"{{name}}\" with {{count}} items",
+      "willReuse_one": "Will reuse existing package \"{{name}}\" ({{count}} item)",
+      "willReuse_other": "Will reuse existing package \"{{name}}\" ({{count}} items)"
+    }
   },
   "common": {
     "retry": "Retry",

@@ -279,6 +279,9 @@
       "resolveSuccess_one": "{{count}} lien analysé",
       "resolveSuccess_other": "{{count}} liens analysés",
       "downloadStarted": "Téléchargement démarré",
+      "playlistGroupingFailed": "Impossible de regrouper la playlist dans un paquet",
+      "playlistAttachFailed_one": "{{count}} téléchargement n'a pas pu être attaché au paquet de playlist",
+      "playlistAttachFailed_other": "{{count}} téléchargements n'ont pas pu être attachés au paquet de playlist",
       "clipboardReadFailed": "Impossible de lire le presse-papiers"
     }
   },
@@ -297,7 +300,14 @@
     "noMetadata": "Aucune métadonnée disponible pour ce lien",
     "retry": "Réessayer",
     "cancel": "Annuler",
-    "download": "Télécharger"
+    "download": "Télécharger",
+    "playlistBanner": {
+      "defaultName": "Playlist",
+      "willCreate_one": "Création du paquet « {{name}} » avec {{count}} élément",
+      "willCreate_other": "Création du paquet « {{name}} » avec {{count}} éléments",
+      "willReuse_one": "Réutilisation du paquet existant « {{name}} » ({{count}} élément)",
+      "willReuse_other": "Réutilisation du paquet existant « {{name}} » ({{count}} éléments)"
+    }
   },
   "common": {
     "retry": "Réessayer",

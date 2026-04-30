@@ -14,6 +14,7 @@ import { QualitySelector } from "./QualitySelector";
 import { AudioOnlySection } from "./AudioOnlySection";
 import { SubtitleSelector } from "./SubtitleSelector";
 import { PlaylistSection } from "./PlaylistSection";
+import { PlaylistPackageBanner } from "./PlaylistPackageBanner";
 import { SizeEstimate } from "./SizeEstimate";
 import { useMediaMetadata } from "./useMediaMetadata";
 import type { ResolvedLink } from "../types";
@@ -79,12 +80,15 @@ export function MediaGrabberDialog({
     const downloadTitle = metadata?.artist
       ? `${metadata.artist} - ${metadata.title}`
       : metadata?.title;
+    const isPlaylist = metadata?.isPlaylist === true;
     onConfirm({
       quality: effectiveAudioOnly ? "audio_only" : qualitySelection,
       format: effectiveAudioOnly ? audioFormat : formatSelection,
       subtitles: selectedSubtitles,
       audioOnly: effectiveAudioOnly,
       playlistItems: selectedPlaylistItems,
+      isPlaylist,
+      playlistItemCount: isPlaylist ? metadata?.playlistItems?.length ?? 0 : undefined,
       title: downloadTitle,
     });
     onOpenChange(false);
@@ -108,11 +112,21 @@ export function MediaGrabberDialog({
             />
 
             {metadata.isPlaylist && metadata.playlistItems && metadata.playlistItems.length > 0 && (
-              <PlaylistSection
-                items={metadata.playlistItems}
-                selectedItems={selectedPlaylistItems}
-                onSelectItems={setSelectedPlaylistItems}
-              />
+              <>
+                <PlaylistPackageBanner
+                  packageName={metadata.title}
+                  itemCount={
+                    selectedPlaylistItems.length > 0
+                      ? selectedPlaylistItems.length
+                      : metadata.playlistItems.length
+                  }
+                />
+                <PlaylistSection
+                  items={metadata.playlistItems}
+                  selectedItems={selectedPlaylistItems}
+                  onSelectItems={setSelectedPlaylistItems}
+                />
+              </>
             )}
 
             <div className="space-y-4 border-t pt-6">

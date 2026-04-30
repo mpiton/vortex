@@ -94,6 +94,11 @@ pub struct Package {
     auto_extract: bool,
     priority: u8,
     created_at: u64,
+    /// Natural identifier on the source the package was auto-built from
+    /// (YouTube/SoundCloud playlist id, container hash, …). Lets the
+    /// auto-grouper deduplicate when the same playlist is resolved twice.
+    /// `None` for manual packages.
+    external_id: Option<String>,
     /// In-memory aggregate children. Persistence stores the inverse FK
     /// on `downloads.package_id` — never a column on `packages` itself.
     download_ids: Vec<DownloadId>,
@@ -115,6 +120,7 @@ impl Package {
             auto_extract: true,
             priority: DEFAULT_PACKAGE_PRIORITY,
             created_at,
+            external_id: None,
             download_ids: Vec::new(),
         }
     }
@@ -132,6 +138,7 @@ impl Package {
         auto_extract: bool,
         priority: u8,
         created_at: u64,
+        external_id: Option<String>,
     ) -> Result<Self, DomainError> {
         Ok(Self {
             id,
@@ -142,6 +149,7 @@ impl Package {
             auto_extract,
             priority: validate_package_priority(priority)?,
             created_at,
+            external_id,
             download_ids: Vec::new(),
         })
     }
@@ -161,6 +169,10 @@ impl Package {
     pub fn set_priority(&mut self, priority: u8) -> Result<(), DomainError> {
         self.priority = validate_package_priority(priority)?;
         Ok(())
+    }
+
+    pub fn set_external_id(&mut self, external_id: Option<String>) {
+        self.external_id = external_id;
     }
 
     pub fn add_download(&mut self, id: DownloadId) {
@@ -216,6 +228,10 @@ impl Package {
     pub fn created_at(&self) -> u64 {
         self.created_at
     }
+
+    pub fn external_id(&self) -> Option<&str> {
+        self.external_id.as_deref()
+    }
 }
 
 #[cfg(test)]
@@ -242,8 +258,19 @@ mod tests {
         assert!(p.auto_extract());
         assert_eq!(p.priority(), DEFAULT_PACKAGE_PRIORITY);
         assert_eq!(p.created_at(), 1_700_000_000_000);
+        assert!(p.external_id().is_none());
         assert_eq!(p.download_count(), 0);
         assert!(p.downloads().is_empty());
+    }
+
+    #[test]
+    fn test_package_set_external_id_round_trip() {
+        let mut p = make_package();
+        assert!(p.external_id().is_none());
+        p.set_external_id(Some("yt-playlist-PLabc".to_string()));
+        assert_eq!(p.external_id(), Some("yt-playlist-PLabc"));
+        p.set_external_id(None);
+        assert!(p.external_id().is_none());
     }
 
     #[test]
@@ -365,6 +392,7 @@ mod tests {
             false,
             7,
             1_700_000_000_001,
+            Some("ext-42".to_string()),
         )
         .expect("valid priority");
         assert_eq!(p.id().as_str(), "pkg-r");
@@ -375,6 +403,7 @@ mod tests {
         assert!(!p.auto_extract());
         assert_eq!(p.priority(), 7);
         assert_eq!(p.created_at(), 1_700_000_000_001);
+        assert_eq!(p.external_id(), Some("ext-42"));
         assert!(p.downloads().is_empty());
     }
 
@@ -390,6 +419,7 @@ mod tests {
                 true,
                 bad,
                 0,
+                None,
             )
             .expect_err("priority must be rejected");
             assert!(matches!(err, DomainError::ValidationError(_)));

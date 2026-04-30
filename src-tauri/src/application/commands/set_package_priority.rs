@@ -44,6 +44,7 @@ impl CommandBus {
             existing.auto_extract(),
             cmd.priority,
             existing.created_at(),
+            existing.external_id().map(str::to_string),
         )?;
         repo.save(&updated)?;
 

@@ -16,6 +16,13 @@ pub trait PackageRepository: Send + Sync {
     /// matches (and not an error).
     fn find_by_id(&self, id: &PackageId) -> Result<Option<Package>, DomainError>;
 
+    /// Look up a package by its `external_id` natural key (playlist id,
+    /// container hash…). Used by the auto-grouper to deduplicate packages
+    /// when the same source is resolved twice. Returns the first match
+    /// ordered by `created_at` ascending so reuses are deterministic.
+    /// Returns `None` when no row matches.
+    fn find_by_external_id(&self, external_id: &str) -> Result<Option<Package>, DomainError>;
+
     /// Insert or update a package. Implementations upsert by primary key
     /// and must preserve `created_at` across subsequent saves so list
     /// ordering stays stable.

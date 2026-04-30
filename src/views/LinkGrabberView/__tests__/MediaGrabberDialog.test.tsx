@@ -275,6 +275,8 @@ describe("MediaGrabberDialog", () => {
       subtitles: [],
       audioOnly: false,
       playlistItems: [],
+      isPlaylist: false,
+      playlistItemCount: undefined,
       title: "Test Video Title",
     });
     expect(onOpenChange).toHaveBeenCalledWith(false);
@@ -319,6 +321,8 @@ describe("MediaGrabberDialog", () => {
       subtitles: [],
       audioOnly: true,
       playlistItems: [],
+      isPlaylist: false,
+      playlistItemCount: undefined,
       title: "Forss - Flickermood",
     });
   });
@@ -349,6 +353,23 @@ describe("MediaGrabberDialog - Playlist", () => {
     expect(screen.getByText("Video 1")).toBeInTheDocument();
     expect(screen.getByText("Video 2")).toBeInTheDocument();
     expect(screen.getByText("Video 3")).toBeInTheDocument();
+  });
+
+  it("should mark options as playlist with full item count when no item is manually selected", async () => {
+    mockInvoke.mockResolvedValue(mockPlaylistMetadata);
+    const user = userEvent.setup();
+    const { onConfirm } = renderDialog();
+
+    await screen.findByText("Test Video Title");
+    await user.click(screen.getByRole("button", { name: "Download" }));
+
+    expect(onConfirm).toHaveBeenCalledWith(
+      expect.objectContaining({
+        isPlaylist: true,
+        playlistItemCount: 3,
+        playlistItems: [],
+      }),
+    );
   });
 
   it("should select all playlist items with Select All button", async () => {

@@ -44,6 +44,7 @@ impl CommandBus {
                 updated.auto_extract(),
                 updated.priority(),
                 updated.created_at(),
+                updated.external_id().map(str::to_string),
             )?;
         }
         if let Some(folder) = cmd.patch.folder_path {
@@ -77,6 +78,7 @@ fn clone_for_update(existing: &Package) -> Package {
         existing.auto_extract(),
         existing.priority(),
         existing.created_at(),
+        existing.external_id().map(str::to_string),
     )
     .expect("existing package always validates")
 }

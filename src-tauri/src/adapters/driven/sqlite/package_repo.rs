@@ -1,6 +1,8 @@
 //! SQLite implementation of `PackageRepository` (CQRS write side).
 
-use sea_orm::{DatabaseConnection, EntityTrait, QueryOrder, sea_query::OnConflict};
+use sea_orm::{
+    ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, QueryOrder, sea_query::OnConflict,
+};
 
 use crate::adapters::driven::sqlite::entities::package;
 use crate::adapters::driven::sqlite::util::{block_on, map_db_err, safe_u64};
@@ -34,6 +36,23 @@ impl PackageRepository for SqlitePackageRepo {
         })
     }
 
+    fn find_by_external_id(&self, external_id: &str) -> Result<Option<Package>, DomainError> {
+        let needle = external_id.to_string();
+        block_on(async {
+            let model = package::Entity::find()
+                .filter(package::Column::ExternalId.eq(needle))
+                .order_by_asc(package::Column::CreatedAt)
+                .order_by_asc(package::Column::Id)
+                .one(&self.db)
+                .await
+                .map_err(map_db_err)?;
+            match model {
+                Some(m) => Ok(Some(m.into_domain()?)),
+                None => Ok(None),
+            }
+        })
+    }
+
     fn save(&self, package: &Package) -> Result<(), DomainError> {
         let active = package::ActiveModel::from_domain(package)?;
 
@@ -53,6 +72,7 @@ impl PackageRepository for SqlitePackageRepo {
                             package::Column::Password,
                             package::Column::AutoExtract,
                             package::Column::Priority,
+                            package::Column::ExternalId,
                         ])
                         .to_owned(),
                 )
@@ -276,6 +296,7 @@ mod tests {
             2,
             // Different created_at — must NOT overwrite the stored value.
             9_999_999_999_999,
+            None,
         )
         .expect("valid priority");
         repo.save(&pkg).expect("upsert");
@@ -569,6 +590,7 @@ mod tests {
             5,
             // Beyond i64::MAX → must be rejected at conversion.
             u64::MAX,
+            None,
         )
         .expect("valid priority");
         let err = repo.save(&pkg).expect_err("created_at overflow must fail");
@@ -674,6 +696,140 @@ mod tests {
             .find_package_of_download(DownloadId(404))
             .expect("query");
         assert!(owner.is_none(), "missing download row treated as loose");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_save_round_trip_persists_external_id() {
+        let db = setup_test_db().await.expect("test db");
+        let repo = SqlitePackageRepo::new(db);
+
+        let mut pkg = make_package("pkg-ext", "Pl", PackageSourceType::Playlist);
+        pkg.set_external_id(Some("yt-PL12345".to_string()));
+        repo.save(&pkg).expect("save");
+
+        let found = repo
+            .find_by_id(&PackageId::new("pkg-ext"))
+            .expect("find")
+            .expect("present");
+        assert_eq!(found.external_id(), Some("yt-PL12345"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_find_by_external_id_returns_match() {
+        let db = setup_test_db().await.expect("test db");
+        let repo = SqlitePackageRepo::new(db);
+
+        let mut pkg = make_package("pkg-ext-1", "Pl", PackageSourceType::Playlist);
+        pkg.set_external_id(Some("sc-PL-A".to_string()));
+        repo.save(&pkg).expect("save");
+
+        let found = repo
+            .find_by_external_id("sc-PL-A")
+            .expect("query")
+            .expect("present");
+        assert_eq!(found.id().as_str(), "pkg-ext-1");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_find_by_external_id_returns_none_when_absent() {
+        let db = setup_test_db().await.expect("test db");
+        let repo = SqlitePackageRepo::new(db);
+        let result = repo.find_by_external_id("missing-key").expect("query");
+        assert!(result.is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_find_by_external_id_does_not_match_null_packages() {
+        // Manual packages keep external_id NULL — must not be returned
+        // by a search for a different key, or for any key.
+        let db = setup_test_db().await.expect("test db");
+        let repo = SqlitePackageRepo::new(db);
+        repo.save(&make_package("pkg-null", "M", PackageSourceType::Manual))
+            .expect("save");
+        assert!(
+            repo.find_by_external_id("any").expect("query").is_none(),
+            "manual package with NULL external_id must not match"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_save_rejects_duplicate_external_id_via_unique_index() {
+        // The UNIQUE index on `packages.external_id` enforces the
+        // one-package-per-natural-key invariant at the storage level —
+        // multi-process safe, regardless of the in-process grouper
+        // mutex. Trying to insert a different `id` with the same
+        // `external_id` must surface as an error.
+        let db = setup_test_db().await.expect("test db");
+        let repo = SqlitePackageRepo::new(db);
+
+        let mut first = Package::new(
+            PackageId::new("pkg-first"),
+            "first".to_string(),
+            PackageSourceType::Playlist,
+            1_000_000_000_000,
+        );
+        first.set_external_id(Some("dup".to_string()));
+        repo.save(&first).expect("save first");
+
+        let mut second = Package::new(
+            PackageId::new("pkg-second"),
+            "second".to_string(),
+            PackageSourceType::Playlist,
+            2_000_000_000_000,
+        );
+        second.set_external_id(Some("dup".to_string()));
+        let err = repo
+            .save(&second)
+            .expect_err("UNIQUE index must reject the duplicate");
+        let msg = format!("{err:?}");
+        assert!(
+            msg.to_uppercase().contains("UNIQUE"),
+            "expected UNIQUE constraint violation, got {msg}"
+        );
+
+        // The first package is still present; the second never landed.
+        let found = repo
+            .find_by_external_id("dup")
+            .expect("query")
+            .expect("present");
+        assert_eq!(found.id().as_str(), "pkg-first");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_unique_index_allows_multiple_null_external_ids() {
+        // SQLite treats every NULL in a UNIQUE index as distinct, so
+        // manual packages (which keep `external_id` NULL) are not
+        // restricted to a single row by the new constraint.
+        let db = setup_test_db().await.expect("test db");
+        let repo = SqlitePackageRepo::new(db);
+
+        repo.save(&make_package("pkg-a", "A", PackageSourceType::Manual))
+            .expect("save first manual");
+        repo.save(&make_package("pkg-b", "B", PackageSourceType::Manual))
+            .expect("save second manual must coexist");
+
+        assert_eq!(repo.list().expect("list").len(), 2);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_save_upsert_can_clear_external_id() {
+        // Emptying external_id (manual rename of an auto-package) must
+        // persist the NULL via the upsert column list.
+        let db = setup_test_db().await.expect("test db");
+        let repo = SqlitePackageRepo::new(db);
+
+        let mut pkg = make_package("pkg-clear", "C", PackageSourceType::Playlist);
+        pkg.set_external_id(Some("PL-x".to_string()));
+        repo.save(&pkg).expect("first save");
+
+        pkg.set_external_id(None);
+        repo.save(&pkg).expect("upsert");
+
+        let found = repo
+            .find_by_id(&PackageId::new("pkg-clear"))
+            .expect("find")
+            .expect("present");
+        assert!(found.external_id().is_none());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
