@@ -12,7 +12,9 @@ use sea_orm::{
 };
 
 use crate::adapters::driven::sqlite::entities::{download, download_segment};
-use crate::adapters::driven::sqlite::util::{block_on, map_db_err, safe_u64};
+use crate::adapters::driven::sqlite::util::{
+    block_on, map_db_err, resolve_download_created_at, safe_u64,
+};
 use crate::domain::error::DomainError;
 use crate::domain::model::download::DownloadId;
 use crate::domain::model::package::PackageId;
@@ -171,7 +173,11 @@ fn download_row_to_view(
         DomainError::StorageError(format!("invalid download state in DB: {}", model.state))
     })?;
     let priority_u8 = u8::try_from(model.priority).unwrap_or(5);
-    let created_at = safe_u64(model.created_at);
+    // Apply the same legacy fallback chain `download_read_repo` uses so
+    // a row that persisted `created_at = 0` does not surface a 1970
+    // timestamp here while the regular Downloads view shows the
+    // correct id-inferred or updated_at-derived date.
+    let created_at = resolve_download_created_at(model.created_at, model.id, model.updated_at);
 
     Ok(DownloadView {
         id: DownloadId(safe_u64(model.id)),
@@ -405,6 +411,26 @@ mod tests {
         ))
         .await
         .expect("update speed");
+    }
+
+    /// Force a row's `created_at` and `updated_at` columns. The default
+    /// `insert_download` writes `1` to both; a few tests need to assert
+    /// the legacy fallback chain (`created_at = 0` triggers the id /
+    /// updated_at chain in `resolve_download_created_at`).
+    async fn set_download_timestamps(
+        db: &DatabaseConnection,
+        id: i64,
+        created_at: i64,
+        updated_at: i64,
+    ) {
+        db.execute(Statement::from_string(
+            sea_orm::DatabaseBackend::Sqlite,
+            format!(
+                "UPDATE downloads SET created_at = {created_at}, updated_at = {updated_at} WHERE id = {id}"
+            ),
+        ))
+        .await
+        .expect("update timestamps");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1163,5 +1189,106 @@ mod tests {
             .find(|v| v.id.0 == 951)
             .expect("downloading row");
         assert_eq!(downloading.eta_seconds, Some(4));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_find_package_downloads_resolves_legacy_zero_created_at() {
+        // Legacy rows persisted before the timestamp backfill landed
+        // can have `created_at = 0`. The Downloads view recovers a real
+        // timestamp via id-inferred → updated_at → MIN_PLAUSIBLE
+        // fallback (`download_read_repo::read_created_at`). The
+        // package member view must apply the same chain or it will
+        // surface 1970 dates and break clients that key off
+        // `created_at` as a secondary sort.
+        use crate::adapters::driven::sqlite::util::MIN_PLAUSIBLE_UNIX_MS;
+
+        let db = setup_test_db().await.expect("test db");
+        let write = SqlitePackageRepo::new(db.clone());
+        let read = SqlitePackageReadRepo::new(db.clone());
+
+        write
+            .save(&make_package(
+                "legacy",
+                "Legacy",
+                PackageSourceType::Manual,
+                1,
+            ))
+            .unwrap();
+
+        // Snowflake-style id: high bits encode the creation ms.
+        let inferred_ms: u64 = 1_700_000_000_000;
+        let snowflake_id: i64 = ((inferred_ms << 12) | 1) as i64;
+        insert_download(
+            &db,
+            snowflake_id,
+            Some("legacy"),
+            "Downloading",
+            Some(100),
+            10,
+            0,
+        )
+        .await;
+        set_download_timestamps(&db, snowflake_id, 0, 0).await;
+
+        // No id timestamp + no updated_at → MIN_PLAUSIBLE_UNIX_MS.
+        let bare_id: i64 = 7;
+        insert_download(
+            &db,
+            bare_id,
+            Some("legacy"),
+            "Downloading",
+            Some(100),
+            10,
+            1,
+        )
+        .await;
+        set_download_timestamps(&db, bare_id, 0, 0).await;
+
+        // No id timestamp but a positive updated_at → that updated_at.
+        let upd_only_id: i64 = 8;
+        let upd_only_ts: i64 = 1_650_000_000_000;
+        insert_download(
+            &db,
+            upd_only_id,
+            Some("legacy"),
+            "Downloading",
+            Some(100),
+            10,
+            2,
+        )
+        .await;
+        set_download_timestamps(&db, upd_only_id, 0, upd_only_ts).await;
+
+        let views = read
+            .find_package_downloads(&PackageId::new("legacy"))
+            .unwrap();
+        assert_eq!(views.len(), 3);
+
+        let snow = views
+            .iter()
+            .find(|v| v.id.0 == snowflake_id as u64)
+            .expect("snowflake row");
+        assert_eq!(
+            snow.created_at, inferred_ms,
+            "snowflake id must back-derive its creation ms",
+        );
+
+        let bare = views
+            .iter()
+            .find(|v| v.id.0 == bare_id as u64)
+            .expect("bare row");
+        assert_eq!(
+            bare.created_at, MIN_PLAUSIBLE_UNIX_MS,
+            "no source of truth → sentinel anchor",
+        );
+
+        let upd = views
+            .iter()
+            .find(|v| v.id.0 == upd_only_id as u64)
+            .expect("updated_at row");
+        assert_eq!(
+            upd.created_at, upd_only_ts as u64,
+            "fallback to updated_at when id has no embedded ms",
+        );
     }
 }
