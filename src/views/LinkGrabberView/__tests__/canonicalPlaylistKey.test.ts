@@ -30,9 +30,45 @@ describe("canonicalPlaylistKey", () => {
     expect(canonicalPlaylistKey(watchUrl)).toBe(watchUrl);
   });
 
-  it("returns the raw URL for non-YouTube hosts (SoundCloud paths are already canonical)", () => {
-    const scUrl = "https://soundcloud.com/forss/sets/holiday-mix";
-    expect(canonicalPlaylistKey(scUrl)).toBe(scUrl);
+  it("collapses SoundCloud playlist URLs to the canonical path token", () => {
+    expect(
+      canonicalPlaylistKey("https://soundcloud.com/forss/sets/holiday-mix"),
+    ).toBe("soundcloud:/forss/sets/holiday-mix");
+  });
+
+  it("normalises SoundCloud host variants and tracking params to the same key", () => {
+    const a = canonicalPlaylistKey(
+      "https://soundcloud.com/forss/sets/holiday-mix",
+    );
+    const b = canonicalPlaylistKey(
+      "https://m.soundcloud.com/forss/sets/holiday-mix",
+    );
+    const c = canonicalPlaylistKey(
+      "https://www.soundcloud.com/forss/sets/holiday-mix?in=somebody/sets/playlist&utm_source=mobile",
+    );
+    const d = canonicalPlaylistKey(
+      "https://soundcloud.com/forss/sets/holiday-mix/",
+    );
+    expect(a).toBe("soundcloud:/forss/sets/holiday-mix");
+    expect(b).toBe(a);
+    expect(c).toBe(a);
+    expect(d).toBe(a);
+  });
+
+  it("lowercases SoundCloud paths so case-only differences collapse", () => {
+    expect(
+      canonicalPlaylistKey("https://soundcloud.com/Forss/Sets/Holiday-Mix"),
+    ).toBe("soundcloud:/forss/sets/holiday-mix");
+  });
+
+  it("returns the raw URL for unrecognised hosts (no canonical scheme yet)", () => {
+    const otherUrl = "https://vimeo.com/album/abc123";
+    expect(canonicalPlaylistKey(otherUrl)).toBe(otherUrl);
+  });
+
+  it("leaves SoundCloud short-share hosts untouched (cannot resolve without HTTP)", () => {
+    const shortUrl = "https://on.soundcloud.com/abc123";
+    expect(canonicalPlaylistKey(shortUrl)).toBe(shortUrl);
   });
 
   it("collapses youtu.be short-share URLs to the same canonical token", () => {
