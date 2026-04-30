@@ -287,8 +287,12 @@ export function FolderDialog({ pkg, onCancel, onPickFolder, onSubmit }: FolderDi
     !submitting && trimmed.length > 0 && trimmed !== initialFolderRef.current.trim();
 
   const handleBrowse = async () => {
-    const picked = await onPickFolder();
-    if (picked) setFolder(picked);
+    try {
+      const picked = await onPickFolder();
+      if (picked) setFolder(picked);
+    } catch {
+      // picker errors surfaced upstream; keep current value
+    }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {

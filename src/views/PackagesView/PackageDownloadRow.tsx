@@ -8,9 +8,15 @@ interface PackageDownloadRowProps {
   download: DownloadView;
   packageId: string;
   onDragStart: (download: DownloadView, fromPackageId: string) => void;
+  onDragEnd: () => void;
 }
 
-export function PackageDownloadRow({ download, packageId, onDragStart }: PackageDownloadRowProps) {
+export function PackageDownloadRow({
+  download,
+  packageId,
+  onDragStart,
+  onDragEnd,
+}: PackageDownloadRowProps) {
   const { t } = useTranslation();
   return (
     <div
@@ -22,6 +28,7 @@ export function PackageDownloadRow({ download, packageId, onDragStart }: Package
         e.dataTransfer.setData("application/x-vortex-source-package", packageId);
         onDragStart(download, packageId);
       }}
+      onDragEnd={onDragEnd}
       className="flex items-center gap-3 border-t bg-muted/30 px-4 py-2 text-sm hover:bg-muted/50"
     >
       <GripVertical

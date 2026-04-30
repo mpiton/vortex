@@ -30,6 +30,7 @@ export interface PackageRowActions {
   pauseAll: (pkg: PackageView, downloads: DownloadView[]) => void;
   startAll: (pkg: PackageView, downloads: DownloadView[]) => void;
   beginDragDownload: (download: DownloadView, fromPackageId: string) => void;
+  endDragDownload: () => void;
   dropDownload: (toPackageId: string, e: React.DragEvent) => void;
 }
 
@@ -215,6 +216,7 @@ export function PackageRow({
               download={d}
               packageId={pkg.id}
               onDragStart={actions.beginDragDownload}
+              onDragEnd={actions.endDragDownload}
             />
           ))}
         </div>

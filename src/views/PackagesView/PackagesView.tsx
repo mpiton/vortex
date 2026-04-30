@@ -275,6 +275,9 @@ export function PackagesView() {
       if (!Number.isFinite(numericId)) return;
       dragRef.current = { downloadId: numericId, fromPackageId };
     },
+    endDragDownload: () => {
+      dragRef.current = null;
+    },
     dropDownload: async (toPackageId, e) => {
       const transfer = e.dataTransfer;
       const transferId = transfer?.getData("application/x-vortex-download") ?? "";
