@@ -590,9 +590,11 @@
       "passwordError": "Échec de l'enregistrement du mot de passe",
       "moveSuccess_one": "{{count}} téléchargement déplacé",
       "moveSuccess_other": "{{count}} téléchargements déplacés",
+      "movePartialError": "{{moved}} téléchargements sur {{total}} déplacés ({{failed}} en échec)",
       "moveError": "Échec du déplacement",
       "moveDownloadSuccess": "Téléchargement déplacé",
       "moveDownloadError": "Échec du déplacement du téléchargement",
+      "moveDownloadRollbackError": "Déplacement échoué et rollback échoué — actualisez pour vérifier le contenu du paquet",
       "bulkPauseSuccess": "Tous les téléchargements mis en pause",
       "bulkStartSuccess": "Tous les téléchargements relancés",
       "bulkActionError": "L'action en lot a échoué"

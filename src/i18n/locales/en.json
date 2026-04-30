@@ -590,9 +590,11 @@
       "passwordError": "Failed to save password",
       "moveSuccess_one": "{{count}} download moved",
       "moveSuccess_other": "{{count}} downloads moved",
+      "movePartialError": "Moved {{moved}} of {{total}} downloads ({{failed}} failed)",
       "moveError": "Failed to move folder",
       "moveDownloadSuccess": "Download moved to package",
       "moveDownloadError": "Failed to move download",
+      "moveDownloadRollbackError": "Move failed and rollback also failed — refresh to verify package contents",
       "bulkPauseSuccess": "Paused all downloads",
       "bulkStartSuccess": "Resumed all downloads",
       "bulkActionError": "Bulk action failed"

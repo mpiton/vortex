@@ -188,7 +188,14 @@ export function PackagesView() {
       if (!folderTarget) return;
       const outcome = await moveFolderMut.mutateAsync({ id: folderTarget.id, newFolder });
       const moved = outcome?.moved.length ?? 0;
-      toast.success(t("packages.toast.moveSuccess", { count: moved }));
+      const failed = outcome?.failed.length ?? 0;
+      if (failed > 0) {
+        toast.error(
+          t("packages.toast.movePartialError", { moved, failed, total: moved + failed }),
+        );
+      } else {
+        toast.success(t("packages.toast.moveSuccess", { count: moved }));
+      }
     },
     [folderTarget, moveFolderMut, t],
   );
@@ -284,7 +291,18 @@ export function PackagesView() {
       }
       try {
         await removeFromPackageMut.mutateAsync({ packageId: fromId, downloadId });
-        await addToPackageMut.mutateAsync({ packageId: toPackageId, downloadId });
+        try {
+          await addToPackageMut.mutateAsync({ packageId: toPackageId, downloadId });
+        } catch (addError) {
+          try {
+            await addToPackageMut.mutateAsync({ packageId: fromId, downloadId });
+          } catch {
+            toast.error(t("packages.toast.moveDownloadRollbackError"));
+            invalidatePackages();
+            throw addError;
+          }
+          throw addError;
+        }
         toast.success(t("packages.toast.moveDownloadSuccess"));
         invalidatePackages();
       } catch {

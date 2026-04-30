@@ -282,7 +282,8 @@ export function FolderDialog({ pkg, onCancel, onPickFolder, onSubmit }: FolderDi
   }, [open]);
 
   const trimmed = folder.trim();
-  const canSubmit = !submitting && trimmed.length > 0;
+  const canSubmit =
+    !submitting && trimmed.length > 0 && trimmed !== initialFolderRef.current.trim();
 
   const handleBrowse = async () => {
     const picked = await onPickFolder();
