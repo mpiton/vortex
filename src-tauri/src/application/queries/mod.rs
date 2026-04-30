@@ -9,20 +9,24 @@ mod get_account_traffic;
 mod get_download_detail;
 mod get_downloads;
 mod get_history_entry;
+mod get_package;
 mod get_plugin_config;
 mod get_plugin_store;
 mod get_stats;
 mod list_accounts;
 mod list_archive_contents;
 mod list_history;
+mod list_package_downloads;
+mod list_packages;
 mod list_plugins;
 mod search_history;
 mod top_modules;
 
 use crate::domain::model::account::{AccountId, AccountType};
 use crate::domain::model::download::DownloadId;
+use crate::domain::model::package::PackageId;
 use crate::domain::model::views::{
-    DownloadFilter, HistoryFilter, HistorySort, SortOrder, StatsPeriod,
+    DownloadFilter, HistoryFilter, HistorySort, PackageFilter, SortOrder, StatsPeriod,
 };
 use crate::domain::ports::driving::Query;
 
@@ -136,3 +140,27 @@ pub struct GetAccountTrafficQuery {
     pub id: AccountId,
 }
 impl Query for GetAccountTrafficQuery {}
+
+/// List packages with optional filtering. Results are ordered by
+/// `created_at` ascending then by `id` ascending so successive calls
+/// yield a deterministic order.
+#[derive(Debug, Default)]
+pub struct ListPackagesQuery {
+    pub filter: Option<PackageFilter>,
+}
+impl Query for ListPackagesQuery {}
+
+/// Fetch a single package's aggregated read view.
+#[derive(Debug)]
+pub struct GetPackageQuery {
+    pub id: PackageId,
+}
+impl Query for GetPackageQuery {}
+
+/// Fetch the downloads attached to a package, ordered by
+/// `queue_position` ascending then `id` ascending.
+#[derive(Debug)]
+pub struct ListPackageDownloadsQuery {
+    pub id: PackageId,
+}
+impl Query for ListPackageDownloadsQuery {}

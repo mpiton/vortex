@@ -80,12 +80,13 @@ pub use adapters::driving::tauri_ipc::{
     download_set_priority, download_start, download_verify_checksum, history_clear,
     history_delete_entry, history_export, history_get_by_id, history_list,
     history_purge_older_than, history_search, link_resolve, package_add_download, package_create,
-    package_delete, package_move_to_folder, package_remove_download, package_set_password,
-    package_set_priority, package_toggle_auto_extract, package_update, plugin_config_get,
-    plugin_config_update, plugin_disable, plugin_enable, plugin_install, plugin_list,
-    plugin_report_broken, plugin_store_install, plugin_store_list, plugin_store_refresh,
-    plugin_store_update, plugin_uninstall, reveal_in_folder, settings_get, settings_update,
-    stats_get, stats_top_modules, status_bar_get,
+    package_delete, package_get, package_list, package_list_downloads, package_move_to_folder,
+    package_remove_download, package_set_password, package_set_priority,
+    package_toggle_auto_extract, package_update, plugin_config_get, plugin_config_update,
+    plugin_disable, plugin_enable, plugin_install, plugin_list, plugin_report_broken,
+    plugin_store_install, plugin_store_list, plugin_store_refresh, plugin_store_update,
+    plugin_uninstall, reveal_in_folder, settings_get, settings_update, stats_get,
+    stats_top_modules, status_bar_get,
 };
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -166,6 +167,13 @@ pub fn run() {
                 Arc::new(SqliteAccountRepo::new(db.clone()));
             let package_repo: Arc<dyn crate::domain::ports::driven::PackageRepository> =
                 Arc::new(SqlitePackageRepo::new(db.clone()));
+            let package_read_repo: Arc<
+                dyn crate::domain::ports::driven::PackageReadRepository,
+            > = Arc::new(
+                crate::adapters::driven::sqlite::package_read_repo::SqlitePackageReadRepo::new(
+                    db.clone(),
+                ),
+            );
 
             // ── Plugin system ───────────────────────────────────────
             let shared_resources = Arc::new(SharedHostResources::new());
@@ -391,7 +399,8 @@ pub fn run() {
                 )
                 .with_plugin_loader(plugin_loader.clone())
                 .with_plugin_config_store(plugin_config_store)
-                .with_account_repo(account_repo),
+                .with_account_repo(account_repo)
+                .with_package_read_repo(package_read_repo),
             );
 
             // ── Register AppState ───────────────────────────────────
@@ -581,6 +590,9 @@ pub fn run() {
             package_toggle_auto_extract,
             package_add_download,
             package_remove_download,
+            package_list,
+            package_get,
+            package_list_downloads,
         ])
         .run(tauri::generate_context!())
         // Tauri's run() has no meaningful recovery path — panic is intentional here

@@ -12,8 +12,8 @@ use crate::domain::ports::driven::download_read_repository::DownloadReadReposito
 
 use super::entities::{download, download_segment};
 use super::util::{
-    MIN_PLAUSIBLE_UNIX_MS, block_on, infer_timestamp_ms_from_download_id,
-    inferred_download_created_at_order_expr, map_db_err, safe_u32, safe_u64,
+    block_on, inferred_download_created_at_order_expr, map_db_err, resolve_download_created_at,
+    safe_u32, safe_u64,
 };
 
 pub struct SqliteDownloadReadRepo {
@@ -27,19 +27,7 @@ impl SqliteDownloadReadRepo {
 }
 
 fn read_created_at(model: &download::Model) -> u64 {
-    let created_at = safe_u64(model.created_at);
-    if created_at > 0 {
-        created_at
-    } else if let Some(inferred) = infer_timestamp_ms_from_download_id(model.id) {
-        inferred
-    } else {
-        let updated_at = safe_u64(model.updated_at);
-        if updated_at > 0 {
-            updated_at
-        } else {
-            MIN_PLAUSIBLE_UNIX_MS
-        }
-    }
+    resolve_download_created_at(model.created_at, model.id, model.updated_at)
 }
 
 /// Compute progress percent rounded to one decimal place.
@@ -354,6 +342,7 @@ impl DownloadReadRepository for SqliteDownloadReadRepo {
 mod tests {
     use super::*;
     use crate::adapters::driven::sqlite::download_repo::SqliteDownloadRepo;
+    use crate::adapters::driven::sqlite::util::MIN_PLAUSIBLE_UNIX_MS;
     use crate::domain::model::download::{Download, Url};
     use crate::domain::model::segment::SegmentState;
     use crate::domain::ports::driven::download_repository::DownloadRepository;

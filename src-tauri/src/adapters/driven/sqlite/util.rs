@@ -38,6 +38,33 @@ pub fn infer_timestamp_ms_from_download_id(raw_id: i64) -> Option<u64> {
     (ts >= MIN_PLAUSIBLE_UNIX_MS).then_some(ts)
 }
 
+/// Resolve a download row's `created_at` timestamp with the same
+/// fallback chain SQL ordering uses (`inferred_download_created_at_order_expr`):
+///   1. `created_at` when persisted as a positive value
+///   2. timestamp inferred from the snowflake-style id high bits
+///   3. `updated_at` when positive
+///   4. `MIN_PLAUSIBLE_UNIX_MS` (the sentinel anchor)
+///
+/// Legacy rows persisted before the timestamp backfill landed often have
+/// `created_at = 0`; reading the raw column there would surface "1970"
+/// dates and break the secondary sort key in any view that consumes
+/// download rows.
+pub fn resolve_download_created_at(raw_created_at: i64, raw_id: i64, raw_updated_at: i64) -> u64 {
+    let created_at = safe_u64(raw_created_at);
+    if created_at > 0 {
+        return created_at;
+    }
+    if let Some(inferred) = infer_timestamp_ms_from_download_id(raw_id) {
+        return inferred;
+    }
+    let updated_at = safe_u64(raw_updated_at);
+    if updated_at > 0 {
+        updated_at
+    } else {
+        MIN_PLAUSIBLE_UNIX_MS
+    }
+}
+
 pub fn current_timestamp_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

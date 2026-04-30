@@ -220,3 +220,64 @@ pub struct SortOrder {
 
 /// Count of downloads grouped by state.
 pub type StateCountMap = HashMap<DownloadState, usize>;
+
+/// Aggregated read view of a `Package` aggregate.
+///
+/// Produced by [`PackageReadRepository`](crate::domain::ports::driven::PackageReadRepository)
+/// from a single `LEFT JOIN` between `packages` and `downloads` so the
+/// child statistics (`downloads_count`, `total_bytes`, `progress_percent`)
+/// are computed SQL-side. Avoids the N+1 round-trip the UI would otherwise
+/// pay when listing dozens of packages.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PackageView {
+    pub id: String,
+    pub name: String,
+    /// Lowercase wire form (`container`, `playlist`, `manual`, `split_archive`).
+    pub source_type: String,
+    pub folder_path: Option<String>,
+    pub auto_extract: bool,
+    pub priority: u8,
+    pub created_at: u64,
+    /// Number of downloads currently attached via `downloads.package_id`.
+    pub downloads_count: u64,
+    /// Aggregate of member `downloads.total_bytes`. Members in state
+    /// `Completed` count for `COALESCE(total_bytes, downloaded_bytes)` so
+    /// the value matches what each row's per-download view reports
+    /// (Completed = 100% regardless of the persisted bytes); other
+    /// members with `total_bytes = NULL` contribute `0`. `0` overall
+    /// when the package has no members. Mirrored on the numerator side
+    /// in `downloaded_bytes` so `progress_percent` cannot exceed 100%.
+    pub total_bytes: u64,
+    /// Aggregate of member `downloads.downloaded_bytes`. Members in
+    /// state `Completed` count for `COALESCE(total_bytes,
+    /// downloaded_bytes)` (their full size when known, otherwise their
+    /// persisted bytes), other members count for the persisted
+    /// `downloaded_bytes`. `0` when the package has no members.
+    pub downloaded_bytes: u64,
+    /// Aggregate progress in `[0.0, 100.0]`, rounded to one decimal. `0.0`
+    /// when no member contributes a known total. Mirrors the formula
+    /// applied to individual downloads in `download_read_repo` so the UI
+    /// stays consistent across rows.
+    pub progress_percent: f64,
+    /// `true` when at least one member download has a `Completed` state
+    /// **and** every other member is also `Completed`. `false` when the
+    /// package is empty or any member is still pending/failed/active.
+    pub all_completed: bool,
+}
+
+/// Filter combinable on the `find_packages` read repository call.
+///
+/// Each field is optional. When `name_q` is set the implementation
+/// performs a Unicode-aware case-insensitive substring (fuzzy) match
+/// against `packages.name` — the comparison happens after the SQL fetch
+/// so `LIKE` wildcards (`%`, `_`) are treated literally and non-ASCII
+/// characters case-fold correctly (e.g. `café` matches `CAFÉ`). Blank
+/// or whitespace-only values are treated as "no filter". When
+/// `source_type` is set it constrains by the lowercase wire form
+/// (`container`, `playlist`, `manual`, `split_archive`). Both fields
+/// combine with AND when present.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PackageFilter {
+    pub source_type: Option<String>,
+    pub name_q: Option<String>,
+}
