@@ -15,6 +15,7 @@ pub struct Model {
     pub auto_extract: i32,
     pub priority: i32,
     pub created_at: i64,
+    pub external_id: Option<String>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
@@ -56,6 +57,7 @@ impl Model {
             auto_extract,
             priority,
             created_at,
+            self.external_id,
         )
     }
 }
@@ -78,6 +80,7 @@ impl ActiveModel {
             auto_extract: Set(if package.auto_extract() { 1 } else { 0 }),
             priority: Set(i32::from(package.priority())),
             created_at: Set(created_at),
+            external_id: Set(package.external_id().map(str::to_string)),
         })
     }
 }

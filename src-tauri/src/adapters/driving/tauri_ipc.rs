@@ -793,6 +793,71 @@ pub async fn link_resolve(
         })
 }
 
+/// Inbound IPC payload for [`link_group_playlists`]. Mirrors
+/// [`crate::application::services::PlaylistGroup`] in camelCase.
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaylistGroupInputDto {
+    pub playlist_id: String,
+    pub playlist_name: String,
+    pub item_count: usize,
+}
+
+/// IPC return shape for [`link_group_playlists`]. Mirrors
+/// [`crate::application::services::PlaylistGroupResult`] in camelCase
+/// so the frontend can show the "Will create package X with N items"
+/// banner before Start.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaylistGroupResultDto {
+    pub package_id: String,
+    pub package_name: String,
+    pub created: bool,
+    pub item_count: usize,
+}
+
+#[tauri::command]
+pub async fn link_group_playlists(
+    state: State<'_, AppState>,
+    groups: Vec<PlaylistGroupInputDto>,
+) -> Result<Vec<PlaylistGroupResultDto>, String> {
+    use crate::application::commands::GroupPlaylistsCommand;
+    use crate::application::services::PlaylistGroup;
+
+    let cmd = GroupPlaylistsCommand {
+        groups: groups
+            .into_iter()
+            .map(|g| PlaylistGroup {
+                playlist_id: g.playlist_id,
+                playlist_name: g.playlist_name,
+                item_count: g.item_count,
+            })
+            .collect(),
+    };
+
+    let results = state
+        .command_bus
+        .handle_group_playlists(cmd)
+        .await
+        .map_err(|e| match &e {
+            AppError::Validation(msg) => msg.clone(),
+            other => {
+                tracing::error!(error = %other, "playlist grouping failed");
+                "Failed to group playlists".to_string()
+            }
+        })?;
+
+    Ok(results
+        .into_iter()
+        .map(|r| PlaylistGroupResultDto {
+            package_id: r.package_id.as_str().to_string(),
+            package_name: r.package_name,
+            created: r.created,
+            item_count: r.item_count,
+        })
+        .collect())
+}
+
 // ── Clipboard ────────────────────────────────────────────────────────
 
 #[tauri::command]

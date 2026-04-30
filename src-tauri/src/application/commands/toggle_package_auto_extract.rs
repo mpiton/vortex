@@ -30,6 +30,7 @@ impl CommandBus {
             next_value,
             existing.priority(),
             existing.created_at(),
+            existing.external_id().map(str::to_string),
         )?;
         repo.save(&updated)?;
         self.event_bus()

@@ -4,7 +4,7 @@
 //! Handler implementations live in submodules and add methods to `CommandBus`.
 
 #[cfg(test)]
-mod tests_support;
+pub(crate) mod tests_support;
 
 mod add_account;
 mod add_download_to_package;
@@ -18,6 +18,7 @@ mod delete_package;
 mod export_accounts;
 mod export_history;
 mod extract_archive;
+mod group_playlists;
 mod import_accounts;
 mod install_plugin;
 mod move_package_to_folder;
@@ -188,6 +189,15 @@ pub struct ResolveLinksCommand {
 impl Command for ResolveLinksCommand {}
 
 pub use resolve_links::ResolvedLinkDto;
+
+/// Auto-group resolved playlist links into one [`Package`] per unique
+/// `playlist_id`. Re-running with the same id reuses the existing
+/// package (PRD-v2 §P1.11).
+#[derive(Debug)]
+pub struct GroupPlaylistsCommand {
+    pub groups: Vec<crate::application::services::PlaylistGroup>,
+}
+impl Command for GroupPlaylistsCommand {}
 
 // Handler: task 23 (settings)
 #[derive(Debug)]

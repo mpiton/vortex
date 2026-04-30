@@ -13,7 +13,13 @@ import { ActionsBar } from "./ActionsBar";
 import { ResolvedLinksSection } from "./ResolvedLinksSection";
 import { MediaGrabberDialog } from "./MediaGrabberDialog";
 import type { ResolvedLink, FilterType, GroupingMode } from "./types";
-import type { MediaDownloadResult, MediaGrabberOptions } from "@/types/media";
+import type {
+  MediaDownloadResult,
+  MediaGrabberOptions,
+  PlaylistGroupInput,
+  PlaylistGroupResult,
+} from "@/types/media";
+import { invoke } from "@tauri-apps/api/core";
 
 export function LinkGrabberView() {
   const { t } = useTranslation();
@@ -43,7 +49,7 @@ export function LinkGrabberView() {
 
   const { mutate: startDownload } = useTauriMutation<unknown, { url: string }>("download_start");
 
-  const { mutate: startMediaDownload } = useTauriMutation<
+  const { mutateAsync: startMediaDownloadAsync } = useTauriMutation<
     MediaDownloadResult,
     {
       url: string;
@@ -53,12 +59,7 @@ export function LinkGrabberView() {
       title?: string;
       playlistItems: string[];
     }
-  >("download_media_start", {
-    onSuccess: () => {
-      toast.success(t("linkGrabber.toast.downloadStarted"));
-      void navigate("/");
-    },
-  });
+  >("download_media_start");
 
   const handlePasteUrls = (urls: string[]) => {
     // TODO: container: entries need a dedicated backend command for decryption
@@ -96,17 +97,63 @@ export function LinkGrabberView() {
     setMediaGrabberOpen(true);
   };
 
-  const handleMediaGrabberConfirm = (options: MediaGrabberOptions) => {
-    if (selectedMediaLink?.originalUrl) {
-      startMediaDownload({
-        url: selectedMediaLink.originalUrl,
+  const handleMediaGrabberConfirm = async (options: MediaGrabberOptions) => {
+    if (!selectedMediaLink?.originalUrl) return;
+
+    const url = selectedMediaLink.originalUrl;
+    const isPlaylistDownload = options.playlistItems.length > 0;
+
+    let packageId: string | undefined;
+    if (isPlaylistDownload) {
+      try {
+        const grouped = await invoke<PlaylistGroupResult[]>("link_group_playlists", {
+          groups: [
+            {
+              playlistId: url,
+              playlistName: options.title ?? "",
+              itemCount: options.playlistItems.length,
+            } satisfies PlaylistGroupInput,
+          ],
+        });
+        packageId = grouped[0]?.packageId;
+      } catch (err) {
+        // Non-fatal: still kick off downloads, just without auto-grouping.
+        // The user can retry by re-resolving the playlist later.
+        toast.error(t("linkGrabber.toast.playlistGroupingFailed", { defaultValue: String(err) }));
+      }
+    }
+
+    let result: MediaDownloadResult;
+    try {
+      result = await startMediaDownloadAsync({
+        url,
         quality: options.quality,
         format: options.format,
         audioOnly: options.audioOnly,
         title: options.title,
         playlistItems: options.playlistItems,
       });
+    } catch (err) {
+      toast.error(t("linkGrabber.toast.downloadFailed", { defaultValue: String(err) }));
+      return;
     }
+
+    if (packageId && result.downloadIds.length > 0) {
+      // Attach each newly-created download to the auto-package. Failures
+      // here are non-fatal — the downloads exist and run; only the
+      // grouping is missed.
+      await Promise.all(
+        result.downloadIds.map((downloadId) =>
+          invoke<void>("package_add_download", {
+            packageId,
+            downloadId,
+          }).catch(() => undefined),
+        ),
+      );
+    }
+
+    toast.success(t("linkGrabber.toast.downloadStarted"));
+    void navigate("/");
   };
 
   const pasteContent =

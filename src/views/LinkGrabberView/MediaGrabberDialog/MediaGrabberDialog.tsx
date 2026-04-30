@@ -14,6 +14,7 @@ import { QualitySelector } from "./QualitySelector";
 import { AudioOnlySection } from "./AudioOnlySection";
 import { SubtitleSelector } from "./SubtitleSelector";
 import { PlaylistSection } from "./PlaylistSection";
+import { PlaylistPackageBanner } from "./PlaylistPackageBanner";
 import { SizeEstimate } from "./SizeEstimate";
 import { useMediaMetadata } from "./useMediaMetadata";
 import type { ResolvedLink } from "../types";
@@ -108,11 +109,21 @@ export function MediaGrabberDialog({
             />
 
             {metadata.isPlaylist && metadata.playlistItems && metadata.playlistItems.length > 0 && (
-              <PlaylistSection
-                items={metadata.playlistItems}
-                selectedItems={selectedPlaylistItems}
-                onSelectItems={setSelectedPlaylistItems}
-              />
+              <>
+                <PlaylistPackageBanner
+                  packageName={metadata.title}
+                  itemCount={
+                    selectedPlaylistItems.length > 0
+                      ? selectedPlaylistItems.length
+                      : metadata.playlistItems.length
+                  }
+                />
+                <PlaylistSection
+                  items={metadata.playlistItems}
+                  selectedItems={selectedPlaylistItems}
+                  onSelectItems={setSelectedPlaylistItems}
+                />
+              </>
             )}
 
             <div className="space-y-4 border-t pt-6">

@@ -321,6 +321,21 @@ impl PackageRepository for InMemoryPackageRepo {
         Ok(self.store.lock().unwrap().get(id).cloned())
     }
 
+    fn find_by_external_id(&self, external_id: &str) -> Result<Option<Package>, DomainError> {
+        let guard = self.store.lock().unwrap();
+        let mut matches: Vec<Package> = guard
+            .values()
+            .filter(|p| p.external_id() == Some(external_id))
+            .cloned()
+            .collect();
+        matches.sort_by(|a, b| {
+            a.created_at()
+                .cmp(&b.created_at())
+                .then_with(|| a.id().as_str().cmp(b.id().as_str()))
+        });
+        Ok(matches.into_iter().next())
+    }
+
     fn save(&self, package: &Package) -> Result<(), DomainError> {
         let mut guard = self.store.lock().unwrap();
         let created_at = match guard.get(package.id()) {
@@ -336,6 +351,7 @@ impl PackageRepository for InMemoryPackageRepo {
             package.auto_extract(),
             package.priority(),
             created_at,
+            package.external_id().map(str::to_string),
         )?;
         guard.insert(package.id().clone(), stored);
         Ok(())
