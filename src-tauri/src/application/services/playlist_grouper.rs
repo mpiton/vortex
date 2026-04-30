@@ -148,7 +148,25 @@ impl PlaylistGrouper {
             created_at_ms,
         );
         package.set_external_id(Some(trimmed_id.to_string()));
-        self.repo.save(&package)?;
+
+        // Save with conflict-recovery: a cross-process writer (the lock
+        // above only serialises within one process) may have inserted
+        // the same `external_id` between our `find_by_external_id` and
+        // here, in which case the SQLite UNIQUE index makes our save
+        // fail. Re-querying decides whether the failure was a race
+        // (return the existing package as a reuse) or a real error.
+        if let Err(save_err) = self.repo.save(&package) {
+            if let Some(existing) = self.repo.find_by_external_id(trimmed_id)? {
+                return Ok(PlaylistGroupResult {
+                    package_id: existing.id().clone(),
+                    package_name: existing.name().to_string(),
+                    created: false,
+                    item_count: group.item_count,
+                });
+            }
+            return Err(save_err.into());
+        }
+
         self.event_bus.publish(DomainEvent::PackageCreated {
             id: package_id.clone(),
             name: name.clone(),
@@ -387,6 +405,138 @@ mod tests {
             .filter(|e| matches!(e, DomainEvent::PackageCreated { .. }))
             .count();
         assert_eq!(created_events, 1, "PackageCreated must fire exactly once");
+    }
+
+    /// Repo wrapper that simulates a cross-process race: the first
+    /// `save` call rejects with a UNIQUE-style error after seeding the
+    /// inner store with the "winning" package, so the next
+    /// `find_by_external_id` succeeds. Subsequent saves pass through.
+    struct RacingPackageRepo {
+        inner: Arc<InMemoryPackageRepo>,
+        winner: Mutex<Option<Package>>,
+    }
+
+    impl RacingPackageRepo {
+        fn new(winner: Package) -> Arc<Self> {
+            Arc::new(Self {
+                inner: Arc::new(InMemoryPackageRepo::new()),
+                winner: Mutex::new(Some(winner)),
+            })
+        }
+    }
+
+    impl PackageRepository for RacingPackageRepo {
+        fn find_by_id(
+            &self,
+            id: &PackageId,
+        ) -> Result<Option<Package>, crate::domain::error::DomainError> {
+            self.inner.find_by_id(id)
+        }
+
+        fn find_by_external_id(
+            &self,
+            external_id: &str,
+        ) -> Result<Option<Package>, crate::domain::error::DomainError> {
+            self.inner.find_by_external_id(external_id)
+        }
+
+        fn save(&self, package: &Package) -> Result<(), crate::domain::error::DomainError> {
+            // Simulate a cross-process winner that already inserted the
+            // same `external_id`: seed the inner store, then surface a
+            // UNIQUE-style error.
+            if let Some(winner) = self.winner.lock().expect("winner lock").take() {
+                self.inner.save(&winner)?;
+                return Err(crate::domain::error::DomainError::StorageError(
+                    "UNIQUE constraint failed: packages.external_id".to_string(),
+                ));
+            }
+            self.inner.save(package)
+        }
+
+        fn list(&self) -> Result<Vec<Package>, crate::domain::error::DomainError> {
+            self.inner.list()
+        }
+
+        fn delete(&self, id: &PackageId) -> Result<(), crate::domain::error::DomainError> {
+            self.inner.delete(id)
+        }
+
+        fn list_downloads(
+            &self,
+            id: &PackageId,
+        ) -> Result<
+            Vec<crate::domain::model::download::DownloadId>,
+            crate::domain::error::DomainError,
+        > {
+            self.inner.list_downloads(id)
+        }
+
+        fn attach_download(
+            &self,
+            package_id: &PackageId,
+            download_id: crate::domain::model::download::DownloadId,
+        ) -> Result<(), crate::domain::error::DomainError> {
+            self.inner.attach_download(package_id, download_id)
+        }
+
+        fn detach_download(
+            &self,
+            download_id: crate::domain::model::download::DownloadId,
+        ) -> Result<(), crate::domain::error::DomainError> {
+            self.inner.detach_download(download_id)
+        }
+
+        fn find_package_of_download(
+            &self,
+            download_id: crate::domain::model::download::DownloadId,
+        ) -> Result<Option<PackageId>, crate::domain::error::DomainError> {
+            self.inner.find_package_of_download(download_id)
+        }
+    }
+
+    #[test]
+    fn test_group_one_recovers_when_save_loses_unique_race() {
+        // Cross-process race: another writer inserts the same
+        // `external_id` between our `find` and `save`. The UNIQUE index
+        // (added in migration m20260430_000008) makes our save fail.
+        // The grouper must re-query and surface the winner as a reuse
+        // instead of bubbling the constraint error to the caller.
+        let bus = Arc::new(CapturingEventBus::new());
+        let mut winner = Package::new(
+            PackageId::new("pkg-winner"),
+            "Winner".to_string(),
+            PackageSourceType::Playlist,
+            500,
+        );
+        winner.set_external_id(Some("PL-race".to_string()));
+        let repo = RacingPackageRepo::new(winner);
+        let grouper = PlaylistGrouper::new(repo.clone(), bus.clone());
+
+        let result = grouper
+            .group_one(&group("PL-race", "Loser", 4), 1_000)
+            .expect("conflict must be recovered, not propagated");
+
+        assert!(
+            !result.created,
+            "post-conflict result must surface the winner as a reuse"
+        );
+        assert_eq!(result.package_id.as_str(), "pkg-winner");
+        assert_eq!(result.package_name, "Winner");
+        // The grouper must NOT publish a `PackageCreated` event for a
+        // package it didn't actually create.
+        let created_events = bus
+            .snapshot()
+            .iter()
+            .filter(|e| matches!(e, DomainEvent::PackageCreated { .. }))
+            .count();
+        assert_eq!(
+            created_events, 0,
+            "no PackageCreated must fire when the save lost the race"
+        );
+
+        let stored = repo.list().expect("list");
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].id().as_str(), "pkg-winner");
     }
 
     #[test]
