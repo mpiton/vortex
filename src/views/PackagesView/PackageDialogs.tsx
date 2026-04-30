@@ -19,7 +19,7 @@ import {
 } from "@/components/ui/select";
 import type { CreatePackageInput, PackageSourceType, PackageView } from "@/types/package";
 
-const SOURCE_OPTIONS: PackageSourceType[] = ["manual", "playlist", "container", "split-archive"];
+const SOURCE_OPTIONS: PackageSourceType[] = ["manual", "playlist", "container", "split_archive"];
 
 interface AddPackageDialogProps {
   open: boolean;

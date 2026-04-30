@@ -112,7 +112,7 @@ export function PackagesView() {
   const priorityMut = useTauriMutation<void, { id: string; priority: number }>(
     "package_set_priority",
     {
-      invalidateKeys: INVALIDATE_KEYS,
+      invalidateKeys: INVALIDATE_KEYS_WITH_DOWNLOADS,
       errorMessage: () => t("packages.toast.updateError"),
     },
   );
@@ -277,13 +277,10 @@ export function PackagesView() {
     },
     dropDownload: async (toPackageId, e) => {
       const transfer = e.dataTransfer;
-      const rawId =
-        transfer?.getData("application/x-vortex-download") ??
-        String(dragRef.current?.downloadId ?? "");
-      const fromId =
-        transfer?.getData("application/x-vortex-source-package") ??
-        dragRef.current?.fromPackageId ??
-        "";
+      const transferId = transfer?.getData("application/x-vortex-download") ?? "";
+      const transferFrom = transfer?.getData("application/x-vortex-source-package") ?? "";
+      const rawId = transferId !== "" ? transferId : String(dragRef.current?.downloadId ?? "");
+      const fromId = transferFrom !== "" ? transferFrom : dragRef.current?.fromPackageId ?? "";
       const downloadId = Number(rawId);
       dragRef.current = null;
       if (!Number.isFinite(downloadId) || fromId === toPackageId || fromId === "") {
@@ -299,7 +296,7 @@ export function PackagesView() {
           } catch {
             toast.error(t("packages.toast.moveDownloadRollbackError"));
             invalidatePackages();
-            throw addError;
+            return;
           }
           throw addError;
         }

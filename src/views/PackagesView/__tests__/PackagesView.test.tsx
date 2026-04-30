@@ -42,7 +42,7 @@ function samplePackages(): PackageView[] {
     {
       id: "pkg-2",
       name: "Backup archive",
-      sourceType: "split-archive",
+      sourceType: "split_archive",
       folderPath: null,
       autoExtract: true,
       priority: 7,

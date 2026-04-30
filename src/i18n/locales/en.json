@@ -513,7 +513,7 @@
       "container": "Container",
       "playlist": "Playlist",
       "manual": "Manual",
-      "split-archive": "Split archive"
+      "split_archive": "Split archive"
     },
     "row": {
       "expand": "Expand package",

@@ -9,7 +9,7 @@ const FILTER_ORDER: ReadonlyArray<"all" | PackageSourceType> = [
   "container",
   "playlist",
   "manual",
-  "split-archive",
+  "split_archive",
 ];
 
 interface PackageToolbarProps {

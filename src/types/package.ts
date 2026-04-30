@@ -2,7 +2,7 @@ export type PackageSourceType =
   | 'container'
   | 'playlist'
   | 'manual'
-  | 'split-archive';
+  | 'split_archive';
 
 export interface PackageView {
   id: string;
