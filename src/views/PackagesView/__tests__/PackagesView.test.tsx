@@ -416,6 +416,133 @@ describe("PackagesView", () => {
     });
   });
 
+  it("marks a download as pending-move when the Move button is pressed", async () => {
+    mockInvoke.mockImplementation(defaultInvokeImpl());
+    const user = userEvent.setup();
+    renderView();
+    await screen.findByText("Holiday playlist");
+    await user.click(screen.getByTestId("package-row-pkg-1-toggle"));
+    await screen.findByText("song-01.mp3");
+
+    const row = screen.getByTestId("package-download-row-42");
+    expect(row).toHaveAttribute("aria-grabbed", "false");
+
+    await user.click(screen.getByTestId("package-download-row-42-move"));
+
+    expect(row).toHaveAttribute("aria-grabbed", "true");
+    expect(screen.getByTestId("packages-move-live-region")).toHaveTextContent(
+      /selected song-01\.mp3/i,
+    );
+  });
+
+  it("shows Move-here target on non-source packages and hides it on the source", async () => {
+    mockInvoke.mockImplementation(defaultInvokeImpl());
+    const user = userEvent.setup();
+    renderView();
+    await screen.findByText("Holiday playlist");
+    await user.click(screen.getByTestId("package-row-pkg-1-toggle"));
+    await screen.findByText("song-01.mp3");
+
+    expect(screen.queryByTestId("package-row-pkg-1-move-target")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("package-row-pkg-2-move-target")).not.toBeInTheDocument();
+
+    await user.click(screen.getByTestId("package-download-row-42-move"));
+
+    expect(screen.queryByTestId("package-row-pkg-1-move-target")).not.toBeInTheDocument();
+    expect(screen.getByTestId("package-row-pkg-2-move-target")).toBeInTheDocument();
+    expect(screen.getByTestId("package-row-pkg-2-dropzone")).toHaveAttribute(
+      "aria-dropeffect",
+      "move",
+    );
+  });
+
+  it("executes a keyboard move via Move-here target and announces success", async () => {
+    mockInvoke.mockImplementation(async (command: string) => {
+      if (command === "package_list") return samplePackages();
+      if (command === "package_list_downloads") return sampleChildren();
+      if (command === "package_remove_download") return null;
+      if (command === "package_add_download") return null;
+      return null;
+    });
+    const user = userEvent.setup();
+    renderView();
+    await screen.findByText("Holiday playlist");
+    await user.click(screen.getByTestId("package-row-pkg-1-toggle"));
+    await screen.findByText("song-01.mp3");
+
+    await user.click(screen.getByTestId("package-download-row-42-move"));
+    await user.click(screen.getByTestId("package-row-pkg-2-move-target"));
+
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith(
+        "package_remove_download",
+        expect.objectContaining({ packageId: "pkg-1", downloadId: 42 }),
+      );
+      expect(mockInvoke).toHaveBeenCalledWith(
+        "package_add_download",
+        expect.objectContaining({ packageId: "pkg-2", downloadId: 42 }),
+      );
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("packages-move-live-region")).toHaveTextContent(
+        /song-01\.mp3 moved to backup archive/i,
+      );
+    });
+    expect(
+      screen.queryByTestId("package-row-pkg-2-move-target"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("cancels a pending move and clears the live region", async () => {
+    mockInvoke.mockImplementation(defaultInvokeImpl());
+    const user = userEvent.setup();
+    renderView();
+    await screen.findByText("Holiday playlist");
+    await user.click(screen.getByTestId("package-row-pkg-1-toggle"));
+    await screen.findByText("song-01.mp3");
+
+    await user.click(screen.getByTestId("package-download-row-42-move"));
+    expect(
+      screen.getByTestId("package-download-row-42"),
+    ).toHaveAttribute("aria-grabbed", "true");
+
+    await user.click(screen.getByTestId("package-download-row-42-move-cancel"));
+
+    expect(
+      screen.getByTestId("package-download-row-42"),
+    ).toHaveAttribute("aria-grabbed", "false");
+    expect(screen.getByTestId("packages-move-live-region")).toHaveTextContent(
+      /move cancelled/i,
+    );
+    expect(
+      screen.queryByTestId("package-row-pkg-2-move-target"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("announces an error when keyboard move fails on add", async () => {
+    mockInvoke.mockImplementation(async (command: string) => {
+      if (command === "package_list") return samplePackages();
+      if (command === "package_list_downloads") return sampleChildren();
+      if (command === "package_remove_download") return null;
+      if (command === "package_add_download") throw new Error("boom");
+      return null;
+    });
+    const user = userEvent.setup();
+    renderView();
+    await screen.findByText("Holiday playlist");
+    await user.click(screen.getByTestId("package-row-pkg-1-toggle"));
+    await screen.findByText("song-01.mp3");
+
+    await user.click(screen.getByTestId("package-download-row-42-move"));
+    await user.click(screen.getByTestId("package-row-pkg-2-move-target"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("packages-move-live-region")).toHaveTextContent(
+        /failed to move song-01\.mp3/i,
+      );
+    });
+  });
+
   it("surfaces the error state when package_list fails", async () => {
     mockInvoke.mockImplementation(async (command: string) => {
       if (command === "package_list") throw new Error("boom");

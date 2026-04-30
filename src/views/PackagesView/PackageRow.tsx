@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import {
+  ArrowRightLeft,
   ChevronDown,
   ChevronRight,
   Folder,
@@ -19,6 +20,12 @@ import type { DownloadView } from "@/types/download";
 import type { PackageView } from "@/types/package";
 import { PackageDownloadRow } from "./PackageDownloadRow";
 
+export interface PendingMove {
+  downloadId: number;
+  fromPackageId: string;
+  fileName: string;
+}
+
 export interface PackageRowActions {
   toggleExpand: (id: string) => void;
   rename: (pkg: PackageView) => void;
@@ -32,6 +39,9 @@ export interface PackageRowActions {
   beginDragDownload: (download: DownloadView, fromPackageId: string) => void;
   endDragDownload: () => void;
   dropDownload: (toPackageId: string, e: React.DragEvent) => void;
+  selectForMove: (download: DownloadView, fromPackageId: string) => void;
+  cancelMove: () => void;
+  executeMove: (toPackage: PackageView) => void;
 }
 
 interface PackageRowProps {
@@ -40,6 +50,7 @@ interface PackageRowProps {
   childrenLoading: boolean;
   childrenError: Error | null;
   childDownloads: DownloadView[] | null;
+  pendingMove: PendingMove | null;
   actions: PackageRowActions;
 }
 
@@ -51,6 +62,7 @@ export function PackageRow({
   childrenLoading,
   childrenError,
   childDownloads,
+  pendingMove,
   actions,
 }: PackageRowProps) {
   const { t } = useTranslation();
@@ -64,6 +76,9 @@ export function PackageRow({
     actions.dropDownload(pkg.id, e);
   };
 
+  const isMoveTarget =
+    pendingMove !== null && pendingMove.fromPackageId !== pkg.id;
+
   return (
     <div
       data-testid={`package-row-${pkg.id}-dropzone`}
@@ -73,6 +88,7 @@ export function PackageRow({
       }}
       onDrop={handleDrop}
       aria-label={t("packages.drag.dropZoneAriaLabel")}
+      aria-dropeffect={isMoveTarget ? "move" : undefined}
     >
       <div
         data-testid={`package-row-${pkg.id}`}
@@ -193,6 +209,19 @@ export function PackageRow({
         >
           <Trash2 className="h-3 w-3" />
         </Button>
+
+        {isMoveTarget && (
+          <Button
+            size="sm"
+            variant="default"
+            data-testid={`package-row-${pkg.id}-move-target`}
+            onClick={() => actions.executeMove(pkg)}
+            aria-label={t("packages.move.targetAriaLabel", { name: pkg.name })}
+          >
+            <ArrowRightLeft className="mr-1 h-3 w-3" />
+            <span className="hidden sm:inline">{t("packages.move.target")}</span>
+          </Button>
+        )}
       </div>
 
       {expanded && (
@@ -215,8 +244,13 @@ export function PackageRow({
               key={d.id}
               download={d}
               packageId={pkg.id}
+              isPendingMove={
+                pendingMove !== null && pendingMove.downloadId === Number(d.id)
+              }
               onDragStart={actions.beginDragDownload}
               onDragEnd={actions.endDragDownload}
+              onSelectForMove={actions.selectForMove}
+              onCancelMove={actions.cancelMove}
             />
           ))}
         </div>

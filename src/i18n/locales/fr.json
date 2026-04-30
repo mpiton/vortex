@@ -589,6 +589,22 @@
       "downloadHandleAriaLabel": "Glisser le téléchargement vers un autre paquet",
       "dropZoneAriaLabel": "Déposer les téléchargements ici"
     },
+    "move": {
+      "start": "Déplacer…",
+      "startAriaLabel": "Marquer {{name}} pour déplacement vers un autre paquet",
+      "cancel": "Annuler le déplacement",
+      "cancelAriaLabel": "Annuler le déplacement en cours de {{name}}",
+      "target": "Déplacer la sélection ici",
+      "targetAriaLabel": "Déplacer le téléchargement sélectionné vers {{name}}",
+      "liveRegionLabel": "Statut du déplacement",
+      "announce": {
+        "selected": "{{name}} sélectionné pour déplacement. Choisissez un paquet de destination.",
+        "cancelled": "Déplacement annulé",
+        "started": "Déplacement de {{name}} vers {{package}}…",
+        "success": "{{name}} déplacé vers {{package}}",
+        "error": "Échec du déplacement de {{name}}"
+      }
+    },
     "toast": {
       "createSuccess": "Paquet créé",
       "createError": "Échec de la création du paquet",

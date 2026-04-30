@@ -589,6 +589,22 @@
       "downloadHandleAriaLabel": "Drag download to another package",
       "dropZoneAriaLabel": "Drop downloads here"
     },
+    "move": {
+      "start": "Move…",
+      "startAriaLabel": "Mark {{name}} for move to another package",
+      "cancel": "Cancel move",
+      "cancelAriaLabel": "Cancel pending move of {{name}}",
+      "target": "Move selected here",
+      "targetAriaLabel": "Move selected download to {{name}}",
+      "liveRegionLabel": "Move status",
+      "announce": {
+        "selected": "Selected {{name}} for move. Choose a destination package.",
+        "cancelled": "Move cancelled",
+        "started": "Moving {{name}} to {{package}}…",
+        "success": "{{name}} moved to {{package}}",
+        "error": "Failed to move {{name}}"
+      }
+    },
     "toast": {
       "createSuccess": "Package created",
       "createError": "Failed to create package",
