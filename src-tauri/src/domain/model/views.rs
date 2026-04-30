@@ -240,11 +240,19 @@ pub struct PackageView {
     pub created_at: u64,
     /// Number of downloads currently attached via `downloads.package_id`.
     pub downloads_count: u64,
-    /// Sum of `downloads.total_bytes` for member downloads, treating
-    /// unknown sizes as zero. `0` when the package has no members.
+    /// Aggregate of member `downloads.total_bytes`. Members in state
+    /// `Completed` count for `COALESCE(total_bytes, downloaded_bytes)` so
+    /// the value matches what each row's per-download view reports
+    /// (Completed = 100% regardless of the persisted bytes); other
+    /// members with `total_bytes = NULL` contribute `0`. `0` overall
+    /// when the package has no members. Mirrored on the numerator side
+    /// in `downloaded_bytes` so `progress_percent` cannot exceed 100%.
     pub total_bytes: u64,
-    /// Sum of `downloads.downloaded_bytes` for member downloads. `0` when
-    /// the package has no members.
+    /// Aggregate of member `downloads.downloaded_bytes`. Members in
+    /// state `Completed` count for `COALESCE(total_bytes,
+    /// downloaded_bytes)` (their full size when known, otherwise their
+    /// persisted bytes), other members count for the persisted
+    /// `downloaded_bytes`. `0` when the package has no members.
     pub downloaded_bytes: u64,
     /// Aggregate progress in `[0.0, 100.0]`, rounded to one decimal. `0.0`
     /// when no member contributes a known total. Mirrors the formula
@@ -260,10 +268,14 @@ pub struct PackageView {
 /// Filter combinable on the `find_packages` read repository call.
 ///
 /// Each field is optional. When `name_q` is set the implementation
-/// performs a case-insensitive substring (fuzzy) match against
-/// `packages.name`; when `source_type` is set it constrains by the
-/// lowercase wire form (`container`, `playlist`, `manual`,
-/// `split_archive`). Both fields combine with AND when present.
+/// performs a Unicode-aware case-insensitive substring (fuzzy) match
+/// against `packages.name` — the comparison happens after the SQL fetch
+/// so `LIKE` wildcards (`%`, `_`) are treated literally and non-ASCII
+/// characters case-fold correctly (e.g. `café` matches `CAFÉ`). Blank
+/// or whitespace-only values are treated as "no filter". When
+/// `source_type` is set it constrains by the lowercase wire form
+/// (`container`, `playlist`, `manual`, `split_archive`). Both fields
+/// combine with AND when present.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PackageFilter {
     pub source_type: Option<String>,

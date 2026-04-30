@@ -35,17 +35,6 @@ fn round_one_dp(value: f64) -> f64 {
     (value * 10.0).round() / 10.0
 }
 
-/// Escape SQLite `LIKE` metacharacters in user-supplied substrings so
-/// they match literally. Pairs with `ESCAPE '\'` in the SQL clause:
-/// `\\` is escaped first to keep the escape character itself literal,
-/// then `%` and `_` (the two `LIKE` wildcards) are escaped.
-fn escape_like(input: &str) -> String {
-    input
-        .replace('\\', r"\\")
-        .replace('%', r"\%")
-        .replace('_', r"\_")
-}
-
 fn aggregate_progress_percent(downloaded: u64, total: u64, all_completed: bool) -> f64 {
     if all_completed {
         return 100.0;
@@ -198,6 +187,7 @@ impl PackageReadRepository for SqlitePackageReadRepo {
         let mut sql = String::from(PACKAGE_AGG_SELECT);
         let mut clauses: Vec<&'static str> = Vec::new();
         let mut params: Vec<Value> = Vec::new();
+        let mut name_needle: Option<String> = None;
         if let Some(ref f) = filter {
             if let Some(ref source) = f.source_type {
                 clauses.push("p.source_type = ?");
@@ -206,14 +196,14 @@ impl PackageReadRepository for SqlitePackageReadRepo {
             if let Some(ref needle) = f.name_q {
                 let trimmed = needle.trim();
                 if !trimmed.is_empty() {
-                    // ESCAPE clause keeps the advertised "substring"
-                    // semantics: a literal `%` or `_` in user input
-                    // matches itself instead of acting as a wildcard.
-                    clauses.push(r"LOWER(p.name) LIKE ? ESCAPE '\'");
-                    params.push(Value::from(format!(
-                        "%{}%",
-                        escape_like(&trimmed.to_lowercase()),
-                    )));
+                    // Substring matching is filtered in Rust after the
+                    // SQL fetch — same approach as `history_repo` —
+                    // because stock SQLite's `LOWER()` only case-folds
+                    // ASCII (so `LOWER('CAFÉ')` stays `'CAFÉ'`) and the
+                    // `LIKE` wildcards `%` and `_` would otherwise need
+                    // escaping. Rust's `to_lowercase` is Unicode-aware
+                    // and `str::contains` treats every byte literally.
+                    name_needle = Some(trimmed.to_lowercase());
                 }
             }
         }
@@ -233,7 +223,14 @@ impl PackageReadRepository for SqlitePackageReadRepo {
                 ))
                 .await
                 .map_err(map_db_err)?;
-            rows.iter().map(row_to_view).collect()
+            let views: Vec<PackageView> = rows.iter().map(row_to_view).collect::<Result<_, _>>()?;
+            Ok(match name_needle {
+                Some(needle) => views
+                    .into_iter()
+                    .filter(|v| v.name.to_lowercase().contains(&needle))
+                    .collect(),
+                None => views,
+            })
         })
     }
 
@@ -751,12 +748,11 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn test_find_packages_filter_name_q_escapes_like_percent_metachar() {
-        // Without ESCAPE, `%` is the SQL `LIKE` "match anything"
-        // wildcard, so a query for `100%` would match `100` even if no
-        // package literally contains `%`. Searching for `100%` must
-        // only return rows whose name actually contains the substring
-        // `100%`.
+    async fn test_find_packages_filter_name_q_treats_percent_literally() {
+        // `%` is the SQL `LIKE` "match anything" wildcard. Filtering in
+        // Rust via `str::contains` (rather than pushing into a SQL
+        // pattern) means `%` is just another character, so a query for
+        // `100%` only matches rows whose name literally contains `100%`.
         let db = setup_test_db().await.expect("test db");
         let write = SqlitePackageRepo::new(db.clone());
         let read = SqlitePackageReadRepo::new(db);
@@ -784,9 +780,9 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn test_find_packages_filter_name_q_escapes_like_underscore_metachar() {
-        // Without ESCAPE, `_` matches any single character — so `foo_bar`
-        // would match `foo-bar`, `foo bar`, etc. The filter must treat
+    async fn test_find_packages_filter_name_q_treats_underscore_literally() {
+        // In SQL `LIKE`, `_` matches any single character — so `foo_bar`
+        // would match `foo-bar`, `foo bar`, etc. Filtering in Rust treats
         // `_` literally.
         let db = setup_test_db().await.expect("test db");
         let write = SqlitePackageRepo::new(db.clone());
@@ -813,10 +809,9 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn test_find_packages_filter_name_q_escapes_backslash_metachar() {
-        // The escape character itself (`\`) must be doubled so a user
-        // input ending in `\` does not silently swallow the next byte
-        // of the wrapping `%` and produce an invalid pattern.
+    async fn test_find_packages_filter_name_q_treats_backslash_literally() {
+        // Filtering in Rust means `\` is just a byte; no escape sequence
+        // can swallow a wrapping wildcard or invalidate the pattern.
         let db = setup_test_db().await.expect("test db");
         let write = SqlitePackageRepo::new(db.clone());
         let read = SqlitePackageReadRepo::new(db);
@@ -846,6 +841,65 @@ mod tests {
             .unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].id, "a");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_find_packages_filter_name_q_matches_non_ascii_case_insensitively() {
+        // Stock SQLite's `LOWER()` only case-folds ASCII, so a SQL
+        // `LOWER(p.name) LIKE` clause would miss `CAFÉ` when the user
+        // searches `café`. Folding both sides in Rust via
+        // `str::to_lowercase` (which is Unicode-aware) keeps the
+        // advertised case-insensitive semantics for any script.
+        let db = setup_test_db().await.expect("test db");
+        let write = SqlitePackageRepo::new(db.clone());
+        let read = SqlitePackageReadRepo::new(db);
+
+        write
+            .save(&make_package(
+                "a",
+                "CAFÉ Special",
+                PackageSourceType::Manual,
+                1,
+            ))
+            .unwrap();
+        write
+            .save(&make_package(
+                "b",
+                "Ärger Folder",
+                PackageSourceType::Manual,
+                2,
+            ))
+            .unwrap();
+        write
+            .save(&make_package(
+                "c",
+                "Plain ASCII",
+                PackageSourceType::Manual,
+                3,
+            ))
+            .unwrap();
+
+        let result_cafe = read
+            .find_packages(Some(PackageFilter {
+                source_type: None,
+                name_q: Some("café".to_string()),
+            }))
+            .unwrap();
+        assert_eq!(
+            result_cafe.len(),
+            1,
+            "lowercase needle must match uppercase É"
+        );
+        assert_eq!(result_cafe[0].id, "a");
+
+        let result_arger = read
+            .find_packages(Some(PackageFilter {
+                source_type: None,
+                name_q: Some("ärger".to_string()),
+            }))
+            .unwrap();
+        assert_eq!(result_arger.len(), 1);
+        assert_eq!(result_arger[0].id, "b");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
