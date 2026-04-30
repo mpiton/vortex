@@ -80,12 +80,15 @@ export function MediaGrabberDialog({
     const downloadTitle = metadata?.artist
       ? `${metadata.artist} - ${metadata.title}`
       : metadata?.title;
+    const isPlaylist = metadata?.isPlaylist === true;
     onConfirm({
       quality: effectiveAudioOnly ? "audio_only" : qualitySelection,
       format: effectiveAudioOnly ? audioFormat : formatSelection,
       subtitles: selectedSubtitles,
       audioOnly: effectiveAudioOnly,
       playlistItems: selectedPlaylistItems,
+      isPlaylist,
+      playlistItemCount: isPlaylist ? metadata?.playlistItems?.length ?? 0 : undefined,
       title: downloadTitle,
     });
     onOpenChange(false);

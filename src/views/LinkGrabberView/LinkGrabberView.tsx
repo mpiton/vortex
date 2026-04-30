@@ -101,17 +101,26 @@ export function LinkGrabberView() {
     if (!selectedMediaLink?.originalUrl) return;
 
     const url = selectedMediaLink.originalUrl;
-    const isPlaylistDownload = options.playlistItems.length > 0;
+    // Gate auto-grouping on the metadata-derived `isPlaylist` flag rather
+    // than on `playlistItems.length`. The selection list is empty by
+    // default — the backend interprets that as "download every track" —
+    // so a `> 0` check would skip grouping for the most common path.
+    const isPlaylistDownload =
+      options.isPlaylist === true || options.playlistItems.length > 0;
 
     let packageId: string | undefined;
     if (isPlaylistDownload) {
       try {
+        const groupItemCount =
+          options.playlistItems.length > 0
+            ? options.playlistItems.length
+            : options.playlistItemCount ?? 0;
         const grouped = await invoke<PlaylistGroupResult[]>("link_group_playlists", {
           groups: [
             {
               playlistId: url,
               playlistName: options.title ?? "",
-              itemCount: options.playlistItems.length,
+              itemCount: groupItemCount,
             } satisfies PlaylistGroupInput,
           ],
         });

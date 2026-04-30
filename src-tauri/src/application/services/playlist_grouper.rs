@@ -22,7 +22,7 @@
 //! the grouper only cares about the natural key, not about which
 //! plugin emitted it.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use uuid::Uuid;
 
@@ -31,6 +31,29 @@ use crate::domain::event::DomainEvent;
 use crate::domain::model::package::{Package, PackageId, PackageSourceType};
 use crate::domain::ports::driven::EventBus;
 use crate::domain::ports::driven::PackageRepository;
+
+/// Process-wide lock that serialises the find-then-save sequence in
+/// [`PlaylistGrouper::group_one`]. Without it, two concurrent IPC
+/// invocations (rapid double-Start, two windows) for the same
+/// `playlist_id` could both observe "not found" and each insert a new
+/// `Package`, breaking the idempotent-reuse guarantee. The lock is held
+/// only across the lookup + save, never during downstream work, so the
+/// contention window is tiny (a few SQLite writes).
+fn group_lock() -> &'static Mutex<()> {
+    static GROUP_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    GROUP_LOCK.get_or_init(|| Mutex::new(()))
+}
+
+/// Acquire the global grouper lock, recovering from a poisoned mutex
+/// (a previous panic while holding the guard) instead of panicking
+/// again. Domain state lives in SQLite, not in the lock guard, so the
+/// next caller can safely proceed.
+fn acquire_group_lock() -> MutexGuard<'static, ()> {
+    match group_lock().lock() {
+        Ok(g) => g,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
 
 /// One playlist seen by the resolver. The grouper turns one or more
 /// `PlaylistGroup` instances into a `Package` per unique `playlist_id`.
@@ -80,6 +103,10 @@ impl PlaylistGrouper {
     /// Find or create the package for a single playlist. Idempotent on
     /// `playlist_id`: re-running with the same id yields the same
     /// `package_id` and `created = false`.
+    ///
+    /// The find-then-save pair is protected by a process-wide mutex so
+    /// two concurrent calls for the same `playlist_id` cannot both miss
+    /// the lookup and insert duplicate packages.
     pub fn group_one(
         &self,
         group: &PlaylistGroup,
@@ -89,6 +116,8 @@ impl PlaylistGrouper {
         if trimmed_id.is_empty() {
             return Err(AppError::Validation("playlist_id must not be empty".into()));
         }
+
+        let _guard = acquire_group_lock();
 
         if let Some(existing) = self.repo.find_by_external_id(trimmed_id)? {
             return Ok(PlaylistGroupResult {
@@ -298,6 +327,61 @@ mod tests {
         let stored = repo.list().unwrap();
         assert_eq!(stored.len(), 1);
         assert_eq!(stored[0].external_id(), Some("PL-ok"));
+    }
+
+    #[test]
+    fn test_group_one_serialises_concurrent_calls_for_same_playlist_id() {
+        // Spawn N threads that all hit `group_one` for the same
+        // `playlist_id` at once. Without the lock, the find-then-save
+        // race can produce two `PackageCreated` events and two rows
+        // sharing the same `external_id`. With the lock, exactly one
+        // creation must win and the rest must reuse it.
+        const THREADS: usize = 16;
+        let (repo, bus) = arc_repo_and_bus();
+        let grouper = Arc::new(PlaylistGrouper::new(
+            repo.clone() as Arc<dyn PackageRepository>,
+            bus.clone(),
+        ));
+
+        let handles: Vec<_> = (0..THREADS)
+            .map(|i| {
+                let grouper = grouper.clone();
+                std::thread::spawn(move || {
+                    grouper
+                        .group_one(&group("PL-race", "Race", 1), 1_700_000_000_000 + i as u64)
+                        .expect("group_one")
+                })
+            })
+            .collect();
+
+        let results: Vec<PlaylistGroupResult> = handles
+            .into_iter()
+            .map(|h| h.join().expect("thread"))
+            .collect();
+
+        let created_count = results.iter().filter(|r| r.created).count();
+        assert_eq!(
+            created_count, 1,
+            "exactly one thread must create the package"
+        );
+        let unique_ids: std::collections::HashSet<&PackageId> =
+            results.iter().map(|r| &r.package_id).collect();
+        assert_eq!(
+            unique_ids.len(),
+            1,
+            "every call must yield the same package id"
+        );
+
+        let stored = repo.list().expect("list");
+        assert_eq!(stored.len(), 1, "exactly one package row must exist");
+        assert_eq!(stored[0].external_id(), Some("PL-race"));
+
+        let created_events = bus
+            .snapshot()
+            .iter()
+            .filter(|e| matches!(e, DomainEvent::PackageCreated { .. }))
+            .count();
+        assert_eq!(created_events, 1, "PackageCreated must fire exactly once");
     }
 
     #[test]
