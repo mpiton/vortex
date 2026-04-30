@@ -55,7 +55,7 @@ export function AddPackageDialog({ open, onOpenChange, onSubmit }: AddPackageDia
       await onSubmit({
         name: trimmedName,
         sourceType,
-        folderPath: trimmedFolder.length > 0 ? folderPath : undefined,
+        folderPath: trimmedFolder.length > 0 ? trimmedFolder : undefined,
       });
       onOpenChange(false);
     } catch {
@@ -300,7 +300,7 @@ export function FolderDialog({ pkg, onCancel, onPickFolder, onSubmit }: FolderDi
     if (!canSubmit) return;
     setSubmitting(true);
     try {
-      await onSubmit(folder);
+      await onSubmit(trimmed);
       onCancel();
     } catch {
       // toast surfaced by mutation
