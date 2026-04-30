@@ -42,7 +42,11 @@ fn aggregate_progress_percent(downloaded: u64, total: u64, all_completed: bool) 
     if total == 0 {
         return 0.0;
     }
-    round_one_dp(downloaded as f64 / total as f64 * 100.0)
+    // Clamp to the documented `[0.0, 100.0]` contract: a non-completed
+    // member can persist `downloaded_bytes > total_bytes` (e.g. last
+    // segment over-fetch, mid-flight retry double-count) which would
+    // otherwise leak past 100% to the UI.
+    round_one_dp(downloaded as f64 / total as f64 * 100.0).min(100.0)
 }
 
 /// Map an aggregated row back to a [`PackageView`]. Centralised so both
@@ -133,7 +137,10 @@ fn compute_progress_percent_for_download(state: &str, downloaded: u64, total: Op
         return 100.0;
     }
     match total {
-        Some(t) if t > 0 => round_one_dp(downloaded as f64 / t as f64 * 100.0),
+        // Same `[0.0, 100.0]` clamp as the package-level aggregate so a
+        // row whose persisted `downloaded_bytes` overshoots `total_bytes`
+        // does not render a `>100%` progress bar.
+        Some(t) if t > 0 => round_one_dp(downloaded as f64 / t as f64 * 100.0).min(100.0),
         _ => 0.0,
     }
 }
@@ -283,24 +290,29 @@ impl PackageReadRepository for SqlitePackageReadRepo {
                 .map(|r| r.try_get_by_index::<i64>(0).map_err(map_db_err))
                 .collect::<Result<Vec<_>, _>>()?;
 
-            let downloads = download::Entity::find()
-                .filter(download::Column::Id.is_in(download_ids.clone()))
-                .all(&self.db)
-                .await
-                .map_err(map_db_err)?;
-
-            let segments = download_segment::Entity::find()
-                .filter(download_segment::Column::DownloadId.is_in(download_ids.clone()))
-                .all(&self.db)
-                .await
-                .map_err(map_db_err)?;
+            let mut downloads: Vec<download::Model> = Vec::with_capacity(download_ids.len());
+            for chunk in download_ids.chunks(SQLITE_IN_CHUNK) {
+                let page = download::Entity::find()
+                    .filter(download::Column::Id.is_in(chunk.to_vec()))
+                    .all(&self.db)
+                    .await
+                    .map_err(map_db_err)?;
+                downloads.extend(page);
+            }
 
             let mut seg_map: HashMap<i64, (u32, u32)> = HashMap::new();
-            for seg in &segments {
-                let entry = seg_map.entry(seg.download_id).or_insert((0, 0));
-                entry.1 = entry.1.saturating_add(1);
-                if seg.state == "Downloading" {
-                    entry.0 = entry.0.saturating_add(1);
+            for chunk in download_ids.chunks(SQLITE_IN_CHUNK) {
+                let segments = download_segment::Entity::find()
+                    .filter(download_segment::Column::DownloadId.is_in(chunk.to_vec()))
+                    .all(&self.db)
+                    .await
+                    .map_err(map_db_err)?;
+                for seg in &segments {
+                    let entry = seg_map.entry(seg.download_id).or_insert((0, 0));
+                    entry.1 = entry.1.saturating_add(1);
+                    if seg.state == "Downloading" {
+                        entry.0 = entry.0.saturating_add(1);
+                    }
                 }
             }
 
@@ -322,6 +334,14 @@ impl PackageReadRepository for SqlitePackageReadRepo {
         })
     }
 }
+
+/// Maximum number of host parameters bound in a single `IN (...)` query
+/// to stay below SQLite's `SQLITE_MAX_VARIABLE_NUMBER` ceiling. The
+/// modern default is 32 766 but older builds (and embedded targets)
+/// floor at 999, so we pick a value well below both. Used to chunk the
+/// member-download lookup in `find_package_downloads` for packages with
+/// thousands of attached items (bulk RSS / podcast imports).
+const SQLITE_IN_CHUNK: usize = 900;
 
 #[cfg(test)]
 mod tests {
@@ -990,5 +1010,100 @@ mod tests {
         assert!((views[0].progress_percent - 33.3).abs() < 0.01);
         // Completed always reports 100 even when downloaded < total.
         assert_eq!(views[1].progress_percent, 100.0);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_find_packages_progress_clamps_above_one_hundred_percent() {
+        // A non-Completed row whose persisted `downloaded_bytes` exceeds
+        // `total_bytes` (segment over-fetch, retry double-count) must
+        // still render as 100% — the documented contract is `[0.0,
+        // 100.0]`, not raw arithmetic.
+        let db = setup_test_db().await.expect("test db");
+        let write = SqlitePackageRepo::new(db.clone());
+        let read = SqlitePackageReadRepo::new(db.clone());
+
+        write
+            .save(&make_package(
+                "overshoot",
+                "Overshoot",
+                PackageSourceType::Manual,
+                1,
+            ))
+            .unwrap();
+        // Downloading at 1500 / 1000 → 150% before clamping.
+        insert_download(
+            &db,
+            900,
+            Some("overshoot"),
+            "Downloading",
+            Some(1000),
+            1500,
+            0,
+        )
+        .await;
+
+        let pkg = &read.find_packages(None).unwrap()[0];
+        assert_eq!(
+            pkg.progress_percent, 100.0,
+            "package aggregate must clamp >100% to 100%",
+        );
+
+        let row = &read
+            .find_package_downloads(&PackageId::new("overshoot"))
+            .unwrap()[0];
+        assert_eq!(
+            row.progress_percent, 100.0,
+            "per-row view must clamp >100% to 100%",
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_find_package_downloads_chunks_oversized_in_query() {
+        // With a package holding more members than `SQLITE_IN_CHUNK`,
+        // a single `Id IN (?, ?, ...)` would exceed
+        // `SQLITE_MAX_VARIABLE_NUMBER` on builds capped at 999. The
+        // implementation must chunk the lookup so no batch exceeds the
+        // limit, and still return every member in queue order.
+        let db = setup_test_db().await.expect("test db");
+        let write = SqlitePackageRepo::new(db.clone());
+        let read = SqlitePackageReadRepo::new(db.clone());
+
+        write
+            .save(&make_package(
+                "bulk",
+                "Bulk",
+                PackageSourceType::Playlist,
+                1,
+            ))
+            .unwrap();
+
+        let count: i64 = (SQLITE_IN_CHUNK as i64) + 50;
+        for i in 0..count {
+            insert_download(
+                &db,
+                10_000 + i,
+                Some("bulk"),
+                "Downloading",
+                Some(100),
+                10,
+                i,
+            )
+            .await;
+        }
+
+        let views = read
+            .find_package_downloads(&PackageId::new("bulk"))
+            .unwrap();
+        assert_eq!(views.len(), count as usize, "every chunked row returned");
+        // Spot-check ordering at the chunk boundary: row at index 900
+        // (the first of the second chunk) must keep its `queue_position`
+        // ASC ordering (monotonic with id since both increase together).
+        for (idx, view) in views.iter().enumerate() {
+            assert_eq!(
+                view.id.0,
+                10_000 + idx as u64,
+                "chunked merge preserved insertion order at index {idx}",
+            );
+        }
     }
 }
