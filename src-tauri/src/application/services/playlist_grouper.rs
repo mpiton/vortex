@@ -86,8 +86,13 @@ pub struct PlaylistGroupResult {
 }
 
 /// Stable label used when the input `playlist_name` is empty / blank.
-fn fallback_name(playlist_id: &str) -> String {
-    format!("Playlist {playlist_id}")
+/// Returns a generic English string rather than embedding the raw
+/// `external_id`: the natural key may be a full URL or an opaque
+/// canonical token (e.g. `youtube:playlist:PL…`), neither of which is
+/// useful to surface in the package list. Frontend i18n still applies
+/// to the banner; the persisted package name is intentionally generic.
+fn fallback_name() -> String {
+    "Untitled playlist".to_string()
 }
 
 pub struct PlaylistGrouper {
@@ -130,7 +135,7 @@ impl PlaylistGrouper {
 
         let trimmed_name = group.playlist_name.trim();
         let name = if trimmed_name.is_empty() {
-            fallback_name(trimmed_id)
+            fallback_name()
         } else {
             trimmed_name.to_string()
         };
@@ -283,9 +288,9 @@ mod tests {
             .group_one(&group("PL-no-name", "   ", 4), 0)
             .expect("create");
 
-        assert_eq!(result.package_name, "Playlist PL-no-name");
+        assert_eq!(result.package_name, "Untitled playlist");
         let stored = repo.find_by_id(&result.package_id).unwrap().unwrap();
-        assert_eq!(stored.name(), "Playlist PL-no-name");
+        assert_eq!(stored.name(), "Untitled playlist");
     }
 
     #[test]

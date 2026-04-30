@@ -279,8 +279,9 @@
       "resolveSuccess_one": "{{count}} link resolved",
       "resolveSuccess_other": "{{count}} links resolved",
       "downloadStarted": "Download started",
-      "downloadFailed": "Download failed: {{defaultValue}}",
       "playlistGroupingFailed": "Could not auto-group playlist into a package",
+      "playlistAttachFailed_one": "{{count}} download could not be attached to the playlist package",
+      "playlistAttachFailed_other": "{{count}} downloads could not be attached to the playlist package",
       "clipboardReadFailed": "Could not read clipboard"
     }
   },

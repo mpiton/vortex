@@ -279,8 +279,9 @@
       "resolveSuccess_one": "{{count}} lien analysé",
       "resolveSuccess_other": "{{count}} liens analysés",
       "downloadStarted": "Téléchargement démarré",
-      "downloadFailed": "Échec du téléchargement : {{defaultValue}}",
       "playlistGroupingFailed": "Impossible de regrouper la playlist dans un paquet",
+      "playlistAttachFailed_one": "{{count}} téléchargement n'a pas pu être attaché au paquet de playlist",
+      "playlistAttachFailed_other": "{{count}} téléchargements n'ont pas pu être attachés au paquet de playlist",
       "clipboardReadFailed": "Impossible de lire le presse-papiers"
     }
   },

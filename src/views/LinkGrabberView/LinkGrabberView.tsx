@@ -20,6 +20,7 @@ import type {
   PlaylistGroupResult,
 } from "@/types/media";
 import { invoke } from "@tauri-apps/api/core";
+import { canonicalPlaylistKey } from "./canonicalPlaylistKey";
 
 export function LinkGrabberView() {
   const { t } = useTranslation();
@@ -115,10 +116,16 @@ export function LinkGrabberView() {
           options.playlistItems.length > 0
             ? options.playlistItems.length
             : options.playlistItemCount ?? 0;
+        // Prefer the canonical playlist key (e.g. `youtube:playlist:PLxxx`)
+        // so equivalent URLs (`watch?v=…&list=…` vs `playlist?list=…`)
+        // dedupe to the same package. Falls back to the raw URL when the
+        // source has no canonical scheme yet (SoundCloud paths are already
+        // stable, unknown sources keep the URL as the natural key).
+        const playlistKey = canonicalPlaylistKey(url);
         const grouped = await invoke<PlaylistGroupResult[]>("link_group_playlists", {
           groups: [
             {
-              playlistId: url,
+              playlistId: playlistKey,
               playlistName: options.title ?? "",
               itemCount: groupItemCount,
             } satisfies PlaylistGroupInput,
@@ -142,23 +149,37 @@ export function LinkGrabberView() {
         title: options.title,
         playlistItems: options.playlistItems,
       });
-    } catch (err) {
-      toast.error(t("linkGrabber.toast.downloadFailed", { defaultValue: String(err) }));
+    } catch {
+      // `useTauriMutation` already surfaces a default error toast on
+      // rejection; emitting one here would double-report the same
+      // failure. Just bail out so we skip the success path.
       return;
     }
 
     if (packageId && result.downloadIds.length > 0) {
       // Attach each newly-created download to the auto-package. Failures
-      // here are non-fatal — the downloads exist and run; only the
-      // grouping is missed.
-      await Promise.all(
+      // here are non-fatal (downloads still run; only the grouping is
+      // missed) but they must not be silent: surface a single toast when
+      // any attachment rejects so the user can retry.
+      const attachOutcomes = await Promise.allSettled(
         result.downloadIds.map((downloadId) =>
           invoke<void>("package_add_download", {
             packageId,
             downloadId,
-          }).catch(() => undefined),
+          }),
         ),
       );
+      const failedAttachCount = attachOutcomes.filter(
+        (o) => o.status === "rejected",
+      ).length;
+      if (failedAttachCount > 0) {
+        toast.error(
+          t("linkGrabber.toast.playlistAttachFailed", {
+            count: failedAttachCount,
+            defaultValue: `${failedAttachCount} downloads could not be attached to the playlist package`,
+          }),
+        );
+      }
     }
 
     toast.success(t("linkGrabber.toast.downloadStarted"));
