@@ -753,35 +753,62 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn test_find_by_external_id_returns_oldest_when_duplicates() {
-        // Two packages with the same external_id (no DB UNIQUE) — repo
-        // returns the earliest by created_at so callers reuse the first
-        // package created from a given source rather than the latest.
+    async fn test_save_rejects_duplicate_external_id_via_unique_index() {
+        // The UNIQUE index on `packages.external_id` enforces the
+        // one-package-per-natural-key invariant at the storage level —
+        // multi-process safe, regardless of the in-process grouper
+        // mutex. Trying to insert a different `id` with the same
+        // `external_id` must surface as an error.
         let db = setup_test_db().await.expect("test db");
         let repo = SqlitePackageRepo::new(db);
 
-        let mut newer = Package::new(
-            PackageId::new("pkg-newer"),
-            "newer".to_string(),
-            PackageSourceType::Playlist,
-            2_000_000_000_000,
-        );
-        newer.set_external_id(Some("dup".to_string()));
-        let mut older = Package::new(
-            PackageId::new("pkg-older"),
-            "older".to_string(),
+        let mut first = Package::new(
+            PackageId::new("pkg-first"),
+            "first".to_string(),
             PackageSourceType::Playlist,
             1_000_000_000_000,
         );
-        older.set_external_id(Some("dup".to_string()));
-        repo.save(&newer).expect("save newer");
-        repo.save(&older).expect("save older");
+        first.set_external_id(Some("dup".to_string()));
+        repo.save(&first).expect("save first");
 
+        let mut second = Package::new(
+            PackageId::new("pkg-second"),
+            "second".to_string(),
+            PackageSourceType::Playlist,
+            2_000_000_000_000,
+        );
+        second.set_external_id(Some("dup".to_string()));
+        let err = repo
+            .save(&second)
+            .expect_err("UNIQUE index must reject the duplicate");
+        let msg = format!("{err:?}");
+        assert!(
+            msg.to_uppercase().contains("UNIQUE"),
+            "expected UNIQUE constraint violation, got {msg}"
+        );
+
+        // The first package is still present; the second never landed.
         let found = repo
             .find_by_external_id("dup")
             .expect("query")
             .expect("present");
-        assert_eq!(found.id().as_str(), "pkg-older");
+        assert_eq!(found.id().as_str(), "pkg-first");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_unique_index_allows_multiple_null_external_ids() {
+        // SQLite treats every NULL in a UNIQUE index as distinct, so
+        // manual packages (which keep `external_id` NULL) are not
+        // restricted to a single row by the new constraint.
+        let db = setup_test_db().await.expect("test db");
+        let repo = SqlitePackageRepo::new(db);
+
+        repo.save(&make_package("pkg-a", "A", PackageSourceType::Manual))
+            .expect("save first manual");
+        repo.save(&make_package("pkg-b", "B", PackageSourceType::Manual))
+            .expect("save second manual must coexist");
+
+        assert_eq!(repo.list().expect("list").len(), 2);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

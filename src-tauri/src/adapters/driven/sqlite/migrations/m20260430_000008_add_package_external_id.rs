@@ -7,10 +7,12 @@
 //! nullable: only auto-grouped sources fill it; manual packages stay
 //! `NULL`.
 //!
-//! An index covers the lookup; uniqueness is enforced at the
-//! application layer because containers and playlists may share an id
-//! shape but never collide in practice (the column is nullable, so a
-//! UNIQUE constraint would forbid more than one manual package row).
+//! The index is `UNIQUE`. SQLite treats every `NULL` in a UNIQUE index
+//! as distinct from every other value (including other `NULL`s), so
+//! multiple manual packages with `NULL external_id` remain valid while
+//! the one-package-per-`external_id` invariant is enforced at storage
+//! level — robust against concurrent writes from multiple processes,
+//! not just the in-process `PlaylistGrouper` mutex.
 
 use sea_orm_migration::prelude::*;
 
@@ -35,6 +37,7 @@ impl MigrationTrait for Migration {
                     .name("idx_packages_external_id")
                     .table(Packages::Table)
                     .col(Packages::ExternalId)
+                    .unique()
                     .to_owned(),
             )
             .await
