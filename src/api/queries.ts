@@ -1,5 +1,6 @@
 import type { AccountListFilter } from '@/types/account';
 import type { DownloadFilter } from '@/types/download';
+import type { PackageListFilter } from '@/types/package';
 
 export const downloadQueries = {
   all: () => ['downloads'] as const,
@@ -26,6 +27,16 @@ export const historyQueries = {
 export const statsQueries = {
   all: () => ['stats'] as const,
   overview: () => [...statsQueries.all(), 'overview'] as const,
+};
+
+export const packageQueries = {
+  all: () => ['packages'] as const,
+  lists: () => [...packageQueries.all(), 'list'] as const,
+  list: (filter?: PackageListFilter) =>
+    filter ? ([...packageQueries.lists(), filter] as const) : (packageQueries.lists() as readonly unknown[]),
+  details: () => [...packageQueries.all(), 'detail'] as const,
+  detail: (id: string) => [...packageQueries.details(), id] as const,
+  downloads: (id: string) => [...packageQueries.all(), 'downloads', id] as const,
 };
 
 export const accountQueries = {
