@@ -154,9 +154,18 @@ fn download_row_to_view(
     let downloaded = safe_u64(model.downloaded_bytes);
     let speed = safe_u64(model.speed_bytes_per_sec);
     let progress_percent = compute_progress_percent_for_download(&model.state, downloaded, total);
-    let eta_seconds = match total {
-        Some(t) if speed > 0 && t > downloaded => Some((t - downloaded) / speed),
-        _ => None,
+    // A `Completed` row reports 100% above, so any ETA would be
+    // self-contradictory ("done, X seconds remaining"). Stale rows can
+    // still leave `speed_bytes_per_sec > 0` with `downloaded_bytes <
+    // total_bytes` if the engine crashed mid-flush, so guard explicitly
+    // on state instead of relying on the byte counters being clean.
+    let eta_seconds = if model.state == "Completed" {
+        None
+    } else {
+        match total {
+            Some(t) if speed > 0 && t > downloaded => Some((t - downloaded) / speed),
+            _ => None,
+        }
     };
     let state = model.state.parse().map_err(|_| {
         DomainError::StorageError(format!("invalid download state in DB: {}", model.state))
@@ -382,6 +391,20 @@ mod tests {
         ))
         .await
         .expect("seed download");
+    }
+
+    /// Override `speed_bytes_per_sec` after `insert_download` seeded a
+    /// row. Kept as a one-off because every other test wants
+    /// `speed = 0`; only the ETA edge case needs a non-zero stale value.
+    async fn set_download_speed(db: &DatabaseConnection, id: i64, speed_bytes_per_sec: i64) {
+        db.execute(Statement::from_string(
+            sea_orm::DatabaseBackend::Sqlite,
+            format!(
+                "UPDATE downloads SET speed_bytes_per_sec = {speed_bytes_per_sec} WHERE id = {id}"
+            ),
+        ))
+        .await
+        .expect("update speed");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1105,5 +1128,40 @@ mod tests {
                 "chunked merge preserved insertion order at index {idx}",
             );
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_find_package_downloads_eta_is_none_for_completed_with_stale_speed() {
+        // A `Completed` row reports 100% progress, so any ETA would be
+        // self-contradictory. Stale persisted data can leave
+        // `speed_bytes_per_sec > 0` and `downloaded_bytes < total_bytes`
+        // (engine crashed mid-flush, manual state edit). The view must
+        // suppress ETA based on state, not on whether the bytes look
+        // clean.
+        let db = setup_test_db().await.expect("test db");
+        let write = SqlitePackageRepo::new(db.clone());
+        let read = SqlitePackageReadRepo::new(db.clone());
+
+        write
+            .save(&make_package("eta", "Eta", PackageSourceType::Manual, 1))
+            .unwrap();
+        // Completed with bytes that would otherwise produce a positive ETA:
+        // total=1000, downloaded=600, speed=100 → naive (1000-600)/100 = 4s.
+        insert_download(&db, 950, Some("eta"), "Completed", Some(1000), 600, 0).await;
+        set_download_speed(&db, 950, 100).await;
+        // Sanity: a Downloading row with the same numbers still gets ETA.
+        insert_download(&db, 951, Some("eta"), "Downloading", Some(1000), 600, 1).await;
+        set_download_speed(&db, 951, 100).await;
+
+        let views = read.find_package_downloads(&PackageId::new("eta")).unwrap();
+        assert_eq!(views.len(), 2);
+        let completed = views.iter().find(|v| v.id.0 == 950).expect("completed row");
+        assert_eq!(completed.progress_percent, 100.0);
+        assert_eq!(completed.eta_seconds, None, "completed must suppress ETA");
+        let downloading = views
+            .iter()
+            .find(|v| v.id.0 == 951)
+            .expect("downloading row");
+        assert_eq!(downloading.eta_seconds, Some(4));
     }
 }
