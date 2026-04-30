@@ -35,6 +35,17 @@ fn round_one_dp(value: f64) -> f64 {
     (value * 10.0).round() / 10.0
 }
 
+/// Escape SQLite `LIKE` metacharacters in user-supplied substrings so
+/// they match literally. Pairs with `ESCAPE '\'` in the SQL clause:
+/// `\\` is escaped first to keep the escape character itself literal,
+/// then `%` and `_` (the two `LIKE` wildcards) are escaped.
+fn escape_like(input: &str) -> String {
+    input
+        .replace('\\', r"\\")
+        .replace('%', r"\%")
+        .replace('_', r"\_")
+}
+
 fn aggregate_progress_percent(downloaded: u64, total: u64, all_completed: bool) -> f64 {
     if all_completed {
         return 100.0;
@@ -109,17 +120,21 @@ fn row_to_view(row: &sea_orm::QueryResult) -> Result<PackageView, DomainError> {
     })
 }
 
-// `downloaded_bytes_sum` matches the per-download progress semantics:
-// `compute_progress_percent_for_download` treats `state = 'Completed'`
-// as 100% regardless of the persisted `downloaded_bytes`. The CASE
-// branch below mirrors that — completed members contribute their full
-// `total_bytes` (or fall back to `downloaded_bytes` when total is
-// unknown) so a package with mixed Completed + active members never
-// reports a lower aggregate than the sum of its per-row progress.
+// Both `total_bytes_sum` and `downloaded_bytes_sum` use the same
+// per-row contribution for Completed members so they stay in lockstep:
+//   - state = 'Completed' → COALESCE(total_bytes, downloaded_bytes)
+//   - else                → total_bytes / downloaded_bytes as stored
+// Mixing the two would let a Completed member with NULL total_bytes
+// add bytes to the numerator without adding any to the denominator,
+// producing aggregate progress > 100% (e.g. one Completed NULL-total
+// row alongside a small Downloading row would explode the percentage).
+// Keeping the CASE symmetric also mirrors the per-download semantics
+// in `compute_progress_percent_for_download`, which treats Completed
+// as 100% regardless of the persisted bytes.
 const PACKAGE_AGG_SELECT: &str = "SELECT \
     p.id, p.name, p.source_type, p.folder_path, p.auto_extract, p.priority, p.created_at, \
     COUNT(d.id) AS downloads_count, \
-    COALESCE(SUM(COALESCE(d.total_bytes, 0)), 0) AS total_bytes_sum, \
+    COALESCE(SUM(CASE WHEN d.state = 'Completed' THEN COALESCE(d.total_bytes, d.downloaded_bytes) ELSE COALESCE(d.total_bytes, 0) END), 0) AS total_bytes_sum, \
     COALESCE(SUM(CASE WHEN d.state = 'Completed' THEN COALESCE(d.total_bytes, d.downloaded_bytes) ELSE d.downloaded_bytes END), 0) AS downloaded_bytes_sum, \
     COALESCE(SUM(CASE WHEN d.state = 'Completed' THEN 1 ELSE 0 END), 0) AS completed_count \
     FROM packages p LEFT JOIN downloads d ON d.package_id = p.id";
@@ -183,7 +198,6 @@ impl PackageReadRepository for SqlitePackageReadRepo {
         let mut sql = String::from(PACKAGE_AGG_SELECT);
         let mut clauses: Vec<&'static str> = Vec::new();
         let mut params: Vec<Value> = Vec::new();
-        let lowered_name: Option<String>;
         if let Some(ref f) = filter {
             if let Some(ref source) = f.source_type {
                 clauses.push("p.source_type = ?");
@@ -192,9 +206,14 @@ impl PackageReadRepository for SqlitePackageReadRepo {
             if let Some(ref needle) = f.name_q {
                 let trimmed = needle.trim();
                 if !trimmed.is_empty() {
-                    clauses.push("LOWER(p.name) LIKE ?");
-                    lowered_name = Some(format!("%{}%", trimmed.to_lowercase()));
-                    params.push(Value::from(lowered_name.unwrap()));
+                    // ESCAPE clause keeps the advertised "substring"
+                    // semantics: a literal `%` or `_` in user input
+                    // matches itself instead of acting as a wildcard.
+                    clauses.push(r"LOWER(p.name) LIKE ? ESCAPE '\'");
+                    params.push(Value::from(format!(
+                        "%{}%",
+                        escape_like(&trimmed.to_lowercase()),
+                    )));
                 }
             }
         }
@@ -467,10 +486,10 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_find_packages_completed_member_without_total_falls_back_to_downloaded() {
         // Edge case: a Completed download with total_bytes = NULL
-        // (extractor could not announce a size). The aggregate should
-        // fall back to `downloaded_bytes` so we still credit the member,
-        // matching `compute_progress_percent_for_download`'s behavior of
-        // returning 100% for any Completed row regardless of total.
+        // (extractor could not announce a size). Both numerator and
+        // denominator must fall back to `downloaded_bytes` for that
+        // row so the aggregate stays self-consistent — otherwise mixing
+        // it with another row would push `progress_percent > 100`.
         let db = setup_test_db().await.expect("test db");
         let write = SqlitePackageRepo::new(db.clone());
         let read = SqlitePackageReadRepo::new(db.clone());
@@ -496,14 +515,60 @@ mod tests {
 
         let v = &read.find_packages(None).unwrap()[0];
         assert_eq!(v.downloads_count, 1);
-        assert_eq!(v.total_bytes, 0, "no known total stays 0 in the sum");
+        assert_eq!(
+            v.total_bytes, 777,
+            "completed NULL-total row contributes downloaded_bytes to the denominator",
+        );
         assert_eq!(
             v.downloaded_bytes, 777,
-            "completed member with NULL total falls back to downloaded_bytes",
+            "completed NULL-total row contributes downloaded_bytes to the numerator",
         );
         // Single member, all_completed → 100% via the existing branch.
         assert!(v.all_completed);
         assert_eq!(v.progress_percent, 100.0);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_find_packages_mixed_state_with_unknown_completed_total_stays_under_100() {
+        // Regression: previously the numerator credited a Completed
+        // NULL-total row with its `downloaded_bytes` while the
+        // denominator credited 0 for it, so a small Downloading row
+        // alongside it could produce `progress_percent` well over 100%
+        // (e.g. 500 numerator / 100 denominator → 500%). Making both
+        // sides symmetric for the NULL-total Completed case keeps the
+        // ratio bounded.
+        let db = setup_test_db().await.expect("test db");
+        let write = SqlitePackageRepo::new(db.clone());
+        let read = SqlitePackageReadRepo::new(db.clone());
+
+        write
+            .save(&make_package("mix", "Mixed", PackageSourceType::Manual, 1))
+            .unwrap();
+        // Completed but total_bytes = NULL, downloaded_bytes = 500.
+        insert_download(&db, 40, Some("mix"), "Completed", None, 500, 0).await;
+        // Downloading at 50 / 100 — the small known-size row that used
+        // to expose the asymmetry.
+        insert_download(&db, 41, Some("mix"), "Downloading", Some(100), 50, 1).await;
+
+        let v = &read.find_packages(None).unwrap()[0];
+        assert_eq!(v.downloads_count, 2);
+        assert_eq!(v.total_bytes, 600, "500 (completed fallback) + 100 (known)");
+        assert_eq!(
+            v.downloaded_bytes, 550,
+            "500 (completed credited fully) + 50"
+        );
+        assert!(
+            v.progress_percent <= 100.0,
+            "progress_percent must never exceed 100% (got {})",
+            v.progress_percent,
+        );
+        // 550 / 600 = 91.666... → 91.7 after one-dp rounding.
+        assert!(
+            (v.progress_percent - 91.7).abs() < 0.01,
+            "progress_percent = {}",
+            v.progress_percent,
+        );
+        assert!(!v.all_completed);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -683,6 +748,104 @@ mod tests {
             }))
             .unwrap();
         assert_eq!(result.len(), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_find_packages_filter_name_q_escapes_like_percent_metachar() {
+        // Without ESCAPE, `%` is the SQL `LIKE` "match anything"
+        // wildcard, so a query for `100%` would match `100` even if no
+        // package literally contains `%`. Searching for `100%` must
+        // only return rows whose name actually contains the substring
+        // `100%`.
+        let db = setup_test_db().await.expect("test db");
+        let write = SqlitePackageRepo::new(db.clone());
+        let read = SqlitePackageReadRepo::new(db);
+
+        write
+            .save(&make_package("a", "100% off", PackageSourceType::Manual, 1))
+            .unwrap();
+        write
+            .save(&make_package(
+                "b",
+                "100 packages",
+                PackageSourceType::Manual,
+                2,
+            ))
+            .unwrap();
+
+        let result = read
+            .find_packages(Some(PackageFilter {
+                source_type: None,
+                name_q: Some("100%".to_string()),
+            }))
+            .unwrap();
+        assert_eq!(result.len(), 1, "only the literal `100%` row matches");
+        assert_eq!(result[0].id, "a");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_find_packages_filter_name_q_escapes_like_underscore_metachar() {
+        // Without ESCAPE, `_` matches any single character — so `foo_bar`
+        // would match `foo-bar`, `foo bar`, etc. The filter must treat
+        // `_` literally.
+        let db = setup_test_db().await.expect("test db");
+        let write = SqlitePackageRepo::new(db.clone());
+        let read = SqlitePackageReadRepo::new(db);
+
+        write
+            .save(&make_package("a", "foo_bar", PackageSourceType::Manual, 1))
+            .unwrap();
+        write
+            .save(&make_package("b", "foo-bar", PackageSourceType::Manual, 2))
+            .unwrap();
+        write
+            .save(&make_package("c", "fooXbar", PackageSourceType::Manual, 3))
+            .unwrap();
+
+        let result = read
+            .find_packages(Some(PackageFilter {
+                source_type: None,
+                name_q: Some("foo_bar".to_string()),
+            }))
+            .unwrap();
+        assert_eq!(result.len(), 1, "only the literal underscore matches");
+        assert_eq!(result[0].id, "a");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_find_packages_filter_name_q_escapes_backslash_metachar() {
+        // The escape character itself (`\`) must be doubled so a user
+        // input ending in `\` does not silently swallow the next byte
+        // of the wrapping `%` and produce an invalid pattern.
+        let db = setup_test_db().await.expect("test db");
+        let write = SqlitePackageRepo::new(db.clone());
+        let read = SqlitePackageReadRepo::new(db);
+
+        write
+            .save(&make_package(
+                "a",
+                r"path\to\file",
+                PackageSourceType::Manual,
+                1,
+            ))
+            .unwrap();
+        write
+            .save(&make_package(
+                "b",
+                "path/to/file",
+                PackageSourceType::Manual,
+                2,
+            ))
+            .unwrap();
+
+        let result = read
+            .find_packages(Some(PackageFilter {
+                source_type: None,
+                name_q: Some(r"\to\".to_string()),
+            }))
+            .unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].id, "a");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
