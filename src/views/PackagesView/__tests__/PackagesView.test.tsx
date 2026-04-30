@@ -488,6 +488,7 @@ describe("PackagesView", () => {
         /song-01\.mp3 moved to backup archive/i,
       );
     });
+    expect(mockToastSuccess).toHaveBeenCalled();
     expect(
       screen.queryByTestId("package-row-pkg-2-move-target"),
     ).not.toBeInTheDocument();
@@ -541,6 +542,7 @@ describe("PackagesView", () => {
         /failed to move song-01\.mp3/i,
       );
     });
+    expect(mockToastError).toHaveBeenCalled();
   });
 
   it("surfaces the error state when package_list fails", async () => {

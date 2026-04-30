@@ -370,11 +370,13 @@ export function PackagesView() {
             package: toPackage.name,
           }),
         );
+        toast.success(t("packages.toast.moveDownloadSuccess"));
         invalidatePackages();
       } catch {
         setMoveAnnouncement(
           t("packages.move.announce.error", { name: move.fileName }),
         );
+        toast.error(t("packages.toast.moveDownloadError"));
       } finally {
         setPendingMove(null);
       }
