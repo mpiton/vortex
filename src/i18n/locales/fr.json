@@ -503,6 +503,101 @@
       "hint": "Top 5 modules par nombre d'utilisations, indépendant de la période sélectionnée"
     }
   },
+  "packages": {
+    "title": "Paquets",
+    "loading": "Chargement des paquets…",
+    "empty": "Aucun paquet pour le moment",
+    "search": "Rechercher des paquets",
+    "filter": {
+      "all": "Tous",
+      "container": "Conteneur",
+      "playlist": "Playlist",
+      "manual": "Manuel",
+      "split-archive": "Archive segmentée"
+    },
+    "row": {
+      "expand": "Déplier le paquet",
+      "collapse": "Replier le paquet",
+      "files_one": "{{count}} fichier",
+      "files_other": "{{count}} fichiers",
+      "renameAriaLabel": "Renommer le paquet",
+      "actionsAriaLabel": "Actions du paquet",
+      "noFolder": "Aucun dossier",
+      "browseFolder": "Parcourir",
+      "autoExtract": "Auto-extraction",
+      "priority": "Priorité",
+      "noChildren": "Aucun téléchargement dans ce paquet",
+      "loadingChildren": "Chargement des téléchargements…"
+    },
+    "actions": {
+      "add": "Nouveau paquet",
+      "rename": "Renommer",
+      "setPassword": "Définir le mot de passe",
+      "changeFolder": "Changer de dossier",
+      "delete": "Supprimer le paquet",
+      "pauseAll": "Tout mettre en pause",
+      "startAll": "Tout démarrer"
+    },
+    "addDialog": {
+      "title": "Nouveau paquet",
+      "name": "Nom",
+      "sourceType": "Source",
+      "folderPath": "Dossier (optionnel)",
+      "submit": "Créer",
+      "cancel": "Annuler"
+    },
+    "passwordDialog": {
+      "title": "Mot de passe du paquet",
+      "description": "Stocké dans le trousseau de l'OS, jamais sur disque.",
+      "password": "Mot de passe",
+      "passwordPlaceholder": "Laisser vide pour effacer",
+      "submit": "Enregistrer",
+      "cancel": "Annuler"
+    },
+    "renameDialog": {
+      "title": "Renommer le paquet",
+      "name": "Nom",
+      "submit": "Enregistrer",
+      "cancel": "Annuler"
+    },
+    "folderDialog": {
+      "title": "Changer de dossier",
+      "description": "Les téléchargements actifs du paquet seront déplacés sur le disque.",
+      "folder": "Dossier",
+      "browse": "Parcourir",
+      "submit": "Déplacer",
+      "cancel": "Annuler"
+    },
+    "deleteDialog": {
+      "title": "Supprimer le paquet ?",
+      "description": "{{name}} sera retiré.",
+      "deleteDownloads": "Supprimer aussi les téléchargements enfants",
+      "confirm": "Supprimer",
+      "cancel": "Annuler"
+    },
+    "drag": {
+      "downloadHandleAriaLabel": "Glisser le téléchargement vers un autre paquet",
+      "dropZoneAriaLabel": "Déposer les téléchargements ici"
+    },
+    "toast": {
+      "createSuccess": "Paquet créé",
+      "createError": "Échec de la création du paquet",
+      "updateSuccess": "Paquet mis à jour",
+      "updateError": "Échec de la mise à jour",
+      "deleteSuccess": "Paquet supprimé",
+      "deleteError": "Échec de la suppression",
+      "passwordSuccess": "Mot de passe enregistré",
+      "passwordError": "Échec de l'enregistrement du mot de passe",
+      "moveSuccess_one": "{{count}} téléchargement déplacé",
+      "moveSuccess_other": "{{count}} téléchargements déplacés",
+      "moveError": "Échec du déplacement",
+      "moveDownloadSuccess": "Téléchargement déplacé",
+      "moveDownloadError": "Échec du déplacement du téléchargement",
+      "bulkPauseSuccess": "Tous les téléchargements mis en pause",
+      "bulkStartSuccess": "Tous les téléchargements relancés",
+      "bulkActionError": "L'action en lot a échoué"
+    }
+  },
   "accounts": {
     "title": "Comptes",
     "loading": "Chargement des comptes…",

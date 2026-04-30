@@ -503,6 +503,101 @@
       "hint": "Top 5 modules ranked by download count, independent of the selected period"
     }
   },
+  "packages": {
+    "title": "Packages",
+    "loading": "Loading packages…",
+    "empty": "No packages yet",
+    "search": "Search packages",
+    "filter": {
+      "all": "All",
+      "container": "Container",
+      "playlist": "Playlist",
+      "manual": "Manual",
+      "split-archive": "Split archive"
+    },
+    "row": {
+      "expand": "Expand package",
+      "collapse": "Collapse package",
+      "files_one": "{{count}} file",
+      "files_other": "{{count}} files",
+      "renameAriaLabel": "Rename package",
+      "actionsAriaLabel": "Package actions",
+      "noFolder": "No folder",
+      "browseFolder": "Browse",
+      "autoExtract": "Auto-extract",
+      "priority": "Priority",
+      "noChildren": "No downloads in this package",
+      "loadingChildren": "Loading downloads…"
+    },
+    "actions": {
+      "add": "New package",
+      "rename": "Rename",
+      "setPassword": "Set password",
+      "changeFolder": "Change folder",
+      "delete": "Delete package",
+      "pauseAll": "Pause all",
+      "startAll": "Start all"
+    },
+    "addDialog": {
+      "title": "New package",
+      "name": "Name",
+      "sourceType": "Source",
+      "folderPath": "Folder (optional)",
+      "submit": "Create",
+      "cancel": "Cancel"
+    },
+    "passwordDialog": {
+      "title": "Package password",
+      "description": "Stored in the OS keyring, never on disk.",
+      "password": "Password",
+      "passwordPlaceholder": "Leave empty to clear",
+      "submit": "Save",
+      "cancel": "Cancel"
+    },
+    "renameDialog": {
+      "title": "Rename package",
+      "name": "Name",
+      "submit": "Save",
+      "cancel": "Cancel"
+    },
+    "folderDialog": {
+      "title": "Change folder",
+      "description": "Active downloads in the package will be moved on disk.",
+      "folder": "Folder",
+      "browse": "Browse",
+      "submit": "Move",
+      "cancel": "Cancel"
+    },
+    "deleteDialog": {
+      "title": "Delete package?",
+      "description": "{{name}} will be removed.",
+      "deleteDownloads": "Also delete child downloads",
+      "confirm": "Delete",
+      "cancel": "Cancel"
+    },
+    "drag": {
+      "downloadHandleAriaLabel": "Drag download to another package",
+      "dropZoneAriaLabel": "Drop downloads here"
+    },
+    "toast": {
+      "createSuccess": "Package created",
+      "createError": "Failed to create package",
+      "updateSuccess": "Package updated",
+      "updateError": "Failed to update package",
+      "deleteSuccess": "Package deleted",
+      "deleteError": "Failed to delete package",
+      "passwordSuccess": "Password saved",
+      "passwordError": "Failed to save password",
+      "moveSuccess_one": "{{count}} download moved",
+      "moveSuccess_other": "{{count}} downloads moved",
+      "moveError": "Failed to move folder",
+      "moveDownloadSuccess": "Download moved to package",
+      "moveDownloadError": "Failed to move download",
+      "bulkPauseSuccess": "Paused all downloads",
+      "bulkStartSuccess": "Resumed all downloads",
+      "bulkActionError": "Bulk action failed"
+    }
+  },
   "accounts": {
     "title": "Accounts",
     "loading": "Loading accounts…",
