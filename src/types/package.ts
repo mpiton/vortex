@@ -44,3 +44,8 @@ export interface PackageMoveOutcome {
     reason: string;
   }>;
 }
+
+export interface PackageSummary {
+  packageId: string;
+  packageName: string;
+}

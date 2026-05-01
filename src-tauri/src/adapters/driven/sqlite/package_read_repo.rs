@@ -276,6 +276,32 @@ impl PackageReadRepository for SqlitePackageReadRepo {
         })
     }
 
+    fn find_package_by_external_id(
+        &self,
+        external_id: &str,
+    ) -> Result<Option<PackageView>, DomainError> {
+        let sql = format!(
+            "{PACKAGE_AGG_SELECT} WHERE p.external_id = ? GROUP BY p.id \
+             ORDER BY p.created_at ASC, p.id ASC"
+        );
+        let ext_id_value = external_id.to_string();
+        block_on(async {
+            let row = self
+                .db
+                .query_one(Statement::from_sql_and_values(
+                    sea_orm::DatabaseBackend::Sqlite,
+                    &sql,
+                    [Value::from(ext_id_value)],
+                ))
+                .await
+                .map_err(map_db_err)?;
+            match row {
+                None => Ok(None),
+                Some(r) => Ok(Some(row_to_view(&r)?)),
+            }
+        })
+    }
+
     fn find_package_downloads(&self, id: &PackageId) -> Result<Vec<DownloadView>, DomainError> {
         use sea_orm::ColumnTrait;
 
@@ -1290,5 +1316,34 @@ mod tests {
             upd.created_at, upd_only_ts as u64,
             "fallback to updated_at when id has no embedded ms",
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_find_package_by_external_id_returns_some_when_match() {
+        let db = setup_test_db().await.expect("test db");
+        let write = SqlitePackageRepo::new(db.clone());
+        let read = SqlitePackageReadRepo::new(db);
+
+        let mut pkg = make_package("ext-1", "YouTube Playlist", PackageSourceType::Playlist, 10);
+        pkg.set_external_id(Some("youtube:playlist:abc".to_string()));
+        write.save(&pkg).expect("save");
+
+        let result = read
+            .find_package_by_external_id("youtube:playlist:abc")
+            .expect("query");
+        let view = result.expect("should find package by external_id");
+        assert_eq!(view.id, "ext-1");
+        assert_eq!(view.name, "YouTube Playlist");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_find_package_by_external_id_returns_none_when_missing() {
+        let db = setup_test_db().await.expect("test db");
+        let read = SqlitePackageReadRepo::new(db);
+
+        let result = read
+            .find_package_by_external_id("youtube:playlist:missing")
+            .expect("query");
+        assert!(result.is_none());
     }
 }

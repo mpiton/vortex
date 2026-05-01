@@ -4,6 +4,7 @@
 //! Handler implementations live in submodules and add methods to `QueryBus`.
 
 mod count_by_state;
+mod find_package_by_external_id;
 mod get_account;
 mod get_account_traffic;
 mod get_download_detail;
@@ -164,3 +165,11 @@ pub struct ListPackageDownloadsQuery {
     pub id: PackageId,
 }
 impl Query for ListPackageDownloadsQuery {}
+
+/// Look up the package whose `external_id` matches the given key.
+/// Returns `None` when no package has been registered for the given key.
+#[derive(Debug)]
+pub struct FindPackageByExternalIdQuery {
+    pub external_id: String,
+}
+impl Query for FindPackageByExternalIdQuery {}

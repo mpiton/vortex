@@ -3194,6 +3194,20 @@ pub async fn package_list_downloads(
         .map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+pub async fn package_find_by_external_id(
+    state: State<'_, AppState>,
+    external_id: String,
+) -> Result<Option<crate::application::read_models::PackageSummaryDto>, String> {
+    state
+        .query_bus
+        .handle_find_package_by_external_id(
+            crate::application::queries::FindPackageByExternalIdQuery { external_id },
+        )
+        .await
+        .map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{

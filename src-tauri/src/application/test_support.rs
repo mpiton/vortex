@@ -654,6 +654,8 @@ pub(crate) fn query_bus_with_accounts(repo: Arc<dyn AccountRepository>) -> Query
 pub(crate) struct InMemoryPackageReadRepo {
     packages: Mutex<Vec<PackageView>>,
     downloads_by_package: Mutex<HashMap<String, Vec<DownloadView>>>,
+    /// Maps external_id → package_id for `find_package_by_external_id`.
+    external_id_index: Mutex<HashMap<String, String>>,
 }
 
 impl InMemoryPackageReadRepo {
@@ -661,11 +663,23 @@ impl InMemoryPackageReadRepo {
         Self {
             packages: Mutex::new(Vec::new()),
             downloads_by_package: Mutex::new(HashMap::new()),
+            external_id_index: Mutex::new(HashMap::new()),
         }
     }
 
     pub(crate) fn insert(&self, view: PackageView) {
         self.packages.lock().unwrap().push(view);
+    }
+
+    /// Insert a package view and register an external_id → package_id mapping
+    /// so `find_package_by_external_id` can resolve it.
+    pub(crate) fn insert_with_external_id(&self, view: PackageView, external_id: &str) {
+        let pkg_id = view.id.clone();
+        self.packages.lock().unwrap().push(view);
+        self.external_id_index
+            .lock()
+            .unwrap()
+            .insert(external_id.to_string(), pkg_id);
     }
 
     pub(crate) fn attach_downloads(&self, package_id: &str, downloads: Vec<DownloadView>) {
@@ -719,6 +733,25 @@ impl PackageReadRepository for InMemoryPackageReadRepo {
             .get(id.as_str())
             .cloned()
             .unwrap_or_default())
+    }
+
+    fn find_package_by_external_id(
+        &self,
+        external_id: &str,
+    ) -> Result<Option<PackageView>, DomainError> {
+        let index = self.external_id_index.lock().unwrap();
+        let Some(pkg_id) = index.get(external_id) else {
+            return Ok(None);
+        };
+        let pkg_id = pkg_id.clone();
+        drop(index);
+        Ok(self
+            .packages
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|p| p.id == pkg_id)
+            .cloned())
     }
 }
 
