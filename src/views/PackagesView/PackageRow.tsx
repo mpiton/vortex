@@ -88,7 +88,6 @@ export function PackageRow({
       }}
       onDrop={handleDrop}
       aria-label={t("packages.drag.dropZoneAriaLabel")}
-      aria-dropeffect={isMoveTarget ? "move" : undefined}
     >
       <div
         data-testid={`package-row-${pkg.id}`}

@@ -378,7 +378,13 @@ export function PackagesView() {
         );
         toast.error(t("packages.toast.moveDownloadError"));
       } finally {
-        setPendingMove(null);
+        setPendingMove((current) =>
+          current &&
+          current.downloadId === move.downloadId &&
+          current.fromPackageId === move.fromPackageId
+            ? null
+            : current,
+        );
       }
     },
   }), [

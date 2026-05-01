@@ -25,11 +25,26 @@ export function PackageDownloadRow({
   onCancelMove,
 }: PackageDownloadRowProps) {
   const { t } = useTranslation();
+  const moveTestId = isPendingMove
+    ? `package-download-row-${download.id}-move-cancel`
+    : `package-download-row-${download.id}-move`;
+  const moveAriaLabel = isPendingMove
+    ? t("packages.move.cancelAriaLabel", { name: download.fileName })
+    : t("packages.move.startAriaLabel", { name: download.fileName });
+  const moveLabel = isPendingMove
+    ? t("packages.move.cancel")
+    : t("packages.move.start");
+  const handleMoveClick = () => {
+    if (isPendingMove) {
+      onCancelMove();
+    } else {
+      onSelectForMove(download, packageId);
+    }
+  };
   return (
     <div
       data-testid={`package-download-row-${download.id}`}
       draggable
-      aria-grabbed={isPendingMove}
       onDragStart={(e) => {
         e.dataTransfer.effectAllowed = "move";
         e.dataTransfer.setData("application/x-vortex-download", download.id);
@@ -49,29 +64,21 @@ export function PackageDownloadRow({
       <span className="text-xs text-muted-foreground">{formatSpeed(download.speedBytesPerSec)}</span>
       <span className="text-xs text-muted-foreground">{formatEta(download.etaSeconds)}</span>
       <Progress value={download.progressPercent} className="h-1.5 w-32" />
-      {isPendingMove ? (
-        <Button
-          size="sm"
-          variant="outline"
-          data-testid={`package-download-row-${download.id}-move-cancel`}
-          aria-label={t("packages.move.cancelAriaLabel", { name: download.fileName })}
-          onClick={onCancelMove}
-        >
+      <Button
+        size="sm"
+        variant={isPendingMove ? "default" : "outline"}
+        data-testid={moveTestId}
+        aria-pressed={isPendingMove}
+        aria-label={moveAriaLabel}
+        onClick={handleMoveClick}
+      >
+        {isPendingMove ? (
           <X className="mr-1 h-3 w-3" />
-          <span className="hidden sm:inline">{t("packages.move.cancel")}</span>
-        </Button>
-      ) : (
-        <Button
-          size="sm"
-          variant="outline"
-          data-testid={`package-download-row-${download.id}-move`}
-          aria-label={t("packages.move.startAriaLabel", { name: download.fileName })}
-          onClick={() => onSelectForMove(download, packageId)}
-        >
+        ) : (
           <ArrowRightLeft className="mr-1 h-3 w-3" />
-          <span className="hidden sm:inline">{t("packages.move.start")}</span>
-        </Button>
-      )}
+        )}
+        <span className="hidden sm:inline">{moveLabel}</span>
+      </Button>
     </div>
   );
 }
