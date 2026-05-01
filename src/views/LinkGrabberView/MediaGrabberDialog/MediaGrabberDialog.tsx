@@ -17,6 +17,8 @@ import { PlaylistSection } from "./PlaylistSection";
 import { PlaylistPackageBanner } from "./PlaylistPackageBanner";
 import { SizeEstimate } from "./SizeEstimate";
 import { useMediaMetadata } from "./useMediaMetadata";
+import { usePackageByExternalId } from "@/hooks/usePackageByExternalId";
+import { canonicalPlaylistKey } from "../canonicalPlaylistKey";
 import type { ResolvedLink } from "../types";
 import type { MediaGrabberOptions } from "@/types/media";
 
@@ -49,6 +51,13 @@ export function MediaGrabberDialog({
     isError,
     refetch,
   } = useMediaMetadata(link.originalUrl, open);
+
+  const playlistKey = metadata?.isPlaylist
+    ? canonicalPlaylistKey(link.originalUrl)
+    : undefined;
+  const { data: existingPackage } = usePackageByExternalId(playlistKey);
+  const willReuseExisting = !!existingPackage;
+
   const requiresAudioOnly = !!metadata &&
     link.mediaType === "audio" &&
     metadata.availableQualities.length === 0 &&
@@ -114,12 +123,13 @@ export function MediaGrabberDialog({
             {metadata.isPlaylist && metadata.playlistItems && metadata.playlistItems.length > 0 && (
               <>
                 <PlaylistPackageBanner
-                  packageName={metadata.title}
+                  packageName={existingPackage?.packageName ?? metadata.title}
                   itemCount={
                     selectedPlaylistItems.length > 0
                       ? selectedPlaylistItems.length
                       : metadata.playlistItems.length
                   }
+                  willReuseExisting={willReuseExisting}
                 />
                 <PlaylistSection
                   items={metadata.playlistItems}

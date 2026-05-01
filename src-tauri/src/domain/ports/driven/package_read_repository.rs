@@ -35,4 +35,11 @@ pub trait PackageReadRepository: Send + Sync {
     /// `id` ascending. Returns an empty vector when the package has no
     /// members or does not exist.
     fn find_package_downloads(&self, id: &PackageId) -> Result<Vec<DownloadView>, DomainError>;
+
+    /// Fetch the aggregated view for the package whose `external_id`
+    /// matches the given key. Returns `Ok(None)` when no row matches.
+    fn find_package_by_external_id(
+        &self,
+        external_id: &str,
+    ) -> Result<Option<PackageView>, DomainError>;
 }

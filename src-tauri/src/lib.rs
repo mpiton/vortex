@@ -80,13 +80,13 @@ pub use adapters::driving::tauri_ipc::{
     download_set_priority, download_start, download_verify_checksum, history_clear,
     history_delete_entry, history_export, history_get_by_id, history_list,
     history_purge_older_than, history_search, link_group_playlists, link_resolve,
-    package_add_download, package_create, package_delete, package_get, package_list,
-    package_list_downloads, package_move_to_folder, package_remove_download, package_set_password,
-    package_set_priority, package_toggle_auto_extract, package_update, plugin_config_get,
-    plugin_config_update, plugin_disable, plugin_enable, plugin_install, plugin_list,
-    plugin_report_broken, plugin_store_install, plugin_store_list, plugin_store_refresh,
-    plugin_store_update, plugin_uninstall, reveal_in_folder, settings_get, settings_update,
-    stats_get, stats_top_modules, status_bar_get,
+    package_add_download, package_create, package_delete, package_find_by_external_id, package_get,
+    package_list, package_list_downloads, package_move_to_folder, package_remove_download,
+    package_set_password, package_set_priority, package_toggle_auto_extract, package_update,
+    plugin_config_get, plugin_config_update, plugin_disable, plugin_enable, plugin_install,
+    plugin_list, plugin_report_broken, plugin_store_install, plugin_store_list,
+    plugin_store_refresh, plugin_store_update, plugin_uninstall, reveal_in_folder, settings_get,
+    settings_update, stats_get, stats_top_modules, status_bar_get,
 };
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -594,6 +594,7 @@ pub fn run() {
             package_list,
             package_get,
             package_list_downloads,
+            package_find_by_external_id,
         ])
         .run(tauri::generate_context!())
         // Tauri's run() has no meaningful recovery path — panic is intentional here

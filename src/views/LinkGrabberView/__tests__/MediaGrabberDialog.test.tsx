@@ -3,6 +3,7 @@ import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
+import "@/i18n/i18n";
 import { MediaGrabberDialog } from "../MediaGrabberDialog";
 import type { ResolvedLink } from "../types";
 import type { MediaMetadata } from "@/types/media";
@@ -517,5 +518,55 @@ describe("MediaGrabberDialog - State Reset", () => {
         playlistItems: [],
       }),
     );
+  });
+});
+
+describe("MediaGrabberDialog - existing package lookup", () => {
+  beforeEach(() => {
+    mockInvoke.mockReset();
+  });
+
+  const mockPlaylistLink: ResolvedLink = {
+    ...mockMediaLink,
+    id: "playlist-1",
+    originalUrl: "https://youtube.com/playlist?list=PLtest123",
+    resolvedUrl: "https://youtube.com/playlist?list=PLtest123",
+  };
+
+  const mockPlaylistMetadataWithKey: MediaMetadata = {
+    ...mockPlaylistMetadata,
+    title: "Test Playlist",
+  };
+
+  function setupInvoke(packageFindResult: unknown) {
+    mockInvoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "command_get_media_metadata") return mockPlaylistMetadataWithKey;
+      if (cmd === "package_find_by_external_id") return packageFindResult;
+      return null;
+    });
+  }
+
+  it("shows 'will create' banner when no existing package matches the playlist key", async () => {
+    setupInvoke(null);
+
+    renderDialog({ link: mockPlaylistLink });
+
+    await screen.findByText("Test Playlist");
+
+    const banner = await screen.findByTestId("playlist-package-banner");
+    expect(banner.textContent?.toLowerCase()).not.toMatch(/reuse|réutilisation/);
+    expect(banner).toBeInTheDocument();
+  });
+
+  it("shows 'reusing' banner with the existing package name when one matches", async () => {
+    setupInvoke({ packageId: "pkg-1", packageName: "Lo-Fi Beats Mix" });
+
+    renderDialog({ link: mockPlaylistLink });
+
+    await screen.findByText("Test Playlist");
+
+    const banner = await screen.findByTestId("playlist-package-banner");
+    expect(banner.textContent?.toLowerCase()).toMatch(/reuse|réutilisation/);
+    expect(banner.textContent).toContain("Lo-Fi Beats Mix");
   });
 });
