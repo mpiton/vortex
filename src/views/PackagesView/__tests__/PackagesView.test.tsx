@@ -520,12 +520,16 @@ describe("PackagesView", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("announces an error when keyboard move fails on add", async () => {
-    mockInvoke.mockImplementation(async (command: string) => {
+  it("announces an error when keyboard move fails on add (rollback succeeds)", async () => {
+    mockInvoke.mockImplementation(async (command: string, args?: unknown) => {
       if (command === "package_list") return samplePackages();
       if (command === "package_list_downloads") return sampleChildren();
       if (command === "package_remove_download") return null;
-      if (command === "package_add_download") throw new Error("boom");
+      if (command === "package_add_download") {
+        const { packageId } = args as { packageId: string };
+        if (packageId === "pkg-2") throw new Error("boom");
+        return null;
+      }
       return null;
     });
     const user = userEvent.setup();
@@ -543,6 +547,12 @@ describe("PackagesView", () => {
       );
     });
     expect(mockToastError).toHaveBeenCalled();
+    const addCalls = mockInvoke.mock.calls.filter(
+      ([c]) => c === "package_add_download",
+    );
+    expect(addCalls).toHaveLength(2);
+    expect(addCalls[0]?.[1]).toMatchObject({ packageId: "pkg-2", downloadId: 42 });
+    expect(addCalls[1]?.[1]).toMatchObject({ packageId: "pkg-1", downloadId: 42 });
   });
 
   it("surfaces the error state when package_list fails", async () => {
