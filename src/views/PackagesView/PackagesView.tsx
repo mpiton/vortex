@@ -22,7 +22,7 @@ import {
   RenamePackageDialog,
 } from "./PackageDialogs";
 import { PackageTree } from "./PackageTree";
-import type { PackageRowActions } from "./PackageRow";
+import type { PackageRowActions, PendingMove } from "./PackageRow";
 import { PackageToolbar } from "./PackageToolbar";
 
 const INVALIDATE_KEYS = [packageQueries.all()] as const;
@@ -52,6 +52,8 @@ export function PackagesView() {
 
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const dragRef = useRef<{ downloadId: number; fromPackageId: string } | null>(null);
+  const [pendingMove, setPendingMove] = useState<PendingMove | null>(null);
+  const [moveAnnouncement, setMoveAnnouncement] = useState("");
 
   const queryFilter = useMemo(() => {
     const f: { sourceType?: string; nameQ?: string } = {};
@@ -233,6 +235,24 @@ export function PackagesView() {
     [],
   );
 
+  const moveDownloadBetweenPackages = useCallback(
+    async (downloadId: number, fromId: string, toPackageId: string) => {
+      await removeFromPackageMut.mutateAsync({ packageId: fromId, downloadId });
+      try {
+        await addToPackageMut.mutateAsync({ packageId: toPackageId, downloadId });
+        return { ok: true as const };
+      } catch (addError) {
+        try {
+          await addToPackageMut.mutateAsync({ packageId: fromId, downloadId });
+        } catch {
+          return { ok: false as const, rollbackFailed: true };
+        }
+        throw addError;
+      }
+    },
+    [addToPackageMut, removeFromPackageMut],
+  );
+
   const actions = useMemo<PackageRowActions>(() => ({
     toggleExpand: (id: string) => {
       setExpandedId((prev) => (prev === id ? null : id));
@@ -293,18 +313,11 @@ export function PackagesView() {
         return;
       }
       try {
-        await removeFromPackageMut.mutateAsync({ packageId: fromId, downloadId });
-        try {
-          await addToPackageMut.mutateAsync({ packageId: toPackageId, downloadId });
-        } catch (addError) {
-          try {
-            await addToPackageMut.mutateAsync({ packageId: fromId, downloadId });
-          } catch {
-            toast.error(t("packages.toast.moveDownloadRollbackError"));
-            invalidatePackages();
-            return;
-          }
-          throw addError;
+        const result = await moveDownloadBetweenPackages(downloadId, fromId, toPackageId);
+        if (!result.ok) {
+          toast.error(t("packages.toast.moveDownloadRollbackError"));
+          invalidatePackages();
+          return;
         }
         toast.success(t("packages.toast.moveDownloadSuccess"));
         invalidatePackages();
@@ -312,13 +325,75 @@ export function PackagesView() {
         toast.error(t("packages.toast.moveDownloadError"));
       }
     },
+    selectForMove: (download, fromPackageId) => {
+      const numericId = Number(download.id);
+      if (!Number.isFinite(numericId)) return;
+      setPendingMove({
+        downloadId: numericId,
+        fromPackageId,
+        fileName: download.fileName,
+      });
+      setMoveAnnouncement(
+        t("packages.move.announce.selected", { name: download.fileName }),
+      );
+    },
+    cancelMove: () => {
+      setPendingMove(null);
+      setMoveAnnouncement(t("packages.move.announce.cancelled"));
+    },
+    executeMove: async (toPackage) => {
+      const move = pendingMove;
+      if (!move || move.fromPackageId === toPackage.id) return;
+      setMoveAnnouncement(
+        t("packages.move.announce.started", {
+          name: move.fileName,
+          package: toPackage.name,
+        }),
+      );
+      try {
+        const result = await moveDownloadBetweenPackages(
+          move.downloadId,
+          move.fromPackageId,
+          toPackage.id,
+        );
+        if (!result.ok) {
+          setMoveAnnouncement(
+            t("packages.move.announce.error", { name: move.fileName }),
+          );
+          toast.error(t("packages.toast.moveDownloadRollbackError"));
+          invalidatePackages();
+          return;
+        }
+        setMoveAnnouncement(
+          t("packages.move.announce.success", {
+            name: move.fileName,
+            package: toPackage.name,
+          }),
+        );
+        toast.success(t("packages.toast.moveDownloadSuccess"));
+        invalidatePackages();
+      } catch {
+        setMoveAnnouncement(
+          t("packages.move.announce.error", { name: move.fileName }),
+        );
+        toast.error(t("packages.toast.moveDownloadError"));
+      } finally {
+        setPendingMove((current) =>
+          current &&
+          current.downloadId === move.downloadId &&
+          current.fromPackageId === move.fromPackageId
+            ? null
+            : current,
+        );
+      }
+    },
   }), [
-    addToPackageMut,
     fanoutDownloadAction,
     invalidatePackages,
+    moveDownloadBetweenPackages,
     pauseMut,
+    pendingMove,
     priorityMut,
-    removeFromPackageMut,
     resumeMut,
     t,
     toggleAutoExtractMut,
@@ -359,9 +434,20 @@ export function PackagesView() {
           childrenLoading={childrenLoading}
           childrenError={(childrenError as Error | null) ?? null}
           childrenById={childrenById}
+          pendingMove={pendingMove}
           actions={actions}
         />
       )}
+      <div
+        data-testid="packages-move-live-region"
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+        aria-label={t("packages.move.liveRegionLabel")}
+        className="sr-only"
+      >
+        {moveAnnouncement}
+      </div>
       <AddPackageDialog
         open={addOpen}
         onOpenChange={setAddOpen}

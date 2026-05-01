@@ -1,7 +1,11 @@
 import { useTranslation } from "react-i18next";
 import type { DownloadView } from "@/types/download";
 import type { PackageView } from "@/types/package";
-import { PackageRow, type PackageRowActions } from "./PackageRow";
+import {
+  PackageRow,
+  type PackageRowActions,
+  type PendingMove,
+} from "./PackageRow";
 
 interface PackageTreeProps {
   packages: PackageView[];
@@ -9,6 +13,7 @@ interface PackageTreeProps {
   childrenLoading: boolean;
   childrenError: Error | null;
   childrenById: DownloadView[] | null;
+  pendingMove: PendingMove | null;
   actions: PackageRowActions;
 }
 
@@ -18,6 +23,7 @@ export function PackageTree({
   childrenLoading,
   childrenError,
   childrenById,
+  pendingMove,
   actions,
 }: PackageTreeProps) {
   const { t } = useTranslation();
@@ -45,6 +51,7 @@ export function PackageTree({
             childrenLoading={isExpanded && childrenLoading}
             childrenError={isExpanded ? childrenError : null}
             childDownloads={isExpanded ? childrenById : null}
+            pendingMove={pendingMove}
             actions={actions}
           />
         );
