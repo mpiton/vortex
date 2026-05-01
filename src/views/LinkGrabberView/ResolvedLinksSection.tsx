@@ -1,6 +1,7 @@
 import { Checkbox } from "@/components/ui/checkbox";
+import { useLinkGrabberStore, type LinkProbeStatus } from "@/stores/linkGrabberStore";
 import { LinkRow } from "./LinkRow";
-import type { ResolvedLink, FilterType, GroupingMode } from "./types";
+import type { LinkStatus, ResolvedLink, FilterType, GroupingMode } from "./types";
 
 interface ResolvedLinksSectionProps {
   links: ResolvedLink[];
@@ -9,6 +10,7 @@ interface ResolvedLinksSectionProps {
   selectedIds: string[];
   onSelectIds: (ids: string[]) => void;
   onMediaClick?: (link: ResolvedLink) => void;
+  onRetry?: (url: string) => void;
 }
 
 function getGroupKey(link: ResolvedLink, mode: GroupingMode): string {
@@ -55,10 +57,29 @@ export function groupLinks(
   }, {});
 }
 
-function applyFilter(links: ResolvedLink[], filter: FilterType): ResolvedLink[] {
+function statusOf(link: ResolvedLink, liveStatuses: Record<string, LinkProbeStatus>): LinkStatus {
+  const live = liveStatuses[link.originalUrl];
+  return (live?.kind as LinkStatus | undefined) ?? link.status;
+}
+
+export function applyFilter(
+  links: ResolvedLink[],
+  filter: FilterType,
+  liveStatuses: Record<string, LinkProbeStatus> = {},
+): ResolvedLink[] {
   if (filter === "all") return links;
-  if (filter === "online") return links.filter((l) => l.status === "online");
-  if (filter === "offline") return links.filter((l) => l.status === "offline");
+  if (filter === "online") {
+    return links.filter((l) => statusOf(l, liveStatuses) === "online");
+  }
+  if (filter === "offline") {
+    // Treat both "offline" and "unknown" as "not online" for the
+    // Offline filter so a slow-resolving probe surfaces alongside
+    // confirmed-offline links instead of silently disappearing.
+    return links.filter((l) => {
+      const s = statusOf(l, liveStatuses);
+      return s === "offline" || s === "unknown";
+    });
+  }
   return links.filter((l) => l.isMedia);
 }
 
@@ -69,8 +90,10 @@ export function ResolvedLinksSection({
   selectedIds,
   onSelectIds,
   onMediaClick,
+  onRetry,
 }: ResolvedLinksSectionProps) {
-  const filtered = applyFilter(links, filter);
+  const liveStatuses = useLinkGrabberStore((s) => s.statuses);
+  const filtered = applyFilter(links, filter, liveStatuses);
   const grouped = groupLinks(filtered, groupingMode);
 
   const handleGroupToggle = (linksInGroup: ResolvedLink[], checked: boolean) => {
@@ -96,22 +119,17 @@ export function ResolvedLinksSection({
       {Object.entries(grouped).map(([groupName, groupItems]) => {
         if (groupItems.length === 0) return null;
         const groupIds = groupItems.map((l) => l.id);
-        const allSelected =
-          groupIds.length > 0 && groupIds.every((id) => selectedIds.includes(id));
+        const allSelected = groupIds.length > 0 && groupIds.every((id) => selectedIds.includes(id));
         return (
           <div key={groupName}>
             <div className="sticky top-0 flex items-center gap-2 bg-muted px-4 py-2">
               <Checkbox
                 checked={allSelected}
-                onCheckedChange={(checked) =>
-                  handleGroupToggle(groupItems, !!checked)
-                }
+                onCheckedChange={(checked) => handleGroupToggle(groupItems, !!checked)}
                 aria-label={`Select all in ${groupName}`}
               />
               <span className="text-sm font-medium">{groupName}</span>
-              <span className="text-xs text-muted-foreground">
-                ({groupItems.length})
-              </span>
+              <span className="text-xs text-muted-foreground">({groupItems.length})</span>
             </div>
             <div className="space-y-1 p-2">
               {groupItems.map((link) => (
@@ -121,6 +139,7 @@ export function ResolvedLinksSection({
                   selected={selectedIds.includes(link.id)}
                   onSelect={() => handleLinkToggle(link.id)}
                   onMediaClick={onMediaClick}
+                  onRetry={onRetry}
                 />
               ))}
             </div>

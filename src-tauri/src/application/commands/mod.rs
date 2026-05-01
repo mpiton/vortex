@@ -10,6 +10,7 @@ mod add_account;
 mod add_download_to_package;
 mod cancel_download;
 mod change_directory;
+mod check_online;
 mod clear_downloads_by_state;
 mod create_package;
 mod delete_account;
@@ -189,6 +190,17 @@ pub struct ResolveLinksCommand {
 impl Command for ResolveLinksCommand {}
 
 pub use resolve_links::ResolvedLinkDto;
+
+/// Probe each URL in `urls` for availability and stream a
+/// `DomainEvent::LinkStatusUpdated` per terminal transition. Bounded by
+/// `AppConfig::link_check_parallelism`; each probe is capped by
+/// `AppConfig::link_check_timeout_secs` before it falls back to
+/// `LinkStatus::Unknown`.
+#[derive(Debug, Clone)]
+pub struct CheckOnlineCommand {
+    pub urls: Vec<String>,
+}
+impl Command for CheckOnlineCommand {}
 
 /// Auto-group resolved playlist links into one [`Package`] per unique
 /// `playlist_id`. Re-running with the same id reuses the existing

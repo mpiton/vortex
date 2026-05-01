@@ -67,7 +67,8 @@ impl HttpModule {
     /// Check a URL's availability and metadata via a HEAD request.
     ///
     /// Returns `LinkStatus::Online` for 2xx, `LinkStatus::Offline` for 404/410,
-    /// and `LinkStatus::Unknown` for other status codes.
+    /// `LinkStatus::PremiumOnly` for 401/402 (auth/payment required), and
+    /// `LinkStatus::Unknown` for other status codes.
     pub async fn check_link(&self, url: &str) -> Result<LinkStatus, DomainError> {
         let response = self.send_head(url).await?;
         let status = response.status();
@@ -83,6 +84,10 @@ impl HttpModule {
             })
         } else if status == reqwest::StatusCode::NOT_FOUND || status == reqwest::StatusCode::GONE {
             Ok(LinkStatus::Offline)
+        } else if status == reqwest::StatusCode::UNAUTHORIZED
+            || status == reqwest::StatusCode::PAYMENT_REQUIRED
+        {
+            Ok(LinkStatus::PremiumOnly)
         } else {
             Ok(LinkStatus::Unknown)
         }
@@ -652,6 +657,34 @@ mod tests {
         let m = module();
         let url = format!("{}/error", server.uri());
         assert_eq!(m.check_link(&url).await.unwrap(), LinkStatus::Unknown);
+    }
+
+    #[tokio::test]
+    async fn test_check_link_premium_only_401() {
+        let server = MockServer::start().await;
+        Mock::given(method("HEAD"))
+            .and(path("/premium"))
+            .respond_with(ResponseTemplate::new(401))
+            .mount(&server)
+            .await;
+
+        let m = module();
+        let url = format!("{}/premium", server.uri());
+        assert_eq!(m.check_link(&url).await.unwrap(), LinkStatus::PremiumOnly);
+    }
+
+    #[tokio::test]
+    async fn test_check_link_premium_only_402() {
+        let server = MockServer::start().await;
+        Mock::given(method("HEAD"))
+            .and(path("/payment"))
+            .respond_with(ResponseTemplate::new(402))
+            .mount(&server)
+            .await;
+
+        let m = module();
+        let url = format!("{}/payment", server.uri());
+        assert_eq!(m.check_link(&url).await.unwrap(), LinkStatus::PremiumOnly);
     }
 
     #[tokio::test]

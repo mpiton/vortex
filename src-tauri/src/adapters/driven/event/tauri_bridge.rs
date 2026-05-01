@@ -73,6 +73,7 @@ fn event_name(event: &DomainEvent) -> &'static str {
         DomainEvent::NoAccountAvailable { .. } => "no-account-available",
         DomainEvent::AccountSelected { .. } => "account-selected",
         DomainEvent::AccountExhausted { .. } => "account-exhausted",
+        DomainEvent::LinkStatusUpdated { .. } => "link-status-updated",
     }
 }
 
@@ -231,6 +232,32 @@ fn event_payload(event: &DomainEvent) -> serde_json::Value {
                 "exhaustedUntilMs": exhausted_until_ms,
             })
         }
+        DomainEvent::LinkStatusUpdated { url, status } => {
+            json!({ "url": url, "status": link_status_payload(status) })
+        }
+    }
+}
+
+/// Camel-case JSON projection of [`LinkStatus`]. The Tauri bridge keeps
+/// payload shape stable across the IPC boundary so the React store can
+/// rely on `status.kind` plus optional metadata for `Online`.
+fn link_status_payload(status: &crate::domain::model::link::LinkStatus) -> serde_json::Value {
+    use crate::domain::model::link::LinkStatus;
+    match status {
+        LinkStatus::Checking => json!({ "kind": "checking" }),
+        LinkStatus::Online {
+            filename,
+            size,
+            resumable,
+        } => json!({
+            "kind": "online",
+            "filename": filename,
+            "size": size,
+            "resumable": resumable,
+        }),
+        LinkStatus::PremiumOnly => json!({ "kind": "premiumOnly" }),
+        LinkStatus::Offline => json!({ "kind": "offline" }),
+        LinkStatus::Unknown => json!({ "kind": "unknown" }),
     }
 }
 
@@ -490,5 +517,44 @@ mod tests {
         assert_eq!(urls.len(), 2);
         assert_eq!(urls[0], "https://a.com/file.zip");
         assert_eq!(urls[1], "ftp://b.com/data.tar");
+    }
+
+    #[test]
+    fn test_event_payload_link_status_updated_online() {
+        use crate::domain::model::link::LinkStatus;
+        let event = DomainEvent::LinkStatusUpdated {
+            url: "https://a.com/file.zip".to_string(),
+            status: LinkStatus::Online {
+                filename: Some("file.zip".to_string()),
+                size: Some(2048),
+                resumable: true,
+            },
+        };
+        let (name, payload) = to_tauri_event(&event);
+        assert_eq!(name, "link-status-updated");
+        assert_eq!(payload["url"], "https://a.com/file.zip");
+        assert_eq!(payload["status"]["kind"], "online");
+        assert_eq!(payload["status"]["filename"], "file.zip");
+        assert_eq!(payload["status"]["size"], 2048);
+        assert_eq!(payload["status"]["resumable"], true);
+    }
+
+    #[test]
+    fn test_event_payload_link_status_updated_terminal_variants() {
+        use crate::domain::model::link::LinkStatus;
+        for (status, kind) in [
+            (LinkStatus::Checking, "checking"),
+            (LinkStatus::PremiumOnly, "premiumOnly"),
+            (LinkStatus::Offline, "offline"),
+            (LinkStatus::Unknown, "unknown"),
+        ] {
+            let event = DomainEvent::LinkStatusUpdated {
+                url: "https://x/".to_string(),
+                status,
+            };
+            let (name, payload) = to_tauri_event(&event);
+            assert_eq!(name, "link-status-updated");
+            assert_eq!(payload["status"]["kind"], kind);
+        }
     }
 }

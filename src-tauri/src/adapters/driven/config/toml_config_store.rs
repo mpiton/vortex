@@ -192,6 +192,10 @@ struct ConfigDto {
     accent_color: String,
     compact_mode: bool,
     locale: String,
+
+    // Link Grabber
+    link_check_parallelism: u32,
+    link_check_timeout_secs: u32,
 }
 
 impl Default for ConfigDto {
@@ -240,6 +244,8 @@ impl From<AppConfig> for ConfigDto {
             accent_color: c.accent_color,
             compact_mode: c.compact_mode,
             locale: c.locale,
+            link_check_parallelism: c.link_check_parallelism,
+            link_check_timeout_secs: c.link_check_timeout_secs,
         }
     }
 }
@@ -296,6 +302,8 @@ impl TryFrom<ConfigDto> for AppConfig {
             accent_color: d.accent_color,
             compact_mode: d.compact_mode,
             locale: d.locale,
+            link_check_parallelism: d.link_check_parallelism,
+            link_check_timeout_secs: d.link_check_timeout_secs,
         })
     }
 }

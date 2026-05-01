@@ -88,6 +88,16 @@ pub struct AppConfig {
     pub accent_color: String,
     pub compact_mode: bool,
     pub locale: String,
+
+    // ── Link Grabber ─────────────────────────────────────────────────
+    /// Maximum number of concurrent `link_check_online` probes. Bounds
+    /// the parallelism so a paste of 500 URLs cannot exhaust sockets or
+    /// trip per-host throttling. PRD §6.2.2.
+    pub link_check_parallelism: u32,
+    /// Per-URL timeout (seconds) used by `link_check_online`. Beyond
+    /// this deadline a probe is abandoned and the URL is reported as
+    /// `LinkStatus::Unknown` so the UI can surface a retry button.
+    pub link_check_timeout_secs: u32,
 }
 
 impl Default for AppConfig {
@@ -144,8 +154,34 @@ impl Default for AppConfig {
             accent_color: "#4F46E5".to_string(),
             compact_mode: false,
             locale: "en".to_string(),
+
+            // Link Grabber
+            link_check_parallelism: DEFAULT_LINK_CHECK_PARALLELISM,
+            link_check_timeout_secs: DEFAULT_LINK_CHECK_TIMEOUT_SECS,
         }
     }
+}
+
+/// Default value for `link_check_parallelism`. Picked so a typical
+/// paste resolves visibly fast without hammering small hosters.
+pub const DEFAULT_LINK_CHECK_PARALLELISM: u32 = 8;
+
+/// Default value for `link_check_timeout_secs`. PRD §6.2.2 expects
+/// "Checking" to be a transient state, so 10s is the longest the UI
+/// should stall on a single URL before flipping to `Unknown`.
+pub const DEFAULT_LINK_CHECK_TIMEOUT_SECS: u32 = 10;
+
+/// Lower bound for `link_check_parallelism`. Below 1 the queue stalls.
+pub const MIN_LINK_CHECK_PARALLELISM: u32 = 1;
+
+/// Upper bound for `link_check_parallelism`. Above 64 the bound becomes
+/// counterproductive (per-host throttling, ephemeral port pressure).
+pub const MAX_LINK_CHECK_PARALLELISM: u32 = 64;
+
+/// Clamp a persisted `link_check_parallelism` to its valid range and
+/// convert to `usize`. Mirrors `normalize_max_concurrent` for downloads.
+pub fn normalize_link_check_parallelism(raw: u32) -> usize {
+    raw.clamp(MIN_LINK_CHECK_PARALLELISM, MAX_LINK_CHECK_PARALLELISM) as usize
 }
 
 /// Partial configuration update.
@@ -209,6 +245,10 @@ pub struct ConfigPatch {
     pub accent_color: Option<String>,
     pub compact_mode: Option<bool>,
     pub locale: Option<String>,
+
+    // Link Grabber
+    pub link_check_parallelism: Option<u32>,
+    pub link_check_timeout_secs: Option<u32>,
 }
 
 /// Lower bound for `max_concurrent_downloads` accepted by the scheduler.
@@ -367,6 +407,14 @@ pub fn apply_patch(config: &mut AppConfig, patch: &ConfigPatch) {
     if let Some(ref v) = patch.locale {
         config.locale = v.clone();
     }
+
+    // Link Grabber
+    if let Some(v) = patch.link_check_parallelism {
+        config.link_check_parallelism = v;
+    }
+    if let Some(v) = patch.link_check_timeout_secs {
+        config.link_check_timeout_secs = v;
+    }
 }
 
 #[cfg(test)]
@@ -428,6 +476,56 @@ mod tests {
         apply_patch(&mut config, &patch);
         assert!(!config.dynamic_split_enabled);
         assert_eq!(config.dynamic_split_min_remaining_mb, 16);
+    }
+
+    #[test]
+    fn test_default_link_check_parallelism_matches_prd_default() {
+        let c = AppConfig::default();
+        assert_eq!(c.link_check_parallelism, DEFAULT_LINK_CHECK_PARALLELISM);
+        assert_eq!(c.link_check_parallelism, 8);
+    }
+
+    #[test]
+    fn test_default_link_check_timeout_matches_prd_default() {
+        let c = AppConfig::default();
+        assert_eq!(c.link_check_timeout_secs, DEFAULT_LINK_CHECK_TIMEOUT_SECS);
+        assert_eq!(c.link_check_timeout_secs, 10);
+    }
+
+    #[test]
+    fn test_apply_patch_updates_link_check_fields() {
+        let mut config = AppConfig::default();
+        let patch = ConfigPatch {
+            link_check_parallelism: Some(16),
+            link_check_timeout_secs: Some(30),
+            ..Default::default()
+        };
+        apply_patch(&mut config, &patch);
+        assert_eq!(config.link_check_parallelism, 16);
+        assert_eq!(config.link_check_timeout_secs, 30);
+    }
+
+    #[test]
+    fn test_normalize_link_check_parallelism_clamps_zero_to_min() {
+        assert_eq!(
+            normalize_link_check_parallelism(0),
+            MIN_LINK_CHECK_PARALLELISM as usize
+        );
+    }
+
+    #[test]
+    fn test_normalize_link_check_parallelism_preserves_in_range_values() {
+        assert_eq!(normalize_link_check_parallelism(1), 1);
+        assert_eq!(normalize_link_check_parallelism(8), 8);
+        assert_eq!(normalize_link_check_parallelism(64), 64);
+    }
+
+    #[test]
+    fn test_normalize_link_check_parallelism_clamps_above_range_to_max() {
+        assert_eq!(
+            normalize_link_check_parallelism(1000),
+            MAX_LINK_CHECK_PARALLELISM as usize
+        );
     }
 
     #[test]

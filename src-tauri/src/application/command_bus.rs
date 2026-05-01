@@ -232,6 +232,10 @@ impl CommandBus {
         self.http_client.as_ref()
     }
 
+    pub(crate) fn http_client_arc(&self) -> Arc<dyn HttpClient> {
+        Arc::clone(&self.http_client)
+    }
+
     pub fn plugin_loader(&self) -> &dyn PluginLoader {
         self.plugin_loader.as_ref()
     }

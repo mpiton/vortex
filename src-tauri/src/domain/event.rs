@@ -1,5 +1,6 @@
 use crate::domain::model::account::AccountId;
 use crate::domain::model::download::DownloadId;
+use crate::domain::model::link::LinkStatus;
 use crate::domain::model::package::PackageId;
 use crate::domain::model::views::HistoryEntry;
 
@@ -319,6 +320,16 @@ pub enum DomainEvent {
         /// Unix epoch milliseconds — deadline after which the rotator
         /// will consider the account eligible again.
         exhausted_until_ms: u64,
+    },
+
+    // Link Grabber
+    /// Emitted by the `link_check_online` handler whenever a single URL
+    /// transitions to a new [`LinkStatus`]. The Tauri bridge forwards
+    /// each event so the Link Grabber view can render per-row badges
+    /// progressively rather than waiting for the whole batch.
+    LinkStatusUpdated {
+        url: String,
+        status: LinkStatus,
     },
 }
 

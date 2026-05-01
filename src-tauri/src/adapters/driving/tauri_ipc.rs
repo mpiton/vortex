@@ -15,7 +15,7 @@ use crate::application::commands::store_install::{StoreInstallCommand, StoreUpda
 use crate::application::commands::{
     AccountPatch, AddAccountCommand, AddDownloadToPackageCommand, CancelDownloadCommand,
     ChangeDirectoryBulkCommand, ChangeDirectoryBulkOutcome, ChangeDirectoryCommand,
-    ChangeDirectoryFailure, ClearDownloadsByStateCommand, ClearHistoryCommand,
+    ChangeDirectoryFailure, CheckOnlineCommand, ClearDownloadsByStateCommand, ClearHistoryCommand,
     CreatePackageCommand, DeleteAccountCommand, DeleteHistoryEntryCommand, DeletePackageCommand,
     DisablePluginCommand, EnablePluginCommand, ExportAccountsCommand, ExportAccountsOutcome,
     ExportHistoryCommand, ExportHistoryFormat, ImportAccountsCommand, ImportAccountsOutcome,
@@ -793,6 +793,28 @@ pub async fn link_resolve(
         })
 }
 
+/// Stream-style probe of every URL in `urls`. The handler returns once
+/// every probe has either resolved or timed out; per-URL transitions are
+/// fanned out as `link-status-updated` Tauri events while it runs.
+#[tauri::command]
+pub async fn link_check_online(
+    state: State<'_, AppState>,
+    urls: Vec<String>,
+) -> Result<(), String> {
+    let cmd = CheckOnlineCommand { urls };
+    state
+        .command_bus
+        .handle_check_online(cmd)
+        .await
+        .map_err(|e| match &e {
+            AppError::Validation(msg) => msg.clone(),
+            other => {
+                tracing::error!(error = %other, "link_check_online failed");
+                "Failed to check links".to_string()
+            }
+        })
+}
+
 /// Inbound IPC payload for [`link_group_playlists`]. Mirrors
 /// [`crate::application::services::PlaylistGroup`] in camelCase.
 #[derive(Debug, serde::Deserialize)]
@@ -951,6 +973,10 @@ pub struct SettingsDto {
     pub accent_color: String,
     pub compact_mode: bool,
     pub locale: String,
+
+    // Link Grabber
+    pub link_check_parallelism: u32,
+    pub link_check_timeout_secs: u32,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -998,6 +1024,8 @@ impl From<AppConfig> for SettingsDto {
             accent_color: c.accent_color,
             compact_mode: c.compact_mode,
             locale: c.locale,
+            link_check_parallelism: c.link_check_parallelism,
+            link_check_timeout_secs: c.link_check_timeout_secs,
         }
     }
 }
@@ -1058,6 +1086,10 @@ pub struct ConfigPatchDto {
     pub accent_color: Option<String>,
     pub compact_mode: Option<bool>,
     pub locale: Option<String>,
+
+    // Link Grabber
+    pub link_check_parallelism: Option<u32>,
+    pub link_check_timeout_secs: Option<u32>,
 }
 
 impl TryFrom<ConfigPatchDto> for ConfigPatch {
@@ -1105,6 +1137,8 @@ impl TryFrom<ConfigPatchDto> for ConfigPatch {
             accent_color: d.accent_color,
             compact_mode: d.compact_mode,
             locale: d.locale,
+            link_check_parallelism: d.link_check_parallelism,
+            link_check_timeout_secs: d.link_check_timeout_secs,
         })
     }
 }

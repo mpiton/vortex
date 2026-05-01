@@ -1,0 +1,767 @@
+//! Handler for [`CheckOnlineCommand`] — Link Grabber pipeline step 2.
+//!
+//! Probes each URL via the HTTP HEAD port and publishes a
+//! [`DomainEvent::LinkStatusUpdated`] for every transition. The Tauri
+//! bridge fans the events out to the frontend so the UI can colour each
+//! row as soon as its probe resolves.
+//!
+//! Concurrency is bounded by [`AppConfig::link_check_parallelism`] and
+//! each probe is capped by [`AppConfig::link_check_timeout_secs`] before
+//! it falls back to [`LinkStatus::Unknown`]. The handler always emits a
+//! `Checking` event up-front so the UI can render the spinner without
+//! waiting for the first probe to land.
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use tokio::sync::Semaphore;
+
+use crate::application::command_bus::CommandBus;
+use crate::application::error::AppError;
+use crate::domain::event::DomainEvent;
+use crate::domain::model::config::normalize_link_check_parallelism;
+use crate::domain::model::http::HttpResponse;
+use crate::domain::model::link::LinkStatus;
+use crate::domain::ports::driven::HttpClient;
+
+use super::CheckOnlineCommand;
+
+/// Cap on the size of a single check batch. Mirrors the bound used by
+/// `resolve_links` so a paste of 10 000 URLs cannot trip the bus before
+/// the user notices something is wrong.
+const MAX_URLS: usize = 500;
+
+impl CommandBus {
+    /// Probe each URL and stream `LinkStatusUpdated` events.
+    pub async fn handle_check_online(&self, cmd: CheckOnlineCommand) -> Result<(), AppError> {
+        if cmd.urls.len() > MAX_URLS {
+            return Err(AppError::Validation(format!(
+                "Too many URLs: {} (max {})",
+                cmd.urls.len(),
+                MAX_URLS
+            )));
+        }
+
+        let config = self.config_store().get_config().map_err(AppError::from)?;
+        let parallelism = normalize_link_check_parallelism(config.link_check_parallelism);
+        let timeout = Duration::from_secs(config.link_check_timeout_secs.max(1) as u64);
+        let semaphore = Arc::new(Semaphore::new(parallelism));
+        let http_client = self.http_client_arc();
+        let event_bus = self.event_bus_arc();
+
+        // Emit "Checking" once per URL before spawning so the UI gets a
+        // synchronous spinner even when every probe queues behind the
+        // semaphore. Skips empty / scheme-rejected entries — they jump
+        // straight to `Unknown` so the row never sticks on "Checking".
+        let mut probes: Vec<String> = Vec::with_capacity(cmd.urls.len());
+        for url in cmd.urls {
+            if url.trim().is_empty() {
+                continue;
+            }
+            if !is_probeable_scheme(&url) {
+                event_bus.publish(DomainEvent::LinkStatusUpdated {
+                    url: url.clone(),
+                    status: LinkStatus::Unknown,
+                });
+                continue;
+            }
+            event_bus.publish(DomainEvent::LinkStatusUpdated {
+                url: url.clone(),
+                status: LinkStatus::Checking,
+            });
+            probes.push(url);
+        }
+
+        let mut handles = Vec::with_capacity(probes.len());
+        for url in probes {
+            let sem = semaphore.clone();
+            let http = http_client.clone();
+            let bus = event_bus.clone();
+            handles.push(tokio::spawn(async move {
+                let permit = sem.acquire_owned().await.expect("semaphore not closed");
+                let status = run_probe(http, url.clone(), timeout).await;
+                drop(permit);
+                bus.publish(DomainEvent::LinkStatusUpdated { url, status });
+            }));
+        }
+
+        for handle in handles {
+            // A panicking probe must not poison the whole batch. Log
+            // and keep draining so partial batches still flush their
+            // remaining `Checking` rows.
+            if let Err(err) = handle.await {
+                tracing::warn!(error = %err, "link_check_online probe task panicked");
+            }
+        }
+
+        Ok(())
+    }
+}
+
+async fn run_probe(http: Arc<dyn HttpClient>, url: String, timeout: Duration) -> LinkStatus {
+    // The driven `HttpClient::head` is sync and may itself block on a
+    // dedicated tokio runtime (`reqwest_client::block_on`). Driving it
+    // through `spawn_blocking` keeps the parent runtime responsive even
+    // if a probe takes the full timeout.
+    let url_for_log = url.clone();
+    let join = tokio::task::spawn_blocking(move || http.head(&url));
+    match tokio::time::timeout(timeout, join).await {
+        Ok(Ok(Ok(response))) => classify_response(&response),
+        Ok(Ok(Err(err))) => {
+            tracing::debug!(url = %url_for_log, error = %err, "link probe failed");
+            LinkStatus::Unknown
+        }
+        Ok(Err(join_err)) => {
+            tracing::warn!(url = %url_for_log, error = %join_err, "link probe panicked");
+            LinkStatus::Unknown
+        }
+        Err(_elapsed) => {
+            tracing::debug!(url = %url_for_log, "link probe timed out");
+            LinkStatus::Unknown
+        }
+    }
+}
+
+fn classify_response(response: &HttpResponse) -> LinkStatus {
+    let code = response.status_code;
+    if (200..300).contains(&code) {
+        LinkStatus::Online {
+            filename: extract_filename(response),
+            size: response.content_length(),
+            resumable: response
+                .headers
+                .get("accept-ranges")
+                .and_then(|v| v.first())
+                .map(|v| v.eq_ignore_ascii_case("bytes"))
+                .unwrap_or(false),
+        }
+    } else if code == 404 || code == 410 {
+        LinkStatus::Offline
+    } else if code == 401 || code == 402 {
+        LinkStatus::PremiumOnly
+    } else {
+        LinkStatus::Unknown
+    }
+}
+
+fn extract_filename(response: &HttpResponse) -> Option<String> {
+    let content_disposition = response
+        .headers
+        .get("content-disposition")
+        .and_then(|v| v.first())
+        .cloned();
+    content_disposition.and_then(|cd| parse_content_disposition_filename(&cd))
+}
+
+fn parse_content_disposition_filename(value: &str) -> Option<String> {
+    // Supports `filename="x"` and `filename=x` (RFC 6266 simplified).
+    let lower = value.to_ascii_lowercase();
+    let idx = lower.find("filename=")?;
+    let raw = &value[idx + "filename=".len()..];
+    let trimmed = raw.trim();
+    let stripped = trimmed
+        .trim_start_matches('"')
+        .trim_end_matches('"')
+        .trim_end_matches(';')
+        .trim();
+    if stripped.is_empty() {
+        None
+    } else {
+        Some(stripped.to_string())
+    }
+}
+
+fn is_probeable_scheme(url: &str) -> bool {
+    let lower = url.to_lowercase();
+    lower.starts_with("http://") || lower.starts_with("https://")
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use std::path::Path;
+    use std::sync::Mutex;
+
+    use crate::application::test_support::NoopHistoryRepo;
+    use crate::domain::error::DomainError;
+    use crate::domain::model::archive::{ArchiveEntry, ArchiveFormat, ExtractSummary};
+    use crate::domain::model::config::{AppConfig, ConfigPatch};
+    use crate::domain::model::credential::Credential;
+    use crate::domain::model::download::{Download, DownloadId, DownloadState};
+    use crate::domain::model::http::HttpResponse;
+    use crate::domain::model::meta::DownloadMeta;
+    use crate::domain::model::plugin::{PluginInfo, PluginManifest};
+    use crate::domain::ports::driven::{
+        ArchiveExtractor, ClipboardObserver, ConfigStore, CredentialStore, DownloadEngine,
+        DownloadRepository, EventBus, FileStorage, HttpClient, PluginLoader,
+    };
+
+    use super::*;
+
+    /// Minimal `HttpClient` whose response is keyed by URL. Anything not
+    /// mapped returns a 200 so the test author can describe only the
+    /// "interesting" URLs.
+    struct ScriptedHttp {
+        responses: HashMap<String, HttpResponse>,
+        delay: Option<Duration>,
+        calls: Mutex<Vec<String>>,
+    }
+
+    impl ScriptedHttp {
+        fn new(responses: HashMap<String, HttpResponse>, delay: Option<Duration>) -> Self {
+            Self {
+                responses,
+                delay,
+                calls: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn calls(&self) -> Vec<String> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+
+    impl HttpClient for ScriptedHttp {
+        fn head(&self, url: &str) -> Result<HttpResponse, DomainError> {
+            self.calls.lock().unwrap().push(url.to_string());
+            if let Some(d) = self.delay {
+                std::thread::sleep(d);
+            }
+            Ok(self
+                .responses
+                .get(url)
+                .cloned()
+                .unwrap_or_else(|| HttpResponse {
+                    status_code: 200,
+                    headers: HashMap::new(),
+                    body: vec![],
+                }))
+        }
+        fn get_range(&self, _url: &str, _start: u64, _end: u64) -> Result<Vec<u8>, DomainError> {
+            Ok(vec![])
+        }
+        fn supports_range(&self, _url: &str) -> Result<bool, DomainError> {
+            Ok(false)
+        }
+    }
+
+    struct CapturingBus {
+        events: Mutex<Vec<DomainEvent>>,
+    }
+
+    impl CapturingBus {
+        fn new() -> Self {
+            Self {
+                events: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn snapshot(&self) -> Vec<DomainEvent> {
+            self.events.lock().unwrap().clone()
+        }
+    }
+
+    impl EventBus for CapturingBus {
+        fn publish(&self, event: DomainEvent) {
+            self.events.lock().unwrap().push(event);
+        }
+        fn subscribe(&self, _h: Box<dyn Fn(&DomainEvent) + Send + Sync>) {}
+    }
+
+    struct InMemoryConfig {
+        config: Mutex<AppConfig>,
+    }
+
+    impl InMemoryConfig {
+        fn new(config: AppConfig) -> Self {
+            Self {
+                config: Mutex::new(config),
+            }
+        }
+    }
+
+    impl ConfigStore for InMemoryConfig {
+        fn get_config(&self) -> Result<AppConfig, DomainError> {
+            Ok(self.config.lock().unwrap().clone())
+        }
+        fn update_config(&self, _patch: ConfigPatch) -> Result<AppConfig, DomainError> {
+            Ok(self.config.lock().unwrap().clone())
+        }
+    }
+
+    // ── Stubs for unrelated ports the bus still requires ─────────────
+
+    struct NoopRepo;
+    impl DownloadRepository for NoopRepo {
+        fn find_by_id(&self, _id: DownloadId) -> Result<Option<Download>, DomainError> {
+            Ok(None)
+        }
+        fn save(&self, _d: &Download) -> Result<(), DomainError> {
+            Ok(())
+        }
+        fn delete(&self, _id: DownloadId) -> Result<(), DomainError> {
+            Ok(())
+        }
+        fn find_by_state(&self, _s: DownloadState) -> Result<Vec<Download>, DomainError> {
+            Ok(vec![])
+        }
+    }
+
+    struct NoopEngine;
+    impl DownloadEngine for NoopEngine {
+        fn start(&self, _d: &Download) -> Result<(), DomainError> {
+            Ok(())
+        }
+        fn pause(&self, _id: DownloadId) -> Result<(), DomainError> {
+            Ok(())
+        }
+        fn resume(&self, _id: DownloadId) -> Result<(), DomainError> {
+            Ok(())
+        }
+        fn cancel(&self, _id: DownloadId) -> Result<(), DomainError> {
+            Ok(())
+        }
+    }
+
+    struct NoopFiles;
+    impl FileStorage for NoopFiles {
+        fn create_file(&self, _path: &Path, _size: u64) -> Result<(), DomainError> {
+            Ok(())
+        }
+        fn write_segment(
+            &self,
+            _path: &Path,
+            _offset: u64,
+            _data: &[u8],
+        ) -> Result<(), DomainError> {
+            Ok(())
+        }
+        fn read_meta(&self, _path: &Path) -> Result<Option<DownloadMeta>, DomainError> {
+            Ok(None)
+        }
+        fn write_meta(&self, _path: &Path, _meta: &DownloadMeta) -> Result<(), DomainError> {
+            Ok(())
+        }
+        fn delete_meta(&self, _path: &Path) -> Result<(), DomainError> {
+            Ok(())
+        }
+    }
+
+    struct NoopPluginLoader;
+    impl PluginLoader for NoopPluginLoader {
+        fn load(&self, _: &PluginManifest) -> Result<(), DomainError> {
+            Ok(())
+        }
+        fn unload(&self, _: &str) -> Result<(), DomainError> {
+            Ok(())
+        }
+        fn resolve_url(&self, _: &str) -> Result<Option<PluginInfo>, DomainError> {
+            Ok(None)
+        }
+        fn list_loaded(&self) -> Result<Vec<PluginInfo>, DomainError> {
+            Ok(vec![])
+        }
+        fn set_enabled(&self, _: &str, _: bool) -> Result<(), DomainError> {
+            Ok(())
+        }
+    }
+
+    struct NoopCredentials;
+    impl CredentialStore for NoopCredentials {
+        fn get(&self, _service: &str) -> Result<Option<Credential>, DomainError> {
+            Ok(None)
+        }
+        fn store(&self, _service: &str, _credential: &Credential) -> Result<(), DomainError> {
+            Ok(())
+        }
+        fn delete(&self, _service: &str) -> Result<(), DomainError> {
+            Ok(())
+        }
+    }
+
+    struct NoopClipboard;
+    impl ClipboardObserver for NoopClipboard {
+        fn start(&self) -> Result<(), DomainError> {
+            Ok(())
+        }
+        fn stop(&self) -> Result<(), DomainError> {
+            Ok(())
+        }
+        fn get_urls(&self) -> Result<Vec<String>, DomainError> {
+            Ok(vec![])
+        }
+    }
+
+    struct NoopExtractor;
+    impl ArchiveExtractor for NoopExtractor {
+        fn detect_format(&self, _path: &Path) -> Result<Option<ArchiveFormat>, DomainError> {
+            Ok(None)
+        }
+        fn can_extract(&self, _path: &Path) -> Result<bool, DomainError> {
+            Ok(false)
+        }
+        fn extract(
+            &self,
+            _path: &Path,
+            _dest: &Path,
+            _password: Option<&str>,
+        ) -> Result<ExtractSummary, DomainError> {
+            Ok(ExtractSummary {
+                extracted_files: 0,
+                extracted_bytes: 0,
+                duration_ms: 0,
+                warnings: vec![],
+            })
+        }
+        fn list_contents(
+            &self,
+            _path: &Path,
+            _password: Option<&str>,
+        ) -> Result<Vec<ArchiveEntry>, DomainError> {
+            Ok(vec![])
+        }
+        fn detect_segments(
+            &self,
+            _path: &Path,
+        ) -> Result<Option<Vec<std::path::PathBuf>>, DomainError> {
+            Ok(None)
+        }
+    }
+
+    fn build_bus(
+        http: Arc<dyn HttpClient>,
+        bus: Arc<CapturingBus>,
+        config: Arc<dyn ConfigStore>,
+    ) -> CommandBus {
+        CommandBus::new(
+            Arc::new(NoopRepo),
+            Arc::new(NoopEngine),
+            bus,
+            Arc::new(NoopFiles),
+            http,
+            Arc::new(NoopPluginLoader),
+            config,
+            Arc::new(NoopCredentials),
+            Arc::new(NoopClipboard),
+            Arc::new(NoopExtractor),
+            Arc::new(NoopHistoryRepo),
+            None,
+        )
+    }
+
+    fn response(status: u16) -> HttpResponse {
+        HttpResponse {
+            status_code: status,
+            headers: HashMap::new(),
+            body: vec![],
+        }
+    }
+
+    fn online_response(filename: &str, size: u64) -> HttpResponse {
+        let mut headers = HashMap::new();
+        headers.insert("content-length".to_string(), vec![size.to_string()]);
+        headers.insert(
+            "content-disposition".to_string(),
+            vec![format!("attachment; filename=\"{filename}\"")],
+        );
+        headers.insert("accept-ranges".to_string(), vec!["bytes".to_string()]);
+        HttpResponse {
+            status_code: 200,
+            headers,
+            body: vec![],
+        }
+    }
+
+    fn extract_status_for(events: &[DomainEvent], url: &str) -> Option<LinkStatus> {
+        events.iter().rev().find_map(|e| match e {
+            DomainEvent::LinkStatusUpdated { url: u, status } if u == url => Some(status.clone()),
+            _ => None,
+        })
+    }
+
+    #[tokio::test]
+    async fn handle_check_online_emits_checking_then_terminal_for_each_url() {
+        let mut responses = HashMap::new();
+        responses.insert("https://a/".to_string(), online_response("file.zip", 1024));
+        responses.insert("https://b/".to_string(), response(404));
+
+        let http = Arc::new(ScriptedHttp::new(responses, None));
+        let event_bus = Arc::new(CapturingBus::new());
+        let config = Arc::new(InMemoryConfig::new(AppConfig::default()));
+        let bus = build_bus(http.clone(), event_bus.clone(), config);
+
+        bus.handle_check_online(CheckOnlineCommand {
+            urls: vec!["https://a/".to_string(), "https://b/".to_string()],
+        })
+        .await
+        .expect("ok");
+
+        let events = event_bus.snapshot();
+        // Two `Checking` then two terminal events — order between
+        // terminals is non-deterministic so we assert by URL.
+        let checking_count = events
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e,
+                    DomainEvent::LinkStatusUpdated {
+                        status: LinkStatus::Checking,
+                        ..
+                    }
+                )
+            })
+            .count();
+        assert_eq!(checking_count, 2);
+        match extract_status_for(&events, "https://a/").unwrap() {
+            LinkStatus::Online {
+                filename,
+                size,
+                resumable,
+            } => {
+                assert_eq!(filename.as_deref(), Some("file.zip"));
+                assert_eq!(size, Some(1024));
+                assert!(resumable);
+            }
+            other => panic!("expected Online for a, got {other:?}"),
+        }
+        assert_eq!(
+            extract_status_for(&events, "https://b/"),
+            Some(LinkStatus::Offline)
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_check_online_maps_unauthorized_to_premium_only() {
+        let mut responses = HashMap::new();
+        responses.insert("https://a/".to_string(), response(401));
+        responses.insert("https://b/".to_string(), response(402));
+
+        let http = Arc::new(ScriptedHttp::new(responses, None));
+        let event_bus = Arc::new(CapturingBus::new());
+        let config = Arc::new(InMemoryConfig::new(AppConfig::default()));
+        let bus = build_bus(http, event_bus.clone(), config);
+
+        bus.handle_check_online(CheckOnlineCommand {
+            urls: vec!["https://a/".to_string(), "https://b/".to_string()],
+        })
+        .await
+        .expect("ok");
+
+        let events = event_bus.snapshot();
+        assert_eq!(
+            extract_status_for(&events, "https://a/"),
+            Some(LinkStatus::PremiumOnly)
+        );
+        assert_eq!(
+            extract_status_for(&events, "https://b/"),
+            Some(LinkStatus::PremiumOnly)
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_check_online_maps_other_status_codes_to_unknown() {
+        let mut responses = HashMap::new();
+        responses.insert("https://a/".to_string(), response(500));
+        responses.insert("https://b/".to_string(), response(403));
+
+        let http = Arc::new(ScriptedHttp::new(responses, None));
+        let event_bus = Arc::new(CapturingBus::new());
+        let config = Arc::new(InMemoryConfig::new(AppConfig::default()));
+        let bus = build_bus(http, event_bus.clone(), config);
+
+        bus.handle_check_online(CheckOnlineCommand {
+            urls: vec!["https://a/".to_string(), "https://b/".to_string()],
+        })
+        .await
+        .expect("ok");
+
+        let events = event_bus.snapshot();
+        assert_eq!(
+            extract_status_for(&events, "https://a/"),
+            Some(LinkStatus::Unknown)
+        );
+        assert_eq!(
+            extract_status_for(&events, "https://b/"),
+            Some(LinkStatus::Unknown)
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_check_online_skips_non_http_schemes_with_unknown() {
+        let http = Arc::new(ScriptedHttp::new(HashMap::new(), None));
+        let event_bus = Arc::new(CapturingBus::new());
+        let config = Arc::new(InMemoryConfig::new(AppConfig::default()));
+        let bus = build_bus(http.clone(), event_bus.clone(), config);
+
+        bus.handle_check_online(CheckOnlineCommand {
+            urls: vec![
+                "ftp://example.com/file".to_string(),
+                "magnet:?xt=urn:btih:abc".to_string(),
+            ],
+        })
+        .await
+        .expect("ok");
+
+        let events = event_bus.snapshot();
+        // Both rejected without firing a HEAD probe.
+        assert!(http.calls().is_empty());
+        let ftp = extract_status_for(&events, "ftp://example.com/file").unwrap();
+        let magnet = extract_status_for(&events, "magnet:?xt=urn:btih:abc").unwrap();
+        assert_eq!(ftp, LinkStatus::Unknown);
+        assert_eq!(magnet, LinkStatus::Unknown);
+        // No `Checking` event for skipped URLs.
+        let checking_count = events
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e,
+                    DomainEvent::LinkStatusUpdated {
+                        status: LinkStatus::Checking,
+                        ..
+                    }
+                )
+            })
+            .count();
+        assert_eq!(checking_count, 0);
+    }
+
+    #[tokio::test]
+    async fn handle_check_online_returns_unknown_when_probe_times_out() {
+        let mut responses = HashMap::new();
+        responses.insert("https://slow/".to_string(), response(200));
+        // 200ms head delay but timeout is 1s in test config (so sleep
+        // longer than that).
+        let http = Arc::new(ScriptedHttp::new(
+            responses,
+            Some(Duration::from_millis(1500)),
+        ));
+        let event_bus = Arc::new(CapturingBus::new());
+        let cfg = AppConfig {
+            link_check_timeout_secs: 1,
+            ..AppConfig::default()
+        };
+        let config = Arc::new(InMemoryConfig::new(cfg));
+        let bus = build_bus(http, event_bus.clone(), config);
+
+        bus.handle_check_online(CheckOnlineCommand {
+            urls: vec!["https://slow/".to_string()],
+        })
+        .await
+        .expect("ok");
+
+        let events = event_bus.snapshot();
+        assert_eq!(
+            extract_status_for(&events, "https://slow/"),
+            Some(LinkStatus::Unknown)
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_check_online_rejects_batches_above_max() {
+        let http = Arc::new(ScriptedHttp::new(HashMap::new(), None));
+        let event_bus = Arc::new(CapturingBus::new());
+        let config = Arc::new(InMemoryConfig::new(AppConfig::default()));
+        let bus = build_bus(http, event_bus.clone(), config);
+
+        let urls = (0..(MAX_URLS + 1))
+            .map(|i| format!("https://example.com/{i}"))
+            .collect();
+        let result = bus.handle_check_online(CheckOnlineCommand { urls }).await;
+
+        assert!(matches!(result, Err(AppError::Validation(_))));
+        // No event must have been published when validation rejects.
+        assert!(event_bus.snapshot().is_empty());
+    }
+
+    #[tokio::test]
+    async fn handle_check_online_bounded_parallelism_caps_concurrent_probes() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::time::Duration;
+
+        struct ConcurrencyTracker {
+            in_flight: AtomicUsize,
+            peak: AtomicUsize,
+        }
+
+        impl ConcurrencyTracker {
+            fn new() -> Arc<Self> {
+                Arc::new(Self {
+                    in_flight: AtomicUsize::new(0),
+                    peak: AtomicUsize::new(0),
+                })
+            }
+
+            fn enter(&self) {
+                let now = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+                let mut peak = self.peak.load(Ordering::SeqCst);
+                while now > peak {
+                    match self
+                        .peak
+                        .compare_exchange(peak, now, Ordering::SeqCst, Ordering::SeqCst)
+                    {
+                        Ok(_) => break,
+                        Err(actual) => peak = actual,
+                    }
+                }
+            }
+
+            fn leave(&self) {
+                self.in_flight.fetch_sub(1, Ordering::SeqCst);
+            }
+        }
+
+        struct TrackingHttp {
+            tracker: Arc<ConcurrencyTracker>,
+        }
+
+        impl HttpClient for TrackingHttp {
+            fn head(&self, _url: &str) -> Result<HttpResponse, DomainError> {
+                self.tracker.enter();
+                std::thread::sleep(Duration::from_millis(80));
+                self.tracker.leave();
+                Ok(HttpResponse {
+                    status_code: 200,
+                    headers: HashMap::new(),
+                    body: vec![],
+                })
+            }
+            fn get_range(
+                &self,
+                _url: &str,
+                _start: u64,
+                _end: u64,
+            ) -> Result<Vec<u8>, DomainError> {
+                Ok(vec![])
+            }
+            fn supports_range(&self, _url: &str) -> Result<bool, DomainError> {
+                Ok(false)
+            }
+        }
+
+        let tracker = ConcurrencyTracker::new();
+        let http = Arc::new(TrackingHttp {
+            tracker: tracker.clone(),
+        });
+        let event_bus = Arc::new(CapturingBus::new());
+        let cfg = AppConfig {
+            link_check_parallelism: 3,
+            ..AppConfig::default()
+        };
+        let config = Arc::new(InMemoryConfig::new(cfg));
+        let bus = build_bus(http, event_bus, config);
+
+        let urls: Vec<String> = (0..12)
+            .map(|i| format!("https://example.com/{i}"))
+            .collect();
+        bus.handle_check_online(CheckOnlineCommand { urls })
+            .await
+            .expect("ok");
+
+        let peak = tracker.peak.load(Ordering::SeqCst);
+        assert!(
+            peak <= 3,
+            "peak concurrency {peak} exceeded configured cap of 3"
+        );
+        assert!(peak >= 1, "no probes ever ran");
+    }
+}
