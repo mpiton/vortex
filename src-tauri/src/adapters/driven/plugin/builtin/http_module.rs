@@ -68,29 +68,21 @@ impl HttpModule {
     ///
     /// Returns `LinkStatus::Online` for 2xx, `LinkStatus::Offline` for 404/410,
     /// `LinkStatus::PremiumOnly` for 401/402 (auth/payment required), and
-    /// `LinkStatus::Unknown` for other status codes.
+    /// `LinkStatus::Unknown` for other status codes. Status-code mapping
+    /// is delegated to `LinkStatus::from_status_code` so this module and
+    /// the `link_check_online` handler stay in sync.
     pub async fn check_link(&self, url: &str) -> Result<LinkStatus, DomainError> {
         let response = self.send_head(url).await?;
-        let status = response.status();
+        let code = response.status().as_u16();
 
-        if status.is_success() {
-            let filename = extract_filename(response.headers(), url);
-            let size = parse_content_length(response.headers());
-            let resumable = parse_accept_ranges(response.headers());
-            Ok(LinkStatus::Online {
-                filename,
-                size,
-                resumable,
-            })
-        } else if status == reqwest::StatusCode::NOT_FOUND || status == reqwest::StatusCode::GONE {
-            Ok(LinkStatus::Offline)
-        } else if status == reqwest::StatusCode::UNAUTHORIZED
-            || status == reqwest::StatusCode::PAYMENT_REQUIRED
-        {
-            Ok(LinkStatus::PremiumOnly)
-        } else {
-            Ok(LinkStatus::Unknown)
-        }
+        Ok(match LinkStatus::from_status_code(code) {
+            Some(terminal) => terminal,
+            None => LinkStatus::Online {
+                filename: extract_filename(response.headers(), url),
+                size: parse_content_length(response.headers()),
+                resumable: parse_accept_ranges(response.headers()),
+            },
+        })
     }
 
     /// Follow redirects and return the final URL.

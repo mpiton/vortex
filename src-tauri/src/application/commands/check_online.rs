@@ -123,25 +123,11 @@ async fn run_probe(http: Arc<dyn HttpClient>, url: String, timeout: Duration) ->
 }
 
 fn classify_response(response: &HttpResponse) -> LinkStatus {
-    let code = response.status_code;
-    if (200..300).contains(&code) {
-        LinkStatus::Online {
-            filename: extract_filename(response),
-            size: response.content_length(),
-            resumable: response
-                .headers
-                .get("accept-ranges")
-                .and_then(|v| v.first())
-                .map(|v| v.eq_ignore_ascii_case("bytes"))
-                .unwrap_or(false),
-        }
-    } else if code == 404 || code == 410 {
-        LinkStatus::Offline
-    } else if code == 401 || code == 402 {
-        LinkStatus::PremiumOnly
-    } else {
-        LinkStatus::Unknown
-    }
+    LinkStatus::from_status_code(response.status_code).unwrap_or_else(|| LinkStatus::Online {
+        filename: extract_filename(response),
+        size: response.content_length(),
+        resumable: response.accept_ranges_bytes(),
+    })
 }
 
 fn extract_filename(response: &HttpResponse) -> Option<String> {
@@ -179,22 +165,17 @@ fn is_probeable_scheme(url: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
-    use std::path::Path;
     use std::sync::Mutex;
 
+    use crate::application::commands::tests_support::{
+        StubArchiveExtractor, StubClipboardObserver, StubCredentialStore, StubDownloadEngine,
+        StubDownloadRepo, StubFileStorage, StubPluginLoader,
+    };
     use crate::application::test_support::NoopHistoryRepo;
     use crate::domain::error::DomainError;
-    use crate::domain::model::archive::{ArchiveEntry, ArchiveFormat, ExtractSummary};
     use crate::domain::model::config::{AppConfig, ConfigPatch};
-    use crate::domain::model::credential::Credential;
-    use crate::domain::model::download::{Download, DownloadId, DownloadState};
     use crate::domain::model::http::HttpResponse;
-    use crate::domain::model::meta::DownloadMeta;
-    use crate::domain::model::plugin::{PluginInfo, PluginManifest};
-    use crate::domain::ports::driven::{
-        ArchiveExtractor, ClipboardObserver, ConfigStore, CredentialStore, DownloadEngine,
-        DownloadRepository, EventBus, FileStorage, HttpClient, PluginLoader,
-    };
+    use crate::domain::ports::driven::{ConfigStore, EventBus, HttpClient};
 
     use super::*;
 
@@ -289,161 +270,22 @@ mod tests {
         }
     }
 
-    // ── Stubs for unrelated ports the bus still requires ─────────────
-
-    struct NoopRepo;
-    impl DownloadRepository for NoopRepo {
-        fn find_by_id(&self, _id: DownloadId) -> Result<Option<Download>, DomainError> {
-            Ok(None)
-        }
-        fn save(&self, _d: &Download) -> Result<(), DomainError> {
-            Ok(())
-        }
-        fn delete(&self, _id: DownloadId) -> Result<(), DomainError> {
-            Ok(())
-        }
-        fn find_by_state(&self, _s: DownloadState) -> Result<Vec<Download>, DomainError> {
-            Ok(vec![])
-        }
-    }
-
-    struct NoopEngine;
-    impl DownloadEngine for NoopEngine {
-        fn start(&self, _d: &Download) -> Result<(), DomainError> {
-            Ok(())
-        }
-        fn pause(&self, _id: DownloadId) -> Result<(), DomainError> {
-            Ok(())
-        }
-        fn resume(&self, _id: DownloadId) -> Result<(), DomainError> {
-            Ok(())
-        }
-        fn cancel(&self, _id: DownloadId) -> Result<(), DomainError> {
-            Ok(())
-        }
-    }
-
-    struct NoopFiles;
-    impl FileStorage for NoopFiles {
-        fn create_file(&self, _path: &Path, _size: u64) -> Result<(), DomainError> {
-            Ok(())
-        }
-        fn write_segment(
-            &self,
-            _path: &Path,
-            _offset: u64,
-            _data: &[u8],
-        ) -> Result<(), DomainError> {
-            Ok(())
-        }
-        fn read_meta(&self, _path: &Path) -> Result<Option<DownloadMeta>, DomainError> {
-            Ok(None)
-        }
-        fn write_meta(&self, _path: &Path, _meta: &DownloadMeta) -> Result<(), DomainError> {
-            Ok(())
-        }
-        fn delete_meta(&self, _path: &Path) -> Result<(), DomainError> {
-            Ok(())
-        }
-    }
-
-    struct NoopPluginLoader;
-    impl PluginLoader for NoopPluginLoader {
-        fn load(&self, _: &PluginManifest) -> Result<(), DomainError> {
-            Ok(())
-        }
-        fn unload(&self, _: &str) -> Result<(), DomainError> {
-            Ok(())
-        }
-        fn resolve_url(&self, _: &str) -> Result<Option<PluginInfo>, DomainError> {
-            Ok(None)
-        }
-        fn list_loaded(&self) -> Result<Vec<PluginInfo>, DomainError> {
-            Ok(vec![])
-        }
-        fn set_enabled(&self, _: &str, _: bool) -> Result<(), DomainError> {
-            Ok(())
-        }
-    }
-
-    struct NoopCredentials;
-    impl CredentialStore for NoopCredentials {
-        fn get(&self, _service: &str) -> Result<Option<Credential>, DomainError> {
-            Ok(None)
-        }
-        fn store(&self, _service: &str, _credential: &Credential) -> Result<(), DomainError> {
-            Ok(())
-        }
-        fn delete(&self, _service: &str) -> Result<(), DomainError> {
-            Ok(())
-        }
-    }
-
-    struct NoopClipboard;
-    impl ClipboardObserver for NoopClipboard {
-        fn start(&self) -> Result<(), DomainError> {
-            Ok(())
-        }
-        fn stop(&self) -> Result<(), DomainError> {
-            Ok(())
-        }
-        fn get_urls(&self) -> Result<Vec<String>, DomainError> {
-            Ok(vec![])
-        }
-    }
-
-    struct NoopExtractor;
-    impl ArchiveExtractor for NoopExtractor {
-        fn detect_format(&self, _path: &Path) -> Result<Option<ArchiveFormat>, DomainError> {
-            Ok(None)
-        }
-        fn can_extract(&self, _path: &Path) -> Result<bool, DomainError> {
-            Ok(false)
-        }
-        fn extract(
-            &self,
-            _path: &Path,
-            _dest: &Path,
-            _password: Option<&str>,
-        ) -> Result<ExtractSummary, DomainError> {
-            Ok(ExtractSummary {
-                extracted_files: 0,
-                extracted_bytes: 0,
-                duration_ms: 0,
-                warnings: vec![],
-            })
-        }
-        fn list_contents(
-            &self,
-            _path: &Path,
-            _password: Option<&str>,
-        ) -> Result<Vec<ArchiveEntry>, DomainError> {
-            Ok(vec![])
-        }
-        fn detect_segments(
-            &self,
-            _path: &Path,
-        ) -> Result<Option<Vec<std::path::PathBuf>>, DomainError> {
-            Ok(None)
-        }
-    }
-
     fn build_bus(
         http: Arc<dyn HttpClient>,
         bus: Arc<CapturingBus>,
         config: Arc<dyn ConfigStore>,
     ) -> CommandBus {
         CommandBus::new(
-            Arc::new(NoopRepo),
-            Arc::new(NoopEngine),
+            Arc::new(StubDownloadRepo),
+            Arc::new(StubDownloadEngine),
             bus,
-            Arc::new(NoopFiles),
+            Arc::new(StubFileStorage),
             http,
-            Arc::new(NoopPluginLoader),
+            Arc::new(StubPluginLoader),
             config,
-            Arc::new(NoopCredentials),
-            Arc::new(NoopClipboard),
-            Arc::new(NoopExtractor),
+            Arc::new(StubCredentialStore),
+            Arc::new(StubClipboardObserver),
+            Arc::new(StubArchiveExtractor),
             Arc::new(NoopHistoryRepo),
             None,
         )

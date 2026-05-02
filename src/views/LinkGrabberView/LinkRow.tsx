@@ -26,8 +26,6 @@ const statusIconMap: Record<LinkStatus, React.ReactElement> = {
   offline: <X className="h-4 w-4 text-red-500" aria-label="offline" />,
   premiumOnly: <Lock className="h-4 w-4 text-orange-500" aria-label="premium-only" />,
   unknown: <HelpCircle className="h-4 w-4 text-muted-foreground" aria-label="unknown" />,
-  // `error` mirrors `unknown` visually but stays distinct in the type
-  // so legacy callers keep their existing semantics.
   error: <AlertCircle className="h-4 w-4 text-yellow-500" aria-label="error" />,
 };
 
@@ -42,9 +40,7 @@ const statusBadgeColor: Record<LinkStatus, string> = {
 
 export function LinkRow({ link, selected, onSelect, onMediaClick, onRetry }: LinkRowProps) {
   const liveStatus = useLinkGrabberStore((s) => s.statuses[link.originalUrl]);
-  const effectiveStatus: LinkStatus = liveStatus
-    ? liveStatusToLinkStatus(liveStatus.kind)
-    : link.status;
+  const effectiveStatus: LinkStatus = liveStatus?.kind ?? link.status;
   const showRetry = effectiveStatus === "unknown" && onRetry !== undefined;
 
   return (
@@ -105,13 +101,4 @@ export function LinkRow({ link, selected, onSelect, onMediaClick, onRetry }: Lin
       )}
     </div>
   );
-}
-
-function liveStatusToLinkStatus(
-  kind: "checking" | "online" | "offline" | "premiumOnly" | "unknown",
-): LinkStatus {
-  // Backend currently maps 1:1 onto the frontend variants. The
-  // function is kept as a chokepoint so a future divergence (e.g. an
-  // intermediate "stalled" state) only needs editing in one place.
-  return kind;
 }

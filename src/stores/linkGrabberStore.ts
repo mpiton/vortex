@@ -28,16 +28,42 @@ interface LinkGrabberState {
 export const useLinkGrabberStore = create<LinkGrabberState>((set) => ({
   statuses: {},
   setStatus: (url, status) =>
-    set((state) => ({
-      statuses: { ...state.statuses, [url]: status },
-    })),
+    set((state) => {
+      // No-op when the incoming status is structurally identical: avoids
+      // a needless object-ref change so subscribers (LinkRow rows,
+      // ResolvedLinksSection) don't re-render on duplicate events.
+      if (statusesEqual(state.statuses[url], status)) {
+        return state;
+      }
+      return { statuses: { ...state.statuses, [url]: status } };
+    }),
   setManyStatuses: (entries) =>
     set((state) => {
+      let changed = false;
       const next = { ...state.statuses };
       for (const [url, status] of entries) {
-        next[url] = status;
+        if (!statusesEqual(next[url], status)) {
+          next[url] = status;
+          changed = true;
+        }
       }
-      return { statuses: next };
+      return changed ? { statuses: next } : state;
     }),
-  reset: () => set({ statuses: {} }),
+  reset: () =>
+    set((state) =>
+      Object.keys(state.statuses).length === 0 ? state : { statuses: {} },
+    ),
 }));
+
+function statusesEqual(a: LinkProbeStatus | undefined, b: LinkProbeStatus): boolean {
+  if (!a) return false;
+  if (a.kind !== b.kind) return false;
+  if (a.kind === "online" && b.kind === "online") {
+    return (
+      (a.filename ?? null) === (b.filename ?? null) &&
+      (a.size ?? null) === (b.size ?? null) &&
+      (a.resumable ?? null) === (b.resumable ?? null)
+    );
+  }
+  return true;
+}

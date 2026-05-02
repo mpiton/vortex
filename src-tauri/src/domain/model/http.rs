@@ -46,4 +46,13 @@ impl HttpResponse {
     pub fn content_length(&self) -> Option<u64> {
         self.header("content-length")?.trim().parse().ok()
     }
+
+    /// `true` when the server advertises HTTP byte-range support via
+    /// `Accept-Ranges: bytes`. Mirrors the reqwest-side helper used by
+    /// the segmented engine so all probe flows agree on resumability.
+    pub fn accept_ranges_bytes(&self) -> bool {
+        self.header("accept-ranges")
+            .map(|v| v.eq_ignore_ascii_case("bytes"))
+            .unwrap_or(false)
+    }
 }

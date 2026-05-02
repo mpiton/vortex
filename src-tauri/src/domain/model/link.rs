@@ -31,6 +31,22 @@ impl LinkStatus {
     pub fn is_terminal(&self) -> bool {
         !matches!(self, LinkStatus::Checking)
     }
+
+    /// Map a raw HTTP status code onto a non-`Online` [`LinkStatus`].
+    ///
+    /// Returns `None` for 2xx codes — the caller is expected to build
+    /// the `Online` variant with `filename` / `size` / `resumable`
+    /// metadata harvested from response headers. Shared by the built-in
+    /// HTTP module and the `link_check_online` handler so both flows
+    /// agree on the 401/402/404/410 mapping.
+    pub fn from_status_code(code: u16) -> Option<Self> {
+        match code {
+            404 | 410 => Some(LinkStatus::Offline),
+            401 | 402 => Some(LinkStatus::PremiumOnly),
+            200..=299 => None,
+            _ => Some(LinkStatus::Unknown),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -116,6 +132,38 @@ mod tests {
         assert_eq!(checking, LinkStatus::Checking);
         assert_ne!(checking, LinkStatus::Offline);
         assert_ne!(checking, LinkStatus::PremiumOnly);
+    }
+
+    #[test]
+    fn test_link_status_from_status_code_maps_offline_codes() {
+        assert_eq!(LinkStatus::from_status_code(404), Some(LinkStatus::Offline));
+        assert_eq!(LinkStatus::from_status_code(410), Some(LinkStatus::Offline));
+    }
+
+    #[test]
+    fn test_link_status_from_status_code_maps_premium_only_codes() {
+        assert_eq!(
+            LinkStatus::from_status_code(401),
+            Some(LinkStatus::PremiumOnly)
+        );
+        assert_eq!(
+            LinkStatus::from_status_code(402),
+            Some(LinkStatus::PremiumOnly)
+        );
+    }
+
+    #[test]
+    fn test_link_status_from_status_code_returns_none_for_2xx() {
+        assert_eq!(LinkStatus::from_status_code(200), None);
+        assert_eq!(LinkStatus::from_status_code(206), None);
+        assert_eq!(LinkStatus::from_status_code(299), None);
+    }
+
+    #[test]
+    fn test_link_status_from_status_code_other_codes_map_to_unknown() {
+        assert_eq!(LinkStatus::from_status_code(403), Some(LinkStatus::Unknown));
+        assert_eq!(LinkStatus::from_status_code(500), Some(LinkStatus::Unknown));
+        assert_eq!(LinkStatus::from_status_code(301), Some(LinkStatus::Unknown));
     }
 
     #[test]
