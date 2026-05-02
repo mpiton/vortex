@@ -55,7 +55,11 @@ impl CommandBus {
         // straight to `Unknown` so the row never sticks on "Checking".
         let mut probes: Vec<String> = Vec::with_capacity(cmd.urls.len());
         for url in cmd.urls {
-            if url.trim().is_empty() {
+            // Normalize once: a pasted entry like ` https://example.com/ `
+            // would otherwise fail `is_probeable_scheme` (leading space)
+            // or get sent to `head()` with trailing whitespace.
+            let url = url.trim().to_string();
+            if url.is_empty() {
                 continue;
             }
             if !is_probeable_scheme(&url) {
@@ -160,10 +164,14 @@ fn parse_content_disposition_filename(value: &str) -> Option<String> {
     // like `attachment; filename="x.zip"; size=123` leaks the trailing
     // `size=...` into the returned name.
     const KEY: &str = "filename=";
-    let part = value
-        .split(';')
-        .map(str::trim)
-        .find(|p| p.len() >= KEY.len() && p[..KEY.len()].eq_ignore_ascii_case(KEY))?;
+    // `p.get(..KEY.len())` returns `None` when the requested byte index
+    // does not fall on a UTF-8 boundary — keeps the parser panic-free
+    // on non-ASCII headers like `attachment; nàme=...` that just happen
+    // to be `KEY.len()` bytes long without the `filename=` prefix.
+    let part = value.split(';').map(str::trim).find(|p| {
+        p.get(..KEY.len())
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(KEY))
+    })?;
     let stripped = part[KEY.len()..].trim().trim_matches('"');
     if stripped.is_empty() {
         None
@@ -646,6 +654,24 @@ mod tests {
         );
     }
 
+    /// Regression — non-ASCII characters in a parameter that happens to
+    /// be the same byte length as `KEY` ("filename=") must not panic the
+    /// parser. The old `p[..KEY.len()]` slice would split a multi-byte
+    /// codepoint mid-char; `p.get(..KEY.len())` returns `None` instead.
+    #[test]
+    fn parse_content_disposition_filename_does_not_panic_on_non_ascii() {
+        // `attachment; nàme=foo` — the 9-byte prefix `nàme=foo` straddles
+        // the 2-byte `à`. Must return None, not panic.
+        let got = super::parse_content_disposition_filename("attachment; nàme=foo");
+        assert_eq!(got, None);
+
+        // Real filename parameter still works alongside non-ASCII garbage.
+        let got = super::parse_content_disposition_filename(
+            "attachment; nàme=foo; filename=\"clean.txt\"",
+        );
+        assert_eq!(got.as_deref(), Some("clean.txt"));
+    }
+
     /// Regression — `Accept-Ranges: bytes ` (trailing space) must still
     /// flag the response as resumable. Bug #pre-trim returned `false`.
     #[test]
@@ -658,5 +684,31 @@ mod tests {
             body: vec![],
         };
         assert!(resp.accept_ranges_bytes());
+    }
+
+    /// Regression — pasted URLs with surrounding whitespace must be
+    /// trimmed before the scheme check + HEAD probe. Without this, the
+    /// row was emitted as `Unknown` (scheme reject) and the trimmed
+    /// value never reached `head()`.
+    #[tokio::test]
+    async fn handle_check_online_trims_pasted_whitespace() {
+        let mut responses = HashMap::new();
+        responses.insert("https://a/".to_string(), response(200));
+        let http = Arc::new(ScriptedHttp::new(responses, None));
+        let event_bus = Arc::new(CapturingBus::new());
+        let config = Arc::new(InMemoryConfig::new(AppConfig::default()));
+        let bus = build_bus(http.clone(), event_bus.clone(), config);
+
+        bus.handle_check_online(CheckOnlineCommand {
+            urls: vec!["  https://a/  ".to_string()],
+        })
+        .await
+        .expect("ok");
+
+        // The probe must have run on the trimmed URL, not on the
+        // whitespace-padded original.
+        assert_eq!(http.calls(), vec!["https://a/".to_string()]);
+        let status = extract_status_for(&event_bus.snapshot(), "https://a/").unwrap();
+        assert!(matches!(status, LinkStatus::Online { .. }));
     }
 }

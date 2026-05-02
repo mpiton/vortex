@@ -417,7 +417,10 @@ pub fn apply_patch(config: &mut AppConfig, patch: &ConfigPatch) {
             v.clamp(MIN_LINK_CHECK_PARALLELISM, MAX_LINK_CHECK_PARALLELISM);
     }
     if let Some(v) = patch.link_check_timeout_secs {
-        config.link_check_timeout_secs = v;
+        // Match the runtime coercion in `handle_check_online()` so the
+        // persisted value never disagrees with what the probe loop will
+        // actually use (zero would otherwise stall every probe).
+        config.link_check_timeout_secs = v.max(1);
     }
 }
 
@@ -529,6 +532,20 @@ mod tests {
         };
         apply_patch(&mut config, &patch);
         assert_eq!(config.link_check_parallelism, MIN_LINK_CHECK_PARALLELISM);
+    }
+
+    #[test]
+    fn test_apply_patch_coerces_zero_link_check_timeout_to_one() {
+        // `handle_check_online()` already coerces `0 -> 1` at runtime;
+        // patch path must agree so the persisted TOML never disagrees
+        // with what the probe loop will actually use.
+        let mut config = AppConfig::default();
+        let patch = ConfigPatch {
+            link_check_timeout_secs: Some(0),
+            ..Default::default()
+        };
+        apply_patch(&mut config, &patch);
+        assert_eq!(config.link_check_timeout_secs, 1);
     }
 
     #[test]
