@@ -44,6 +44,7 @@ export function LinkGrabberView() {
   useLinkStatusEvents();
   const resetLinkStatuses = useLinkGrabberStore((s) => s.reset);
   const setManyLinkStatuses = useLinkGrabberStore((s) => s.setManyStatuses);
+  const liveStatuses = useLinkGrabberStore((s) => s.statuses);
 
   const { mutate: checkLinksOnline } = useTauriMutation<void, { urls: string[] }>(
     "link_check_online",
@@ -69,7 +70,19 @@ export function LinkGrabberView() {
         // synchronously instead of waiting for the backend's first
         // event to land.
         setManyLinkStatuses(eligibleUrls.map((url) => [url, { kind: "checking" }] as const));
-        checkLinksOnline({ urls: eligibleUrls });
+        checkLinksOnline(
+          { urls: eligibleUrls },
+          {
+            // Without this, an IPC failure leaves every row stuck on the
+            // optimistic `checking` spinner; downgrade to `unknown` so
+            // the row clears and the retry button surfaces.
+            onError: () => {
+              setManyLinkStatuses(
+                eligibleUrls.map((url) => [url, { kind: "unknown" }] as const),
+              );
+            },
+          },
+        );
       }
       toast.success(t("linkGrabber.toast.resolveSuccess", { count: resolved.length }));
     },
@@ -114,7 +127,11 @@ export function LinkGrabberView() {
 
   const handleStartAllOnline = () => {
     for (const link of resolvedLinks) {
-      if (link.status === "online" && link.resolvedUrl) {
+      // Prefer the live probe status so a row that flipped to offline /
+      // unknown / premiumOnly mid-flight cannot still be started in
+      // bulk just because the static metadata says "online".
+      const effectiveStatus = liveStatuses[link.originalUrl]?.kind ?? link.status;
+      if (effectiveStatus === "online" && link.resolvedUrl) {
         startDownload({ url: link.resolvedUrl });
       }
     }
@@ -312,7 +329,14 @@ export function LinkGrabberView() {
               // spinner returns immediately; the backend will replace
               // the status when its probe lands.
               setManyLinkStatuses([[url, { kind: "checking" }]]);
-              checkLinksOnline({ urls: [url] });
+              checkLinksOnline(
+                { urls: [url] },
+                {
+                  onError: () => {
+                    setManyLinkStatuses([[url, { kind: "unknown" }]]);
+                  },
+                },
+              );
             }}
           />
         </>

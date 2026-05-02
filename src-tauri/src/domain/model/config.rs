@@ -410,7 +410,11 @@ pub fn apply_patch(config: &mut AppConfig, patch: &ConfigPatch) {
 
     // Link Grabber
     if let Some(v) = patch.link_check_parallelism {
-        config.link_check_parallelism = v;
+        // Clamp at write-time so `~/.config/vortex/config.toml` always
+        // round-trips a canonical value, matching the bounds enforced
+        // at probe-time by `normalize_link_check_parallelism`.
+        config.link_check_parallelism =
+            v.clamp(MIN_LINK_CHECK_PARALLELISM, MAX_LINK_CHECK_PARALLELISM);
     }
     if let Some(v) = patch.link_check_timeout_secs {
         config.link_check_timeout_secs = v;
@@ -503,6 +507,28 @@ mod tests {
         apply_patch(&mut config, &patch);
         assert_eq!(config.link_check_parallelism, 16);
         assert_eq!(config.link_check_timeout_secs, 30);
+    }
+
+    #[test]
+    fn test_apply_patch_clamps_link_check_parallelism_above_max() {
+        let mut config = AppConfig::default();
+        let patch = ConfigPatch {
+            link_check_parallelism: Some(1000),
+            ..Default::default()
+        };
+        apply_patch(&mut config, &patch);
+        assert_eq!(config.link_check_parallelism, MAX_LINK_CHECK_PARALLELISM);
+    }
+
+    #[test]
+    fn test_apply_patch_clamps_link_check_parallelism_below_min() {
+        let mut config = AppConfig::default();
+        let patch = ConfigPatch {
+            link_check_parallelism: Some(0),
+            ..Default::default()
+        };
+        apply_patch(&mut config, &patch);
+        assert_eq!(config.link_check_parallelism, MIN_LINK_CHECK_PARALLELISM);
     }
 
     #[test]

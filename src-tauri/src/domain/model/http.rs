@@ -52,7 +52,7 @@ impl HttpResponse {
     /// the segmented engine so all probe flows agree on resumability.
     pub fn accept_ranges_bytes(&self) -> bool {
         self.header("accept-ranges")
-            .map(|v| v.eq_ignore_ascii_case("bytes"))
+            .map(|v| v.trim().eq_ignore_ascii_case("bytes"))
             .unwrap_or(false)
     }
 }

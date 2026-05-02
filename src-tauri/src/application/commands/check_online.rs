@@ -14,7 +14,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::sync::Semaphore;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::application::command_bus::CommandBus;
 use crate::application::error::AppError;
@@ -79,8 +79,7 @@ impl CommandBus {
             let bus = event_bus.clone();
             handles.push(tokio::spawn(async move {
                 let permit = sem.acquire_owned().await.expect("semaphore not closed");
-                let status = run_probe(http, url.clone(), timeout).await;
-                drop(permit);
+                let status = run_probe(http, url.clone(), timeout, permit).await;
                 bus.publish(DomainEvent::LinkStatusUpdated { url, status });
             }));
         }
@@ -98,13 +97,29 @@ impl CommandBus {
     }
 }
 
-async fn run_probe(http: Arc<dyn HttpClient>, url: String, timeout: Duration) -> LinkStatus {
+async fn run_probe(
+    http: Arc<dyn HttpClient>,
+    url: String,
+    timeout: Duration,
+    permit: OwnedSemaphorePermit,
+) -> LinkStatus {
     // The driven `HttpClient::head` is sync and may itself block on a
     // dedicated tokio runtime (`reqwest_client::block_on`). Driving it
     // through `spawn_blocking` keeps the parent runtime responsive even
     // if a probe takes the full timeout.
+    //
+    // `spawn_blocking` cannot be aborted: when `tokio::time::timeout`
+    // elapses below the blocking thread keeps running until the sync
+    // `head` call returns. Move `permit` into the closure so the
+    // semaphore stays held for the lifetime of the blocking work; the
+    // parent task can still report `Unknown` to the UI without freeing
+    // capacity for a new probe to start in parallel.
     let url_for_log = url.clone();
-    let join = tokio::task::spawn_blocking(move || http.head(&url));
+    let join = tokio::task::spawn_blocking(move || {
+        let result = http.head(&url);
+        drop(permit);
+        result
+    });
     match tokio::time::timeout(timeout, join).await {
         Ok(Ok(Ok(response))) => classify_response(&response),
         Ok(Ok(Err(err))) => {
@@ -140,16 +155,16 @@ fn extract_filename(response: &HttpResponse) -> Option<String> {
 }
 
 fn parse_content_disposition_filename(value: &str) -> Option<String> {
-    // Supports `filename="x"` and `filename=x` (RFC 6266 simplified).
-    let lower = value.to_ascii_lowercase();
-    let idx = lower.find("filename=")?;
-    let raw = &value[idx + "filename=".len()..];
-    let trimmed = raw.trim();
-    let stripped = trimmed
-        .trim_start_matches('"')
-        .trim_end_matches('"')
-        .trim_end_matches(';')
-        .trim();
+    // RFC 6266 simplified: split params on `;` first, then locate the
+    // `filename=` parameter in isolation. Without the split, a header
+    // like `attachment; filename="x.zip"; size=123` leaks the trailing
+    // `size=...` into the returned name.
+    const KEY: &str = "filename=";
+    let part = value
+        .split(';')
+        .map(str::trim)
+        .find(|p| p.len() >= KEY.len() && p[..KEY.len()].eq_ignore_ascii_case(KEY))?;
+    let stripped = part[KEY.len()..].trim().trim_matches('"');
     if stripped.is_empty() {
         None
     } else {
@@ -605,5 +620,43 @@ mod tests {
             "peak concurrency {peak} exceeded configured cap of 3"
         );
         assert!(peak >= 1, "no probes ever ran");
+    }
+
+    /// Regression — RFC 6266 simplified parser must isolate the
+    /// `filename=` parameter even when other params follow it. Without
+    /// the per-param split the old impl returned `file.zip"; size=123`.
+    #[test]
+    fn parse_content_disposition_filename_isolates_when_more_params_follow() {
+        let got = super::parse_content_disposition_filename(
+            "attachment; filename=\"file.zip\"; size=123",
+        );
+        assert_eq!(got.as_deref(), Some("file.zip"));
+
+        let got_unquoted =
+            super::parse_content_disposition_filename("attachment; filename=plain.bin; size=42");
+        assert_eq!(got_unquoted.as_deref(), Some("plain.bin"));
+
+        let got_case =
+            super::parse_content_disposition_filename("attachment; FileName=\"upper.txt\"");
+        assert_eq!(got_case.as_deref(), Some("upper.txt"));
+
+        assert_eq!(
+            super::parse_content_disposition_filename("attachment; filename="),
+            None
+        );
+    }
+
+    /// Regression — `Accept-Ranges: bytes ` (trailing space) must still
+    /// flag the response as resumable. Bug #pre-trim returned `false`.
+    #[test]
+    fn accept_ranges_bytes_trims_surrounding_whitespace() {
+        let mut headers = HashMap::new();
+        headers.insert("accept-ranges".to_string(), vec![" bytes ".to_string()]);
+        let resp = HttpResponse {
+            status_code: 200,
+            headers,
+            body: vec![],
+        };
+        assert!(resp.accept_ranges_bytes());
     }
 }
