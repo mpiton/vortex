@@ -51,20 +51,18 @@ impl CommandBus {
 
         // Emit "Checking" once per URL before spawning so the UI gets a
         // synchronous spinner even when every probe queues behind the
-        // semaphore. Skips empty / scheme-rejected entries — they jump
-        // straight to `Unknown` so the row never sticks on "Checking".
+        // semaphore. Empty / scheme-rejected entries jump straight to
+        // `Unknown` so every input URL gets exactly one terminal event
+        // and the row never sticks on "Checking".
         let mut probes: Vec<String> = Vec::with_capacity(cmd.urls.len());
         for url in cmd.urls {
             // Normalize once: a pasted entry like ` https://example.com/ `
             // would otherwise fail `is_probeable_scheme` (leading space)
             // or get sent to `head()` with trailing whitespace.
             let url = url.trim().to_string();
-            if url.is_empty() {
-                continue;
-            }
-            if !is_probeable_scheme(&url) {
+            if url.is_empty() || !is_probeable_scheme(&url) {
                 event_bus.publish(DomainEvent::LinkStatusUpdated {
-                    url: url.clone(),
+                    url,
                     status: LinkStatus::Unknown,
                 });
                 continue;
@@ -684,6 +682,43 @@ mod tests {
             body: vec![],
         };
         assert!(resp.accept_ranges_bytes());
+    }
+
+    /// Regression — every input URL must produce exactly one terminal
+    /// event, including blanks. The handler emits `Unknown` for empty
+    /// entries instead of dropping them silently so the IPC contract
+    /// stays one-event-per-input.
+    #[tokio::test]
+    async fn handle_check_online_emits_unknown_for_blank_inputs() {
+        let http = Arc::new(ScriptedHttp::new(HashMap::new(), None));
+        let event_bus = Arc::new(CapturingBus::new());
+        let config = Arc::new(InMemoryConfig::new(AppConfig::default()));
+        let bus = build_bus(http.clone(), event_bus.clone(), config);
+
+        bus.handle_check_online(CheckOnlineCommand {
+            urls: vec!["".to_string(), "   ".to_string()],
+        })
+        .await
+        .expect("ok");
+
+        // No HEAD probe ever fires for blanks.
+        assert!(http.calls().is_empty());
+        let events = event_bus.snapshot();
+        // Both blanks collapse to the empty string after trim and emit
+        // a single `Unknown`. We assert by counting matching events.
+        let unknown_count = events
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e,
+                    DomainEvent::LinkStatusUpdated {
+                        url,
+                        status: LinkStatus::Unknown,
+                    } if url.is_empty()
+                )
+            })
+            .count();
+        assert_eq!(unknown_count, 2);
     }
 
     /// Regression — pasted URLs with surrounding whitespace must be
