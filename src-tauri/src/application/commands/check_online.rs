@@ -54,8 +54,16 @@ impl CommandBus {
         // semaphore. Empty / scheme-rejected entries jump straight to
         // `Unknown` so every input URL gets exactly one terminal event
         // and the row never sticks on "Checking".
+        //
+        // The shared `TokioEventBus` is a bounded broadcast channel
+        // (capacity 256, see `lib.rs`). Pre-seeding 500 URLs in a single
+        // synchronous burst would push the slow `tauri_bridge` subscriber
+        // into `Lagged` mode and silently drop intermediate events. Yield
+        // every `EVENT_YIELD_INTERVAL` publishes so the subscriber gets
+        // a chance to drain the ring before the next batch lands.
+        const EVENT_YIELD_INTERVAL: usize = 64;
         let mut probes: Vec<String> = Vec::with_capacity(cmd.urls.len());
-        for url in cmd.urls {
+        for (i, url) in cmd.urls.into_iter().enumerate() {
             // Normalize once: a pasted entry like ` https://example.com/ `
             // would otherwise fail `is_probeable_scheme` (leading space)
             // or get sent to `head()` with trailing whitespace.
@@ -65,13 +73,16 @@ impl CommandBus {
                     url,
                     status: LinkStatus::Unknown,
                 });
-                continue;
+            } else {
+                event_bus.publish(DomainEvent::LinkStatusUpdated {
+                    url: url.clone(),
+                    status: LinkStatus::Checking,
+                });
+                probes.push(url);
             }
-            event_bus.publish(DomainEvent::LinkStatusUpdated {
-                url: url.clone(),
-                status: LinkStatus::Checking,
-            });
-            probes.push(url);
+            if (i + 1) % EVENT_YIELD_INTERVAL == 0 {
+                tokio::task::yield_now().await;
+            }
         }
 
         let mut handles = Vec::with_capacity(probes.len());
