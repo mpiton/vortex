@@ -4,7 +4,7 @@
 set -euo pipefail
 
 # File patterns that typically contain secrets
-SECRET_PATTERNS='\.(env|env\..+|pem|key|p12|pfx|secret|creds|aws|netrc)$|\.(env|secrets)/|^\.npmrc$|^\.pypirc$'
+SECRET_PATTERNS='\.(env|env\..+|pem|key|p12|pfx|secret|creds|aws|netrc)$|(^|/)(\.env|\.secrets|secrets)/|^\.npmrc$|^\.pypirc$'
 
 # List staged files (excluding deletions)
 STAGED=$(git diff --cached --diff-filter=d --name-only)

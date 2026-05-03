@@ -38,13 +38,16 @@ pre-commit:
       fail_text: "Secret file or API key detected in staging. Remove before commit."
 
     no-manual-deps:
-      glob: "{Cargo.toml,package.json,src-tauri/Cargo.toml}"
+      # No glob — must run on lockfile-only commits too so a stray
+      # pnpm-lock.yaml / yarn.lock stage attempt is rejected even when no
+      # manifest is staged. The script itself short-circuits when nothing
+      # relevant is staged.
       run: ./scripts/no-manual-deps.sh
       fail_text: "Manual dependency editing forbidden. Use: cargo add / npm install"
 
     changelog-updated:
       run: |
-        if git diff --cached --name-only | grep -qE '\.(rs|ts|tsx)$'; then
+        if git diff --cached --name-only | grep -qE '\.(rs|ts|tsx|js|jsx)$'; then
           if ! git diff --cached --name-only | grep -q '^CHANGELOG.md$'; then
             echo "Code modified without CHANGELOG.md entry"
             echo "Add a line to the [Unreleased] section"
@@ -72,8 +75,8 @@ pre-push:
       fail_text: "TypeScript type-check fails."
 
     cargo-deny:
-      run: cargo deny --manifest-path src-tauri/Cargo.toml check licenses bans advisories
-      fail_text: "cargo-deny detected an issue (non-GPL-compatible license, RustSec advisory, banned crate)."
+      run: cargo deny --manifest-path src-tauri/Cargo.toml check licenses bans advisories sources
+      fail_text: "cargo-deny detected an issue (non-GPL-compatible license, RustSec advisory, banned crate, untrusted source)."
 
     knip:
       run: npx knip --reporter compact

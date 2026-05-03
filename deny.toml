@@ -94,7 +94,7 @@ skip-tree = []
 # === Sources ===
 [sources]
 unknown-registry = "deny"
-unknown-git = "warn"
+unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 # Temporary: extism git fork pinned in src-tauri/Cargo.toml until upstream
 # ships wasmtime >=43 (clears GHSA-jhxm-h53p-jm7w + GHSA-xx5w-cvp6-jv83).

@@ -1,10 +1,72 @@
 #!/usr/bin/env bash
-# Reject manual edits to Cargo.toml / package.json without an updated lock file.
-# Forces use of `cargo add` / `npm install`.
+# Reject manual edits to Cargo.toml / package.json *dependency tables* without
+# an updated lock file. Forces use of `cargo add` / `npm install`.
 # Invoked at pre-commit via lefthook.yml.
 set -euo pipefail
 
 STAGED=$(git diff --cached --name-only)
+
+# === Reject pnpm-lock.yaml / yarn.lock unconditionally (vortex = npm only) ===
+# Runs even on lockfile-only commits, so a stray pnpm-lock.yaml stage attempt
+# is blocked even when no package.json change accompanies it.
+if echo "$STAGED" | grep -qE '(^|/)(pnpm-lock\.yaml|yarn\.lock)$'; then
+    echo "BLOCKED: pnpm-lock.yaml or yarn.lock detected."
+    echo "Vortex uses npm exclusively. Remove this lock file and use package-lock.json."
+    exit 1
+fi
+
+# Compute the inclusive line ranges occupied by Cargo dependency tables in the
+# staged version of the file. Handles `[dependencies]`, `[dev-dependencies]`,
+# `[build-dependencies]`, `[workspace.dependencies]`, and `[target.*.dependencies]`
+# (plus their dev-/build- variants).
+cargo_dep_section_ranges() {
+    git show ":${1}" 2>/dev/null | awk '
+        /^\[/ {
+            if (in_dep && start > 0) print start "-" (NR - 1)
+            in_dep = ($0 ~ /^\[(dev-|build-)?dependencies\][[:space:]]*$/ \
+                  || $0 ~ /^\[workspace\.(dev-|build-)?dependencies\][[:space:]]*$/ \
+                  || $0 ~ /^\[target\.[^]]+\.(dev-|build-)?dependencies\][[:space:]]*$/)
+            start = (in_dep ? NR + 1 : 0)
+            next
+        }
+        END { if (in_dep && start > 0) print start "-" NR }
+    '
+}
+
+# Emit the new-file line numbers of every `+` line in the staged diff.
+# Skips diff metadata (+++ headers).
+added_line_numbers() {
+    git diff --cached -U0 "$1" | awk '
+        /^\+\+\+/ { next }
+        /^@@/ {
+            if (match($0, /\+[0-9]+/)) {
+                cur = substr($0, RSTART + 1, RLENGTH - 1) + 0
+            }
+            next
+        }
+        /^\+/ { print cur; cur++ }
+    '
+}
+
+# Returns 0 if any added line falls inside a dep-section range.
+cargo_dep_change_detected() {
+    local file="$1"
+    local ranges added line s e
+    ranges=$(cargo_dep_section_ranges "$file") || return 1
+    [ -z "$ranges" ] && return 1
+    added=$(added_line_numbers "$file")
+    [ -z "$added" ] && return 1
+    for line in $added; do
+        for r in $ranges; do
+            s="${r%-*}"
+            e="${r#*-}"
+            if [ "$line" -ge "$s" ] && [ "$line" -le "$e" ]; then
+                return 0
+            fi
+        done
+    done
+    return 1
+}
 
 # === Cargo.toml ===
 for cargo_toml in src-tauri/Cargo.toml Cargo.toml; do
@@ -15,17 +77,9 @@ for cargo_toml in src-tauri/Cargo.toml Cargo.toml; do
             lock="${cargo_toml%/Cargo.toml}/Cargo.lock"
         fi
 
-        # Detect changes in [dependencies] / [dev-dependencies] / [build-dependencies]
-        DEP_DIFF=$(git diff --cached -U0 "$cargo_toml" \
-            | grep -E '^\+[^+]' \
-            | grep -E '^\+[a-zA-Z0-9_-]+\s*=' || true)
-
-        if [ -n "$DEP_DIFF" ]; then
+        if cargo_dep_change_detected "$cargo_toml"; then
             if ! echo "$STAGED" | grep -qF "$lock"; then
-                echo "BLOCKED: $cargo_toml modified without updated $lock."
-                echo ""
-                echo "You added/modified dependencies:"
-                echo "$DEP_DIFF" | sed 's/^/  /'
+                echo "BLOCKED: $cargo_toml dependency table modified without updated $lock."
                 echo ""
                 echo "Correct procedure:"
                 echo "  cargo add <crate>            # or cargo add --dev / --build"
@@ -40,16 +94,27 @@ for cargo_toml in src-tauri/Cargo.toml Cargo.toml; do
 done
 
 # === package.json ===
-if echo "$STAGED" | grep -qF "package.json"; then
-    PKG_DEP_DIFF=$(git diff --cached -U0 package.json \
-        | grep -E '^\+\s*"[^"]+"\s*:\s*"\^?[~=<>0-9]' || true)
+# Detect dependency-table changes via jq diff against HEAD. Avoids the
+# false positives that hit a top-level "version" / "name" bump.
+pkg_dep_change_detected() {
+    command -v jq >/dev/null 2>&1 || return 1
+    local sect old new
+    for sect in dependencies devDependencies peerDependencies optionalDependencies; do
+        old=$(git show "HEAD:package.json" 2>/dev/null \
+            | jq -S --arg s "$sect" '.[$s] // {}' 2>/dev/null || echo '{}')
+        new=$(git show ":package.json" 2>/dev/null \
+            | jq -S --arg s "$sect" '.[$s] // {}' 2>/dev/null || echo '{}')
+        if [ "$old" != "$new" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
 
-    if [ -n "$PKG_DEP_DIFF" ]; then
+if echo "$STAGED" | grep -qF "package.json"; then
+    if pkg_dep_change_detected; then
         if ! echo "$STAGED" | grep -qF "package-lock.json"; then
-            echo "BLOCKED: package.json modified without updated package-lock.json."
-            echo ""
-            echo "You added/modified dependencies:"
-            echo "$PKG_DEP_DIFF" | sed 's/^/  /'
+            echo "BLOCKED: package.json dependency table modified without updated package-lock.json."
             echo ""
             echo "Correct procedure:"
             echo "  npm install <package>      # runtime dependency"
@@ -58,13 +123,6 @@ if echo "$STAGED" | grep -qF "package.json"; then
             echo "This updates package-lock.json automatically."
             exit 1
         fi
-    fi
-
-    # Reject pnpm/yarn lock files (vortex uses npm only)
-    if echo "$STAGED" | grep -qE '(pnpm-lock\.yaml|yarn\.lock)'; then
-        echo "BLOCKED: pnpm-lock.yaml or yarn.lock detected."
-        echo "Vortex uses npm exclusively. Remove this lock file and use package-lock.json."
-        exit 1
     fi
 fi
 

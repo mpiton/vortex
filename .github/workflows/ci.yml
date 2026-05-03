@@ -109,7 +109,7 @@ jobs:
 
       - name: Check for secret files in repo
         run: |
-          SECRET_FILES=$(git ls-files | grep -iE '\.(env|env\..+|pem|key|p12|pfx|secret|creds)$|\.(env|secrets)/|^\.npmrc$|^\.pypirc$' || true)
+          SECRET_FILES=$(git ls-files | grep -iE '\.(env|env\..+|pem|key|p12|pfx|secret|creds|aws|netrc)$|(^|/)(\.env|\.secrets|secrets)/|^\.npmrc$|^\.pypirc$' || true)
           if [ -n "$SECRET_FILES" ]; then
             echo "::error::Secret files in repo:"
             echo "$SECRET_FILES"

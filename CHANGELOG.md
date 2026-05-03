@@ -17,6 +17,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Dead barrel** (scope `ui`): `src/stores/index.ts` (5-line re-export with zero importers — flagged by knip; consumers already import from the individual `stores/<name>` files directly).
 
+### Fixed
+
+- **PR #140 review** (scope `ci`): tightened the new CI/hooks layer in response to chatgpt-codex / cubic / coderabbit findings.
+  - `release.yml` tag trigger was regex-style (`v[0-9]+.[0-9]+.[0-9]+*`) — won't match `v1.2.3` since GitHub Actions `on.push.tags` is glob, not regex. Replaced with `v[0-9]*.[0-9]*.[0-9]*`.
+  - `release.yml` CHANGELOG check now uses `grep -F` against `## [<version>]` / `## <version>` instead of unescaped regex, so version dots match literally (`1.2.3` no longer accepts `1X2X3`).
+  - `scripts/no-manual-deps.sh` rewritten to scope dependency-edit detection to actual TOML / JSON dep tables: an awk pass over the staged Cargo.toml computes the line ranges occupied by `[dependencies]` / `[dev-dependencies]` / `[build-dependencies]` (plus `workspace.` and `target.*.` variants), then only added lines falling in those ranges count. `package.json` now diffs the relevant sections via `jq` (`dependencies`, `devDependencies`, `peerDependencies`, `optionalDependencies`) against `HEAD`. Pure version / metadata bumps no longer trigger the lockfile requirement.
+  - `scripts/no-manual-deps.sh` rejects `pnpm-lock.yaml` / `yarn.lock` unconditionally (was nested inside the `package.json` branch — a lockfile-only commit slipped through). Hook entry no longer scopes via `glob` so the script always runs.
+  - `scripts/no-secrets.sh` filename pattern now matches `secrets/` directories without a leading dot (`(^|/)(\.env|\.secrets|secrets)/`). `.github/workflows/ci.yml` server-side scan extended with `.netrc` and `aws` plus the same `secrets/` fix.
+  - `lefthook.yml` `changelog-updated` hook now treats `*.js` / `*.jsx` as code (was `rs|ts|tsx` only).
+  - `lefthook.yml` pre-push `cargo-deny` now runs `licenses bans advisories sources` (the `sources` check was missing on push, even though CI runs the full check).
+  - `deny.toml` `unknown-git` flipped from `warn` to `deny` now that `allow-git` lists every legitimate git source — unlisted git deps are rejected.
+
 ### Changed
 
 - **Frontend formatting baseline** (scope `ci`): mass-formatted 188 files under `src/**/*.{ts,tsx,css,json}` to satisfy the new `oxfmt --check` gate. No behavioural change — pure formatting. The hook glob `src/**/*.{ts,tsx,css,json}` and the CI invocation explicitly target the same scope so README, CHANGELOG, registry, and Tauri-generated schemas are never reformatted.
