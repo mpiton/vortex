@@ -43,12 +43,14 @@ impl CommandBus {
 
         let config = self.config_store().get_config().map_err(AppError::from)?;
         let timeout = Duration::from_secs(config.link_check_timeout_secs.max(1) as u64);
-        // Use the shared semaphore from `CommandBus` so the configured
+        // Use the shared limiter from `CommandBus` so the configured
         // `link_check_parallelism` cap is enforced globally — without
         // it, two overlapping `handle_check_online` invocations would
         // each create their own per-call semaphore and the aggregate
-        // in-flight HEAD count could reach 2× the cap.
-        let semaphore = self.link_check_semaphore();
+        // in-flight HEAD count could reach 2× the cap. The limiter
+        // itself is runtime-resizable (`LinkCheckLimiter::resize`), so
+        // a settings change is honoured without an app restart.
+        let semaphore = self.link_check_limiter().semaphore();
         let http_client = self.http_client_arc();
         let event_bus = self.event_bus_arc();
 

@@ -70,7 +70,21 @@ impl CommandBus {
         crate::domain::model::config::apply_patch(&mut merged, &cmd.patch);
         validate_config(&merged)?;
 
+        let parallelism_changed = cmd.patch.link_check_parallelism.is_some();
         let updated = self.config_store().update_config(cmd.patch)?;
+
+        // When the user changed `link_check_parallelism`, resize the
+        // shared link-check limiter so the new cap takes effect on the
+        // next probe without restarting the app. `resize` clamps via
+        // `normalize_link_check_parallelism` so a hand-edited config
+        // value cannot push the cap out of bounds.
+        if parallelism_changed {
+            let new_parallelism = crate::domain::model::config::normalize_link_check_parallelism(
+                updated.link_check_parallelism,
+            );
+            self.link_check_limiter().resize(new_parallelism);
+        }
+
         self.event_bus().publish(DomainEvent::SettingsUpdated);
         Ok(updated)
     }
