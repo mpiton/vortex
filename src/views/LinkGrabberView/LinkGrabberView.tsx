@@ -131,8 +131,17 @@ export function LinkGrabberView() {
       // unknown / premiumOnly mid-flight cannot still be started in
       // bulk just because the static metadata says "online".
       const effectiveStatus = liveStatuses[link.originalUrl]?.kind ?? link.status;
-      if (effectiveStatus === "online" && link.resolvedUrl) {
-        startDownload({ url: link.resolvedUrl });
+      if (effectiveStatus !== "online") continue;
+      // Fallback to `originalUrl` when the initial resolve produced no
+      // `resolvedUrl` (offline / error at resolve time) but a later
+      // `link_check_online` event flipped the row to online. Without
+      // this, the row's "online" badge contradicts the bulk action,
+      // which silently skips it. If `originalUrl` is a page rather
+      // than a direct download URL, `download_start` surfaces the
+      // failure via the standard error toast.
+      const url = link.resolvedUrl ?? link.originalUrl;
+      if (url) {
+        startDownload({ url });
       }
     }
   };
