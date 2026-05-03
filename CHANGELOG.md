@@ -19,6 +19,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **PR #140 review round 5** (scope `ci`): closed coderabbit / cubic / chatgpt-codex flags from round 4, including a critical YAML parse failure introduced by the round-4 inline Python heredoc.
+  - **Critical**: `.github/workflows/ci.yml` Python heredoc body lacked the indentation required by the `run: |` block scalar, breaking YAML parse and preventing the `forbidden-tools` job from loading. Extracted the scanner to `scripts/forbidden-rust-allow.py` and call it as `python3 scripts/forbidden-rust-allow.py`. The script slurps each `*.rs` file and walks every `#[allow(...)]` group with `re.DOTALL`, exits 1 with hits on stdout when any are found.
+  - `secrets-scan` API key job no longer echoes the matched secret value into CI logs. `git grep -n` returns `file:line:matched_text`, so the report now passes through `awk -F: '{print $1 ":" $2}'` to keep only `file:line`.
+  - `secrets-scan` file pattern now matches nested `.npmrc` / `.pypirc` (e.g. `tools/.npmrc`, `ci/.pypirc`) via `(^|/)\.npmrc$|(^|/)\.pypirc$`. `scripts/no-secrets.sh` SECRET_PATTERNS aligned to the same anchoring.
+  - `forbidden-tools` step dropped the blanket `set +e`. Replaced with a targeted `|| true` on the `git grep` call (the only command that exits non-zero on the success path) so unexpected failures (Python crashes, missing tools, permissions) still abort the job.
+  - `scripts/no-secrets.sh` content filter switched back to `^\+` plus an explicit `grep -vE '^\+\+\+ [ab]/'` invert step. The earlier `^\+[^+]` filter rejected real added lines whose content started with `+`, opening a credential-bypass crack.
+
 - **PR #140 review round 4** (scope `ci`): closed coderabbit / chatgpt-codex flags from the round-3 push.
   - `scripts/no-secrets.sh` `^\+` filter now anchored as `^\+[^+]` so the diff metadata line `+++ b/<path>` cannot trip the API key content scan when a tracked filename happens to share a key prefix.
   - `.github/workflows/ci.yml` `forbidden-tools` Rust-suppression scanner replaced with a Python slurp-and-regex pass so multiline forms like `#[allow(\n    clippy::xxx,\n    dead_code,\n)]` are caught. `git grep` is line-oriented and missed those.

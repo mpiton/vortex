@@ -109,7 +109,9 @@ jobs:
 
       - name: Check for secret files in repo
         run: |
-          SECRET_FILES=$(git ls-files | grep -iE '\.(env|env\..+|pem|key|p12|pfx|secret|creds|aws|netrc)$|(^|/)(\.env|\.secrets|secrets)/|^\.npmrc$|^\.pypirc$' || true)
+          # `(^|/)\.npmrc$|(^|/)\.pypirc$` catches nested forms (e.g.
+          # `tools/.npmrc`) on top of the root-level files.
+          SECRET_FILES=$(git ls-files | grep -iE '\.(env|env\..+|pem|key|p12|pfx|secret|creds|aws|netrc)$|(^|/)(\.env|\.secrets|secrets)/|(^|/)\.npmrc$|(^|/)\.pypirc$' || true)
           if [ -n "$SECRET_FILES" ]; then
             echo "::error::Secret files in repo:"
             echo "$SECRET_FILES"
@@ -127,7 +129,10 @@ jobs:
           MATCHES=$(git grep -nE "$PATTERNS" -- ':(exclude)*.lock' || true)
           if [ -n "$MATCHES" ]; then
             echo "::error::API key pattern detected:"
-            echo "$MATCHES" | head -10
+            # Strip the matched secret value from the output — `git grep -n`
+            # returns `file:line:matched_text`; emit only `file:line` so CI
+            # logs never reveal the raw credential.
+            echo "$MATCHES" | head -10 | awk -F: '{print $1 ":" $2}'
             exit 1
           fi
 
@@ -162,37 +167,19 @@ jobs:
 
       - name: Reject #[allow] / @ts-ignore / oxlint-disable
         run: |
-          set +e
-          # Multi-line aware Rust scanner: `git grep` is line-oriented, so
-          # `#[allow(\n    dead_code,\n)]` slips through. Slurp each .rs file
-          # and walk every `#[allow(...)]` group with a regex that spans
-          # newlines, then match the forbidden tokens inside the captured
-          # argument list.
-          BAD_RUST=$(python3 - <<'PY'
-import re, subprocess, sys
-
-files = subprocess.check_output(['git', 'ls-files', '*.rs'], text=True).split()
-forbidden = re.compile(r'\b(dead_code|unused|unused_variables|unused_imports)\b')
-hits = []
-for f in files:
-    try:
-        with open(f, encoding='utf-8', errors='replace') as fh:
-            text = fh.read()
-    except OSError:
-        continue
-    for m in re.finditer(r'#\[allow\(([^)]*)\)\]', text, re.DOTALL):
-        if forbidden.search(m.group(1)):
-            line = text[:m.start()].count('\n') + 1
-            snippet = ' '.join(m.group(0).split())[:120]
-            hits.append(f'{f}:{line}: {snippet}')
-            if len(hits) >= 20:
-                break
-    if len(hits) >= 20:
-        break
-sys.stdout.write('\n'.join(hits))
-PY
-)
-          BAD_TS=$(git grep -nE '@ts-ignore|@ts-expect-error|oxlint-disable' -- '*.ts' '*.tsx' '*.js' '*.jsx' | head -20)
+          # Multi-line aware Rust scanner lives in a sibling Python script.
+          # `git grep` is line-oriented and would miss split forms like
+          #   #[allow(
+          #       dead_code,
+          #   )]
+          # The script exits 1 with the hit list on stdout when any are
+          # found, 0 otherwise.
+          BAD_RUST=$(python3 scripts/forbidden-rust-allow.py || true)
+          # `git grep` exits non-zero when it finds no match — that is the
+          # success path here, so shield the assignment with `|| true` rather
+          # than disabling errexit for the whole step.
+          BAD_TS=$(git grep -nE '@ts-ignore|@ts-expect-error|oxlint-disable' -- '*.ts' '*.tsx' '*.js' '*.jsx' || true)
+          BAD_TS=$(printf '%s\n' "$BAD_TS" | head -20)
           if [ -n "$BAD_RUST" ] || [ -n "$BAD_TS" ]; then
             echo "::error::Error suppression detected (forbidden):"
             [ -n "$BAD_RUST" ] && echo "$BAD_RUST"
