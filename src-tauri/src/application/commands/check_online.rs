@@ -148,12 +148,11 @@ fn classify_response(response: &HttpResponse) -> LinkStatus {
 }
 
 fn extract_filename(response: &HttpResponse) -> Option<String> {
-    let content_disposition = response
-        .headers
-        .get("content-disposition")
-        .and_then(|v| v.first())
-        .cloned();
-    content_disposition.and_then(|cd| parse_content_disposition_filename(&cd))
+    // `HttpResponse::header` does case-insensitive matching so a server
+    // sending the canonical `Content-Disposition` casing still resolves.
+    response
+        .header("content-disposition")
+        .and_then(parse_content_disposition_filename)
 }
 
 fn parse_content_disposition_filename(value: &str) -> Option<String> {
@@ -682,6 +681,26 @@ mod tests {
             body: vec![],
         };
         assert!(resp.accept_ranges_bytes());
+    }
+
+    /// Regression — `extract_filename` must locate `Content-Disposition`
+    /// regardless of header casing. Servers that send the canonical
+    /// `Content-Disposition` would otherwise lose the filename.
+    #[test]
+    fn extract_filename_is_case_insensitive_on_header_name() {
+        let mut headers = HashMap::new();
+        headers.insert("content-length".to_string(), vec!["1024".to_string()]);
+        // Note the canonical capital-letter casing.
+        headers.insert(
+            "Content-Disposition".to_string(),
+            vec!["attachment; filename=\"upper.bin\"".to_string()],
+        );
+        let resp = HttpResponse {
+            status_code: 200,
+            headers,
+            body: vec![],
+        };
+        assert_eq!(super::extract_filename(&resp).as_deref(), Some("upper.bin"));
     }
 
     /// Regression — every input URL must produce exactly one terminal
