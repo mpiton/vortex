@@ -49,7 +49,11 @@ jobs:
 
       - name: Compute PR diff (src-tauri only)
         run: |
-          git diff origin/${{ github.base_ref }}.. -- 'src-tauri/**' | tee mutants.diff
+          # Three-dot range so the diff covers only commits introduced by
+          # this PR, not upstream churn on the base branch since the PR
+          # diverged. Without it, mutation testing can run on unrelated
+          # files that landed on `main` after the branch was created.
+          git diff "origin/${{ github.base_ref }}...HEAD" -- 'src-tauri/**' | tee mutants.diff
 
       - name: cargo mutants --in-diff
         # Fails the job if any mutant survives. Exit 0 = all killed/unviable,

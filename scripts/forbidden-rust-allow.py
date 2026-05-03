@@ -41,13 +41,6 @@ FORBIDDEN = re.compile(
 # terminates at the first `)]` even when the body itself contains
 # parenthesised forms (e.g. `clippy::needless_pass_by_value`).
 ALLOW_GROUP = re.compile(r"#!?\[\s*allow\s*\((.*?)\)\s*\]", re.DOTALL)
-LINE_COMMENT = re.compile(r"//[^\n]*")
-# Conservative block-comment matcher: refuse to span a `"` so a Rust
-# string literal containing `/*` doesn't trick the scanner into stripping
-# real `#[allow(...)]` attributes that happen to live between those quotes.
-# This is a heuristic — a perfect strip would need a Rust lexer — but it
-# covers every realistic case while staying byte-cheap.
-BLOCK_COMMENT = re.compile(r'/\*[^"]*?\*/', re.DOTALL)
 TODO_TASK = re.compile(r"^\s*//\s*TODO\(\s*[A-Za-z0-9_-]+\s*\)\s*:")
 MAX_HITS = 20
 
@@ -55,16 +48,89 @@ MAX_HITS = 20
 def strip_comments_preserving_lines(text: str) -> str:
     """Remove `//` and `/* ... */` comments while keeping line numbers stable.
 
-    Each stripped span is replaced with the same number of newlines so a
-    later `text[:start].count("\\n")` call still maps to the original line.
+    Walks the source as a small state machine so a `/*` inside a string
+    literal isn't treated as a comment opener, and a `"` inside a comment
+    isn't treated as a string opener. Stripped spans are replaced with the
+    same number of newlines so `text[:pos].count("\\n")` still maps to the
+    original line numbers.
+
+    Handles the common Rust forms — line comments, block comments
+    (`/* ... */`), string literals (`"..."` with `\\` escapes), and char
+    literals (`'.'`). Raw strings (`r"..."`, `r#"..."#`) and multi-line
+    char literals are not modelled exhaustively; they degrade to no-strip
+    for the affected span, which is the safe direction (false positives
+    are reported and reviewed; false negatives would silently let a
+    forbidden suppression through).
     """
-
-    def blank_keep_lines(m: re.Match[str]) -> str:
-        return "\n" * m.group(0).count("\n")
-
-    text = BLOCK_COMMENT.sub(blank_keep_lines, text)
-    text = LINE_COMMENT.sub("", text)
-    return text
+    out: list[str] = []
+    n = len(text)
+    i = 0
+    while i < n:
+        c = text[i]
+        # `"..."` string literal
+        if c == '"':
+            out.append(c)
+            i += 1
+            while i < n:
+                if text[i] == "\\" and i + 1 < n:
+                    out.append(text[i])
+                    out.append(text[i + 1])
+                    i += 2
+                    continue
+                out.append(text[i])
+                if text[i] == '"':
+                    i += 1
+                    break
+                i += 1
+            continue
+        # `'x'` char literal (best-effort: just skip until the closing `'`
+        # without crossing a newline, so a stray `'` in a comment-mention
+        # doesn't open a fake literal).
+        if c == "'":
+            j = i + 1
+            buf = [c]
+            while j < n and text[j] not in ("\n", "'"):
+                if text[j] == "\\" and j + 1 < n:
+                    buf.append(text[j])
+                    buf.append(text[j + 1])
+                    j += 2
+                    continue
+                buf.append(text[j])
+                j += 1
+            if j < n and text[j] == "'":
+                buf.append(text[j])
+                out.extend(buf)
+                i = j + 1
+                continue
+            # Not a real char literal — emit as plain char and move on.
+            out.append(c)
+            i += 1
+            continue
+        # `// ...` line comment
+        if c == "/" and i + 1 < n and text[i + 1] == "/":
+            nl = text.find("\n", i)
+            if nl == -1:
+                # rest of file is a comment; keep no newline (none follows)
+                break
+            i = nl
+            continue
+        # `/* ... */` block comment
+        if c == "/" and i + 1 < n and text[i + 1] == "*":
+            close = text.find("*/", i + 2)
+            if close == -1:
+                # Unterminated — skip the rest, preserving newlines so
+                # downstream line numbers still map.
+                rest = text[i:]
+                out.append("\n" * rest.count("\n"))
+                i = n
+                continue
+            inside = text[i : close + 2]
+            out.append("\n" * inside.count("\n"))
+            i = close + 2
+            continue
+        out.append(c)
+        i += 1
+    return "".join(out)
 
 
 def line_offset(text: str, line_num: int) -> int:

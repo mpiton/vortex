@@ -253,10 +253,16 @@ jobs:
 
       - name: Verify CHANGELOG.md updated when code changes
         run: |
+          # Use three-dot range so the diff is computed from the merge-base
+          # of base..head, not the endpoint snapshot. Without this, a docs-
+          # only PR can be flagged as "code changed" when `main` advances
+          # ahead of the branch and unrelated upstream commits appear in
+          # the endpoint diff.
           BASE="${{ github.event.pull_request.base.sha }}"
           HEAD="${{ github.event.pull_request.head.sha }}"
-          CODE_CHANGED=$(git diff --name-only "$BASE" "$HEAD" | grep -E '\.(rs|ts|tsx|js|jsx)$' || true)
-          CHANGELOG_CHANGED=$(git diff --name-only "$BASE" "$HEAD" | grep -x 'CHANGELOG.md' || true)
+          CHANGED=$(git diff --name-only "${BASE}...${HEAD}")
+          CODE_CHANGED=$(echo "$CHANGED" | grep -E '\.(rs|ts|tsx|js|jsx)$' || true)
+          CHANGELOG_CHANGED=$(echo "$CHANGED" | grep -x 'CHANGELOG.md' || true)
           if [ -n "$CODE_CHANGED" ] && [ -z "$CHANGELOG_CHANGED" ]; then
             echo "::error::Code changed without a CHANGELOG.md entry"
             echo "Add a line in the [Unreleased] section."
