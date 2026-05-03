@@ -31,9 +31,7 @@ export function PackageDownloadRow({
   const moveAriaLabel = isPendingMove
     ? t("packages.move.cancelAriaLabel", { name: download.fileName })
     : t("packages.move.startAriaLabel", { name: download.fileName });
-  const moveLabel = isPendingMove
-    ? t("packages.move.cancel")
-    : t("packages.move.start");
+  const moveLabel = isPendingMove ? t("packages.move.cancel") : t("packages.move.start");
   const handleMoveClick = () => {
     if (isPendingMove) {
       onCancelMove();
@@ -61,7 +59,9 @@ export function PackageDownloadRow({
       <span className="min-w-0 flex-1 truncate font-medium">{download.fileName}</span>
       <span className="text-xs text-muted-foreground">{download.state}</span>
       <span className="text-xs text-muted-foreground">{formatBytes(download.totalBytes)}</span>
-      <span className="text-xs text-muted-foreground">{formatSpeed(download.speedBytesPerSec)}</span>
+      <span className="text-xs text-muted-foreground">
+        {formatSpeed(download.speedBytesPerSec)}
+      </span>
       <span className="text-xs text-muted-foreground">{formatEta(download.etaSeconds)}</span>
       <Progress value={download.progressPercent} className="h-1.5 w-32" />
       <Button

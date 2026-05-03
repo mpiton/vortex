@@ -88,11 +88,7 @@ function validate(field: ConfigField, value: string): string | null {
   return null;
 }
 
-export function PluginConfigDialog({
-  pluginName,
-  open,
-  onOpenChange,
-}: PluginConfigDialogProps) {
+export function PluginConfigDialog({ pluginName, open, onOpenChange }: PluginConfigDialogProps) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [draft, setDraft] = useState<Record<string, string>>({});
@@ -100,15 +96,13 @@ export function PluginConfigDialog({
   const enabled = open && pluginName !== null;
   const { data, isLoading, isError } = useQuery({
     queryKey: pluginName ? QUERY_KEY(pluginName) : ["plugin_config_get_disabled"],
-    queryFn: () =>
-      tauriInvoke<PluginConfigView>("plugin_config_get", { name: pluginName! }),
+    queryFn: () => tauriInvoke<PluginConfigView>("plugin_config_get", { name: pluginName! }),
     enabled,
   });
 
-  const updateMutation = useTauriMutation<
-    void,
-    { name: string; key: string; value: string }
-  >("plugin_config_update");
+  const updateMutation = useTauriMutation<void, { name: string; key: string; value: string }>(
+    "plugin_config_update",
+  );
 
   // Seed the draft on the first successful fetch per dialog opening only.
   // Subsequent refetches must not clobber the user's in-progress edits —
@@ -175,28 +169,18 @@ export function PluginConfigDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>
-            {t("plugins.config.title", { name: pluginName ?? "" })}
-          </DialogTitle>
-          <DialogDescription>
-            {t("plugins.config.description")}
-          </DialogDescription>
+          <DialogTitle>{t("plugins.config.title", { name: pluginName ?? "" })}</DialogTitle>
+          <DialogDescription>{t("plugins.config.description")}</DialogDescription>
         </DialogHeader>
 
-        {isLoading && (
-          <p className="text-xs text-text-dim py-4">
-            {t("plugins.config.loading")}
-          </p>
-        )}
+        {isLoading && <p className="text-xs text-text-dim py-4">{t("plugins.config.loading")}</p>}
         {isError && (
           <p className="text-xs text-destructive py-4" role="alert">
             {t("plugins.config.error")}
           </p>
         )}
         {data && data.fields.length === 0 && (
-          <p className="text-xs text-text-dim py-4">
-            {t("plugins.config.noFields")}
-          </p>
+          <p className="text-xs text-text-dim py-4">{t("plugins.config.noFields")}</p>
         )}
         {data && data.fields.length > 0 && (
           <div className="flex flex-col gap-3 py-2 max-h-[60vh] overflow-y-auto">
@@ -205,9 +189,7 @@ export function PluginConfigDialog({
                 key={field.key}
                 field={field}
                 value={draft[field.key] ?? ""}
-                onChange={(value) =>
-                  setDraft((prev) => ({ ...prev, [field.key]: value }))
-                }
+                onChange={(value) => setDraft((prev) => ({ ...prev, [field.key]: value }))}
                 errorMessage={errors[field.key]}
               />
             ))}
@@ -220,9 +202,7 @@ export function PluginConfigDialog({
           </Button>
           <Button
             onClick={handleSave}
-            disabled={
-              !data || Object.keys(errors).length > 0 || updateMutation.isPending
-            }
+            disabled={!data || Object.keys(errors).length > 0 || updateMutation.isPending}
           >
             {t("common.save")}
           </Button>

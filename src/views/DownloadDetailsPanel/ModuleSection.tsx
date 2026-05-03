@@ -1,5 +1,5 @@
-import type { DownloadDetailView } from '@/types/download';
-import { Badge } from '@/components/ui/badge';
+import type { DownloadDetailView } from "@/types/download";
+import { Badge } from "@/components/ui/badge";
 
 interface ModuleSectionProps {
   download: DownloadDetailView;

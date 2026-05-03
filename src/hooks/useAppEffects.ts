@@ -1,5 +1,5 @@
-import { useEffect } from 'react';
-import { useSettingsStore } from '@/stores/settingsStore';
+import { useEffect } from "react";
+import { useSettingsStore } from "@/stores/settingsStore";
 
 /**
  * Applies global DOM effects based on app config:
@@ -15,23 +15,23 @@ export function useAppEffects() {
     if (config === null) return;
 
     if (config.compactMode) {
-      document.body.classList.add('compact-mode');
+      document.body.classList.add("compact-mode");
     } else {
-      document.body.classList.remove('compact-mode');
+      document.body.classList.remove("compact-mode");
     }
 
     return () => {
-      document.body.classList.remove('compact-mode');
+      document.body.classList.remove("compact-mode");
     };
   }, [config]);
 
   useEffect(() => {
     if (config === null) return;
 
-    document.documentElement.style.setProperty('--color-accent', config.accentColor);
+    document.documentElement.style.setProperty("--color-accent", config.accentColor);
 
     return () => {
-      document.documentElement.style.removeProperty('--color-accent');
+      document.documentElement.style.removeProperty("--color-accent");
     };
   }, [config]);
 }

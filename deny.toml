@@ -1,0 +1,101 @@
+# cargo-deny config — Vortex
+# Docs: https://embarkstudios.github.io/cargo-deny/
+
+[graph]
+all-features = false
+no-default-features = false
+
+[output]
+feature-depth = 1
+
+# === Vulnerability advisories (RustSec) ===
+[advisories]
+db-path = "$CARGO_HOME/advisory-db"
+db-urls = ["https://github.com/rustsec/advisory-db"]
+yanked = "deny"
+# Transitive advisories firing through Tauri 2.x → wry → libappindicator /
+# urlpattern / gtk-rs. None have a safe upgrade today; upstream replacements
+# (gtk-rs GTK4, icu4x) require Tauri 3.x. Track for removal once Tauri ships
+# GTK4 webkit2gtk-6.0 (tauri-apps/tauri#9777).
+ignore = [
+  # gtk-rs GTK3 bindings unmaintained — transitive via tauri-runtime-wry
+  "RUSTSEC-2024-0411",
+  "RUSTSEC-2024-0412",
+  "RUSTSEC-2024-0413",
+  "RUSTSEC-2024-0414",
+  "RUSTSEC-2024-0415",
+  "RUSTSEC-2024-0416",
+  "RUSTSEC-2024-0417",
+  "RUSTSEC-2024-0418",
+  "RUSTSEC-2024-0419",
+  "RUSTSEC-2024-0420",
+  # proc-macro-error unmaintained — transitive via tauri macros stack
+  "RUSTSEC-2024-0370",
+  # bincode 1.x unmaintained — vortex uses bincode 2.x but transitive
+  # 1.x still pulled by some adapters; upstream chain to migrate.
+  "RUSTSEC-2025-0141",
+  # fxhash unmaintained — transitive via sea-orm / sqlx; replacement
+  # rustc-hash requires sea-orm upgrade.
+  "RUSTSEC-2025-0057",
+  # rust-unic family unmaintained — transitive via urlpattern → tauri-utils
+  "RUSTSEC-2025-0075",
+  "RUSTSEC-2025-0080",
+  "RUSTSEC-2025-0081",
+  "RUSTSEC-2025-0098",
+  "RUSTSEC-2025-0100",
+]
+
+# === License compliance (GPL-3.0 compatible) ===
+[licenses]
+confidence-threshold = 0.8
+allow = [
+  # Permissive licenses GPL-3.0 compatible
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Unicode-DFS-2016",
+  "Unicode-3.0",
+  "Zlib",
+  "CC0-1.0",
+  "MPL-2.0",
+  "0BSD",
+  "BSL-1.0",
+  "bzip2-1.0.6",
+  "CDLA-Permissive-2.0",
+
+  # Vortex itself
+  "GPL-3.0",
+  "GPL-3.0-only",
+  "GPL-3.0-or-later",
+]
+
+[[licenses.exceptions]]
+allow = ["OpenSSL"]
+crate = "ring"
+
+# === Bans / duplicates ===
+[bans]
+multiple-versions = "allow"
+# Wildcards triggered by the temporary extism git pin in src-tauri/Cargo.toml
+# (rev-locked, see allow-git below). Downgrade to warn until upstream extism
+# ships wasmtime >=43 and we can pin a regular crates.io version.
+wildcards = "warn"
+highlight = "all"
+workspace-default-features = "allow"
+external-default-features = "allow"
+
+deny = []
+skip = []
+skip-tree = []
+
+# === Sources ===
+[sources]
+unknown-registry = "deny"
+unknown-git = "warn"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+# Temporary: extism git fork pinned in src-tauri/Cargo.toml until upstream
+# ships wasmtime >=43 (clears GHSA-jhxm-h53p-jm7w + GHSA-xx5w-cvp6-jv83).
+allow-git = ["https://github.com/mpiton/extism.git"]

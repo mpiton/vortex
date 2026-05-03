@@ -9,9 +9,7 @@ vi.mock("@/hooks/useBrowseFolder", () => ({
   useBrowseFolder: () => browseFolderMock,
 }));
 
-function renderDialog(
-  overrides: Partial<Parameters<typeof MoveDialog>[0]> = {},
-) {
+function renderDialog(overrides: Partial<Parameters<typeof MoveDialog>[0]> = {}) {
   const props = {
     open: true,
     onOpenChange: vi.fn(),
@@ -42,9 +40,7 @@ describe("MoveDialog", () => {
 
   it("shows the current path when provided", () => {
     renderDialog({ currentPath: "/some/old/path.bin" });
-    expect(screen.getByTestId("move-current-path")).toHaveTextContent(
-      "/some/old/path.bin",
-    );
+    expect(screen.getByTestId("move-current-path")).toHaveTextContent("/some/old/path.bin");
   });
 
   it("hides the current-path block when no path is supplied", () => {
@@ -54,9 +50,7 @@ describe("MoveDialog", () => {
 
   it("starts with no destination selected and confirm disabled", () => {
     renderDialog();
-    expect(screen.getByTestId("move-destination-path")).toHaveTextContent(
-      /no folder selected/i,
-    );
+    expect(screen.getByTestId("move-destination-path")).toHaveTextContent(/no folder selected/i);
     expect(screen.getByRole("button", { name: /^move$/i })).toBeDisabled();
   });
 
@@ -87,9 +81,7 @@ describe("MoveDialog", () => {
 
     await user.click(screen.getByRole("button", { name: /browse/i }));
 
-    expect(screen.getByTestId("move-destination-path")).toHaveTextContent(
-      "/new/destination",
-    );
+    expect(screen.getByTestId("move-destination-path")).toHaveTextContent("/new/destination");
     expect(screen.getByRole("button", { name: /^move$/i })).toBeEnabled();
   });
 
@@ -101,9 +93,7 @@ describe("MoveDialog", () => {
     await user.click(screen.getByRole("button", { name: /browse/i }));
 
     expect(screen.getByRole("button", { name: /^move$/i })).toBeDisabled();
-    expect(screen.getByTestId("move-destination-path")).toHaveTextContent(
-      /no folder selected/i,
-    );
+    expect(screen.getByTestId("move-destination-path")).toHaveTextContent(/no folder selected/i);
   });
 
   it("calls onConfirm with the picked path and closes the dialog on success", async () => {
@@ -131,9 +121,7 @@ describe("MoveDialog", () => {
     expect(props.onConfirm).toHaveBeenCalledWith("/dest");
     // Dialog must NOT receive an onOpenChange(false) so the user can retry.
     expect(props.onOpenChange).not.toHaveBeenCalledWith(false);
-    expect(screen.getByTestId("move-destination-path")).toHaveTextContent(
-      "/dest",
-    );
+    expect(screen.getByTestId("move-destination-path")).toHaveTextContent("/dest");
   });
 
   it("calls onOpenChange(false) when cancel is clicked", async () => {

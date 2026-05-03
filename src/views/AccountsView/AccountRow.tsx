@@ -44,16 +44,12 @@ export function AccountRow({ account, actions, validating }: AccountRowProps) {
   return (
     <tr data-testid={`account-row-${account.id}`} className="border-b last:border-b-0">
       <td className="px-3 py-2 align-middle font-medium">{account.serviceName}</td>
-      <td className="px-3 py-2 align-middle text-sm text-muted-foreground">
-        {account.username}
-      </td>
+      <td className="px-3 py-2 align-middle text-sm text-muted-foreground">{account.username}</td>
       <td className="px-3 py-2 align-middle text-sm">
         {t(`accounts.filter.${account.accountType}`)}
       </td>
       <td className="px-3 py-2 align-middle">
-        <Badge variant={STATUS_VARIANT[status]}>
-          {t(`accounts.status.${status}`)}
-        </Badge>
+        <Badge variant={STATUS_VARIANT[status]}>{t(`accounts.status.${status}`)}</Badge>
       </td>
       <td className="px-3 py-2 align-middle text-sm">
         {trafficPercent !== null ? (
@@ -80,9 +76,7 @@ export function AccountRow({ account, actions, validating }: AccountRowProps) {
           : t("accounts.validUntil.never")}
       </td>
       <td className="px-3 py-2 align-middle text-sm text-muted-foreground">
-        {account.lastValidated !== null
-          ? formatDate(account.lastValidated, language)
-          : "—"}
+        {account.lastValidated !== null ? formatDate(account.lastValidated, language) : "—"}
       </td>
       <td className="px-3 py-2 align-middle">
         <div className="flex items-center justify-end gap-2">

@@ -1,9 +1,9 @@
-import { useEffect, useRef } from 'react';
-import type { KeyboardEvent } from 'react';
-import { Button } from '@/components/ui/button';
-import type { StatsPeriod } from './derive';
+import { useEffect, useRef } from "react";
+import type { KeyboardEvent } from "react";
+import { Button } from "@/components/ui/button";
+import type { StatsPeriod } from "./derive";
 
-const PERIODS: StatsPeriod[] = ['7d', '30d', 'all'];
+const PERIODS: StatsPeriod[] = ["7d", "30d", "all"];
 
 export interface PeriodSelectorProps {
   value: StatsPeriod;
@@ -30,18 +30,18 @@ export function PeriodSelector({ value, onChange, ariaLabel, labels }: PeriodSel
     if (current === -1) return;
     let next = current;
     switch (event.key) {
-      case 'ArrowRight':
-      case 'ArrowDown':
+      case "ArrowRight":
+      case "ArrowDown":
         next = (current + 1) % PERIODS.length;
         break;
-      case 'ArrowLeft':
-      case 'ArrowUp':
+      case "ArrowLeft":
+      case "ArrowUp":
         next = (current - 1 + PERIODS.length) % PERIODS.length;
         break;
-      case 'Home':
+      case "Home":
         next = 0;
         break;
-      case 'End':
+      case "End":
         next = PERIODS.length - 1;
         break;
       default:
@@ -67,7 +67,7 @@ export function PeriodSelector({ value, onChange, ariaLabel, labels }: PeriodSel
           role="tab"
           aria-selected={value === period}
           tabIndex={value === period ? 0 : -1}
-          variant={value === period ? 'default' : 'ghost'}
+          variant={value === period ? "default" : "ghost"}
           size="sm"
           onClick={() => onChange(period)}
         >

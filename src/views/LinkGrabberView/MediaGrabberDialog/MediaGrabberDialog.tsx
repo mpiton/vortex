@@ -41,24 +41,16 @@ export function MediaGrabberDialog({
   const [audioOnly, setAudioOnly] = useState(false);
   const [audioFormat, setAudioFormat] = useState("m4a");
   const [selectedSubtitles, setSelectedSubtitles] = useState<string[]>([]);
-  const [selectedPlaylistItems, setSelectedPlaylistItems] = useState<string[]>(
-    [],
-  );
+  const [selectedPlaylistItems, setSelectedPlaylistItems] = useState<string[]>([]);
 
-  const {
-    data: metadata,
-    isLoading,
-    isError,
-    refetch,
-  } = useMediaMetadata(link.originalUrl, open);
+  const { data: metadata, isLoading, isError, refetch } = useMediaMetadata(link.originalUrl, open);
 
-  const playlistKey = metadata?.isPlaylist
-    ? canonicalPlaylistKey(link.originalUrl)
-    : undefined;
+  const playlistKey = metadata?.isPlaylist ? canonicalPlaylistKey(link.originalUrl) : undefined;
   const { data: existingPackage } = usePackageByExternalId(playlistKey);
   const willReuseExisting = !!existingPackage;
 
-  const requiresAudioOnly = !!metadata &&
+  const requiresAudioOnly =
+    !!metadata &&
     link.mediaType === "audio" &&
     metadata.availableQualities.length === 0 &&
     metadata.availableAudioFormats.length > 0;
@@ -77,8 +69,7 @@ export function MediaGrabberDialog({
       metadata.defaultQuality ?? metadata.availableQualities[0]?.quality ?? "1080p";
     const firstFormat = metadata.availableFormats[0] ?? "mp4";
     const firstAudioFormat =
-      metadata.availableAudioFormats[0] ??
-      (requiresAudioOnly ? "mp3" : "m4a");
+      metadata.availableAudioFormats[0] ?? (requiresAudioOnly ? "mp3" : "m4a");
     setAudioOnly(requiresAudioOnly);
     setQualitySelection(firstQuality);
     setFormatSelection(firstFormat);
@@ -97,7 +88,7 @@ export function MediaGrabberDialog({
       audioOnly: effectiveAudioOnly,
       playlistItems: selectedPlaylistItems,
       isPlaylist,
-      playlistItemCount: isPlaylist ? metadata?.playlistItems?.length ?? 0 : undefined,
+      playlistItemCount: isPlaylist ? (metadata?.playlistItems?.length ?? 0) : undefined,
       title: downloadTitle,
     });
     onOpenChange(false);
@@ -107,7 +98,7 @@ export function MediaGrabberDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[80vh] max-w-2xl overflow-y-auto">
         <DialogHeader>
-          <DialogTitle>{t('mediaGrabber.title')}</DialogTitle>
+          <DialogTitle>{t("mediaGrabber.title")}</DialogTitle>
         </DialogHeader>
 
         {isLoading ? (
@@ -179,13 +170,11 @@ export function MediaGrabberDialog({
         ) : (
           <div className="space-y-3 text-center">
             <p className="text-sm text-muted-foreground">
-              {isError
-                ? t('mediaGrabber.failedToLoad')
-                : t('mediaGrabber.noMetadata')}
+              {isError ? t("mediaGrabber.failedToLoad") : t("mediaGrabber.noMetadata")}
             </p>
             {isError && (
               <Button variant="outline" size="sm" onClick={() => refetch()}>
-                {t('mediaGrabber.retry')}
+                {t("mediaGrabber.retry")}
               </Button>
             )}
           </div>
@@ -193,10 +182,10 @@ export function MediaGrabberDialog({
 
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>
-            {t('mediaGrabber.cancel')}
+            {t("mediaGrabber.cancel")}
           </Button>
           <Button onClick={handleConfirm} disabled={isLoading || !metadata}>
-            {t('mediaGrabber.download')}
+            {t("mediaGrabber.download")}
           </Button>
         </DialogFooter>
       </DialogContent>

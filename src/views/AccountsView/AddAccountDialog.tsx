@@ -57,10 +57,7 @@ export function AddAccountDialog({
   const trimmedService = serviceName.trim();
   const trimmedUsername = username.trim();
   const canSubmit =
-    !submitting &&
-    trimmedService.length > 0 &&
-    trimmedUsername.length > 0 &&
-    password.length > 0;
+    !submitting && trimmedService.length > 0 && trimmedUsername.length > 0 && password.length > 0;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -121,10 +118,7 @@ export function AddAccountDialog({
           </label>
           <div className="grid gap-1 text-sm">
             <span className="font-medium">{t("accounts.addDialog.type")}</span>
-            <Select
-              value={accountType}
-              onValueChange={(v) => setAccountType(v as AccountType)}
-            >
+            <Select value={accountType} onValueChange={(v) => setAccountType(v as AccountType)}>
               <SelectTrigger data-testid="account-add-type">
                 <SelectValue />
               </SelectTrigger>

@@ -1,16 +1,16 @@
-import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
-import type { DownloadState } from '@/types/download';
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import type { DownloadState } from "@/types/download";
 
 const stateColors: Record<DownloadState, string> = {
-  Queued: 'bg-blue-400',
-  Downloading: 'bg-green-500 animate-pulse',
-  Paused: 'bg-yellow-400',
-  Waiting: 'bg-orange-400',
-  Retry: 'bg-orange-500',
-  Error: 'bg-red-500',
-  Completed: 'bg-emerald-600',
-  Checking: 'bg-cyan-500',
-  Extracting: 'bg-purple-500',
+  Queued: "bg-blue-400",
+  Downloading: "bg-green-500 animate-pulse",
+  Paused: "bg-yellow-400",
+  Waiting: "bg-orange-400",
+  Retry: "bg-orange-500",
+  Error: "bg-red-500",
+  Completed: "bg-emerald-600",
+  Checking: "bg-cyan-500",
+  Extracting: "bg-purple-500",
 };
 
 interface StateIndicatorProps {
@@ -19,7 +19,7 @@ interface StateIndicatorProps {
 }
 
 export function StateIndicator({ state, errorMessage }: StateIndicatorProps) {
-  const showErrorDetails = state === 'Error' && Boolean(errorMessage);
+  const showErrorDetails = state === "Error" && Boolean(errorMessage);
 
   return (
     <div className="flex items-center gap-2">

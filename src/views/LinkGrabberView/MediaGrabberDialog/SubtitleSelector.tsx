@@ -7,17 +7,11 @@ interface SubtitleSelectorProps {
   onSelect: (codes: string[]) => void;
 }
 
-export function SubtitleSelector({
-  languages,
-  selected,
-  onSelect,
-}: SubtitleSelectorProps) {
+export function SubtitleSelector({ languages, selected, onSelect }: SubtitleSelectorProps) {
   return (
     <section className="space-y-3">
       <h3 className="text-sm font-semibold">Subtitles</h3>
-      <p className="text-xs text-muted-foreground">
-        Select languages to download (if available)
-      </p>
+      <p className="text-xs text-muted-foreground">Select languages to download (if available)</p>
       <div className="grid max-h-48 grid-cols-2 gap-2 overflow-y-auto">
         {languages.map((lang) => (
           <div key={lang.code} className="flex items-center gap-2">
@@ -31,10 +25,7 @@ export function SubtitleSelector({
                 onSelect([...next]);
               }}
             />
-            <label
-              htmlFor={`subtitle-${lang.code}`}
-              className="cursor-pointer text-sm"
-            >
+            <label htmlFor={`subtitle-${lang.code}`} className="cursor-pointer text-sm">
               {lang.name} ({lang.code})
             </label>
           </div>

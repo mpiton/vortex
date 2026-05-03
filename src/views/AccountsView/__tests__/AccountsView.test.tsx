@@ -89,18 +89,13 @@ describe("AccountsView", () => {
       expect(screen.getByText("alldebrid")).toBeInTheDocument();
     });
     expect(screen.queryByText(/coming soon/i)).not.toBeInTheDocument();
-    expect(mockInvoke).toHaveBeenCalledWith(
-      "account_list",
-      expect.objectContaining({}),
-    );
+    expect(mockInvoke).toHaveBeenCalledWith("account_list", expect.objectContaining({}));
   });
 
   it("renders the empty state when no accounts exist", async () => {
     mockInvoke.mockResolvedValue([]);
     renderView();
-    await waitFor(() =>
-      expect(screen.getByTestId("accounts-empty")).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(screen.getByTestId("accounts-empty")).toBeInTheDocument());
   });
 
   it("filters by category when a tab is clicked", async () => {
@@ -178,9 +173,7 @@ describe("AccountsView", () => {
   it("disables the export trigger when there are no accounts", async () => {
     mockInvoke.mockResolvedValue([]);
     renderView();
-    await waitFor(() =>
-      expect(screen.getByTestId("accounts-empty")).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(screen.getByTestId("accounts-empty")).toBeInTheDocument());
 
     expect(screen.getByTestId("accounts-export-trigger")).toBeDisabled();
     expect(screen.getByTestId("accounts-import-trigger")).not.toBeDisabled();
@@ -201,14 +194,8 @@ describe("AccountsView", () => {
 
     const user = userEvent.setup();
     await user.click(screen.getByTestId("accounts-export-trigger"));
-    await user.type(
-      screen.getByTestId("account-export-passphrase"),
-      "my-passphrase",
-    );
-    await user.type(
-      screen.getByTestId("account-export-passphrase-confirm"),
-      "my-passphrase",
-    );
+    await user.type(screen.getByTestId("account-export-passphrase"), "my-passphrase");
+    await user.type(screen.getByTestId("account-export-passphrase-confirm"), "my-passphrase");
     await user.click(screen.getByTestId("account-export-submit"));
 
     await waitFor(() => expect(mockToastSuccess).toHaveBeenCalled());
@@ -238,14 +225,11 @@ describe("AccountsView", () => {
     await user.click(screen.getByTestId("accounts-import-trigger"));
     await user.click(screen.getByText(/Browse/i));
     await waitFor(() =>
-      expect(
-        (screen.getByTestId("account-import-path") as HTMLInputElement).value,
-      ).toBe("/tmp/in.vxbundle"),
+      expect((screen.getByTestId("account-import-path") as HTMLInputElement).value).toBe(
+        "/tmp/in.vxbundle",
+      ),
     );
-    await user.type(
-      screen.getByTestId("account-import-passphrase"),
-      "my-passphrase",
-    );
+    await user.type(screen.getByTestId("account-import-passphrase"), "my-passphrase");
     await user.click(screen.getByTestId("account-import-submit"));
 
     await waitFor(() =>

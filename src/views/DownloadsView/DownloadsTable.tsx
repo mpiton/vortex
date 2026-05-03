@@ -7,13 +7,7 @@ import {
 } from "@tanstack/react-table";
 import type { ColumnDef, SortingState } from "@tanstack/react-table";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import {
-  DndContext,
-  PointerSensor,
-  useSensor,
-  useSensors,
-  closestCenter,
-} from "@dnd-kit/core";
+import { DndContext, PointerSensor, useSensor, useSensors, closestCenter } from "@dnd-kit/core";
 import type { DragEndEvent } from "@dnd-kit/core";
 import {
   SortableContext,
@@ -414,13 +408,7 @@ function SortableRow({
 
   return (
     <DragHandleContext value={ctxValue}>
-      <tr
-        ref={setRef}
-        data-index={dataIndex}
-        style={style}
-        className={className}
-        onClick={onClick}
-      >
+      <tr ref={setRef} data-index={dataIndex} style={style} className={className} onClick={onClick}>
         {children}
       </tr>
     </DragHandleContext>
@@ -553,10 +541,9 @@ export function DownloadsTable({
   const moveToBottomMut = useTauriMutation<unknown, { id: number }>("download_move_to_bottom", {
     invalidateKeys,
   });
-  const reorderMut = useTauriMutation<unknown, { orderedIds: number[] }>(
-    "download_reorder_queue",
-    { invalidateKeys },
-  );
+  const reorderMut = useTauriMutation<unknown, { orderedIds: number[] }>("download_reorder_queue", {
+    invalidateKeys,
+  });
   const openFileMut = useTauriMutation<unknown, { id: number }>("download_open_file", {
     errorMessage: (err) =>
       err.message.toLowerCase().includes("not found")
@@ -667,9 +654,7 @@ export function DownloadsTable({
   // sort is active.
   const sortableIds = useMemo(() => rows.map((r) => r.original.id), [rows]);
 
-  const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
-  );
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }));
 
   const sortedDownloads = useMemo(() => rows.map((r) => r.original), [rows]);
 
@@ -677,11 +662,7 @@ export function DownloadsTable({
     (event: DragEndEvent) => {
       const { active, over } = event;
       if (!over) return;
-      const orderedIds = computeReorderedIds(
-        sortedDownloads,
-        String(active.id),
-        String(over.id),
-      );
+      const orderedIds = computeReorderedIds(sortedDownloads, String(active.id), String(over.id));
       if (!orderedIds || orderedIds.length === 0) return;
       reorderMut.mutate({ orderedIds });
     },
@@ -710,83 +691,79 @@ export function DownloadsTable({
   return (
     <RowActionsContext value={rowActions}>
       {redownload.dialog}
-      <DndContext
-        sensors={sensors}
-        collisionDetection={closestCenter}
-        onDragEnd={handleDragEnd}
-      >
-      <div ref={tableContainerRef} className="flex-1 overflow-auto rounded-md border">
-        <table className="w-full text-sm">
-          <thead className="sticky top-0 z-10 border-b bg-background">
-            {table.getHeaderGroups().map((headerGroup) => (
-              <tr key={headerGroup.id}>
-                {headerGroup.headers.map((header) => (
-                  <th
-                    key={header.id}
-                    className="cursor-pointer select-none px-3 py-2 text-left text-xs font-medium text-muted-foreground hover:text-foreground"
-                    onClick={
-                      header.column.getCanSort()
-                        ? header.column.getToggleSortingHandler()
-                        : undefined
-                    }
-                  >
-                    <div className="flex items-center gap-1">
-                      {header.isPlaceholder
-                        ? null
-                        : flexRender(header.column.columnDef.header, header.getContext())}
-                      {header.column.getIsSorted() === "asc" && <ArrowUp className="size-3" />}
-                      {header.column.getIsSorted() === "desc" && <ArrowDown className="size-3" />}
-                    </div>
-                  </th>
-                ))}
-              </tr>
-            ))}
-          </thead>
-          <tbody>
-            {virtualRows.length > 0 && (
-              <tr>
-                <td colSpan={columns.length} style={{ height: virtualRows[0].start }} />
-              </tr>
-            )}
-            <SortableContext items={sortableIds} strategy={verticalListSortingStrategy}>
-            {virtualRows.map((virtualRow) => {
-              const row = rows[virtualRow.index];
-              const isSelected = rowSelection[row.original.id] === true;
-
-              return (
-                <SortableRow
-                  key={row.id}
-                  id={row.original.id}
-                  state={row.original.state}
-                  dataIndex={virtualRow.index}
-                  measureRef={(node) => rowVirtualizer.measureElement(node)}
-                  className={`border-b transition-colors hover:bg-muted/50 ${
-                    isSelected ? "bg-accent/50" : ""
-                  }`}
-                  onClick={(e) => handleRowClick(e, row.original.id)}
-                >
-                  {row.getVisibleCells().map((cell) => (
-                    <td key={cell.id} className="px-3 py-2">
-                      {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                    </td>
+      <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+        <div ref={tableContainerRef} className="flex-1 overflow-auto rounded-md border">
+          <table className="w-full text-sm">
+            <thead className="sticky top-0 z-10 border-b bg-background">
+              {table.getHeaderGroups().map((headerGroup) => (
+                <tr key={headerGroup.id}>
+                  {headerGroup.headers.map((header) => (
+                    <th
+                      key={header.id}
+                      className="cursor-pointer select-none px-3 py-2 text-left text-xs font-medium text-muted-foreground hover:text-foreground"
+                      onClick={
+                        header.column.getCanSort()
+                          ? header.column.getToggleSortingHandler()
+                          : undefined
+                      }
+                    >
+                      <div className="flex items-center gap-1">
+                        {header.isPlaceholder
+                          ? null
+                          : flexRender(header.column.columnDef.header, header.getContext())}
+                        {header.column.getIsSorted() === "asc" && <ArrowUp className="size-3" />}
+                        {header.column.getIsSorted() === "desc" && <ArrowDown className="size-3" />}
+                      </div>
+                    </th>
                   ))}
-                </SortableRow>
-              );
-            })}
-            </SortableContext>
-            {virtualRows.length > 0 && (
-              <tr>
-                <td
-                  colSpan={columns.length}
-                  style={{
-                    height: totalSize - virtualRows[virtualRows.length - 1].end,
-                  }}
-                />
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
+                </tr>
+              ))}
+            </thead>
+            <tbody>
+              {virtualRows.length > 0 && (
+                <tr>
+                  <td colSpan={columns.length} style={{ height: virtualRows[0].start }} />
+                </tr>
+              )}
+              <SortableContext items={sortableIds} strategy={verticalListSortingStrategy}>
+                {virtualRows.map((virtualRow) => {
+                  const row = rows[virtualRow.index];
+                  const isSelected = rowSelection[row.original.id] === true;
+
+                  return (
+                    <SortableRow
+                      key={row.id}
+                      id={row.original.id}
+                      state={row.original.state}
+                      dataIndex={virtualRow.index}
+                      measureRef={(node) => rowVirtualizer.measureElement(node)}
+                      className={`border-b transition-colors hover:bg-muted/50 ${
+                        isSelected ? "bg-accent/50" : ""
+                      }`}
+                      onClick={(e) => handleRowClick(e, row.original.id)}
+                    >
+                      {row.getVisibleCells().map((cell) => (
+                        <td key={cell.id} className="px-3 py-2">
+                          {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                        </td>
+                      ))}
+                    </SortableRow>
+                  );
+                })}
+              </SortableContext>
+              {virtualRows.length > 0 && (
+                <tr>
+                  <td
+                    colSpan={columns.length}
+                    style={{
+                      height: totalSize - virtualRows[virtualRows.length - 1].end,
+                    }}
+                  />
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
       </DndContext>
     </RowActionsContext>
   );

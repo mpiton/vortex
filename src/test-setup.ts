@@ -42,13 +42,10 @@ vi.mock("react-i18next", async () => {
     const count = options?.count;
     const pluralCategory =
       typeof count === "number" ? new Intl.PluralRules(language).select(count) : null;
-    const pluralKey =
-      pluralCategory === null ? key : `${key}_${pluralCategory}`;
+    const pluralKey = pluralCategory === null ? key : `${key}_${pluralCategory}`;
     const pluralTemplate = lookupKey(translations[language], pluralKey);
     const template =
-      pluralTemplate !== pluralKey
-        ? pluralTemplate
-        : lookupKey(translations[language], key);
+      pluralTemplate !== pluralKey ? pluralTemplate : lookupKey(translations[language], key);
 
     if (!options) return template;
 

@@ -1,0 +1,15 @@
+# cargo-mutants configuration — Vortex
+# Reference: https://mutants.rs/configuration.html
+
+# Skip files where mutation testing is uninformative:
+# - main.rs is a thin binary entrypoint
+# - build.rs runs only at compile time
+# - tests/** is the test code itself
+# - migrations/** is generated SQL boilerplate
+exclude_globs = ["src/main.rs", "build.rs", "tests/**", "src/adapters/driven/sqlite/migrations/**"]
+
+# First baseline build is cold (Tauri + webkit2gtk + sea-orm + extism).
+# Per-mutant rebuilds reuse Swatinem cache but multiply the per-test budget
+# to absorb tokio + sqlite + WASM integration latencies.
+timeout_multiplier = 2.0
+minimum_test_timeout = 60.0

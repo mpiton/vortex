@@ -1,4 +1,4 @@
-export type AccountType = 'free' | 'premium' | 'debrid';
+export type AccountType = "free" | "premium" | "debrid";
 
 export interface AccountView {
   id: string;

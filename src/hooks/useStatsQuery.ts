@@ -1,8 +1,8 @@
-import { useQueries } from '@tanstack/react-query';
-import { tauriInvoke } from '@/api/client';
-import { historyQueries, statsQueries } from '@/api/queries';
-import type { HistoryView, ModuleStats, StatsView } from '@/types/download';
-import { periodToCutoffSeconds, type StatsPeriod } from '@/views/StatisticsView/derive';
+import { useQueries } from "@tanstack/react-query";
+import { tauriInvoke } from "@/api/client";
+import { historyQueries, statsQueries } from "@/api/queries";
+import type { HistoryView, ModuleStats, StatsView } from "@/types/download";
+import { periodToCutoffSeconds, type StatsPeriod } from "@/views/StatisticsView/derive";
 
 const TOP_MODULES_LIMIT = 5;
 const HISTORY_PAGE_SIZE = 500;
@@ -37,18 +37,18 @@ export function useStatsQuery(period: StatsPeriod): UseStatsQueryResult {
     queries: [
       {
         queryKey: [...statsQueries.overview(), period] as const,
-        queryFn: () => tauriInvoke<StatsView>('stats_get', { period }),
+        queryFn: () => tauriInvoke<StatsView>("stats_get", { period }),
         staleTime: 30_000,
       },
       {
-        queryKey: [...statsQueries.overview(), 'topModules', TOP_MODULES_LIMIT] as const,
+        queryKey: [...statsQueries.overview(), "topModules", TOP_MODULES_LIMIT] as const,
         queryFn: () =>
-          tauriInvoke<ModuleStats[]>('stats_top_modules', { limit: TOP_MODULES_LIMIT }),
+          tauriInvoke<ModuleStats[]>("stats_top_modules", { limit: TOP_MODULES_LIMIT }),
         staleTime: 60_000,
       },
       {
-        queryKey: [...historyQueries.lists(), 'period', period] as const,
-        queryFn: () => tauriInvoke<HistoryView[]>('history_list', historyArgs),
+        queryKey: [...historyQueries.lists(), "period", period] as const,
+        queryFn: () => tauriInvoke<HistoryView[]>("history_list", historyArgs),
         staleTime: 30_000,
       },
     ],

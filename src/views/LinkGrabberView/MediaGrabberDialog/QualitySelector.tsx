@@ -31,9 +31,7 @@ export function QualitySelector({
             aria-checked={selected === q.quality}
             tabIndex={selected === q.quality ? 0 : -1}
             className={`cursor-pointer p-3 transition-colors ${
-              selected === q.quality
-                ? "ring-2 ring-accent bg-accent/10"
-                : "hover:bg-muted"
+              selected === q.quality ? "ring-2 ring-accent bg-accent/10" : "hover:bg-muted"
             }`}
             onClick={() => onSelectQuality(q.quality)}
             onKeyDown={(e) => {
@@ -55,7 +53,9 @@ export function QualitySelector({
       </div>
 
       <div className="space-y-2">
-        <span className="text-sm font-semibold" id="container-format-label">Container Format</span>
+        <span className="text-sm font-semibold" id="container-format-label">
+          Container Format
+        </span>
         <div className="flex gap-2" role="group" aria-labelledby="container-format-label">
           {formats.map((fmt) => (
             <Button

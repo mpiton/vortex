@@ -1,6 +1,6 @@
-import type { ReactNode } from 'react';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { cn } from '@/lib/utils';
+import type { ReactNode } from "react";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { cn } from "@/lib/utils";
 
 export interface ChartCardProps {
   title: string;
@@ -25,27 +25,25 @@ export function ChartCard({
 }: ChartCardProps) {
   const placeholder = isLoading ? (
     <div
-      data-testid={`chart-loading-${title.toLowerCase().replace(/\s+/g, '-')}`}
+      data-testid={`chart-loading-${title.toLowerCase().replace(/\s+/g, "-")}`}
       className="flex h-48 items-center justify-center text-xs text-muted-foreground"
     >
-      {loadingHint ?? '…'}
+      {loadingHint ?? "…"}
     </div>
   ) : isEmpty ? (
     <div
-      data-testid={`chart-empty-${title.toLowerCase().replace(/\s+/g, '-')}`}
+      data-testid={`chart-empty-${title.toLowerCase().replace(/\s+/g, "-")}`}
       className="flex h-48 items-center justify-center text-xs text-muted-foreground"
     >
-      {emptyHint ?? '—'}
+      {emptyHint ?? "—"}
     </div>
   ) : null;
 
   return (
-    <Card className={cn('gap-3 py-4', className)}>
+    <Card className={cn("gap-3 py-4", className)}>
       <CardHeader className="px-4">
         <CardTitle className="text-sm font-semibold">{title}</CardTitle>
-        {description ? (
-          <p className="text-xs text-muted-foreground">{description}</p>
-        ) : null}
+        {description ? <p className="text-xs text-muted-foreground">{description}</p> : null}
       </CardHeader>
       <CardContent className="px-4">{placeholder ?? children}</CardContent>
     </Card>

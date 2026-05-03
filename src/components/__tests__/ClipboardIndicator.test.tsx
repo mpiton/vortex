@@ -76,10 +76,7 @@ describe("ClipboardIndicator", () => {
 
     render(<ClipboardIndicator />, { wrapper });
     const button = screen.getByRole("button");
-    expect(button).toHaveAttribute(
-      "title",
-      "Clipboard monitoring paused"
-    );
+    expect(button).toHaveAttribute("title", "Clipboard monitoring paused");
   });
 
   it("should show green dot when enabled", () => {
@@ -89,10 +86,7 @@ describe("ClipboardIndicator", () => {
 
     render(<ClipboardIndicator />, { wrapper });
     const button = screen.getByRole("button");
-    expect(button).toHaveAttribute(
-      "title",
-      "Clipboard monitoring active"
-    );
+    expect(button).toHaveAttribute("title", "Clipboard monitoring active");
   });
 
   it("should call clipboard_toggle IPC on click", async () => {

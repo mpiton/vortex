@@ -1,25 +1,22 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useTauriMutation, useTauriQuery } from '@/api/hooks';
-import { downloadQueries } from '@/api/queries';
-import { useDownloadProgress } from '@/hooks/useDownloadProgress';
-import { subscribeShortcutAction, SHORTCUT_ACTIONS } from '@/lib/keyboardShortcuts';
-import { useUiStore } from '@/stores/uiStore';
-import type { DownloadView } from '@/types/download';
-import type { FilterType } from './types';
-import { SearchBar } from './SearchBar';
-import { FilterBar } from './FilterBar';
-import { ActionsBar } from './ActionsBar';
-import { DownloadsTable, filterDownloads } from './DownloadsTable';
-import { DownloadDetailsPanel } from '../DownloadDetailsPanel';
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useTauriMutation, useTauriQuery } from "@/api/hooks";
+import { downloadQueries } from "@/api/queries";
+import { useDownloadProgress } from "@/hooks/useDownloadProgress";
+import { subscribeShortcutAction, SHORTCUT_ACTIONS } from "@/lib/keyboardShortcuts";
+import { useUiStore } from "@/stores/uiStore";
+import type { DownloadView } from "@/types/download";
+import type { FilterType } from "./types";
+import { SearchBar } from "./SearchBar";
+import { FilterBar } from "./FilterBar";
+import { ActionsBar } from "./ActionsBar";
+import { DownloadsTable, filterDownloads } from "./DownloadsTable";
+import { DownloadDetailsPanel } from "../DownloadDetailsPanel";
 
-const INVALIDATE_KEYS = [
-  downloadQueries.lists(),
-  downloadQueries.countByState(),
-] as const;
+const INVALIDATE_KEYS = [downloadQueries.lists(), downloadQueries.countByState()] as const;
 
 export function DownloadsView() {
-  const [filter, setFilter] = useState<FilterType>('all');
-  const [searchQuery, setSearchQuery] = useState('');
+  const [filter, setFilter] = useState<FilterType>("all");
+  const [searchQuery, setSearchQuery] = useState("");
   const selectedDownloadId = useUiStore((s) => s.selectedDownloadId);
   const selectedDownloadIds = useUiStore((s) => s.selectedDownloadIds);
   const selectDownload = useUiStore((s) => s.selectDownload);
@@ -28,25 +25,24 @@ export function DownloadsView() {
 
   useDownloadProgress();
 
-  const pauseMut = useTauriMutation<void, { id: number }>('download_pause', {
+  const pauseMut = useTauriMutation<void, { id: number }>("download_pause", {
     invalidateKeys: INVALIDATE_KEYS,
   });
-  const resumeMut = useTauriMutation<void, { id: number }>('download_resume', {
+  const resumeMut = useTauriMutation<void, { id: number }>("download_resume", {
     invalidateKeys: INVALIDATE_KEYS,
   });
   const removeMut = useTauriMutation<void, { id: number; deleteFiles: boolean }>(
-    'download_remove',
+    "download_remove",
     { invalidateKeys: INVALIDATE_KEYS },
   );
 
-  const { data: downloads, isLoading } = useTauriQuery<DownloadView[]>(
-    'download_list',
-    undefined,
-    { queryKey: downloadQueries.lists(), staleTime: 1000 },
-  );
+  const { data: downloads, isLoading } = useTauriQuery<DownloadView[]>("download_list", undefined, {
+    queryKey: downloadQueries.lists(),
+    staleTime: 1000,
+  });
 
   const { data: countByState } = useTauriQuery<Record<string, number>>(
-    'download_count_by_state',
+    "download_count_by_state",
     undefined,
     { queryKey: downloadQueries.countByState(), staleTime: 2000 },
   );
@@ -67,17 +63,13 @@ export function DownloadsView() {
 
   const visibleSelectedDownloads = useMemo(() => {
     const visibleSelectedSet = new Set(visibleSelectedDownloadIds);
-    return filteredDownloads.filter((download) =>
-      visibleSelectedSet.has(download.id),
-    );
+    return filteredDownloads.filter((download) => visibleSelectedSet.has(download.id));
   }, [filteredDownloads, visibleSelectedDownloadIds]);
 
   useEffect(() => {
     const selectionChanged =
       selectedDownloadIds.length !== visibleSelectedDownloadIds.length ||
-      selectedDownloadIds.some(
-        (id, index) => id !== visibleSelectedDownloadIds[index],
-      );
+      selectedDownloadIds.some((id, index) => id !== visibleSelectedDownloadIds[index]);
 
     if (selectionChanged) {
       setSelectedDownloadIds(visibleSelectedDownloadIds);
@@ -103,10 +95,10 @@ export function DownloadsView() {
 
     const tasks = [
       ...visibleSelectedDownloads
-        .filter((download) => download.state === 'Downloading')
+        .filter((download) => download.state === "Downloading")
         .map((download) => pauseMut.mutateAsync({ id: Number(download.id) })),
       ...visibleSelectedDownloads
-        .filter((download) => download.state === 'Paused')
+        .filter((download) => download.state === "Paused")
         .map((download) => resumeMut.mutateAsync({ id: Number(download.id) })),
     ];
 
@@ -127,15 +119,13 @@ export function DownloadsView() {
       ),
     );
     const failedIds = selectionSnapshot.ids.filter(
-      (_, index) => results[index].status === 'rejected',
+      (_, index) => results[index].status === "rejected",
     );
     const currentState = useUiStore.getState();
     const unchanged =
       currentState.selectedDownloadId === selectionSnapshot.activeId &&
       currentState.selectedDownloadIds.length === selectionSnapshot.ids.length &&
-      currentState.selectedDownloadIds.every(
-        (id, index) => id === selectionSnapshot.ids[index],
-      );
+      currentState.selectedDownloadIds.every((id, index) => id === selectionSnapshot.ids[index]);
 
     if (!unchanged) return;
 
@@ -145,10 +135,7 @@ export function DownloadsView() {
     }
 
     setSelectedDownloadIds(failedIds);
-    if (
-      currentState.selectedDownloadId &&
-      !failedIds.includes(currentState.selectedDownloadId)
-    ) {
+    if (currentState.selectedDownloadId && !failedIds.includes(currentState.selectedDownloadId)) {
       selectDownload(null);
     }
   }, [
@@ -183,22 +170,13 @@ export function DownloadsView() {
           return;
       }
     });
-  }, [
-    filteredDownloads,
-    handleRemoveSelected,
-    handleToggleSelected,
-    setSelectedDownloadIds,
-  ]);
+  }, [filteredDownloads, handleRemoveSelected, handleToggleSelected, setSelectedDownloadIds]);
 
   return (
     <div className="flex h-full">
       <div className="flex min-w-0 flex-1 flex-col gap-3 p-4">
         <SearchBar value={searchQuery} onChange={setSearchQuery} />
-        <FilterBar
-          activeFilter={filter}
-          onFilterChange={setFilter}
-          counts={countByState}
-        />
+        <FilterBar activeFilter={filter} onFilterChange={setFilter} counts={countByState} />
         <ActionsBar />
         <DownloadsTable
           downloads={filteredDownloads}

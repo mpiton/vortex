@@ -1,5 +1,5 @@
-import { useSpeedHistory } from '@/hooks/useSpeedHistory';
-import { formatSpeed } from '@/lib/format';
+import { useSpeedHistory } from "@/hooks/useSpeedHistory";
+import { formatSpeed } from "@/lib/format";
 
 const WIDTH = 300;
 const HEIGHT = 60;
@@ -31,7 +31,7 @@ export function SpeedSparkline({ downloadId }: SpeedSparklineProps) {
     return `${x},${y}`;
   });
 
-  const polylinePoints = points.join(' ');
+  const polylinePoints = points.join(" ");
 
   return (
     <section className="space-y-3">
@@ -65,9 +65,7 @@ export function SpeedSparkline({ downloadId }: SpeedSparklineProps) {
           strokeLinecap="round"
         />
       </svg>
-      <p className="text-xs text-muted-foreground text-right">
-        Max: {formatSpeed(maxSpeed)}
-      </p>
+      <p className="text-xs text-muted-foreground text-right">Max: {formatSpeed(maxSpeed)}</p>
     </section>
   );
 }

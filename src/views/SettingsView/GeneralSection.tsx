@@ -134,10 +134,7 @@ export function GeneralSection({ config }: GeneralSectionProps) {
           value={String(config.historyRetentionDays)}
           onValueChange={(v) => handleChange("historyRetentionDays", Number(v))}
         >
-          <SelectTrigger
-            className="w-40"
-            aria-label={t("settings.general.historyRetention.label")}
-          >
+          <SelectTrigger className="w-40" aria-label={t("settings.general.historyRetention.label")}>
             <SelectValue />
           </SelectTrigger>
           <SelectContent>

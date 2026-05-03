@@ -1,8 +1,8 @@
-import { useMemo } from 'react';
-import { Cell, Legend, Pie, PieChart, ResponsiveContainer, Tooltip } from 'recharts';
-import type { HostStats } from '@/types/download';
-import { CHART_TOOLTIP_BG, CHART_TOOLTIP_BORDER, paletteColor } from './chartColors';
-import { formatBytes } from './format';
+import { useMemo } from "react";
+import { Cell, Legend, Pie, PieChart, ResponsiveContainer, Tooltip } from "recharts";
+import type { HostStats } from "@/types/download";
+import { CHART_TOOLTIP_BG, CHART_TOOLTIP_BORDER, paletteColor } from "./chartColors";
+import { formatBytes } from "./format";
 
 const MAX_SLICES = 10;
 
@@ -15,8 +15,8 @@ export interface TopHostsChartProps {
 const TOOLTIP_STYLE = {
   background: CHART_TOOLTIP_BG,
   border: `1px solid ${CHART_TOOLTIP_BORDER}`,
-  borderRadius: '6px',
-  fontSize: '12px',
+  borderRadius: "6px",
+  fontSize: "12px",
 } as const;
 
 export function TopHostsChart({ data, ariaLabel, bytesLabel }: TopHostsChartProps) {
@@ -48,13 +48,9 @@ export function TopHostsChart({ data, ariaLabel, bytesLabel }: TopHostsChartProp
           </Pie>
           <Tooltip
             contentStyle={TOOLTIP_STYLE}
-            formatter={(value) => [formatBytes(typeof value === 'number' ? value : 0), bytesLabel]}
+            formatter={(value) => [formatBytes(typeof value === "number" ? value : 0), bytesLabel]}
           />
-          <Legend
-            verticalAlign="bottom"
-            iconType="circle"
-            wrapperStyle={{ fontSize: '11px' }}
-          />
+          <Legend verticalAlign="bottom" iconType="circle" wrapperStyle={{ fontSize: "11px" }} />
         </PieChart>
       </ResponsiveContainer>
     </div>

@@ -3,14 +3,50 @@ name: Release
 on:
   push:
     tags:
-      - 'v[0-9]+.[0-9]+.[0-9]+*'
+      - "v[0-9]+.[0-9]+.[0-9]+*"
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  verify-tag:
+    name: Verify tag vs Cargo.toml + package.json + CHANGELOG
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.tag.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract version from tag
+        id: tag
+        run: echo "version=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify Cargo.toml version
+        run: |
+          CARGO_VERSION=$(grep -m1 '^version' src-tauri/Cargo.toml | cut -d'"' -f2)
+          if [ "$CARGO_VERSION" != "${{ steps.tag.outputs.version }}" ]; then
+            echo "::error::Cargo.toml version ($CARGO_VERSION) != tag (${{ steps.tag.outputs.version }})"
+            exit 1
+          fi
+
+      - name: Verify package.json version
+        run: |
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          if [ "$PKG_VERSION" != "${{ steps.tag.outputs.version }}" ]; then
+            echo "::error::package.json version ($PKG_VERSION) != tag (${{ steps.tag.outputs.version }})"
+            exit 1
+          fi
+
+      - name: Verify CHANGELOG entry
+        run: |
+          if ! grep -qE "^## \[?${{ steps.tag.outputs.version }}\]?" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no section for version ${{ steps.tag.outputs.version }}"
+            exit 1
+          fi
+
   create-release:
     name: Create GitHub Release
+    needs: verify-tag
     runs-on: ubuntu-latest
     permissions:
       contents: write

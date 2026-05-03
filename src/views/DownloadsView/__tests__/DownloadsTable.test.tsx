@@ -278,8 +278,8 @@ describe("DownloadsTable", () => {
         moduleName: null,
         accountName: null,
         priority: 5,
-    queuePosition: 0,
-    createdAt: Date.now(),
+        queuePosition: 0,
+        createdAt: Date.now(),
         ...overrides,
       };
     }

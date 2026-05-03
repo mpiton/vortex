@@ -1,5 +1,5 @@
-import type { DownloadDetailView } from '@/types/download';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import type { DownloadDetailView } from "@/types/download";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 interface SourceInfoSectionProps {
   download: DownloadDetailView;
@@ -15,10 +15,10 @@ function getHostname(url: string): string {
 
 function getProtocol(url: string): string {
   try {
-    return new URL(url).protocol.replace(':', '').toUpperCase();
+    return new URL(url).protocol.replace(":", "").toUpperCase();
   } catch {
-    const parts = url.split('://');
-    return parts.length > 1 ? parts[0].toUpperCase() : 'UNKNOWN';
+    const parts = url.split("://");
+    return parts.length > 1 ? parts[0].toUpperCase() : "UNKNOWN";
   }
 }
 
@@ -51,7 +51,7 @@ export function SourceInfoSection({ download }: SourceInfoSectionProps) {
         </div>
         <div>
           <p className="text-muted-foreground">Resume Supported</p>
-          <p className="font-mono">{download.resumeSupported ? 'Yes' : 'No'}</p>
+          <p className="font-mono">{download.resumeSupported ? "Yes" : "No"}</p>
         </div>
       </div>
     </section>

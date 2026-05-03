@@ -15,19 +15,19 @@ env:
 
 jobs:
   rust-checks:
-    name: Rust Checks
+    name: Rust — fmt + clippy + deny + tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Linux dependencies
-        run: >
-          sudo apt-get update &&
-          sudo apt-get install -y
-          libwebkit2gtk-4.1-dev
-          libappindicator3-dev
-          librsvg2-dev
-          patchelf
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -37,30 +37,35 @@ jobs:
         with:
           workspaces: src-tauri
 
-      - name: Check formatting
+      - name: cargo fmt --check
         run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
 
-      - name: Clippy
-        run: cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
+      - name: cargo clippy
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --workspace -- -D warnings
 
-      - name: Install cargo-llvm-cov and cargo-audit
+      - name: Install cargo tooling
         uses: taiki-e/install-action@v2
         with:
-          tool: cargo-llvm-cov,cargo-audit
+          tool: cargo-llvm-cov,cargo-deny
 
-      - name: Security audit
-        run: cargo audit --file src-tauri/Cargo.lock
+      - name: cargo deny
+        run: cargo deny --manifest-path src-tauri/Cargo.toml check
 
-      - name: Tests with coverage
-        run: >
-          cargo llvm-cov
-          --manifest-path src-tauri/Cargo.toml
-          --workspace
-          --lcov
-          --output-path lcov.info
+      - name: Tests + coverage
+        run: |
+          cargo llvm-cov \
+            --manifest-path src-tauri/Cargo.toml \
+            --workspace \
+            --lcov \
+            --output-path lcov.info
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rust-coverage
+          path: lcov.info
 
   frontend-checks:
-    name: Frontend Checks
+    name: Frontend — oxlint + oxfmt + tsc + knip + vitest
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -70,30 +75,96 @@ jobs:
           node-version: 22
           cache: npm
 
-      - name: Install dependencies
+      - name: npm ci
         run: npm ci
 
-      - name: Lint
-        run: npx oxlint .
+      - name: oxlint
+        run: npx oxlint . --max-warnings=0
 
-      - name: Type check
+      - name: oxfmt --check
+        run: |
+          npx oxfmt --check --ignore-path .oxfmtignore --ignore-path .gitignore \
+            'src/**/*.{ts,tsx,css,json}' \
+            knip.json package.json tsconfig.json tsconfig.node.json
+
+      - name: tsc -b
         run: npx tsc -b
 
-      - name: Tests with coverage
-        run: npx vitest run --coverage
+      - name: knip
+        run: npx knip --reporter compact
 
-      - name: Check for secret files
+      - name: vitest + coverage
+        run: npx vitest run --coverage --passWithNoTests
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: frontend-coverage
+          path: coverage/
+
+  secrets-scan:
+    name: Secrets scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for secret files in repo
         run: |
-          SECRET_FILES=$(git ls-files | grep -iE '\.(env|env\..+|pem|key|p12|pfx|secret|creds)$' || true)
+          SECRET_FILES=$(git ls-files | grep -iE '\.(env|env\..+|pem|key|p12|pfx|secret|creds)$|\.(env|secrets)/|^\.npmrc$|^\.pypirc$' || true)
           if [ -n "$SECRET_FILES" ]; then
-            echo "::error::Secret files found in repository:"
+            echo "::error::Secret files in repo:"
             echo "$SECRET_FILES"
+            exit 1
+          fi
+
+      - name: Check for API key patterns in tracked files
+        run: |
+          PATTERNS='AKIA[0-9A-Z]{16}|sk-ant-[A-Za-z0-9_-]{20,}|ghp_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{82}|AIza[0-9A-Za-z_-]{35}'
+          MATCHES=$(git grep -nE "$PATTERNS" -- ':(exclude)*.lock' ':(exclude)package.json' ':(exclude)Cargo.toml' || true)
+          if [ -n "$MATCHES" ]; then
+            echo "::error::API key pattern detected:"
+            echo "$MATCHES" | head -10
+            exit 1
+          fi
+
+  forbidden-tools:
+    name: Forbidden tools
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Reject pnpm-lock.yaml / yarn.lock
+        run: |
+          if [ -f pnpm-lock.yaml ] || [ -f yarn.lock ]; then
+            echo "::error::pnpm-lock.yaml / yarn.lock detected."
+            echo "Vortex uses npm only. Remove these files."
+            exit 1
+          fi
+
+      - name: Reject Biome / ESLint / Prettier configs
+        run: |
+          FORBIDDEN=$(ls -1 .eslintrc* biome.json* .prettierrc* 2>/dev/null || true)
+          if [ -n "$FORBIDDEN" ]; then
+            echo "::error::Forbidden lint/format configs detected:"
+            echo "$FORBIDDEN"
+            echo "Vortex uses oxlint + oxfmt only."
+            exit 1
+          fi
+
+      - name: Reject #[allow] / @ts-ignore / oxlint-disable
+        run: |
+          set +e
+          BAD_RUST=$(git grep -nE '#\[allow\((dead_code|unused|unused_variables|unused_imports)' -- '*.rs' | head -20)
+          BAD_TS=$(git grep -nE '@ts-ignore|@ts-expect-error|oxlint-disable' -- '*.ts' '*.tsx' '*.js' '*.jsx' | head -20)
+          if [ -n "$BAD_RUST" ] || [ -n "$BAD_TS" ]; then
+            echo "::error::Error suppression detected (forbidden):"
+            [ -n "$BAD_RUST" ] && echo "$BAD_RUST"
+            [ -n "$BAD_TS" ] && echo "$BAD_TS"
             exit 1
           fi
 
   build:
     name: Build (${{ matrix.os }})
-    needs: [rust-checks, frontend-checks]
+    needs: [rust-checks, frontend-checks, secrets-scan, forbidden-tools]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -115,16 +186,37 @@ jobs:
 
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
-        run: >
-          sudo apt-get update &&
-          sudo apt-get install -y
-          libwebkit2gtk-4.1-dev
-          libappindicator3-dev
-          librsvg2-dev
-          patchelf
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf
 
-      - name: Install dependencies
+      - name: npm ci
         run: npm ci
 
-      - name: Build Tauri app
+      - name: Tauri build
         run: npx tauri build --config .github/tauri.ci.conf.json
+
+  changelog-check:
+    name: CHANGELOG updated
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify CHANGELOG.md updated when code changes
+        run: |
+          BASE="${{ github.event.pull_request.base.sha }}"
+          HEAD="${{ github.event.pull_request.head.sha }}"
+          CODE_CHANGED=$(git diff --name-only "$BASE" "$HEAD" | grep -E '\.(rs|ts|tsx|js|jsx)$' || true)
+          CHANGELOG_CHANGED=$(git diff --name-only "$BASE" "$HEAD" | grep -x 'CHANGELOG.md' || true)
+          if [ -n "$CODE_CHANGED" ] && [ -z "$CHANGELOG_CHANGED" ]; then
+            echo "::error::Code changed without a CHANGELOG.md entry"
+            echo "Add a line in the [Unreleased] section."
+            exit 1
+          fi

@@ -93,9 +93,7 @@ beforeAll(() => {
   } as unknown as typeof ResizeObserver;
 });
 
-function renderDialog(
-  props: Partial<React.ComponentProps<typeof MediaGrabberDialog>> = {},
-) {
+function renderDialog(props: Partial<React.ComponentProps<typeof MediaGrabberDialog>> = {}) {
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false },
@@ -138,30 +136,22 @@ describe("MediaGrabberDialog", () => {
     mockInvoke.mockResolvedValue(mockMetadata);
     renderDialog();
 
-    expect(
-      await screen.findByText("Test Video Title"),
-    ).toBeInTheDocument();
+    expect(await screen.findByText("Test Video Title")).toBeInTheDocument();
   });
 
   it("should show no-metadata message when metadata is null", async () => {
     mockInvoke.mockResolvedValue(null);
     renderDialog();
 
-    expect(
-      await screen.findByText("No metadata available for this link"),
-    ).toBeInTheDocument();
+    expect(await screen.findByText("No metadata available for this link")).toBeInTheDocument();
   });
 
   it("should show error message with retry when metadata fetch fails", async () => {
     mockInvoke.mockRejectedValue(new Error("Network error"));
     renderDialog();
 
-    expect(
-      await screen.findByText("Failed to load media metadata"),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: "Retry" }),
-    ).toBeInTheDocument();
+    expect(await screen.findByText("Failed to load media metadata")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
   });
 
   it("should show quality selector with available qualities", async () => {

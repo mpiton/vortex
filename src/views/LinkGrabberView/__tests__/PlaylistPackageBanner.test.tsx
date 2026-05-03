@@ -12,13 +12,7 @@ describe("PlaylistPackageBanner", () => {
   });
 
   it("should render the will-reuse message when willReuseExisting is true", () => {
-    render(
-      <PlaylistPackageBanner
-        packageName="Existing Pack"
-        itemCount={3}
-        willReuseExisting
-      />,
-    );
+    render(<PlaylistPackageBanner packageName="Existing Pack" itemCount={3} willReuseExisting />);
     const banner = screen.getByTestId("playlist-package-banner");
     expect(banner.textContent?.toLowerCase()).toMatch(/reuse|réutilisation/);
     expect(banner.textContent).toContain("Existing Pack");

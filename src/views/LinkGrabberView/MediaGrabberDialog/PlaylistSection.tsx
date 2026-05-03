@@ -9,19 +9,13 @@ interface PlaylistSectionProps {
   onSelectItems: (ids: string[]) => void;
 }
 
-export function PlaylistSection({
-  items,
-  selectedItems,
-  onSelectItems,
-}: PlaylistSectionProps) {
+export function PlaylistSection({ items, selectedItems, onSelectItems }: PlaylistSectionProps) {
   const allSelected = items.length > 0 && selectedItems.length === items.length;
 
   return (
     <section className="space-y-3">
       <div className="flex items-center justify-between">
-        <h3 className="text-sm font-semibold">
-          Playlist ({items.length} items)
-        </h3>
+        <h3 className="text-sm font-semibold">Playlist ({items.length} items)</h3>
         <Button
           variant="outline"
           size="sm"
@@ -40,10 +34,7 @@ export function PlaylistSection({
       <ScrollArea className="h-40 rounded border">
         <div className="space-y-1 p-2">
           {items.map((item, idx) => (
-            <div
-              key={item.id}
-              className="flex items-center gap-2 rounded p-2 hover:bg-muted"
-            >
+            <div key={item.id} className="flex items-center gap-2 rounded p-2 hover:bg-muted">
               <Checkbox
                 aria-label={`#${idx + 1} ${item.title}`}
                 checked={selectedItems.includes(item.id)}
@@ -51,20 +42,15 @@ export function PlaylistSection({
                   if (checked) {
                     onSelectItems([...selectedItems, item.id]);
                   } else {
-                    onSelectItems(
-                      selectedItems.filter((id) => id !== item.id),
-                    );
+                    onSelectItems(selectedItems.filter((id) => id !== item.id));
                   }
                 }}
               />
               <div className="min-w-0 flex-1">
-                <span className="text-xs font-semibold text-muted-foreground">
-                  #{idx + 1}
-                </span>
+                <span className="text-xs font-semibold text-muted-foreground">#{idx + 1}</span>
                 <p className="truncate text-sm">{item.title}</p>
                 <p className="text-xs text-muted-foreground">
-                  {Math.floor(item.durationSeconds / 60)}m{" "}
-                  {item.durationSeconds % 60}s
+                  {Math.floor(item.durationSeconds / 60)}m {item.durationSeconds % 60}s
                 </p>
               </div>
             </div>

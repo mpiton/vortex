@@ -1,21 +1,13 @@
-import {
-  Bar,
-  BarChart,
-  CartesianGrid,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from 'recharts';
-import type { DailyVolume } from '@/types/download';
+import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import type { DailyVolume } from "@/types/download";
 import {
   ACCENT_COLOR,
   CHART_AXIS_COLOR,
   CHART_GRID_COLOR,
   CHART_TOOLTIP_BG,
   CHART_TOOLTIP_BORDER,
-} from './chartColors';
-import { formatBytes } from './format';
+} from "./chartColors";
+import { formatBytes } from "./format";
 
 export interface DailyVolumeChartProps {
   data: DailyVolume[];
@@ -27,8 +19,8 @@ export interface DailyVolumeChartProps {
 const TOOLTIP_STYLE = {
   background: CHART_TOOLTIP_BG,
   border: `1px solid ${CHART_TOOLTIP_BORDER}`,
-  borderRadius: '6px',
-  fontSize: '12px',
+  borderRadius: "6px",
+  fontSize: "12px",
 } as const;
 
 export function DailyVolumeChart({
@@ -48,7 +40,7 @@ export function DailyVolumeChart({
             fontSize={11}
             tickLine={false}
             axisLine={false}
-            label={{ value: xAxisLabel, position: 'insideBottom', offset: -2, fontSize: 11 }}
+            label={{ value: xAxisLabel, position: "insideBottom", offset: -2, fontSize: 11 }}
           />
           <YAxis
             stroke={CHART_AXIS_COLOR}
@@ -59,15 +51,15 @@ export function DailyVolumeChart({
             label={{
               value: yAxisLabel,
               angle: -90,
-              position: 'insideLeft',
+              position: "insideLeft",
               fontSize: 11,
               offset: 10,
             }}
           />
           <Tooltip
-            cursor={{ fill: 'transparent' }}
+            cursor={{ fill: "transparent" }}
             contentStyle={TOOLTIP_STYLE}
-            formatter={(value) => [formatBytes(typeof value === 'number' ? value : 0), yAxisLabel]}
+            formatter={(value) => [formatBytes(typeof value === "number" ? value : 0), yAxisLabel]}
           />
           <Bar dataKey="bytes" fill={ACCENT_COLOR} radius={[4, 4, 0, 0]} />
         </BarChart>

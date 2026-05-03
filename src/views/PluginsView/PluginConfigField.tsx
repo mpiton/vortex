@@ -32,23 +32,13 @@ export function PluginConfigField({
 
   return (
     <div className="flex flex-col gap-1.5">
-      <label
-        id={labelId}
-        htmlFor={field.key}
-        className="text-xs font-medium text-foreground"
-      >
+      <label id={labelId} htmlFor={field.key} className="text-xs font-medium text-foreground">
         {field.key}
       </label>
-      {field.description && (
-        <p className="text-[10px] text-text-dim">{field.description}</p>
-      )}
+      {field.description && <p className="text-[10px] text-text-dim">{field.description}</p>}
       {renderControl(field, value, onChange, labelId, field.key, describedBy)}
       {errorMessage && (
-        <p
-          id={`${labelId}-error`}
-          role="alert"
-          className="text-[10px] text-destructive"
-        >
+        <p id={`${labelId}-error`} role="alert" className="text-[10px] text-destructive">
           {errorMessage}
         </p>
       )}

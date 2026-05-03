@@ -8,11 +8,7 @@ interface PluginsHeaderProps {
   isRefreshing: boolean;
 }
 
-export function PluginsHeader({
-  enabledCount,
-  onRefresh,
-  isRefreshing,
-}: PluginsHeaderProps) {
+export function PluginsHeader({ enabledCount, onRefresh, isRefreshing }: PluginsHeaderProps) {
   const { t } = useTranslation();
 
   return (

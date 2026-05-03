@@ -1,5 +1,5 @@
 import { NavLink } from "react-router";
-import { useTranslation } from 'react-i18next';
+import { useTranslation } from "react-i18next";
 import { ROUTES } from "@/types/layout";
 import { cn } from "@/lib/utils";
 import vortexLogo from "@/assets/vortex-logo.png";
@@ -21,9 +21,7 @@ export function Sidebar() {
       <nav className="flex flex-1 flex-col items-center gap-1">
         {ROUTES.map((route, index) => (
           <div key={route.path} className="flex flex-col items-center">
-            {GROUP_BREAKS.has(index) && (
-              <div className="my-2 h-px w-6 bg-sidebar-divider" />
-            )}
+            {GROUP_BREAKS.has(index) && <div className="my-2 h-px w-6 bg-sidebar-divider" />}
             <NavLink
               to={route.path}
               title={t(route.labelKey)}

@@ -34,10 +34,7 @@ describe("PasteZone", () => {
     render(<PasteZone onPasteUrls={onPasteUrls} />);
 
     const textarea = screen.getByRole("textbox");
-    await user.type(
-      textarea,
-      "https://example.com/file.zip\nhttps://other.com/other.zip",
-    );
+    await user.type(textarea, "https://example.com/file.zip\nhttps://other.com/other.zip");
 
     await user.click(screen.getByRole("button", { name: "Analyze Links" }));
 

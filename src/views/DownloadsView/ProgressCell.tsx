@@ -1,6 +1,6 @@
-import { Progress } from '@/components/ui/progress';
-import { useDownloadStore } from '@/stores/downloadStore';
-import type { DownloadView } from '@/types/download';
+import { Progress } from "@/components/ui/progress";
+import { useDownloadStore } from "@/stores/downloadStore";
+import type { DownloadView } from "@/types/download";
 
 interface ProgressCellProps {
   download: DownloadView;

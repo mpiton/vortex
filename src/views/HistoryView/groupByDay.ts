@@ -1,4 +1,4 @@
-import type { HistoryView } from '@/types/download';
+import type { HistoryView } from "@/types/download";
 
 export interface HistoryDayGroup {
   dayKey: string;
@@ -9,8 +9,8 @@ export interface HistoryDayGroup {
 function toDayKey(unixSeconds: number): string {
   const date = new Date(unixSeconds * 1000);
   const y = date.getFullYear();
-  const m = `${date.getMonth() + 1}`.padStart(2, '0');
-  const d = `${date.getDate()}`.padStart(2, '0');
+  const m = `${date.getMonth() + 1}`.padStart(2, "0");
+  const d = `${date.getDate()}`.padStart(2, "0");
   return `${y}-${m}-${d}`;
 }
 

@@ -18,9 +18,8 @@ export function PlaylistPackageBanner({
   willReuseExisting,
 }: PlaylistPackageBannerProps) {
   const { t } = useTranslation();
-  const displayName = packageName.trim().length > 0
-    ? packageName
-    : t("mediaGrabber.playlistBanner.defaultName");
+  const displayName =
+    packageName.trim().length > 0 ? packageName : t("mediaGrabber.playlistBanner.defaultName");
 
   const messageKey = willReuseExisting
     ? "mediaGrabber.playlistBanner.willReuse"

@@ -77,9 +77,7 @@ export function LinkGrabberView() {
             // optimistic `checking` spinner; downgrade to `unknown` so
             // the row clears and the retry button surfaces.
             onError: () => {
-              setManyLinkStatuses(
-                eligibleUrls.map((url) => [url, { kind: "unknown" }] as const),
-              );
+              setManyLinkStatuses(eligibleUrls.map((url) => [url, { kind: "unknown" }] as const));
             },
           },
         );

@@ -1,14 +1,14 @@
-import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
-import { useTranslation } from 'react-i18next';
-import type { FilterType, FilterConfig } from './types';
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { useTranslation } from "react-i18next";
+import type { FilterType, FilterConfig } from "./types";
 
 const FILTERS: FilterConfig[] = [
-  { type: 'all', labelKey: 'downloads.filters.all' },
-  { type: 'active', labelKey: 'downloads.filters.active', states: ['Downloading', 'Queued'] },
-  { type: 'queued', labelKey: 'downloads.filters.queued', states: ['Queued'] },
-  { type: 'done', labelKey: 'downloads.filters.done', states: ['Completed'] },
-  { type: 'failed', labelKey: 'downloads.filters.failed', states: ['Error', 'Retry'] },
+  { type: "all", labelKey: "downloads.filters.all" },
+  { type: "active", labelKey: "downloads.filters.active", states: ["Downloading", "Queued"] },
+  { type: "queued", labelKey: "downloads.filters.queued", states: ["Queued"] },
+  { type: "done", labelKey: "downloads.filters.done", states: ["Completed"] },
+  { type: "failed", labelKey: "downloads.filters.failed", states: ["Error", "Retry"] },
 ];
 
 interface FilterBarProps {
@@ -19,7 +19,7 @@ interface FilterBarProps {
 
 function getFilterCount(filter: FilterConfig, counts: Record<string, number> | undefined): number {
   if (!counts) return 0;
-  if (filter.type === 'all') {
+  if (filter.type === "all") {
     return counts.total ?? Object.values(counts).reduce((sum, v) => sum + v, 0);
   }
   if (!filter.states) return 0;
@@ -34,7 +34,7 @@ export function FilterBar({ activeFilter, onFilterChange, counts }: FilterBarPro
       {FILTERS.map((filter) => (
         <Button
           key={filter.type}
-          variant={activeFilter === filter.type ? 'default' : 'ghost'}
+          variant={activeFilter === filter.type ? "default" : "ghost"}
           size="sm"
           onClick={() => onFilterChange(filter.type)}
         >

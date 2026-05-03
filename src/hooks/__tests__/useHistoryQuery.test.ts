@@ -1,12 +1,12 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { renderHook, waitFor } from '@testing-library/react';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { invoke } from '@tauri-apps/api/core';
-import type { ReactNode } from 'react';
-import { createElement } from 'react';
-import { useHistoryQuery } from '../useHistoryQuery';
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { renderHook, waitFor } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { invoke } from "@tauri-apps/api/core";
+import type { ReactNode } from "react";
+import { createElement } from "react";
+import { useHistoryQuery } from "../useHistoryQuery";
 
-vi.mock('@tauri-apps/api/core', () => ({
+vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(),
 }));
 
@@ -23,45 +23,44 @@ function freshClient() {
   });
 }
 
-describe('useHistoryQuery', () => {
+describe("useHistoryQuery", () => {
   beforeEach(() => {
     mockInvoke.mockReset();
   });
 
-  it('should invoke history_list when search is empty', async () => {
+  it("should invoke history_list when search is empty", async () => {
     mockInvoke.mockResolvedValueOnce([]);
     const { result } = renderHook(() => useHistoryQuery(), {
       wrapper: wrapper(freshClient()),
     });
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
-    expect(mockInvoke).toHaveBeenCalledWith('history_list', undefined);
+    expect(mockInvoke).toHaveBeenCalledWith("history_list", undefined);
   });
 
-  it('should invoke history_search with trimmed query when search is set', async () => {
+  it("should invoke history_search with trimmed query when search is set", async () => {
     mockInvoke.mockResolvedValueOnce([]);
-    const { result } = renderHook(
-      () => useHistoryQuery({ searchQuery: '  movie  ' }),
-      { wrapper: wrapper(freshClient()) },
-    );
-    await waitFor(() => expect(result.current.isSuccess).toBe(true));
-    expect(mockInvoke).toHaveBeenCalledWith('history_search', { q: 'movie' });
-  });
-
-  it('should fall back to history_list when search is whitespace only', async () => {
-    mockInvoke.mockResolvedValueOnce([]);
-    const { result } = renderHook(() => useHistoryQuery({ searchQuery: '   ' }), {
+    const { result } = renderHook(() => useHistoryQuery({ searchQuery: "  movie  " }), {
       wrapper: wrapper(freshClient()),
     });
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
-    expect(mockInvoke).toHaveBeenCalledWith('history_list', undefined);
+    expect(mockInvoke).toHaveBeenCalledWith("history_search", { q: "movie" });
   });
 
-  it('should propagate errors from the IPC layer', async () => {
-    mockInvoke.mockRejectedValueOnce('backend down');
+  it("should fall back to history_list when search is whitespace only", async () => {
+    mockInvoke.mockResolvedValueOnce([]);
+    const { result } = renderHook(() => useHistoryQuery({ searchQuery: "   " }), {
+      wrapper: wrapper(freshClient()),
+    });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(mockInvoke).toHaveBeenCalledWith("history_list", undefined);
+  });
+
+  it("should propagate errors from the IPC layer", async () => {
+    mockInvoke.mockRejectedValueOnce("backend down");
     const { result } = renderHook(() => useHistoryQuery(), {
       wrapper: wrapper(freshClient()),
     });
     await waitFor(() => expect(result.current.isError).toBe(true));
-    expect(result.current.error?.message).toContain('backend down');
+    expect(result.current.error?.message).toContain("backend down");
   });
 });

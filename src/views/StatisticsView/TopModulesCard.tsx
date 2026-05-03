@@ -1,6 +1,6 @@
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import type { ModuleStats } from '@/types/download';
-import { formatBytes, formatCount } from './format';
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import type { ModuleStats } from "@/types/download";
+import { formatBytes, formatCount } from "./format";
 
 export interface TopModulesCardProps {
   data: ModuleStats[] | undefined;
@@ -31,7 +31,7 @@ export function TopModulesCard({
             data-testid="top-modules-loading"
             className="flex h-32 items-center justify-center text-xs text-muted-foreground"
           >
-            {loadingHint ?? '…'}
+            {loadingHint ?? "…"}
           </div>
         ) : entries.length === 0 ? (
           <div
@@ -48,9 +48,7 @@ export function TopModulesCard({
                 className="flex items-center justify-between gap-3 py-2 text-sm"
               >
                 <div className="flex items-center gap-3">
-                  <span className="w-5 text-right text-xs text-muted-foreground">
-                    {index + 1}
-                  </span>
+                  <span className="w-5 text-right text-xs text-muted-foreground">{index + 1}</span>
                   <span className="font-medium">{module.moduleName}</span>
                 </div>
                 <div className="flex flex-col items-end gap-0.5 text-xs text-muted-foreground">

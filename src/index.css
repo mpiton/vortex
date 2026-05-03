@@ -3,54 +3,54 @@
 
 @theme {
   /* Mockup palette */
-  --color-accent: #4F46E5;
-  --color-accent-hover: #4338CA;
-  --color-accent-light: #EEF2FF;
-  --color-accent-medium: #818CF8;
-  --color-accent-foreground: #C7D2FE;
-  --color-sidebar-bg: #1E1F2B;
-  --color-sidebar-hover: #2A2B3D;
-  --color-sidebar-divider: #2E2F42;
-  --color-sidebar-icon: #6B6D80;
-  --color-success: #16A34A;
-  --color-success-light: #F0FDF4;
-  --color-warning: #CA8A04;
-  --color-warning-light: #FEF9C3;
-  --color-error: #DC2626;
-  --color-error-light: #FEF2F2;
-  --color-cyan: #0891B2;
-  --color-cyan-light: #ECFEFF;
+  --color-accent: #4f46e5;
+  --color-accent-hover: #4338ca;
+  --color-accent-light: #eef2ff;
+  --color-accent-medium: #818cf8;
+  --color-accent-foreground: #c7d2fe;
+  --color-sidebar-bg: #1e1f2b;
+  --color-sidebar-hover: #2a2b3d;
+  --color-sidebar-divider: #2e2f42;
+  --color-sidebar-icon: #6b6d80;
+  --color-success: #16a34a;
+  --color-success-light: #f0fdf4;
+  --color-warning: #ca8a04;
+  --color-warning-light: #fef9c3;
+  --color-error: #dc2626;
+  --color-error-light: #fef2f2;
+  --color-cyan: #0891b2;
+  --color-cyan-light: #ecfeff;
 
   /* Surfaces */
-  --color-background: #EDEEF2;
-  --color-foreground: #1A1D24;
-  --color-surface: #FFFFFF;
-  --color-surface-alt: #F6F7F9;
-  --color-surface-muted: #E4E6EB;
+  --color-background: #edeef2;
+  --color-foreground: #1a1d24;
+  --color-surface: #ffffff;
+  --color-surface-alt: #f6f7f9;
+  --color-surface-muted: #e4e6eb;
 
   /* Semantic (shadcn compat) */
-  --color-primary: #4F46E5;
-  --color-primary-foreground: #FFFFFF;
-  --color-secondary: #F6F7F9;
-  --color-secondary-foreground: #1A1D24;
-  --color-destructive: #DC2626;
-  --color-destructive-foreground: #FFFFFF;
-  --color-muted: #5C6370;
-  --color-muted-foreground: #8B919D;
-  --color-card: #FFFFFF;
-  --color-card-foreground: #1A1D24;
-  --color-popover: #FFFFFF;
-  --color-popover-foreground: #1A1D24;
-  --color-border: #D0D3DA;
-  --color-border-soft: #E4E6EB;
-  --color-input: #E4E6EB;
-  --color-ring: #4F46E5;
+  --color-primary: #4f46e5;
+  --color-primary-foreground: #ffffff;
+  --color-secondary: #f6f7f9;
+  --color-secondary-foreground: #1a1d24;
+  --color-destructive: #dc2626;
+  --color-destructive-foreground: #ffffff;
+  --color-muted: #5c6370;
+  --color-muted-foreground: #8b919d;
+  --color-card: #ffffff;
+  --color-card-foreground: #1a1d24;
+  --color-popover: #ffffff;
+  --color-popover-foreground: #1a1d24;
+  --color-border: #d0d3da;
+  --color-border-soft: #e4e6eb;
+  --color-input: #e4e6eb;
+  --color-ring: #4f46e5;
 
   /* Text */
-  --color-text: #1A1D24;
-  --color-text-muted: #5C6370;
-  --color-text-dim: #8B919D;
-  --color-text-ghost: #B0B5BF;
+  --color-text: #1a1d24;
+  --color-text-muted: #5c6370;
+  --color-text-dim: #8b919d;
+  --color-text-ghost: #b0b5bf;
 
   /* Typography — monospace only per mockup */
   --font-sans: "IBM Plex Mono", ui-monospace, monospace;
@@ -63,30 +63,30 @@
 
 .dark {
   --color-background: #111318;
-  --color-foreground: #E4E6EB;
-  --color-surface: #1A1D24;
-  --color-surface-alt: #22252E;
-  --color-surface-muted: #2E3140;
-  --color-primary: #818CF8;
-  --color-primary-foreground: #1E1F2B;
-  --color-secondary: #22252E;
-  --color-secondary-foreground: #E4E6EB;
-  --color-muted: #5C6370;
-  --color-muted-foreground: #8B919D;
-  --color-card: #1A1D24;
-  --color-card-foreground: #E4E6EB;
-  --color-popover: #1A1D24;
-  --color-popover-foreground: #E4E6EB;
-  --color-border: #2E3140;
-  --color-border-soft: #3A3E4A;
-  --color-input: #2E3140;
-  --color-ring: #818CF8;
-  --color-accent: #818CF8;
-  --color-accent-hover: #6366F1;
-  --color-text: #E4E6EB;
-  --color-text-muted: #8B919D;
-  --color-text-dim: #6B6D80;
-  --color-text-ghost: #4A4D5A;
+  --color-foreground: #e4e6eb;
+  --color-surface: #1a1d24;
+  --color-surface-alt: #22252e;
+  --color-surface-muted: #2e3140;
+  --color-primary: #818cf8;
+  --color-primary-foreground: #1e1f2b;
+  --color-secondary: #22252e;
+  --color-secondary-foreground: #e4e6eb;
+  --color-muted: #5c6370;
+  --color-muted-foreground: #8b919d;
+  --color-card: #1a1d24;
+  --color-card-foreground: #e4e6eb;
+  --color-popover: #1a1d24;
+  --color-popover-foreground: #e4e6eb;
+  --color-border: #2e3140;
+  --color-border-soft: #3a3e4a;
+  --color-input: #2e3140;
+  --color-ring: #818cf8;
+  --color-accent: #818cf8;
+  --color-accent-hover: #6366f1;
+  --color-text: #e4e6eb;
+  --color-text-muted: #8b919d;
+  --color-text-dim: #6b6d80;
+  --color-text-ghost: #4a4d5a;
 }
 
 @layer base {

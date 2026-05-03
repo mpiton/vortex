@@ -1,4 +1,4 @@
-import { create } from 'zustand';
+import { create } from "zustand";
 
 interface UiStoreState {
   selectedDownloadId: string | null;
@@ -28,9 +28,7 @@ export const useUiStore = create<UiStoreState>((set) => ({
         : [...s.selectedDownloadIds, id];
       return {
         selectedDownloadIds: nextIds,
-        selectedDownloadId: removing && s.selectedDownloadId === id
-          ? null
-          : s.selectedDownloadId,
+        selectedDownloadId: removing && s.selectedDownloadId === id ? null : s.selectedDownloadId,
       };
     }),
   clearSelection: () => set({ selectedDownloadIds: [], selectedDownloadId: null }),

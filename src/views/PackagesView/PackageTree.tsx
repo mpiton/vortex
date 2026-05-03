@@ -1,11 +1,7 @@
 import { useTranslation } from "react-i18next";
 import type { DownloadView } from "@/types/download";
 import type { PackageView } from "@/types/package";
-import {
-  PackageRow,
-  type PackageRowActions,
-  type PendingMove,
-} from "./PackageRow";
+import { PackageRow, type PackageRowActions, type PendingMove } from "./PackageRow";
 
 interface PackageTreeProps {
   packages: PackageView[];

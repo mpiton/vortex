@@ -1,0 +1,116 @@
+name: Mutation testing
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "src-tauri/**"
+      - ".github/workflows/mutants.yml"
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  incremental:
+    name: cargo-mutants — PR diff
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-mutants
+
+      - name: Compute PR diff (src-tauri only)
+        run: |
+          git diff origin/${{ github.base_ref }}.. -- 'src-tauri/**' | tee mutants.diff
+
+      - name: cargo mutants --in-diff
+        # Fails the job if any mutant survives. Exit 0 = all killed/unviable,
+        # exit 2 = uncaught mutants.
+        run: |
+          cargo mutants \
+            --manifest-path src-tauri/Cargo.toml \
+            --no-shuffle \
+            --in-place \
+            -vV \
+            --in-diff mutants.diff
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mutants-incremental
+          path: src-tauri/mutants.out
+
+  full:
+    name: cargo-mutants — full sharded (shard ${{ matrix.shard }}/4)
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: mutants-shard-${{ matrix.shard }}
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-mutants
+
+      - name: cargo mutants --shard ${{ matrix.shard }}/4
+        run: |
+          cargo mutants \
+            --manifest-path src-tauri/Cargo.toml \
+            --no-shuffle \
+            --in-place \
+            -vV \
+            --shard ${{ matrix.shard }}/4
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mutants-full-shard-${{ matrix.shard }}
+          path: src-tauri/mutants.out
