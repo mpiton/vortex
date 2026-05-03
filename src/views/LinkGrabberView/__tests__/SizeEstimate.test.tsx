@@ -23,12 +23,8 @@ describe("SizeEstimate", () => {
   });
 
   it("should use actual bitrate from qualities when provided", () => {
-    const qualities = [
-      { quality: "720p", height: 720, width: 1280, fps: 30, bitrateKbps: 3000 },
-    ];
-    render(
-      <SizeEstimate quality="720p" format="mp4" duration={60} qualities={qualities} />,
-    );
+    const qualities = [{ quality: "720p", height: 720, width: 1280, fps: 30, bitrateKbps: 3000 }];
+    render(<SizeEstimate quality="720p" format="mp4" duration={60} qualities={qualities} />);
     // 3000 kbps * 1000 * 60 / 8 = 22_500_000 bytes ≈ 21.46 MB
     expect(screen.getByText(/Estimated Size: 21\.46 MB/)).toBeInTheDocument();
   });
@@ -40,9 +36,7 @@ describe("SizeEstimate", () => {
   });
 
   it("should update when quality changes", () => {
-    const { rerender } = render(
-      <SizeEstimate quality="480p" format="mp4" duration={600} />,
-    );
+    const { rerender } = render(<SizeEstimate quality="480p" format="mp4" duration={600} />);
     expect(screen.getByText(/480p MP4/)).toBeInTheDocument();
 
     rerender(<SizeEstimate quality="4k" format="mp4" duration={600} />);

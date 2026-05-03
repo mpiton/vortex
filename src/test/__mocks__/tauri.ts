@@ -7,17 +7,15 @@ export const invoke = vi.fn();
 type ListenerCallback = (event: { payload: unknown }) => void;
 const listeners = new Map<string, Set<ListenerCallback>>();
 
-export const listen = vi.fn(
-  async (event: string, handler: ListenerCallback) => {
-    if (!listeners.has(event)) {
-      listeners.set(event, new Set());
-    }
-    listeners.get(event)!.add(handler);
-    return () => {
-      listeners.get(event)?.delete(handler);
-    };
+export const listen = vi.fn(async (event: string, handler: ListenerCallback) => {
+  if (!listeners.has(event)) {
+    listeners.set(event, new Set());
   }
-);
+  listeners.get(event)!.add(handler);
+  return () => {
+    listeners.get(event)?.delete(handler);
+  };
+});
 
 export function emitMockEvent(event: string, payload: unknown) {
   listeners.get(event)?.forEach((handler) => handler({ payload }));

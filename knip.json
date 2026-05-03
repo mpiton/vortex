@@ -1,0 +1,28 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "entry": ["src/main.tsx", "vite.config.ts"],
+  "project": ["src/**/*.{ts,tsx}", "*.config.{ts,js,cjs}"],
+  "ignore": ["src/vite-env.d.ts", "src-tauri/**", "node_modules/**", "dist/**", "coverage/**"],
+  "ignoreBinaries": ["tauri", "tauri-pilot"],
+  "ignoreDependencies": [
+    "@tauri-apps/api",
+    "@tauri-apps/cli",
+    "@tauri-apps/plugin-dialog",
+    "tailwindcss",
+    "@tailwindcss/vite"
+  ],
+  "ignoreExportsUsedInFile": true,
+  "rules": {
+    "files": "error",
+    "dependencies": "error",
+    "unlisted": "error",
+    "binaries": "error",
+    "unresolved": "error",
+    "exports": "warn",
+    "types": "warn",
+    "nsExports": "warn",
+    "nsTypes": "warn",
+    "duplicates": "warn",
+    "enumMembers": "warn"
+  }
+}

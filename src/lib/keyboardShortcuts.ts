@@ -1,19 +1,17 @@
-export const SHORTCUT_ACTION_EVENT = 'vortex:shortcut-action';
+export const SHORTCUT_ACTION_EVENT = "vortex:shortcut-action";
 
 export const SHORTCUT_ACTIONS = {
-  downloadsFocusSearch: 'downloads.focus-search',
-  downloadsSelectAll: 'downloads.select-all',
-  downloadsToggleSelected: 'downloads.toggle-selected',
-  downloadsRemoveSelected: 'downloads.remove-selected',
+  downloadsFocusSearch: "downloads.focus-search",
+  downloadsSelectAll: "downloads.select-all",
+  downloadsToggleSelected: "downloads.toggle-selected",
+  downloadsRemoveSelected: "downloads.remove-selected",
 } as const;
 
-export type ShortcutAction =
-  (typeof SHORTCUT_ACTIONS)[keyof typeof SHORTCUT_ACTIONS];
+export type ShortcutAction = (typeof SHORTCUT_ACTIONS)[keyof typeof SHORTCUT_ACTIONS];
 
 function isShortcutAction(value: unknown): value is ShortcutAction {
   return (
-    typeof value === 'string' &&
-    Object.values(SHORTCUT_ACTIONS).includes(value as ShortcutAction)
+    typeof value === "string" && Object.values(SHORTCUT_ACTIONS).includes(value as ShortcutAction)
   );
 }
 
@@ -25,9 +23,7 @@ export function dispatchShortcutAction(action: ShortcutAction) {
   );
 }
 
-export function subscribeShortcutAction(
-  handler: (action: ShortcutAction) => void,
-) {
+export function subscribeShortcutAction(handler: (action: ShortcutAction) => void) {
   const listener = (event: Event) => {
     if (!(event instanceof CustomEvent)) return;
 
@@ -39,9 +35,6 @@ export function subscribeShortcutAction(
 
   window.addEventListener(SHORTCUT_ACTION_EVENT, listener as EventListener);
   return () => {
-    window.removeEventListener(
-      SHORTCUT_ACTION_EVENT,
-      listener as EventListener,
-    );
+    window.removeEventListener(SHORTCUT_ACTION_EVENT, listener as EventListener);
   };
 }

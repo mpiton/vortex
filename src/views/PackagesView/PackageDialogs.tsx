@@ -146,8 +146,7 @@ export function RenamePackageDialog({ pkg, onCancel, onSubmit }: RenamePackageDi
   }, [open]);
 
   const trimmed = name.trim();
-  const canSubmit =
-    !submitting && trimmed.length > 0 && trimmed !== initialNameRef.current.trim();
+  const canSubmit = !submitting && trimmed.length > 0 && trimmed !== initialNameRef.current.trim();
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

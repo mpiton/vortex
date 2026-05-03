@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo } from "react";
 import {
   CartesianGrid,
   Line,
@@ -7,16 +7,16 @@ import {
   Tooltip,
   XAxis,
   YAxis,
-} from 'recharts';
+} from "recharts";
 import {
   ACCENT_COLOR,
   CHART_AXIS_COLOR,
   CHART_GRID_COLOR,
   CHART_TOOLTIP_BG,
   CHART_TOOLTIP_BORDER,
-} from './chartColors';
-import type { SpeedPoint } from './derive';
-import { formatSpeed } from './format';
+} from "./chartColors";
+import type { SpeedPoint } from "./derive";
+import { formatSpeed } from "./format";
 
 export interface SpeedCurveChartProps {
   data: SpeedPoint[];
@@ -28,16 +28,11 @@ export interface SpeedCurveChartProps {
 const TOOLTIP_STYLE = {
   background: CHART_TOOLTIP_BG,
   border: `1px solid ${CHART_TOOLTIP_BORDER}`,
-  borderRadius: '6px',
-  fontSize: '12px',
+  borderRadius: "6px",
+  fontSize: "12px",
 } as const;
 
-export function SpeedCurveChart({
-  data,
-  ariaLabel,
-  yAxisLabel,
-  xAxisLabel,
-}: SpeedCurveChartProps) {
+export function SpeedCurveChart({ data, ariaLabel, yAxisLabel, xAxisLabel }: SpeedCurveChartProps) {
   const points = useMemo(() => data.map((p) => ({ date: p.date, avgSpeed: p.avgSpeed })), [data]);
 
   return (
@@ -51,7 +46,7 @@ export function SpeedCurveChart({
             fontSize={11}
             tickLine={false}
             axisLine={false}
-            label={{ value: xAxisLabel, position: 'insideBottom', offset: -2, fontSize: 11 }}
+            label={{ value: xAxisLabel, position: "insideBottom", offset: -2, fontSize: 11 }}
           />
           <YAxis
             stroke={CHART_AXIS_COLOR}
@@ -62,14 +57,14 @@ export function SpeedCurveChart({
             label={{
               value: yAxisLabel,
               angle: -90,
-              position: 'insideLeft',
+              position: "insideLeft",
               fontSize: 11,
               offset: 10,
             }}
           />
           <Tooltip
             contentStyle={TOOLTIP_STYLE}
-            formatter={(value) => [formatSpeed(typeof value === 'number' ? value : 0), yAxisLabel]}
+            formatter={(value) => [formatSpeed(typeof value === "number" ? value : 0), yAxisLabel]}
           />
           <Line
             type="monotone"

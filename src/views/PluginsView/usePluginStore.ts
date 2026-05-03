@@ -11,19 +11,13 @@ const STORE_QUERY_KEY = ["plugin_store_list"] as const;
 // Tracks the count of concurrent operations per plugin name. A Set would lose
 // multiplicity when the same plugin is acted on twice: the first onSettled
 // would clear the flag while a second request is still in-flight.
-function incrementCounter(
-  prev: ReadonlyMap<string, number>,
-  name: string,
-): Map<string, number> {
+function incrementCounter(prev: ReadonlyMap<string, number>, name: string): Map<string, number> {
   const next = new Map(prev);
   next.set(name, (next.get(name) ?? 0) + 1);
   return next;
 }
 
-function decrementCounter(
-  prev: ReadonlyMap<string, number>,
-  name: string,
-): Map<string, number> {
+function decrementCounter(prev: ReadonlyMap<string, number>, name: string): Map<string, number> {
   const next = new Map(prev);
   const current = next.get(name) ?? 0;
   if (current <= 1) {
@@ -36,14 +30,14 @@ function decrementCounter(
 
 export function usePluginStore() {
   const { t } = useTranslation();
-  const [installingCounts, setInstallingCounts] = useState<ReadonlyMap<string, number>>(
-    new Map(),
-  );
-  const [updatingCounts, setUpdatingCounts] = useState<ReadonlyMap<string, number>>(
-    new Map(),
-  );
+  const [installingCounts, setInstallingCounts] = useState<ReadonlyMap<string, number>>(new Map());
+  const [updatingCounts, setUpdatingCounts] = useState<ReadonlyMap<string, number>>(new Map());
 
-  const { data: entries = [], isLoading, isError } = useQuery({
+  const {
+    data: entries = [],
+    isLoading,
+    isError,
+  } = useQuery({
     queryKey: STORE_QUERY_KEY,
     queryFn: () => invoke<PluginStoreEntry[]>("plugin_store_list"),
   });
@@ -53,37 +47,31 @@ export function usePluginStore() {
     onSuccess: () => toast.success(t("plugins.toast.refreshSuccess")),
   });
 
-  const installMutation = useTauriMutation<void, { name: string }>(
-    "plugin_store_install",
-    {
-      invalidateKeys: [STORE_QUERY_KEY],
-      onMutate: (variables) => {
-        setInstallingCounts((prev) => incrementCounter(prev, variables.name));
-      },
-      onSuccess: (_data, variables) => {
-        toast.success(t("plugins.toast.installSuccess", { name: variables.name }));
-      },
-      onSettled: (_data, _error, variables) => {
-        setInstallingCounts((prev) => decrementCounter(prev, variables.name));
-      },
+  const installMutation = useTauriMutation<void, { name: string }>("plugin_store_install", {
+    invalidateKeys: [STORE_QUERY_KEY],
+    onMutate: (variables) => {
+      setInstallingCounts((prev) => incrementCounter(prev, variables.name));
     },
-  );
+    onSuccess: (_data, variables) => {
+      toast.success(t("plugins.toast.installSuccess", { name: variables.name }));
+    },
+    onSettled: (_data, _error, variables) => {
+      setInstallingCounts((prev) => decrementCounter(prev, variables.name));
+    },
+  });
 
-  const updateMutation = useTauriMutation<void, { name: string }>(
-    "plugin_store_update",
-    {
-      invalidateKeys: [STORE_QUERY_KEY],
-      onMutate: (variables) => {
-        setUpdatingCounts((prev) => incrementCounter(prev, variables.name));
-      },
-      onSuccess: (_data, variables) => {
-        toast.success(t("plugins.toast.updateSuccess", { name: variables.name }));
-      },
-      onSettled: (_data, _error, variables) => {
-        setUpdatingCounts((prev) => decrementCounter(prev, variables.name));
-      },
+  const updateMutation = useTauriMutation<void, { name: string }>("plugin_store_update", {
+    invalidateKeys: [STORE_QUERY_KEY],
+    onMutate: (variables) => {
+      setUpdatingCounts((prev) => incrementCounter(prev, variables.name));
     },
-  );
+    onSuccess: (_data, variables) => {
+      toast.success(t("plugins.toast.updateSuccess", { name: variables.name }));
+    },
+    onSettled: (_data, _error, variables) => {
+      setUpdatingCounts((prev) => decrementCounter(prev, variables.name));
+    },
+  });
 
   return {
     entries,

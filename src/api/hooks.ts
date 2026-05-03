@@ -1,12 +1,12 @@
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import type { UseQueryOptions } from '@tanstack/react-query';
-import { tauriInvoke } from '@/api/client';
-import { toast } from '@/lib/toast';
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import type { UseQueryOptions } from "@tanstack/react-query";
+import { tauriInvoke } from "@/api/client";
+import { toast } from "@/lib/toast";
 
 export function useTauriQuery<T>(
   command: string,
   args?: Record<string, unknown>,
-  options?: Omit<UseQueryOptions<T, Error>, 'queryFn'>
+  options?: Omit<UseQueryOptions<T, Error>, "queryFn">,
 ) {
   return useQuery<T, Error>({
     queryKey: args ? [command, args] : [command],
@@ -44,10 +44,7 @@ interface UseTauriMutationOptions<TData, TVariables> {
   errorMessage?: (err: Error) => string;
 }
 
-function resolveErrorMessage(
-  error: Error,
-  mapper?: (err: Error) => string,
-): string {
+function resolveErrorMessage(error: Error, mapper?: (err: Error) => string): string {
   if (!mapper) return error.message;
   let mapped: string;
   try {

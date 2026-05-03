@@ -66,18 +66,14 @@ export function PackageRow({
   actions,
 }: PackageRowProps) {
   const { t } = useTranslation();
-  const sourceLabelKey = useMemo(
-    () => `packages.filter.${pkg.sourceType}`,
-    [pkg.sourceType],
-  );
+  const sourceLabelKey = useMemo(() => `packages.filter.${pkg.sourceType}`, [pkg.sourceType]);
 
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
     actions.dropDownload(pkg.id, e);
   };
 
-  const isMoveTarget =
-    pendingMove !== null && pendingMove.fromPackageId !== pkg.id;
+  const isMoveTarget = pendingMove !== null && pendingMove.fromPackageId !== pkg.id;
 
   return (
     <div
@@ -243,9 +239,7 @@ export function PackageRow({
               key={d.id}
               download={d}
               packageId={pkg.id}
-              isPendingMove={
-                pendingMove !== null && pendingMove.downloadId === Number(d.id)
-              }
+              isPendingMove={pendingMove !== null && pendingMove.downloadId === Number(d.id)}
               onDragStart={actions.beginDragDownload}
               onDragEnd={actions.endDragDownload}
               onSelectForMove={actions.selectForMove}

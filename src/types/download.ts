@@ -1,16 +1,26 @@
 export type DownloadState =
-  | 'Queued'
-  | 'Downloading'
-  | 'Paused'
-  | 'Waiting'
-  | 'Retry'
-  | 'Error'
-  | 'Completed'
-  | 'Checking'
-  | 'Extracting';
+  | "Queued"
+  | "Downloading"
+  | "Paused"
+  | "Waiting"
+  | "Retry"
+  | "Error"
+  | "Completed"
+  | "Checking"
+  | "Extracting";
 
-export type SortField = 'name' | 'filename' | 'size' | 'filesize' | 'progress' | 'speed' | 'state' | 'status' | 'queue' | 'queuePosition';
-export type SortDirection = 'asc' | 'ascending' | 'desc' | 'descending';
+export type SortField =
+  | "name"
+  | "filename"
+  | "size"
+  | "filesize"
+  | "progress"
+  | "speed"
+  | "state"
+  | "status"
+  | "queue"
+  | "queuePosition";
+export type SortDirection = "asc" | "ascending" | "desc" | "descending";
 
 export interface DownloadFilter {
   filterState?: DownloadState;
@@ -26,7 +36,7 @@ export interface SegmentView {
   startByte: number;
   endByte: number;
   downloadedBytes: number;
-  state: 'Pending' | 'Downloading' | 'Completed' | 'Error';
+  state: "Pending" | "Downloading" | "Completed" | "Error";
 }
 
 export interface DownloadView {
@@ -75,9 +85,9 @@ export interface DownloadDetailView {
   updatedAt: number;
 }
 
-export type VerifyChecksumOutcome = 'verified' | 'mismatch' | 'noExpectedChecksum';
+export type VerifyChecksumOutcome = "verified" | "mismatch" | "noExpectedChecksum";
 
-export type ChecksumAlgorithmLabel = 'SHA-256' | 'MD5';
+export type ChecksumAlgorithmLabel = "SHA-256" | "MD5";
 
 export interface PluginView {
   name: string;
@@ -123,7 +133,7 @@ export interface StatsView {
   topHosts: HostStats[];
 }
 
-export type StatsPeriod = '7d' | '30d' | 'all';
+export type StatsPeriod = "7d" | "30d" | "all";
 
 export interface ModuleStats {
   moduleName: string;

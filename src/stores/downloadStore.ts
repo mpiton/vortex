@@ -1,4 +1,4 @@
-import { create } from 'zustand';
+import { create } from "zustand";
 
 interface DownloadProgress {
   id: string;
@@ -23,7 +23,7 @@ export const selectTotalSpeed = (state: DownloadStoreState): number =>
   Object.values(state.progressMap).reduce((sum, p) => sum + p.speedBytesPerSec, 0);
 
 export const selectActiveCount = (state: DownloadStoreState): number =>
-  state.countByState['Downloading'] ?? 0;
+  state.countByState["Downloading"] ?? 0;
 
 export const useDownloadStore = create<DownloadStoreState>((set) => ({
   progressMap: {},

@@ -55,28 +55,28 @@ export interface ClipboardMonitoringChangedPayload {
 }
 
 export type TauriEventMap = {
-  'download-created': DownloadIdPayload;
-  'download-started': DownloadIdPayload;
-  'download-paused': DownloadIdPayload;
-  'download-resumed': DownloadIdPayload;
-  'download-resumed-from-wait': DownloadIdPayload;
-  'download-completed': DownloadIdPayload;
-  'download-failed': DownloadFailedPayload;
-  'download-retrying': DownloadRetryingPayload;
-  'download-waiting': DownloadIdPayload;
-  'download-checking': DownloadIdPayload;
-  'download-cancelled': DownloadIdPayload;
-  'download-removed': DownloadIdPayload;
-  'download-extracting': DownloadIdPayload;
-  'download-progress': DownloadProgressPayload;
-  'segment-started': SegmentPayload;
-  'segment-completed': SegmentPayload;
-  'segment-failed': SegmentFailedPayload;
-  'plugin-loaded': PluginLoadedPayload;
-  'plugin-unloaded': PluginUnloadedPayload;
-  'package-created': PackageCreatedPayload;
-  'clipboard-url-detected': ClipboardUrlDetectedPayload;
-  'clipboard-monitoring-changed': ClipboardMonitoringChangedPayload;
+  "download-created": DownloadIdPayload;
+  "download-started": DownloadIdPayload;
+  "download-paused": DownloadIdPayload;
+  "download-resumed": DownloadIdPayload;
+  "download-resumed-from-wait": DownloadIdPayload;
+  "download-completed": DownloadIdPayload;
+  "download-failed": DownloadFailedPayload;
+  "download-retrying": DownloadRetryingPayload;
+  "download-waiting": DownloadIdPayload;
+  "download-checking": DownloadIdPayload;
+  "download-cancelled": DownloadIdPayload;
+  "download-removed": DownloadIdPayload;
+  "download-extracting": DownloadIdPayload;
+  "download-progress": DownloadProgressPayload;
+  "segment-started": SegmentPayload;
+  "segment-completed": SegmentPayload;
+  "segment-failed": SegmentFailedPayload;
+  "plugin-loaded": PluginLoadedPayload;
+  "plugin-unloaded": PluginUnloadedPayload;
+  "package-created": PackageCreatedPayload;
+  "clipboard-url-detected": ClipboardUrlDetectedPayload;
+  "clipboard-monitoring-changed": ClipboardMonitoringChangedPayload;
 };
 
 export type TauriEventName = keyof TauriEventMap;

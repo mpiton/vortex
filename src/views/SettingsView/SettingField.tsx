@@ -1,6 +1,6 @@
-import { useState, useId, useEffect } from 'react';
-import { Switch } from '@/components/ui/switch';
-import { Input } from '@/components/ui/input';
+import { useState, useId, useEffect } from "react";
+import { Switch } from "@/components/ui/switch";
+import { Input } from "@/components/ui/input";
 
 interface SettingToggleProps {
   label: string;
@@ -9,12 +9,19 @@ interface SettingToggleProps {
   onCheckedChange: (checked: boolean) => void;
 }
 
-export function SettingToggle({ label, description, checked, onCheckedChange }: SettingToggleProps) {
+export function SettingToggle({
+  label,
+  description,
+  checked,
+  onCheckedChange,
+}: SettingToggleProps) {
   const id = useId();
   return (
     <div className="flex items-center justify-between gap-4 py-2">
       <div>
-        <label htmlFor={id} className="text-sm font-medium">{label}</label>
+        <label htmlFor={id} className="text-sm font-medium">
+          {label}
+        </label>
         {description && <p className="text-xs text-muted-foreground">{description}</p>}
       </div>
       <Switch id={id} checked={checked} onCheckedChange={onCheckedChange} />
@@ -50,7 +57,7 @@ export function SettingNumberInput({
 
   const commit = () => {
     const num = Number(localValue);
-    if (!Number.isNaN(num) && localValue !== '') {
+    if (!Number.isNaN(num) && localValue !== "") {
       let clamped = Math.min(max ?? num, Math.max(min ?? num, num));
       if (step && step > 0) {
         const base = min ?? 0;
@@ -66,7 +73,9 @@ export function SettingNumberInput({
   return (
     <div className="flex items-center justify-between gap-4 py-2">
       <div>
-        <label htmlFor={id} className="text-sm font-medium">{label}</label>
+        <label htmlFor={id} className="text-sm font-medium">
+          {label}
+        </label>
         {description && <p className="text-xs text-muted-foreground">{description}</p>}
       </div>
       <Input
@@ -79,7 +88,9 @@ export function SettingNumberInput({
         step={step}
         onChange={(e) => setLocalValue(e.target.value)}
         onBlur={commit}
-        onKeyDown={(e) => { if (e.key === 'Enter') commit(); }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") commit();
+        }}
       />
     </div>
   );

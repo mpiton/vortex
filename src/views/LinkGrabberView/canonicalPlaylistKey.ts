@@ -8,11 +8,7 @@ const YOUTUBE_HOSTS = new Set([
   "youtu.be",
 ]);
 
-const SOUNDCLOUD_HOSTS = new Set([
-  "soundcloud.com",
-  "www.soundcloud.com",
-  "m.soundcloud.com",
-]);
+const SOUNDCLOUD_HOSTS = new Set(["soundcloud.com", "www.soundcloud.com", "m.soundcloud.com"]);
 
 /**
  * Reduce a media URL to a stable key for playlist grouping. The same

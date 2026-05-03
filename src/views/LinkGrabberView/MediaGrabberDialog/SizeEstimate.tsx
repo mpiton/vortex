@@ -18,22 +18,15 @@ const FALLBACK_BITRATE_MAP: Record<string, number> = {
   audio_only: 192,
 };
 
-export function SizeEstimate({
-  quality,
-  format,
-  duration,
-  qualities,
-}: SizeEstimateProps) {
+export function SizeEstimate({ quality, format, duration, qualities }: SizeEstimateProps) {
   const actualBitrate = qualities?.find((q) => q.quality === quality)?.bitrateKbps;
   const bitrateKbps = actualBitrate ?? FALLBACK_BITRATE_MAP[quality] ?? 2500;
-  const fileSizeBytes = ((bitrateKbps * 1000) * duration) / 8;
+  const fileSizeBytes = (bitrateKbps * 1000 * duration) / 8;
   const isAudio = quality === "audio_only";
 
   return (
     <div className="rounded bg-muted p-3">
-      <p className="text-sm font-semibold">
-        Estimated Size: {formatBytes(fileSizeBytes)}
-      </p>
+      <p className="text-sm font-semibold">Estimated Size: {formatBytes(fileSizeBytes)}</p>
       <p className="text-xs text-muted-foreground">
         {quality} {format.toUpperCase()} &bull; {Math.round(duration / 60)}m{" "}
         {isAudio ? "audio" : "video"}

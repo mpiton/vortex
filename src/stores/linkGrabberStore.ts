@@ -50,9 +50,7 @@ export const useLinkGrabberStore = create<LinkGrabberState>((set) => ({
       return changed ? { statuses: next } : state;
     }),
   reset: () =>
-    set((state) =>
-      Object.keys(state.statuses).length === 0 ? state : { statuses: {} },
-    ),
+    set((state) => (Object.keys(state.statuses).length === 0 ? state : { statuses: {} })),
 }));
 
 function statusesEqual(a: LinkProbeStatus | undefined, b: LinkProbeStatus): boolean {

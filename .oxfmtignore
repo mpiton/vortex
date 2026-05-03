@@ -1,0 +1,18 @@
+# Auto-generated Tauri schemas — do not format (regenerated on every build).
+src-tauri/gen/
+
+# Tauri / native — Rust toolchain owns formatting here.
+src-tauri/
+
+# Workspace artifacts not produced by the frontend build.
+contrib/
+registry/
+
+# Documentation — Markdown is left to authors.
+*.md
+
+# Build outputs
+dist/
+coverage/
+node_modules/
+target/

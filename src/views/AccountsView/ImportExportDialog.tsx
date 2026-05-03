@@ -32,8 +32,7 @@ export function ExportAccountsDialog({ open, onOpenChange, onSubmit }: ExportDia
   }, [open]);
 
   const mismatch = confirmPassphrase.length > 0 && passphrase !== confirmPassphrase;
-  const canSubmit =
-    !submitting && passphrase.length > 0 && passphrase === confirmPassphrase;
+  const canSubmit = !submitting && passphrase.length > 0 && passphrase === confirmPassphrase;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

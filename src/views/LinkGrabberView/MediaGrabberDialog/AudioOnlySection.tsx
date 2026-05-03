@@ -37,7 +37,9 @@ export function AudioOnlySection({
 
       {enabled && (
         <div className="space-y-2">
-          <span className="text-sm font-semibold" id="audio-format-label">Audio Format</span>
+          <span className="text-sm font-semibold" id="audio-format-label">
+            Audio Format
+          </span>
           <div className="grid grid-cols-3 gap-2" role="group" aria-labelledby="audio-format-label">
             {audioFormats.map((fmt) => (
               <Button
@@ -53,8 +55,7 @@ export function AudioOnlySection({
             ))}
           </div>
           <p className="text-xs text-muted-foreground">
-            Popular formats: MP3 (wide compatibility), M4A (iTunes), OPUS
-            (quality)
+            Popular formats: MP3 (wide compatibility), M4A (iTunes), OPUS (quality)
           </p>
         </div>
       )}

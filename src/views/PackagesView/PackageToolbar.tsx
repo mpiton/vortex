@@ -30,7 +30,11 @@ export function PackageToolbar({
   const { t } = useTranslation();
   return (
     <header className="flex flex-wrap items-center justify-between gap-3">
-      <div className="flex flex-wrap items-center gap-2" role="tablist" aria-label={t("packages.title")}>
+      <div
+        className="flex flex-wrap items-center gap-2"
+        role="tablist"
+        aria-label={t("packages.title")}
+      >
         {FILTER_ORDER.map((value) => (
           <Button
             key={value}
@@ -54,11 +58,7 @@ export function PackageToolbar({
           data-testid="packages-search"
           className="w-56"
         />
-        <Button
-          type="button"
-          onClick={onAddClick}
-          data-testid="packages-add-trigger"
-        >
+        <Button type="button" onClick={onAddClick} data-testid="packages-add-trigger">
           <Plus className="mr-1 h-4 w-4" aria-hidden />
           {t("packages.actions.add")}
         </Button>

@@ -1,25 +1,25 @@
-import { useState } from 'react';
-import { invoke } from '@tauri-apps/api/core';
-import { useQueryClient } from '@tanstack/react-query';
-import { CheckCircle2, XCircle, Loader2 } from 'lucide-react';
-import type { DownloadDetailView, VerifyChecksumOutcome } from '@/types/download';
-import { Button } from '@/components/ui/button';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
-import { downloadQueries } from '@/api/queries';
+import { useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { useQueryClient } from "@tanstack/react-query";
+import { CheckCircle2, XCircle, Loader2 } from "lucide-react";
+import type { DownloadDetailView, VerifyChecksumOutcome } from "@/types/download";
+import { Button } from "@/components/ui/button";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { downloadQueries } from "@/api/queries";
 
 interface IntegritySectionProps {
   download: DownloadDetailView;
 }
 
-type LocalStatus = 'idle' | 'verifying' | 'verified' | 'mismatch' | 'no-checksum';
+type LocalStatus = "idle" | "verifying" | "verified" | "mismatch" | "no-checksum";
 
 function deriveStatus(download: DownloadDetailView): LocalStatus {
-  if (!download.checksumExpected) return 'no-checksum';
-  if (!download.checksumComputed) return 'idle';
-  return download.checksumExpected.trim().toLowerCase()
-    === download.checksumComputed.trim().toLowerCase()
-    ? 'verified'
-    : 'mismatch';
+  if (!download.checksumExpected) return "no-checksum";
+  if (!download.checksumComputed) return "idle";
+  return download.checksumExpected.trim().toLowerCase() ===
+    download.checksumComputed.trim().toLowerCase()
+    ? "verified"
+    : "mismatch";
 }
 
 // Detect MD5 vs SHA-256 from the hex length so migrated rows without an
@@ -28,24 +28,24 @@ function detectAlgorithm(hash: string | null): string | null {
   if (!hash) return null;
   const trimmed = hash.trim();
   if (!/^[0-9a-fA-F]+$/.test(trimmed)) return null;
-  if (trimmed.length === 64) return 'SHA-256';
-  if (trimmed.length === 32) return 'MD5';
+  if (trimmed.length === 64) return "SHA-256";
+  if (trimmed.length === 32) return "MD5";
   return null;
 }
 
 function statusLabel(status: LocalStatus): string {
   switch (status) {
-    case 'verified':
-      return 'Match';
-    case 'mismatch':
-      return 'Mismatch';
-    case 'verifying':
-      return 'Verifying…';
-    case 'no-checksum':
-      return '—';
-    case 'idle':
+    case "verified":
+      return "Match";
+    case "mismatch":
+      return "Mismatch";
+    case "verifying":
+      return "Verifying…";
+    case "no-checksum":
+      return "—";
+    case "idle":
     default:
-      return 'Pending';
+      return "Pending";
   }
 }
 
@@ -57,20 +57,20 @@ export function IntegritySection({ download }: IntegritySectionProps) {
   const status: LocalStatus = localStatus ?? deriveStatus(download);
   const hasChecksum = download.checksumExpected !== null;
   const algorithm =
-    download.checksumAlgorithm
-    ?? detectAlgorithm(download.checksumExpected)
-    ?? (hasChecksum ? 'Unknown' : '—');
+    download.checksumAlgorithm ??
+    detectAlgorithm(download.checksumExpected) ??
+    (hasChecksum ? "Unknown" : "—");
 
   async function handleVerify() {
     setError(null);
-    setLocalStatus('verifying');
+    setLocalStatus("verifying");
     try {
-      const outcome = await invoke<VerifyChecksumOutcome>('download_verify_checksum', {
+      const outcome = await invoke<VerifyChecksumOutcome>("download_verify_checksum", {
         id: Number(download.id),
       });
-      if (outcome === 'verified') setLocalStatus('verified');
-      else if (outcome === 'mismatch') setLocalStatus('mismatch');
-      else setLocalStatus('no-checksum');
+      if (outcome === "verified") setLocalStatus("verified");
+      else if (outcome === "mismatch") setLocalStatus("mismatch");
+      else setLocalStatus("no-checksum");
       // Refresh the detail so checksumComputed propagates from SQLite.
       await queryClient.invalidateQueries({ queryKey: downloadQueries.detail(download.id) });
     } catch (err) {
@@ -91,12 +91,10 @@ export function IntegritySection({ download }: IntegritySectionProps) {
             variant="outline"
             size="sm"
             onClick={handleVerify}
-            disabled={status === 'verifying'}
+            disabled={status === "verifying"}
             aria-label="Verify checksum"
           >
-            {status === 'verifying' ? (
-              <Loader2 className="size-3.5 mr-1 animate-spin" />
-            ) : null}
+            {status === "verifying" ? <Loader2 className="size-3.5 mr-1 animate-spin" /> : null}
             Verify
           </Button>
         ) : null}
@@ -142,14 +140,11 @@ export function IntegritySection({ download }: IntegritySectionProps) {
         </div>
         <div>
           <p className="text-muted-foreground">Status</p>
-          <p
-            className="font-mono inline-flex items-center gap-1"
-            data-testid="checksum-status"
-          >
-            {status === 'verified' ? (
+          <p className="font-mono inline-flex items-center gap-1" data-testid="checksum-status">
+            {status === "verified" ? (
               <CheckCircle2 className="size-3.5 text-green-600" aria-hidden="true" />
             ) : null}
-            {status === 'mismatch' ? (
+            {status === "mismatch" ? (
               <XCircle className="size-3.5 text-destructive" aria-hidden="true" />
             ) : null}
             {statusLabel(status)}

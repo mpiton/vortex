@@ -1,19 +1,19 @@
-import { useCallback } from 'react';
-import { MoreHorizontal, Copy, Trash2, FolderOpen, RotateCcw } from 'lucide-react';
-import { useTranslation } from 'react-i18next';
-import { Button } from '@/components/ui/button';
+import { useCallback } from "react";
+import { MoreHorizontal, Copy, Trash2, FolderOpen, RotateCcw } from "lucide-react";
+import { useTranslation } from "react-i18next";
+import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu';
-import { formatBytes, formatDate, formatEta, formatSpeed } from '@/lib/format';
-import { useLanguage } from '@/hooks/useLanguage';
-import type { HistoryView } from '@/types/download';
-import { StatusBadge } from './StatusBadge';
-import { deriveHistoryStatus, deriveHostname } from './filterEntries';
+} from "@/components/ui/dropdown-menu";
+import { formatBytes, formatDate, formatEta, formatSpeed } from "@/lib/format";
+import { useLanguage } from "@/hooks/useLanguage";
+import type { HistoryView } from "@/types/download";
+import { StatusBadge } from "./StatusBadge";
+import { deriveHistoryStatus, deriveHostname } from "./filterEntries";
 
 export interface HistoryRowActions {
   redownload: (entry: HistoryView) => void;
@@ -40,8 +40,8 @@ export function HistoryRow({ entry, actions }: HistoryRowProps) {
   // Module and account are not yet carried by HistoryView — the download
   // engine stores them only while a download is active. When the history DTO
   // grows those fields, replace the dash placeholders below.
-  const modulePlaceholder = '—';
-  const accountPlaceholder = '—';
+  const modulePlaceholder = "—";
+  const accountPlaceholder = "—";
 
   return (
     <tr
@@ -54,27 +54,23 @@ export function HistoryRow({ entry, actions }: HistoryRowProps) {
           {entry.fileName}
         </span>
       </td>
-      <td className="px-3 py-2 text-xs text-muted-foreground">
-        {deriveHostname(entry.url)}
-      </td>
+      <td className="px-3 py-2 text-xs text-muted-foreground">{deriveHostname(entry.url)}</td>
       <td className="px-3 py-2 text-xs">{formatBytes(entry.totalBytes)}</td>
       <td className="px-3 py-2 text-xs">{formatEta(entry.durationSeconds)}</td>
-      <td className="px-3 py-2 text-xs">
-        {formatDate(entry.completedAt * 1000, language)}
-      </td>
+      <td className="px-3 py-2 text-xs">{formatDate(entry.completedAt * 1000, language)}</td>
       <td className="px-3 py-2">
         <StatusBadge status={status} />
       </td>
       <td className="px-3 py-2 text-xs">{formatSpeed(entry.avgSpeed)}</td>
       <td
         className="px-3 py-2 text-xs text-muted-foreground"
-        aria-label={t('history.row.moduleEmpty')}
+        aria-label={t("history.row.moduleEmpty")}
       >
         {modulePlaceholder}
       </td>
       <td
         className="px-3 py-2 text-xs text-muted-foreground"
-        aria-label={t('history.row.accountEmpty')}
+        aria-label={t("history.row.accountEmpty")}
       >
         {accountPlaceholder}
       </td>
@@ -84,7 +80,7 @@ export function HistoryRow({ entry, actions }: HistoryRowProps) {
             variant="ghost"
             size="icon"
             className="h-7 w-7"
-            aria-label={t('history.row.redownload')}
+            aria-label={t("history.row.redownload")}
             onClick={handleRedownload}
           >
             <RotateCcw className="size-3.5" />
@@ -95,7 +91,7 @@ export function HistoryRow({ entry, actions }: HistoryRowProps) {
                 variant="ghost"
                 size="icon"
                 className="h-7 w-7"
-                aria-label={t('history.row.moreActions')}
+                aria-label={t("history.row.moreActions")}
               >
                 <MoreHorizontal className="size-3.5" />
               </Button>
@@ -103,16 +99,16 @@ export function HistoryRow({ entry, actions }: HistoryRowProps) {
             <DropdownMenuContent align="end">
               <DropdownMenuItem onClick={handleCopy}>
                 <Copy className="size-3.5" />
-                {t('history.row.copyUrl')}
+                {t("history.row.copyUrl")}
               </DropdownMenuItem>
               <DropdownMenuItem onClick={handleOpenFolder}>
                 <FolderOpen className="size-3.5" />
-                {t('history.row.openFolder')}
+                {t("history.row.openFolder")}
               </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem variant="destructive" onClick={handleDelete}>
                 <Trash2 className="size-3.5" />
-                {t('history.row.delete')}
+                {t("history.row.delete")}
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>

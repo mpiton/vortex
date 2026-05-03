@@ -1,15 +1,15 @@
 export function formatDate(timestampMs: number, locale: string): string {
   return new Intl.DateTimeFormat(locale, {
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
   }).format(new Date(timestampMs));
 }
 
 export function formatEta(seconds: number | null | undefined): string {
-  if (seconds === null || seconds === undefined || seconds <= 0) return '—';
+  if (seconds === null || seconds === undefined || seconds <= 0) return "—";
 
   const days = Math.floor(seconds / 86400);
   const hours = Math.floor((seconds % 86400) / 3600);
@@ -23,9 +23,9 @@ export function formatEta(seconds: number | null | undefined): string {
 }
 
 export function formatSpeed(bytesPerSec: number): string {
-  if (bytesPerSec <= 0) return '0 B/s';
+  if (bytesPerSec <= 0) return "0 B/s";
 
-  const units = ['B/s', 'KB/s', 'MB/s', 'GB/s'];
+  const units = ["B/s", "KB/s", "MB/s", "GB/s"];
   let value = bytesPerSec;
   let unitIndex = 0;
 
@@ -38,9 +38,9 @@ export function formatSpeed(bytesPerSec: number): string {
 }
 
 export function formatBytes(bytes: number | null | undefined): string {
-  if (bytes === null || bytes === undefined || bytes <= 0) return '0 B';
+  if (bytes === null || bytes === undefined || bytes <= 0) return "0 B";
 
-  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const units = ["B", "KB", "MB", "GB", "TB"];
   let value = bytes;
   let unitIndex = 0;
 

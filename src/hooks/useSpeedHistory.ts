@@ -1,5 +1,5 @@
-import { useState, useEffect, useRef } from 'react';
-import { useDownloadStore } from '@/stores/downloadStore';
+import { useState, useEffect, useRef } from "react";
+import { useDownloadStore } from "@/stores/downloadStore";
 
 export interface SpeedSample {
   time: number;

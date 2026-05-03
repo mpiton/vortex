@@ -1,40 +1,83 @@
+# lefthook.yml — Vortex Git hooks
+# Docs: https://github.com/evilmartians/lefthook
+# Install: npm run prepare (auto-runs lefthook install)
+#
+# If a hook blocks without a valid reason: fix the code, NEVER --no-verify.
+
 pre-commit:
   parallel: true
   commands:
     rust-fmt:
       glob: "src-tauri/**/*.rs"
       run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
-      fail_text: "Run 'cargo fmt --manifest-path src-tauri/Cargo.toml' to fix formatting"
+      fail_text: "Rust formatting violation. Run: cargo fmt --manifest-path src-tauri/Cargo.toml"
+
     rust-clippy:
       glob: "src-tauri/**/*.rs"
-      run: cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
-      fail_text: "Fix clippy warnings before committing"
+      run: cargo clippy --manifest-path src-tauri/Cargo.toml --workspace -- -D warnings
+      fail_text: "Clippy warnings. Fix them before commit (no #[allow])."
+
     ts-lint:
-      glob: "src/**/*.{ts,tsx}"
+      glob: "src/**/*.{ts,tsx,js,jsx}"
       run: npx oxlint {staged_files}
       skip:
         - merge
         - rebase
-      fail_text: "Fix oxlint errors before committing"
+      fail_text: "oxlint errors. Run: npx oxlint --fix . (no oxlint-disable)"
+
+    ts-format:
+      glob: "src/**/*.{ts,tsx,css,json}"
+      run: npx oxfmt --check --ignore-path .oxfmtignore --ignore-path .gitignore {staged_files}
+      skip:
+        - merge
+        - rebase
+      fail_text: "Format violation. Run: npx oxfmt ."
+
     no-secrets:
+      run: ./scripts/no-secrets.sh
+      fail_text: "Secret file or API key detected in staging. Remove before commit."
+
+    no-manual-deps:
+      # No glob — must run on lockfile-only commits too so a stray
+      # pnpm-lock.yaml / yarn.lock stage attempt is rejected even when no
+      # manifest is staged. The script itself short-circuits when nothing
+      # relevant is staged.
+      run: ./scripts/no-manual-deps.sh
+      fail_text: "Manual dependency editing forbidden. Use: cargo add / npm install"
+
+    changelog-updated:
       run: |
-        SECRET_FILES=$(git diff --cached --diff-filter=d --name-only | grep -iE '\.(env|env\..+|pem|key|p12|pfx|secret|creds)$' || true)
-        if [ -n "$SECRET_FILES" ]; then
-          echo "BLOCKED: Potential secret files staged:"
-          echo "$SECRET_FILES"
-          exit 1
+        if git diff --cached --name-only | grep -qE '\.(rs|ts|tsx|js|jsx)$'; then
+          if ! git diff --cached --name-only | grep -q '^CHANGELOG.md$'; then
+            echo "Code modified without CHANGELOG.md entry"
+            echo "Add a line to the [Unreleased] section"
+            exit 1
+          fi
         fi
-      fail_text: "Remove secret files from staging"
+      skip:
+        - merge
+        - rebase
+      fail_text: "CHANGELOG.md must be updated when code changes."
 
 pre-push:
   parallel: true
   commands:
     rust-test:
       run: cargo test --manifest-path src-tauri/Cargo.toml --workspace
-      fail_text: "Rust tests must pass before pushing"
+      fail_text: "Rust tests fail. No push until everything is green."
+
     ts-test:
       run: npx vitest run
-      fail_text: "TypeScript tests must pass before pushing"
+      fail_text: "TypeScript tests fail."
+
     ts-typecheck:
       run: npx tsc -b
-      fail_text: "TypeScript type checking must pass before pushing"
+      fail_text: "TypeScript type-check fails."
+
+    cargo-deny:
+      run: cargo deny --manifest-path src-tauri/Cargo.toml check licenses bans advisories sources
+      fail_text: "cargo-deny detected an issue (non-GPL-compatible license, RustSec advisory, banned crate, untrusted source)."
+
+    knip:
+      run: npx knip --reporter compact
+      fail_text: "knip detected unused exports/files/dependencies. Remove them or add explicit ignore in knip.json with rationale."

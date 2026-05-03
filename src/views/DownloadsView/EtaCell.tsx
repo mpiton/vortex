@@ -1,5 +1,5 @@
-import { formatEta } from '@/lib/format';
-import { useDownloadStore } from '@/stores/downloadStore';
+import { formatEta } from "@/lib/format";
+import { useDownloadStore } from "@/stores/downloadStore";
 
 interface EtaCellProps {
   downloadId: string;
@@ -16,7 +16,7 @@ export function EtaCell({ downloadId }: EtaCellProps) {
 
   return (
     <span className="text-xs text-muted-foreground font-mono">
-      {eta !== null ? formatEta(eta) : '\u2014'}
+      {eta !== null ? formatEta(eta) : "\u2014"}
     </span>
   );
 }

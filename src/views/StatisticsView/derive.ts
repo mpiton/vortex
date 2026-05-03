@@ -1,4 +1,4 @@
-import type { HistoryView } from '@/types/download';
+import type { HistoryView } from "@/types/download";
 
 export interface TypeBreakdownEntry {
   extension: string;
@@ -11,13 +11,13 @@ export interface SpeedPoint {
   avgSpeed: number;
 }
 
-export type StatsPeriod = '7d' | '30d' | 'all';
+export type StatsPeriod = "7d" | "30d" | "all";
 
 const SECONDS_PER_DAY = 86_400;
-const UNKNOWN_EXTENSION = 'other';
+const UNKNOWN_EXTENSION = "other";
 
 export function extractExtension(fileName: string): string {
-  const lastDot = fileName.lastIndexOf('.');
+  const lastDot = fileName.lastIndexOf(".");
   if (lastDot <= 0 || lastDot === fileName.length - 1) {
     return UNKNOWN_EXTENSION;
   }
@@ -41,8 +41,8 @@ export function deriveTypeBreakdown(entries: HistoryView[]): TypeBreakdownEntry[
 function toDayKey(epochSeconds: number): string {
   const date = new Date(epochSeconds * 1000);
   const year = date.getUTCFullYear();
-  const month = String(date.getUTCMonth() + 1).padStart(2, '0');
-  const day = String(date.getUTCDate()).padStart(2, '0');
+  const month = String(date.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(date.getUTCDate()).padStart(2, "0");
   return `${year}-${month}-${day}`;
 }
 
@@ -64,8 +64,8 @@ export function deriveSpeedSeries(entries: HistoryView[]): SpeedPoint[] {
 }
 
 export function periodToCutoffSeconds(period: StatsPeriod, nowSeconds: number): number | null {
-  if (period === 'all') return null;
-  const days = period === '7d' ? 7 : 30;
+  if (period === "all") return null;
+  const days = period === "7d" ? 7 : 30;
   return nowSeconds - days * SECONDS_PER_DAY;
 }
 

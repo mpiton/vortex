@@ -3,12 +3,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createElement } from "react";
 
-import {
-  invoke,
-  listen,
-  emitMockEvent,
-  clearMockListeners,
-} from "@/test/__mocks__/tauri";
+import { invoke, listen, emitMockEvent, clearMockListeners } from "@/test/__mocks__/tauri";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke }));
 vi.mock("@tauri-apps/api/event", () => ({ listen }));

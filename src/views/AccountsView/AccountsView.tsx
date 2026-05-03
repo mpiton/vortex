@@ -210,9 +210,7 @@ export function AccountsView() {
           path: picked,
           passphrase,
         });
-        toast.success(
-          t("accounts.toast.exportSuccess", { count: result.count }),
-        );
+        toast.success(t("accounts.toast.exportSuccess", { count: result.count }));
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         toast.error(`${t("accounts.toast.exportError")}: ${message}`);
@@ -239,13 +237,9 @@ export function AccountsView() {
           path,
           passphrase,
         });
-        toast.success(
-          t("accounts.toast.importSuccess", { count: result.imported }),
-        );
+        toast.success(t("accounts.toast.importSuccess", { count: result.imported }));
         if (result.skippedDuplicates > 0) {
-          toast.success(
-            t("accounts.toast.importSkipped", { count: result.skippedDuplicates }),
-          );
+          toast.success(t("accounts.toast.importSkipped", { count: result.skippedDuplicates }));
         }
         invalidateAccountsList();
       } catch (err) {
@@ -258,10 +252,7 @@ export function AccountsView() {
   );
 
   return (
-    <div
-      className="flex h-full min-h-0 flex-col gap-3 p-4"
-      data-testid="accounts-view"
-    >
+    <div className="flex h-full min-h-0 flex-col gap-3 p-4" data-testid="accounts-view">
       <header className="flex items-center justify-between gap-3">
         <h1 className="text-2xl font-semibold">{t("accounts.title")}</h1>
         <div className="flex items-center gap-2">
@@ -282,18 +273,18 @@ export function AccountsView() {
           >
             {t("accounts.actions.export")}
           </Button>
-          <Button
-            type="button"
-            onClick={() => setAddOpen(true)}
-            data-testid="accounts-add-trigger"
-          >
+          <Button type="button" onClick={() => setAddOpen(true)} data-testid="accounts-add-trigger">
             <Plus className="mr-1 h-4 w-4" aria-hidden />
             {t("accounts.actions.add")}
           </Button>
         </div>
       </header>
 
-      <div className="flex flex-wrap items-center gap-2" role="tablist" aria-label={t("accounts.title")}>
+      <div
+        className="flex flex-wrap items-center gap-2"
+        role="tablist"
+        aria-label={t("accounts.title")}
+      >
         {FILTER_ORDER.map((value) => (
           <Button
             key={value}

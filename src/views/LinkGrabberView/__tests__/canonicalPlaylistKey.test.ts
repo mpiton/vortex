@@ -3,22 +3,20 @@ import { canonicalPlaylistKey } from "../canonicalPlaylistKey";
 
 describe("canonicalPlaylistKey", () => {
   it("collapses YouTube watch+list URLs to the canonical playlist token", () => {
-    expect(
-      canonicalPlaylistKey("https://www.youtube.com/watch?v=xyz&list=PL12345"),
-    ).toBe("youtube:playlist:PL12345");
+    expect(canonicalPlaylistKey("https://www.youtube.com/watch?v=xyz&list=PL12345")).toBe(
+      "youtube:playlist:PL12345",
+    );
   });
 
   it("collapses YouTube playlist?list URLs to the same canonical token", () => {
-    expect(
-      canonicalPlaylistKey("https://www.youtube.com/playlist?list=PL12345"),
-    ).toBe("youtube:playlist:PL12345");
+    expect(canonicalPlaylistKey("https://www.youtube.com/playlist?list=PL12345")).toBe(
+      "youtube:playlist:PL12345",
+    );
   });
 
   it("normalises across host variants for the same playlist id", () => {
     const a = canonicalPlaylistKey("https://m.youtube.com/playlist?list=PL12345");
-    const b = canonicalPlaylistKey(
-      "https://music.youtube.com/watch?v=other&list=PL12345",
-    );
+    const b = canonicalPlaylistKey("https://music.youtube.com/watch?v=other&list=PL12345");
     const c = canonicalPlaylistKey("https://youtube.com/playlist?list=PL12345");
     expect(a).toBe("youtube:playlist:PL12345");
     expect(b).toBe("youtube:playlist:PL12345");
@@ -31,24 +29,18 @@ describe("canonicalPlaylistKey", () => {
   });
 
   it("collapses SoundCloud playlist URLs to the canonical path token", () => {
-    expect(
-      canonicalPlaylistKey("https://soundcloud.com/forss/sets/holiday-mix"),
-    ).toBe("soundcloud:/forss/sets/holiday-mix");
+    expect(canonicalPlaylistKey("https://soundcloud.com/forss/sets/holiday-mix")).toBe(
+      "soundcloud:/forss/sets/holiday-mix",
+    );
   });
 
   it("normalises SoundCloud host variants and tracking params to the same key", () => {
-    const a = canonicalPlaylistKey(
-      "https://soundcloud.com/forss/sets/holiday-mix",
-    );
-    const b = canonicalPlaylistKey(
-      "https://m.soundcloud.com/forss/sets/holiday-mix",
-    );
+    const a = canonicalPlaylistKey("https://soundcloud.com/forss/sets/holiday-mix");
+    const b = canonicalPlaylistKey("https://m.soundcloud.com/forss/sets/holiday-mix");
     const c = canonicalPlaylistKey(
       "https://www.soundcloud.com/forss/sets/holiday-mix?in=somebody/sets/playlist&utm_source=mobile",
     );
-    const d = canonicalPlaylistKey(
-      "https://soundcloud.com/forss/sets/holiday-mix/",
-    );
+    const d = canonicalPlaylistKey("https://soundcloud.com/forss/sets/holiday-mix/");
     expect(a).toBe("soundcloud:/forss/sets/holiday-mix");
     expect(b).toBe(a);
     expect(c).toBe(a);
@@ -56,9 +48,9 @@ describe("canonicalPlaylistKey", () => {
   });
 
   it("lowercases SoundCloud paths so case-only differences collapse", () => {
-    expect(
-      canonicalPlaylistKey("https://soundcloud.com/Forss/Sets/Holiday-Mix"),
-    ).toBe("soundcloud:/forss/sets/holiday-mix");
+    expect(canonicalPlaylistKey("https://soundcloud.com/Forss/Sets/Holiday-Mix")).toBe(
+      "soundcloud:/forss/sets/holiday-mix",
+    );
   });
 
   it("returns the raw URL for unrecognised hosts (no canonical scheme yet)", () => {

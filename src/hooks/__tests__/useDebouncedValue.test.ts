@@ -1,8 +1,8 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { renderHook, act } from '@testing-library/react';
-import { useDebouncedValue } from '../useDebouncedValue';
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { renderHook, act } from "@testing-library/react";
+import { useDebouncedValue } from "../useDebouncedValue";
 
-describe('useDebouncedValue', () => {
+describe("useDebouncedValue", () => {
   beforeEach(() => {
     vi.useFakeTimers();
   });
@@ -11,49 +11,49 @@ describe('useDebouncedValue', () => {
     vi.useRealTimers();
   });
 
-  it('should return initial value immediately', () => {
-    const { result } = renderHook(() => useDebouncedValue('first', 300));
-    expect(result.current).toBe('first');
+  it("should return initial value immediately", () => {
+    const { result } = renderHook(() => useDebouncedValue("first", 300));
+    expect(result.current).toBe("first");
   });
 
-  it('should keep old value until delay elapses', () => {
+  it("should keep old value until delay elapses", () => {
     const { result, rerender } = renderHook(
       ({ value }: { value: string }) => useDebouncedValue(value, 300),
-      { initialProps: { value: 'first' } },
+      { initialProps: { value: "first" } },
     );
 
-    rerender({ value: 'second' });
-    expect(result.current).toBe('first');
+    rerender({ value: "second" });
+    expect(result.current).toBe("first");
 
     act(() => {
       vi.advanceTimersByTime(299);
     });
-    expect(result.current).toBe('first');
+    expect(result.current).toBe("first");
 
     act(() => {
       vi.advanceTimersByTime(1);
     });
-    expect(result.current).toBe('second');
+    expect(result.current).toBe("second");
   });
 
-  it('should reset the timer when value changes before delay completes', () => {
+  it("should reset the timer when value changes before delay completes", () => {
     const { result, rerender } = renderHook(
       ({ value }: { value: string }) => useDebouncedValue(value, 300),
-      { initialProps: { value: 'first' } },
+      { initialProps: { value: "first" } },
     );
 
-    rerender({ value: 'second' });
+    rerender({ value: "second" });
     act(() => {
       vi.advanceTimersByTime(200);
     });
-    rerender({ value: 'third' });
+    rerender({ value: "third" });
     act(() => {
       vi.advanceTimersByTime(200);
     });
-    expect(result.current).toBe('first');
+    expect(result.current).toBe("first");
     act(() => {
       vi.advanceTimersByTime(100);
     });
-    expect(result.current).toBe('third');
+    expect(result.current).toBe("third");
   });
 });

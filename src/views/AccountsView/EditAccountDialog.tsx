@@ -78,9 +78,7 @@ export function EditAccountDialog({ account, onCancel, onSubmit }: EditAccountDi
       <DialogContent>
         <DialogHeader>
           <DialogTitle>{t("accounts.actions.edit")}</DialogTitle>
-          <DialogDescription>
-            {account?.serviceName ?? ""}
-          </DialogDescription>
+          <DialogDescription>{account?.serviceName ?? ""}</DialogDescription>
         </DialogHeader>
         <form onSubmit={handleSubmit} className="grid gap-4">
           <label className="grid gap-1 text-sm">
@@ -104,10 +102,7 @@ export function EditAccountDialog({ account, onCancel, onSubmit }: EditAccountDi
           </label>
           <div className="grid gap-1 text-sm">
             <span className="font-medium">{t("accounts.addDialog.type")}</span>
-            <Select
-              value={accountType}
-              onValueChange={(v) => setAccountType(v as AccountType)}
-            >
+            <Select value={accountType} onValueChange={(v) => setAccountType(v as AccountType)}>
               <SelectTrigger data-testid="account-edit-type">
                 <SelectValue />
               </SelectTrigger>

@@ -31,13 +31,7 @@ interface MoveDialogProps {
   onConfirm: (destination: string) => Promise<void> | void;
 }
 
-export function MoveDialog({
-  open,
-  onOpenChange,
-  count,
-  currentPath,
-  onConfirm,
-}: MoveDialogProps) {
+export function MoveDialog({ open, onOpenChange, count, currentPath, onConfirm }: MoveDialogProps) {
   const { t } = useTranslation();
   const browseFolder = useBrowseFolder();
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
@@ -74,16 +68,12 @@ export function MoveDialog({
       <DialogContent>
         <DialogHeader>
           <DialogTitle>{t("downloads.moveDialog.title", { count })}</DialogTitle>
-          <DialogDescription>
-            {t("downloads.moveDialog.description")}
-          </DialogDescription>
+          <DialogDescription>{t("downloads.moveDialog.description")}</DialogDescription>
         </DialogHeader>
 
         {currentPath && (
           <div className="text-sm">
-            <span className="font-medium">
-              {t("downloads.moveDialog.currentLabel")}
-            </span>
+            <span className="font-medium">{t("downloads.moveDialog.currentLabel")}</span>
             <p
               className="mt-1 break-all rounded-md bg-muted/50 p-2 font-mono text-xs"
               data-testid="move-current-path"
@@ -94,9 +84,7 @@ export function MoveDialog({
         )}
 
         <div className="text-sm">
-          <span className="font-medium">
-            {t("downloads.moveDialog.destinationLabel")}
-          </span>
+          <span className="font-medium">{t("downloads.moveDialog.destinationLabel")}</span>
           <div className="mt-1 flex items-center gap-2">
             <p
               className="flex-1 break-all rounded-md bg-muted/50 p-2 font-mono text-xs"
@@ -104,12 +92,7 @@ export function MoveDialog({
             >
               {selectedPath ?? t("downloads.moveDialog.noFolderSelected")}
             </p>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleBrowse}
-              disabled={submitting}
-            >
+            <Button variant="outline" size="sm" onClick={handleBrowse} disabled={submitting}>
               <FolderOpen className="mr-1 h-4 w-4" />
               {t("downloads.moveDialog.browse")}
             </Button>
@@ -117,17 +100,10 @@ export function MoveDialog({
         </div>
 
         <DialogFooter>
-          <Button
-            variant="outline"
-            onClick={() => onOpenChange(false)}
-            disabled={submitting}
-          >
+          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={submitting}>
             {t("downloads.moveDialog.cancel")}
           </Button>
-          <Button
-            onClick={handleConfirm}
-            disabled={!selectedPath || submitting}
-          >
+          <Button onClick={handleConfirm} disabled={!selectedPath || submitting}>
             {t("downloads.moveDialog.confirm")}
           </Button>
         </DialogFooter>
@@ -144,15 +120,10 @@ export function MoveDialog({
  * as "open at last location / OS default" which is the right fallback when
  * the caller has no representative path.
  */
-export function deriveDefaultDir(
-  currentPath: string | undefined,
-): string | null {
+export function deriveDefaultDir(currentPath: string | undefined): string | null {
   if (!currentPath) return null;
   // Strip the trailing basename — the picker wants a directory, not a file.
-  const lastSep = Math.max(
-    currentPath.lastIndexOf("/"),
-    currentPath.lastIndexOf("\\"),
-  );
+  const lastSep = Math.max(currentPath.lastIndexOf("/"), currentPath.lastIndexOf("\\"));
   if (lastSep < 0) return null;
   // Root-level paths need the separator preserved: "/file.bin" → "/" rather
   // than "" (which the picker reads as null), and "C:\file.bin" → "C:\"

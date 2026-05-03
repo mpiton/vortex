@@ -369,9 +369,7 @@ describe("PackagesView", () => {
     await screen.findByText("song-01.mp3");
     await user.click(screen.getByTestId("package-row-pkg-1-pause-all"));
     await waitFor(() => {
-      expect(
-        mockInvoke.mock.calls.filter(([c]) => c === "download_pause"),
-      ).toHaveLength(2);
+      expect(mockInvoke.mock.calls.filter(([c]) => c === "download_pause")).toHaveLength(2);
     });
   });
 
@@ -486,9 +484,7 @@ describe("PackagesView", () => {
       );
     });
     expect(mockToastSuccess).toHaveBeenCalled();
-    expect(
-      screen.queryByTestId("package-row-pkg-2-move-target"),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByTestId("package-row-pkg-2-move-target")).not.toBeInTheDocument();
   });
 
   it("cancels a pending move and clears the live region", async () => {
@@ -500,21 +496,19 @@ describe("PackagesView", () => {
     await screen.findByText("song-01.mp3");
 
     await user.click(screen.getByTestId("package-download-row-42-move"));
-    expect(
-      screen.getByTestId("package-download-row-42-move-cancel"),
-    ).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByTestId("package-download-row-42-move-cancel")).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
 
     await user.click(screen.getByTestId("package-download-row-42-move-cancel"));
 
-    expect(
-      screen.getByTestId("package-download-row-42-move"),
-    ).toHaveAttribute("aria-pressed", "false");
-    expect(screen.getByTestId("packages-move-live-region")).toHaveTextContent(
-      /move cancelled/i,
+    expect(screen.getByTestId("package-download-row-42-move")).toHaveAttribute(
+      "aria-pressed",
+      "false",
     );
-    expect(
-      screen.queryByTestId("package-row-pkg-2-move-target"),
-    ).not.toBeInTheDocument();
+    expect(screen.getByTestId("packages-move-live-region")).toHaveTextContent(/move cancelled/i);
+    expect(screen.queryByTestId("package-row-pkg-2-move-target")).not.toBeInTheDocument();
   });
 
   it("announces an error when keyboard move fails on add (rollback succeeds)", async () => {
@@ -544,9 +538,7 @@ describe("PackagesView", () => {
       );
     });
     expect(mockToastError).toHaveBeenCalled();
-    const addCalls = mockInvoke.mock.calls.filter(
-      ([c]) => c === "package_add_download",
-    );
+    const addCalls = mockInvoke.mock.calls.filter(([c]) => c === "package_add_download");
     expect(addCalls).toHaveLength(2);
     expect(addCalls[0]?.[1]).toMatchObject({ packageId: "pkg-2", downloadId: 42 });
     expect(addCalls[1]?.[1]).toMatchObject({ packageId: "pkg-1", downloadId: 42 });
@@ -577,16 +569,18 @@ describe("PackagesView", () => {
     await user.click(screen.getByTestId("package-row-pkg-2-move-target"));
 
     await user.click(screen.getByTestId("package-download-row-43-move"));
-    expect(
-      screen.getByTestId("package-download-row-43-move-cancel"),
-    ).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByTestId("package-download-row-43-move-cancel")).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
 
     removeGate.resolve?.(null);
 
     await waitFor(() => {
-      expect(
-        screen.getByTestId("package-download-row-43-move-cancel"),
-      ).toHaveAttribute("aria-pressed", "true");
+      expect(screen.getByTestId("package-download-row-43-move-cancel")).toHaveAttribute(
+        "aria-pressed",
+        "true",
+      );
     });
   });
 

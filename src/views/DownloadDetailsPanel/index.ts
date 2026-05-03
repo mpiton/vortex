@@ -1,1 +1,1 @@
-export { DownloadDetailsPanel } from './DownloadDetailsPanel';
+export { DownloadDetailsPanel } from "./DownloadDetailsPanel";

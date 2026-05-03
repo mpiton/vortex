@@ -29,9 +29,7 @@ export function MediaPreview({ title, thumbnail, subtitle }: MediaPreviewProps) 
       )}
       <div className="space-y-1">
         <p className="text-sm font-semibold">{title}</p>
-        {subtitle ? (
-          <p className="text-xs text-muted-foreground">{subtitle}</p>
-        ) : null}
+        {subtitle ? <p className="text-xs text-muted-foreground">{subtitle}</p> : null}
       </div>
     </div>
   );

@@ -15,23 +15,17 @@ describe("ActionsBar", () => {
 
   it("should show Select All with total count", () => {
     render(<ActionsBar {...defaultProps} totalCount={10} />);
-    expect(
-      screen.getByRole("button", { name: "Select All (10)" }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Select All (10)" })).toBeInTheDocument();
   });
 
   it("should hide Start Selected when selectedCount is 0", () => {
     render(<ActionsBar {...defaultProps} selectedCount={0} />);
-    expect(
-      screen.queryByRole("button", { name: /Start Selected/ }),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Start Selected/ })).not.toBeInTheDocument();
   });
 
   it("should show Start Selected when selectedCount > 0", () => {
     render(<ActionsBar {...defaultProps} selectedCount={3} />);
-    expect(
-      screen.getByRole("button", { name: "Start Selected (3)" }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Start Selected (3)" })).toBeInTheDocument();
   });
 
   it("should call onStartAll when Start All Online is clicked", async () => {

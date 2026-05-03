@@ -1,6 +1,6 @@
-import { Search } from 'lucide-react';
-import { useTranslation } from 'react-i18next';
-import { Input } from '@/components/ui/input';
+import { Search } from "lucide-react";
+import { useTranslation } from "react-i18next";
+import { Input } from "@/components/ui/input";
 
 interface SearchBarProps {
   value: string;
@@ -17,8 +17,8 @@ export function SearchBar({ value, onChange }: SearchBarProps) {
         data-shortcut-target="downloads-search"
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        placeholder={t('downloads.searchPlaceholder')}
-        aria-label={t('downloads.searchAriaLabel')}
+        placeholder={t("downloads.searchPlaceholder")}
+        aria-label={t("downloads.searchAriaLabel")}
         className="pl-9"
       />
     </div>

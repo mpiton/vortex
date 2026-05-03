@@ -1,20 +1,20 @@
-import type { HistoryView } from '@/types/download';
+import type { HistoryView } from "@/types/download";
 
-export type HistoryStatus = 'completed' | 'failed' | 'cancelled';
-export type HistoryFilterType = 'all' | 'completed' | 'failed' | 'cancelled';
+export type HistoryStatus = "completed" | "failed" | "cancelled";
+export type HistoryFilterType = "all" | "completed" | "failed" | "cancelled";
 
 // The history table only stores successful downloads today; the backend DTO
 // therefore has no status/outcome field. The Failed/Cancelled tabs are kept
 // for UI continuity once the schema starts persisting those outcomes.
 export function deriveHistoryStatus(_entry: HistoryView): HistoryStatus {
-  return 'completed';
+  return "completed";
 }
 
 export function deriveHostname(url: string): string {
   try {
     return new URL(url).hostname;
   } catch {
-    return '—';
+    return "—";
   }
 }
 
@@ -24,7 +24,7 @@ interface FilterOptions {
 }
 
 function matchesFilter(entry: HistoryView, filter: HistoryFilterType): boolean {
-  if (filter === 'all') return true;
+  if (filter === "all") return true;
   return deriveHistoryStatus(entry) === filter;
 }
 

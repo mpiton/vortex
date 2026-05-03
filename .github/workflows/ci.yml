@@ -15,19 +15,19 @@ env:
 
 jobs:
   rust-checks:
-    name: Rust Checks
+    name: Rust — fmt + clippy + deny + tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Linux dependencies
-        run: >
-          sudo apt-get update &&
-          sudo apt-get install -y
-          libwebkit2gtk-4.1-dev
-          libappindicator3-dev
-          librsvg2-dev
-          patchelf
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -37,30 +37,35 @@ jobs:
         with:
           workspaces: src-tauri
 
-      - name: Check formatting
+      - name: cargo fmt --check
         run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
 
-      - name: Clippy
-        run: cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
+      - name: cargo clippy
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --workspace -- -D warnings
 
-      - name: Install cargo-llvm-cov and cargo-audit
+      - name: Install cargo tooling
         uses: taiki-e/install-action@v2
         with:
-          tool: cargo-llvm-cov,cargo-audit
+          tool: cargo-llvm-cov,cargo-deny
 
-      - name: Security audit
-        run: cargo audit --file src-tauri/Cargo.lock
+      - name: cargo deny
+        run: cargo deny --manifest-path src-tauri/Cargo.toml check
 
-      - name: Tests with coverage
-        run: >
-          cargo llvm-cov
-          --manifest-path src-tauri/Cargo.toml
-          --workspace
-          --lcov
-          --output-path lcov.info
+      - name: Tests + coverage
+        run: |
+          cargo llvm-cov \
+            --manifest-path src-tauri/Cargo.toml \
+            --workspace \
+            --lcov \
+            --output-path lcov.info
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rust-coverage
+          path: lcov.info
 
   frontend-checks:
-    name: Frontend Checks
+    name: Frontend — oxlint + oxfmt + tsc + knip + vitest
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -70,30 +75,138 @@ jobs:
           node-version: 22
           cache: npm
 
-      - name: Install dependencies
+      - name: npm ci
         run: npm ci
 
-      - name: Lint
-        run: npx oxlint .
+      - name: oxlint
+        run: npx oxlint . --max-warnings=0
 
-      - name: Type check
+      - name: oxfmt --check
+        run: |
+          npx oxfmt --check --ignore-path .oxfmtignore --ignore-path .gitignore \
+            'src/**/*.{ts,tsx,css,json}' \
+            knip.json package.json tsconfig.json tsconfig.node.json
+
+      - name: tsc -b
         run: npx tsc -b
 
-      - name: Tests with coverage
-        run: npx vitest run --coverage
+      - name: knip
+        run: npx knip --reporter compact
 
-      - name: Check for secret files
+      - name: vitest + coverage
+        run: npx vitest run --coverage --passWithNoTests
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: frontend-coverage
+          path: coverage/
+
+  secrets-scan:
+    name: Secrets scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for secret files in repo
         run: |
-          SECRET_FILES=$(git ls-files | grep -iE '\.(env|env\..+|pem|key|p12|pfx|secret|creds)$' || true)
+          # `(^|/)\.npmrc$|(^|/)\.pypirc$` catches nested forms (e.g.
+          # `tools/.npmrc`) on top of the root-level files.
+          SECRET_FILES=$(git ls-files | grep -iE '\.(env|env\..+|pem|key|p12|pfx|secret|creds|aws|netrc)$|(^|/)(\.env|\.secrets|secrets)/|(^|/)\.npmrc$|(^|/)\.pypirc$' || true)
           if [ -n "$SECRET_FILES" ]; then
-            echo "::error::Secret files found in repository:"
+            echo "::error::Secret files in repo:"
             echo "$SECRET_FILES"
+            exit 1
+          fi
+
+      - name: Check for API key patterns in tracked files
+        run: |
+          # Patterns aligned with scripts/no-secrets.sh — defence in depth.
+          # All distinctive prefixes (AKIA, sk-ant, sk-, ghp_, github_pat_,
+          # glpat-, AIza), so manifests like package.json / Cargo.toml are
+          # safe to scan and are no longer excluded.
+          # `ASIA…` covers temporary STS credentials (vs long-lived `AKIA…`).
+          PATTERNS='AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|sk-ant-[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9]{32,}|ghp_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{82}|glpat-[A-Za-z0-9_-]{20}|AIza[0-9A-Za-z_-]{35}'
+          MATCHES=$(git grep -nE "$PATTERNS" -- ':(exclude)*.lock' || true)
+          if [ -n "$MATCHES" ]; then
+            echo "::error::API key pattern detected:"
+            # Strip the matched secret value from the output — `git grep -n`
+            # returns `file:line:matched_text`; emit only `file:line` so CI
+            # logs never reveal the raw credential.
+            echo "$MATCHES" | head -10 | awk -F: '{print $1 ":" $2}'
+            exit 1
+          fi
+
+  forbidden-tools:
+    name: Forbidden tools
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Reject pnpm-lock.yaml / yarn.lock
+        run: |
+          # Scan every tracked path (not just root) so a nested
+          # `tools/yarn.lock` cannot bypass the policy.
+          FORBIDDEN_LOCKS=$(git ls-files | grep -E '(^|/)(pnpm-lock\.yaml|yarn\.lock)$' || true)
+          if [ -n "$FORBIDDEN_LOCKS" ]; then
+            echo "::error::pnpm-lock.yaml / yarn.lock detected:"
+            echo "$FORBIDDEN_LOCKS"
+            echo "Vortex uses npm only. Remove these files."
+            exit 1
+          fi
+
+      - name: Reject Biome / ESLint / Prettier configs
+        run: |
+          # Scan all tracked paths (not just root dotfiles) so flat-config
+          # files like `eslint.config.ts` or a nested `packages/foo/biome.json`
+          # cannot bypass the policy.
+          FORBIDDEN=$(git ls-files | grep -E \
+            '(^|/)(\.eslintrc.*|eslint\.config\..+|biome\.json.*|biome\.jsonc.*|\.prettierrc.*|prettier\.config\..+)$' \
+            || true)
+          if [ -n "$FORBIDDEN" ]; then
+            echo "::error::Forbidden lint/format configs detected:"
+            echo "$FORBIDDEN"
+            echo "Vortex uses oxlint + oxfmt only."
+            exit 1
+          fi
+
+      - name: Reject #[allow] / @ts-ignore / oxlint-disable
+        run: |
+          # Multi-line aware Rust scanner lives in a sibling Python script.
+          # `git grep` is line-oriented and would miss split forms like
+          #   #[allow(
+          #       dead_code,
+          #   )]
+          # Convention: exit 0 = clean, exit 1 = hits found (output captured),
+          # any other status = real failure (Python crash, missing tool, etc).
+          # We must distinguish those — a blanket `|| true` would mask real
+          # errors and silently let suppressions through.
+          BAD_RUST_OUTPUT=$(python3 scripts/forbidden-rust-allow.py 2>&1) \
+            || BAD_RUST_STATUS=$?
+          BAD_RUST_STATUS=${BAD_RUST_STATUS:-0}
+          case "$BAD_RUST_STATUS" in
+            0) BAD_RUST="" ;;
+            1) BAD_RUST="$BAD_RUST_OUTPUT" ;;
+            *)
+              echo "::error::scripts/forbidden-rust-allow.py crashed (exit $BAD_RUST_STATUS):"
+              echo "$BAD_RUST_OUTPUT"
+              exit "$BAD_RUST_STATUS"
+              ;;
+          esac
+          # `git grep` exits non-zero when it finds no match — that is the
+          # success path here, so shield the assignment with `|| true` rather
+          # than disabling errexit for the whole step.
+          BAD_TS=$(git grep -nE '@ts-ignore|@ts-expect-error|oxlint-disable' -- '*.ts' '*.tsx' '*.js' '*.jsx' || true)
+          BAD_TS=$(printf '%s\n' "$BAD_TS" | head -20)
+          if [ -n "$BAD_RUST" ] || [ -n "$BAD_TS" ]; then
+            echo "::error::Error suppression detected (forbidden):"
+            [ -n "$BAD_RUST" ] && echo "$BAD_RUST"
+            [ -n "$BAD_TS" ] && echo "$BAD_TS"
             exit 1
           fi
 
   build:
     name: Build (${{ matrix.os }})
-    needs: [rust-checks, frontend-checks]
+    needs: [rust-checks, frontend-checks, secrets-scan, forbidden-tools]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -115,16 +228,43 @@ jobs:
 
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
-        run: >
-          sudo apt-get update &&
-          sudo apt-get install -y
-          libwebkit2gtk-4.1-dev
-          libappindicator3-dev
-          librsvg2-dev
-          patchelf
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf
 
-      - name: Install dependencies
+      - name: npm ci
         run: npm ci
 
-      - name: Build Tauri app
+      - name: Tauri build
         run: npx tauri build --config .github/tauri.ci.conf.json
+
+  changelog-check:
+    name: CHANGELOG updated
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify CHANGELOG.md updated when code changes
+        run: |
+          # Use three-dot range so the diff is computed from the merge-base
+          # of base..head, not the endpoint snapshot. Without this, a docs-
+          # only PR can be flagged as "code changed" when `main` advances
+          # ahead of the branch and unrelated upstream commits appear in
+          # the endpoint diff.
+          BASE="${{ github.event.pull_request.base.sha }}"
+          HEAD="${{ github.event.pull_request.head.sha }}"
+          CHANGED=$(git diff --name-only "${BASE}...${HEAD}")
+          CODE_CHANGED=$(echo "$CHANGED" | grep -E '\.(rs|ts|tsx|js|jsx)$' || true)
+          CHANGELOG_CHANGED=$(echo "$CHANGED" | grep -x 'CHANGELOG.md' || true)
+          if [ -n "$CODE_CHANGED" ] && [ -z "$CHANGELOG_CHANGED" ]; then
+            echo "::error::Code changed without a CHANGELOG.md entry"
+            echo "Add a line in the [Unreleased] section."
+            exit 1
+          fi

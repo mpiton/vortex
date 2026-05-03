@@ -1,8 +1,4 @@
-export type PackageSourceType =
-  | 'container'
-  | 'playlist'
-  | 'manual'
-  | 'split_archive';
+export type PackageSourceType = "container" | "playlist" | "manual" | "split_archive";
 
 export interface PackageView {
   id: string;

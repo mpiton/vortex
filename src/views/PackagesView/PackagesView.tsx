@@ -26,10 +26,7 @@ import type { PackageRowActions, PendingMove } from "./PackageRow";
 import { PackageToolbar } from "./PackageToolbar";
 
 const INVALIDATE_KEYS = [packageQueries.all()] as const;
-const INVALIDATE_KEYS_WITH_DOWNLOADS = [
-  packageQueries.all(),
-  downloadQueries.all(),
-] as const;
+const INVALIDATE_KEYS_WITH_DOWNLOADS = [packageQueries.all(), downloadQueries.all()] as const;
 
 interface PackageMoveOutcome {
   moved: number[];
@@ -71,7 +68,7 @@ export function PackagesView() {
     error: childrenError,
   } = usePackageDownloadsQuery(expandedId);
   const childrenById = useMemo<DownloadView[] | null>(
-    () => (expandedId ? childrenData ?? null : null),
+    () => (expandedId ? (childrenData ?? null) : null),
     [expandedId, childrenData],
   );
 
@@ -87,13 +84,13 @@ export function PackagesView() {
     },
   );
 
-  const updateMut = useTauriMutation<void, { id: string; patch: PackagePatch } & Record<string, unknown>>(
-    "package_update",
-    {
-      invalidateKeys: INVALIDATE_KEYS,
-      errorMessage: () => t("packages.toast.updateError"),
-    },
-  );
+  const updateMut = useTauriMutation<
+    void,
+    { id: string; patch: PackagePatch } & Record<string, unknown>
+  >("package_update", {
+    invalidateKeys: INVALIDATE_KEYS,
+    errorMessage: () => t("packages.toast.updateError"),
+  });
 
   const deleteMut = useTauriMutation<void, { id: string; deleteDownloads: boolean }>(
     "package_delete",
@@ -119,13 +116,13 @@ export function PackagesView() {
     },
   );
 
-  const moveFolderMut = useTauriMutation<
-    PackageMoveOutcome,
-    { id: string; newFolder: string }
-  >("package_move_to_folder", {
-    invalidateKeys: INVALIDATE_KEYS_WITH_DOWNLOADS,
-    errorMessage: () => t("packages.toast.moveError"),
-  });
+  const moveFolderMut = useTauriMutation<PackageMoveOutcome, { id: string; newFolder: string }>(
+    "package_move_to_folder",
+    {
+      invalidateKeys: INVALIDATE_KEYS_WITH_DOWNLOADS,
+      errorMessage: () => t("packages.toast.moveError"),
+    },
+  );
 
   const toggleAutoExtractMut = useTauriMutation<boolean, { id: string }>(
     "package_toggle_auto_extract",
@@ -192,9 +189,7 @@ export function PackagesView() {
       const moved = outcome?.moved.length ?? 0;
       const failed = outcome?.failed.length ?? 0;
       if (failed > 0) {
-        toast.error(
-          t("packages.toast.movePartialError", { moved, failed, total: moved + failed }),
-        );
+        toast.error(t("packages.toast.movePartialError", { moved, failed, total: moved + failed }));
       } else {
         toast.success(t("packages.toast.moveSuccess", { count: moved }));
       }
@@ -225,9 +220,7 @@ export function PackagesView() {
 
   const fanoutDownloadAction = useCallback(
     async (downloads: DownloadView[], action: (id: number) => Promise<unknown>) => {
-      const ids = downloads
-        .map((d) => Number(d.id))
-        .filter((n) => Number.isFinite(n));
+      const ids = downloads.map((d) => Number(d.id)).filter((n) => Number.isFinite(n));
       const results = await Promise.allSettled(ids.map((id) => action(id)));
       const failed = results.filter((r) => r.status === "rejected").length;
       return { total: ids.length, failed };
@@ -253,157 +246,151 @@ export function PackagesView() {
     [addToPackageMut, removeFromPackageMut],
   );
 
-  const actions = useMemo<PackageRowActions>(() => ({
-    toggleExpand: (id: string) => {
-      setExpandedId((prev) => (prev === id ? null : id));
-    },
-    rename: (pkg) => setRenaming(pkg),
-    setPassword: (pkg) => setPasswordTarget(pkg),
-    changeFolder: (pkg) => setFolderTarget(pkg),
-    deletePackage: (pkg) => setDeleting(pkg),
-    toggleAutoExtract: (pkg) => {
-      toggleAutoExtractMut.mutate(
-        { id: pkg.id },
-        { onSuccess: () => toast.success(t("packages.toast.updateSuccess")) },
-      );
-    },
-    setPriority: (pkg, priority) => {
-      priorityMut.mutate(
-        { id: pkg.id, priority },
-        { onSuccess: () => toast.success(t("packages.toast.updateSuccess")) },
-      );
-    },
-    pauseAll: async (_pkg, downloads) => {
-      const { failed } = await fanoutDownloadAction(downloads, (id) =>
-        pauseMut.mutateAsync({ id }),
-      );
-      if (failed > 0) {
-        toast.error(t("packages.toast.bulkActionError"));
-      } else {
-        toast.success(t("packages.toast.bulkPauseSuccess"));
-      }
-    },
-    startAll: async (_pkg, downloads) => {
-      const { failed } = await fanoutDownloadAction(downloads, (id) =>
-        resumeMut.mutateAsync({ id }),
-      );
-      if (failed > 0) {
-        toast.error(t("packages.toast.bulkActionError"));
-      } else {
-        toast.success(t("packages.toast.bulkStartSuccess"));
-      }
-    },
-    beginDragDownload: (download, fromPackageId) => {
-      const numericId = Number(download.id);
-      if (!Number.isFinite(numericId)) return;
-      dragRef.current = { downloadId: numericId, fromPackageId };
-    },
-    endDragDownload: () => {
-      dragRef.current = null;
-    },
-    dropDownload: async (toPackageId, e) => {
-      const transfer = e.dataTransfer;
-      const transferId = transfer?.getData("application/x-vortex-download") ?? "";
-      const transferFrom = transfer?.getData("application/x-vortex-source-package") ?? "";
-      const rawId = transferId !== "" ? transferId : String(dragRef.current?.downloadId ?? "");
-      const fromId = transferFrom !== "" ? transferFrom : dragRef.current?.fromPackageId ?? "";
-      const downloadId = Number(rawId);
-      dragRef.current = null;
-      if (!Number.isFinite(downloadId) || fromId === toPackageId || fromId === "") {
-        return;
-      }
-      try {
-        const result = await moveDownloadBetweenPackages(downloadId, fromId, toPackageId);
-        if (!result.ok) {
-          toast.error(t("packages.toast.moveDownloadRollbackError"));
-          invalidatePackages();
-          return;
-        }
-        toast.success(t("packages.toast.moveDownloadSuccess"));
-        invalidatePackages();
-      } catch {
-        toast.error(t("packages.toast.moveDownloadError"));
-      }
-    },
-    selectForMove: (download, fromPackageId) => {
-      const numericId = Number(download.id);
-      if (!Number.isFinite(numericId)) return;
-      setPendingMove({
-        downloadId: numericId,
-        fromPackageId,
-        fileName: download.fileName,
-      });
-      setMoveAnnouncement(
-        t("packages.move.announce.selected", { name: download.fileName }),
-      );
-    },
-    cancelMove: () => {
-      setPendingMove(null);
-      setMoveAnnouncement(t("packages.move.announce.cancelled"));
-    },
-    executeMove: async (toPackage) => {
-      const move = pendingMove;
-      if (!move || move.fromPackageId === toPackage.id) return;
-      setMoveAnnouncement(
-        t("packages.move.announce.started", {
-          name: move.fileName,
-          package: toPackage.name,
-        }),
-      );
-      try {
-        const result = await moveDownloadBetweenPackages(
-          move.downloadId,
-          move.fromPackageId,
-          toPackage.id,
+  const actions = useMemo<PackageRowActions>(
+    () => ({
+      toggleExpand: (id: string) => {
+        setExpandedId((prev) => (prev === id ? null : id));
+      },
+      rename: (pkg) => setRenaming(pkg),
+      setPassword: (pkg) => setPasswordTarget(pkg),
+      changeFolder: (pkg) => setFolderTarget(pkg),
+      deletePackage: (pkg) => setDeleting(pkg),
+      toggleAutoExtract: (pkg) => {
+        toggleAutoExtractMut.mutate(
+          { id: pkg.id },
+          { onSuccess: () => toast.success(t("packages.toast.updateSuccess")) },
         );
-        if (!result.ok) {
-          setMoveAnnouncement(
-            t("packages.move.announce.error", { name: move.fileName }),
-          );
-          toast.error(t("packages.toast.moveDownloadRollbackError"));
-          invalidatePackages();
+      },
+      setPriority: (pkg, priority) => {
+        priorityMut.mutate(
+          { id: pkg.id, priority },
+          { onSuccess: () => toast.success(t("packages.toast.updateSuccess")) },
+        );
+      },
+      pauseAll: async (_pkg, downloads) => {
+        const { failed } = await fanoutDownloadAction(downloads, (id) =>
+          pauseMut.mutateAsync({ id }),
+        );
+        if (failed > 0) {
+          toast.error(t("packages.toast.bulkActionError"));
+        } else {
+          toast.success(t("packages.toast.bulkPauseSuccess"));
+        }
+      },
+      startAll: async (_pkg, downloads) => {
+        const { failed } = await fanoutDownloadAction(downloads, (id) =>
+          resumeMut.mutateAsync({ id }),
+        );
+        if (failed > 0) {
+          toast.error(t("packages.toast.bulkActionError"));
+        } else {
+          toast.success(t("packages.toast.bulkStartSuccess"));
+        }
+      },
+      beginDragDownload: (download, fromPackageId) => {
+        const numericId = Number(download.id);
+        if (!Number.isFinite(numericId)) return;
+        dragRef.current = { downloadId: numericId, fromPackageId };
+      },
+      endDragDownload: () => {
+        dragRef.current = null;
+      },
+      dropDownload: async (toPackageId, e) => {
+        const transfer = e.dataTransfer;
+        const transferId = transfer?.getData("application/x-vortex-download") ?? "";
+        const transferFrom = transfer?.getData("application/x-vortex-source-package") ?? "";
+        const rawId = transferId !== "" ? transferId : String(dragRef.current?.downloadId ?? "");
+        const fromId = transferFrom !== "" ? transferFrom : (dragRef.current?.fromPackageId ?? "");
+        const downloadId = Number(rawId);
+        dragRef.current = null;
+        if (!Number.isFinite(downloadId) || fromId === toPackageId || fromId === "") {
           return;
         }
+        try {
+          const result = await moveDownloadBetweenPackages(downloadId, fromId, toPackageId);
+          if (!result.ok) {
+            toast.error(t("packages.toast.moveDownloadRollbackError"));
+            invalidatePackages();
+            return;
+          }
+          toast.success(t("packages.toast.moveDownloadSuccess"));
+          invalidatePackages();
+        } catch {
+          toast.error(t("packages.toast.moveDownloadError"));
+        }
+      },
+      selectForMove: (download, fromPackageId) => {
+        const numericId = Number(download.id);
+        if (!Number.isFinite(numericId)) return;
+        setPendingMove({
+          downloadId: numericId,
+          fromPackageId,
+          fileName: download.fileName,
+        });
+        setMoveAnnouncement(t("packages.move.announce.selected", { name: download.fileName }));
+      },
+      cancelMove: () => {
+        setPendingMove(null);
+        setMoveAnnouncement(t("packages.move.announce.cancelled"));
+      },
+      executeMove: async (toPackage) => {
+        const move = pendingMove;
+        if (!move || move.fromPackageId === toPackage.id) return;
         setMoveAnnouncement(
-          t("packages.move.announce.success", {
+          t("packages.move.announce.started", {
             name: move.fileName,
             package: toPackage.name,
           }),
         );
-        toast.success(t("packages.toast.moveDownloadSuccess"));
-        invalidatePackages();
-      } catch {
-        setMoveAnnouncement(
-          t("packages.move.announce.error", { name: move.fileName }),
-        );
-        toast.error(t("packages.toast.moveDownloadError"));
-      } finally {
-        setPendingMove((current) =>
-          current &&
-          current.downloadId === move.downloadId &&
-          current.fromPackageId === move.fromPackageId
-            ? null
-            : current,
-        );
-      }
-    },
-  }), [
-    fanoutDownloadAction,
-    invalidatePackages,
-    moveDownloadBetweenPackages,
-    pauseMut,
-    pendingMove,
-    priorityMut,
-    resumeMut,
-    t,
-    toggleAutoExtractMut,
-  ]);
+        try {
+          const result = await moveDownloadBetweenPackages(
+            move.downloadId,
+            move.fromPackageId,
+            toPackage.id,
+          );
+          if (!result.ok) {
+            setMoveAnnouncement(t("packages.move.announce.error", { name: move.fileName }));
+            toast.error(t("packages.toast.moveDownloadRollbackError"));
+            invalidatePackages();
+            return;
+          }
+          setMoveAnnouncement(
+            t("packages.move.announce.success", {
+              name: move.fileName,
+              package: toPackage.name,
+            }),
+          );
+          toast.success(t("packages.toast.moveDownloadSuccess"));
+          invalidatePackages();
+        } catch {
+          setMoveAnnouncement(t("packages.move.announce.error", { name: move.fileName }));
+          toast.error(t("packages.toast.moveDownloadError"));
+        } finally {
+          setPendingMove((current) =>
+            current &&
+            current.downloadId === move.downloadId &&
+            current.fromPackageId === move.fromPackageId
+              ? null
+              : current,
+          );
+        }
+      },
+    }),
+    [
+      fanoutDownloadAction,
+      invalidatePackages,
+      moveDownloadBetweenPackages,
+      pauseMut,
+      pendingMove,
+      priorityMut,
+      resumeMut,
+      t,
+      toggleAutoExtractMut,
+    ],
+  );
 
   return (
-    <div
-      className="flex h-full min-h-0 flex-col gap-3 p-4"
-      data-testid="packages-view"
-    >
+    <div className="flex h-full min-h-0 flex-col gap-3 p-4" data-testid="packages-view">
       <h1 className="text-2xl font-semibold">{t("packages.title")}</h1>
       <PackageToolbar
         filter={filter}
@@ -448,11 +435,7 @@ export function PackagesView() {
       >
         {moveAnnouncement}
       </div>
-      <AddPackageDialog
-        open={addOpen}
-        onOpenChange={setAddOpen}
-        onSubmit={handleCreate}
-      />
+      <AddPackageDialog open={addOpen} onOpenChange={setAddOpen} onSubmit={handleCreate} />
       <RenamePackageDialog
         pkg={renaming}
         onCancel={() => setRenaming(null)}

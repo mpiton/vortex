@@ -1,18 +1,15 @@
-import { useRef, useState } from 'react';
-import { CheckCheck, FolderInput, Pause, Play, X, XCircle } from 'lucide-react';
-import { useTranslation } from 'react-i18next';
-import { Button } from '@/components/ui/button';
-import { Separator } from '@/components/ui/separator';
-import { MoveDialog } from '@/components/ui/MoveDialog';
-import { useTauriMutation, useTauriQuery } from '@/api/hooks';
-import { downloadQueries } from '@/api/queries';
-import { useDownloadDetail } from '@/hooks/useDownloadDetail';
-import { useUiStore } from '@/stores/uiStore';
-import { toast } from '@/lib/toast';
-import {
-  ClearDownloadsDialog,
-  type ClearDownloadsTarget,
-} from './ClearDownloadsDialog';
+import { useRef, useState } from "react";
+import { CheckCheck, FolderInput, Pause, Play, X, XCircle } from "lucide-react";
+import { useTranslation } from "react-i18next";
+import { Button } from "@/components/ui/button";
+import { Separator } from "@/components/ui/separator";
+import { MoveDialog } from "@/components/ui/MoveDialog";
+import { useTauriMutation, useTauriQuery } from "@/api/hooks";
+import { downloadQueries } from "@/api/queries";
+import { useDownloadDetail } from "@/hooks/useDownloadDetail";
+import { useUiStore } from "@/stores/uiStore";
+import { toast } from "@/lib/toast";
+import { ClearDownloadsDialog, type ClearDownloadsTarget } from "./ClearDownloadsDialog";
 
 interface ChangeDirectoryFailure {
   id: number;
@@ -24,10 +21,7 @@ interface ChangeDirectoryBulkOutcome {
   failed: ChangeDirectoryFailure[];
 }
 
-const INVALIDATE_KEYS = [
-  downloadQueries.lists(),
-  downloadQueries.countByState(),
-] as const;
+const INVALIDATE_KEYS = [downloadQueries.lists(), downloadQueries.countByState()] as const;
 
 export function ActionsBar() {
   const { t } = useTranslation();
@@ -40,40 +34,37 @@ export function ActionsBar() {
     useUiStore.setState((state) => ({
       selectedDownloadIds: failedIds,
       selectedDownloadId:
-        state.selectedDownloadId !== null
-        && failedIds.includes(state.selectedDownloadId)
+        state.selectedDownloadId !== null && failedIds.includes(state.selectedDownloadId)
           ? state.selectedDownloadId
           : (failedIds[0] ?? null),
     }));
   };
 
-  const pauseAll = useTauriMutation<void, void>('download_pause_all', {
+  const pauseAll = useTauriMutation<void, void>("download_pause_all", {
     invalidateKeys: INVALIDATE_KEYS,
   });
 
-  const resumeAll = useTauriMutation<void, void>('download_resume_all', {
+  const resumeAll = useTauriMutation<void, void>("download_resume_all", {
     invalidateKeys: INVALIDATE_KEYS,
   });
 
-  const cancelDownload = useTauriMutation<void, { id: number }>('download_cancel', {
+  const cancelDownload = useTauriMutation<void, { id: number }>("download_cancel", {
     invalidateKeys: INVALIDATE_KEYS,
   });
 
   const moveDownloads = useTauriMutation<
     ChangeDirectoryBulkOutcome,
     { ids: number[]; newDestinationDir: string }
-  >('download_change_directory_bulk', {
+  >("download_change_directory_bulk", {
     invalidateKeys: INVALIDATE_KEYS,
     onSuccess: (outcome, vars) => {
       const total = vars.ids.length;
       if (outcome.failed.length === 0) {
-        toast.success(
-          t('downloads.toast.moveSucceeded', { count: outcome.moved.length }),
-        );
+        toast.success(t("downloads.toast.moveSucceeded", { count: outcome.moved.length }));
         clearSelection();
       } else {
         toast.error(
-          t('downloads.toast.movePartial', {
+          t("downloads.toast.movePartial", {
             moved: outcome.moved.length,
             total,
             failed: outcome.failed.length,
@@ -88,35 +79,32 @@ export function ActionsBar() {
       }
     },
     onError: (err) => {
-      toast.error(t('downloads.toast.moveError', { error: err.message }));
+      toast.error(t("downloads.toast.moveError", { error: err.message }));
     },
   });
 
   const clearCompleted = useTauriMutation<number, { deleteFiles: boolean }>(
-    'download_clear_completed',
+    "download_clear_completed",
     {
       invalidateKeys: INVALIDATE_KEYS,
       onSuccess: (count) => {
-        toast.success(t('downloads.toast.clearedCompleted', { count }));
+        toast.success(t("downloads.toast.clearedCompleted", { count }));
       },
       onError: (err) => {
-        toast.error(t('downloads.toast.clearError', { error: err.message }));
+        toast.error(t("downloads.toast.clearError", { error: err.message }));
       },
     },
   );
 
-  const clearFailed = useTauriMutation<number, { deleteFiles: boolean }>(
-    'download_clear_failed',
-    {
-      invalidateKeys: INVALIDATE_KEYS,
-      onSuccess: (count) => {
-        toast.success(t('downloads.toast.clearedFailed', { count }));
-      },
-      onError: (err) => {
-        toast.error(t('downloads.toast.clearError', { error: err.message }));
-      },
+  const clearFailed = useTauriMutation<number, { deleteFiles: boolean }>("download_clear_failed", {
+    invalidateKeys: INVALIDATE_KEYS,
+    onSuccess: (count) => {
+      toast.success(t("downloads.toast.clearedFailed", { count }));
     },
-  );
+    onError: (err) => {
+      toast.error(t("downloads.toast.clearError", { error: err.message }));
+    },
+  });
 
   const cancellingRef = useRef(false);
   const handleCancelSelected = async () => {
@@ -127,11 +115,10 @@ export function ActionsBar() {
       const results = await Promise.allSettled(
         snapshot.map((id) => cancelDownload.mutateAsync({ id: Number(id) })),
       );
-      const failedIds = snapshot.filter((_, i) => results[i].status === 'rejected');
+      const failedIds = snapshot.filter((_, i) => results[i].status === "rejected");
       const currentIds = useUiStore.getState().selectedDownloadIds;
       const unchanged =
-        currentIds.length === snapshot.length
-        && currentIds.every((id, i) => id === snapshot[i]);
+        currentIds.length === snapshot.length && currentIds.every((id, i) => id === snapshot[i]);
       if (unchanged) {
         if (failedIds.length === 0) clearSelection();
         else setSelectedDownloadIds(failedIds);
@@ -147,24 +134,23 @@ export function ActionsBar() {
   // reactively tracks state transitions. Mirrors the staleTime used by the
   // primary consumer in DownloadsView so the two reads share a single request.
   const { data: counts } = useTauriQuery<Record<string, number>>(
-    'download_count_by_state',
+    "download_count_by_state",
     undefined,
     { queryKey: downloadQueries.countByState(), staleTime: 2000 },
   );
   const completedCount = counts?.Completed ?? 0;
   const errorCount = counts?.Error ?? 0;
 
-  const [dialogTarget, setDialogTarget] =
-    useState<ClearDownloadsTarget | null>(null);
+  const [dialogTarget, setDialogTarget] = useState<ClearDownloadsTarget | null>(null);
   const dialogOpen = dialogTarget !== null;
-  const dialogCount = dialogTarget === 'completed' ? completedCount : errorCount;
+  const dialogCount = dialogTarget === "completed" ? completedCount : errorCount;
 
   const [moveDialogOpen, setMoveDialogOpen] = useState(false);
   // Surface the first selected download's destination so the dialog can show
   // a "current location" hint and seed the OS folder picker near the file.
   // The query is cheap (cached, gated on a non-empty id) and avoids piping
   // destinationPath through the lightweight DownloadView read model.
-  const firstSelectedId = selectedDownloadIds[0] ?? '';
+  const firstSelectedId = selectedDownloadIds[0] ?? "";
   const { data: firstSelectedDetail } = useDownloadDetail(firstSelectedId);
   const moveDialogCurrentPath = firstSelectedDetail?.destinationPath;
 
@@ -176,47 +162,43 @@ export function ActionsBar() {
   };
 
   const handleDialogConfirm = async (deleteFiles: boolean) => {
-    if (dialogTarget === 'completed') {
+    if (dialogTarget === "completed") {
       await clearCompleted.mutateAsync({ deleteFiles });
-    } else if (dialogTarget === 'error') {
+    } else if (dialogTarget === "error") {
       await clearFailed.mutateAsync({ deleteFiles });
     }
   };
 
   return (
     <div
-      className={`flex items-center gap-2 min-h-[36px] ${hasSelection ? 'rounded-md bg-muted/50 px-3 py-1' : ''}`}
+      className={`flex items-center gap-2 min-h-[36px] ${hasSelection ? "rounded-md bg-muted/50 px-3 py-1" : ""}`}
     >
       {hasSelection ? (
         <>
           <span className="text-sm text-muted-foreground">
-            {t('downloads.selectedCount', { count: selectedDownloadIds.length })}
+            {t("downloads.selectedCount", { count: selectedDownloadIds.length })}
           </span>
           <Button variant="ghost" size="sm" onClick={handleCancelSelected}>
             <X className="mr-1 h-4 w-4" />
-            {t('downloads.actions.cancelSelected')}
+            {t("downloads.actions.cancelSelected")}
           </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => setMoveDialogOpen(true)}
-          >
+          <Button variant="ghost" size="sm" onClick={() => setMoveDialogOpen(true)}>
             <FolderInput className="mr-1 h-4 w-4" />
-            {t('downloads.actions.moveSelected')}
+            {t("downloads.actions.moveSelected")}
           </Button>
           <Button variant="ghost" size="sm" onClick={clearSelection}>
-            {t('common.clear')}
+            {t("common.clear")}
           </Button>
         </>
       ) : (
         <>
           <Button variant="ghost" size="sm" onClick={() => pauseAll.mutate()}>
             <Pause className="mr-1 h-4 w-4" />
-            {t('downloads.actions.pauseAll')}
+            {t("downloads.actions.pauseAll")}
           </Button>
           <Button variant="ghost" size="sm" onClick={() => resumeAll.mutate()}>
             <Play className="mr-1 h-4 w-4" />
-            {t('downloads.actions.resumeAll')}
+            {t("downloads.actions.resumeAll")}
           </Button>
 
           <Separator orientation="vertical" className="mx-1 h-4" />
@@ -225,19 +207,19 @@ export function ActionsBar() {
             variant="ghost"
             size="sm"
             disabled={completedCount === 0}
-            onClick={() => setDialogTarget('completed')}
+            onClick={() => setDialogTarget("completed")}
           >
             <CheckCheck className="mr-1 h-4 w-4" />
-            {t('downloads.actions.clearCompleted')}
+            {t("downloads.actions.clearCompleted")}
           </Button>
           <Button
             variant="ghost"
             size="sm"
             disabled={errorCount === 0}
-            onClick={() => setDialogTarget('error')}
+            onClick={() => setDialogTarget("error")}
           >
             <XCircle className="mr-1 h-4 w-4" />
-            {t('downloads.actions.clearFailed')}
+            {t("downloads.actions.clearFailed")}
           </Button>
         </>
       )}

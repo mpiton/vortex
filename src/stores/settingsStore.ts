@@ -1,6 +1,6 @@
-import { create } from 'zustand';
-import { tauriInvoke } from '@/api/client';
-import type { AppConfig, AppConfigPatch } from '@/types/settings';
+import { create } from "zustand";
+import { tauriInvoke } from "@/api/client";
+import type { AppConfig, AppConfigPatch } from "@/types/settings";
 
 interface SettingsStoreState {
   config: AppConfig | null;
@@ -25,7 +25,7 @@ export const useSettingsStore = create<SettingsStoreState>((set) => ({
       config: s.config ? { ...s.config, ...partial } : s.config,
     }));
     try {
-      await tauriInvoke('settings_update', { patch: partial });
+      await tauriInvoke("settings_update", { patch: partial });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       set({ error: message });

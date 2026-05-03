@@ -1,9 +1,9 @@
-import { invoke } from '@tauri-apps/api/core';
-import { QueryClient } from '@tanstack/react-query';
+import { invoke } from "@tauri-apps/api/core";
+import { QueryClient } from "@tanstack/react-query";
 
 function toError(err: unknown): Error {
   if (err instanceof Error) return err;
-  return new Error(typeof err === 'string' ? err : JSON.stringify(err));
+  return new Error(typeof err === "string" ? err : JSON.stringify(err));
 }
 
 export async function tauriInvoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {

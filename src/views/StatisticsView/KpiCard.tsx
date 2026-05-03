@@ -1,6 +1,6 @@
-import type { ComponentType } from 'react';
-import { Card, CardContent } from '@/components/ui/card';
-import { cn } from '@/lib/utils';
+import type { ComponentType } from "react";
+import { Card, CardContent } from "@/components/ui/card";
+import { cn } from "@/lib/utils";
 
 export interface KpiCardProps {
   label: string;
@@ -12,7 +12,7 @@ export interface KpiCardProps {
 
 export function KpiCard({ label, value, hint, icon: Icon, className }: KpiCardProps) {
   return (
-    <Card className={cn('gap-2 py-4', className)}>
+    <Card className={cn("gap-2 py-4", className)}>
       <CardContent className="flex flex-col gap-1.5 px-4">
         <div className="flex items-center justify-between text-xs uppercase tracking-wide text-muted-foreground">
           <span>{label}</span>
