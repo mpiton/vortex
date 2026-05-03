@@ -19,6 +19,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **PR #140 review round 2** (scope `ci`): closed the remaining gaps surfaced by the second pass of chatgpt-codex / cubic / coderabbit findings.
+  - `scripts/no-manual-deps.sh` now also flags Cargo dependency *deletions*, not just additions. A new `removed_line_numbers` helper feeds the same range-overlap check, but against `cargo_dep_section_ranges` of the HEAD blob — a manual `cargo remove` (or sed `/^foo = /d`) that omits an updated lockfile is rejected. New error message lists `cargo remove` / `npm uninstall` alongside the add commands.
+  - `pkg_dep_change_detected` now fails closed when `jq` is absent. A `require_jq` helper prints install instructions for Linux / macOS / Windows and exits 1 instead of returning "no change" — the policy is non-negotiable, so a missing tool blocks the commit instead of silently disabling the gate.
+  - `.github/workflows/ci.yml` server-side API key scan no longer excludes `package.json` and `Cargo.toml` (the patterns are distinctive prefixes — `AKIA*`, `sk-ant-*`, etc. — so manifest scanning is safe). Pattern list aligned with `scripts/no-secrets.sh` to add `sk-[A-Za-z0-9]{32,}` (OpenAI-style) and `glpat-[A-Za-z0-9_-]{20}` (GitLab PATs) so defence-in-depth is consistent across pre-commit and CI.
+
 - **PR #140 review** (scope `ci`): tightened the new CI/hooks layer in response to chatgpt-codex / cubic / coderabbit findings.
   - `release.yml` tag trigger was regex-style (`v[0-9]+.[0-9]+.[0-9]+*`) — won't match `v1.2.3` since GitHub Actions `on.push.tags` is glob, not regex. Replaced with `v[0-9]*.[0-9]*.[0-9]*`.
   - `release.yml` CHANGELOG check now uses `grep -F` against `## [<version>]` / `## <version>` instead of unescaped regex, so version dots match literally (`1.2.3` no longer accepts `1X2X3`).

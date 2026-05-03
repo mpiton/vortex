@@ -118,8 +118,12 @@ jobs:
 
       - name: Check for API key patterns in tracked files
         run: |
-          PATTERNS='AKIA[0-9A-Z]{16}|sk-ant-[A-Za-z0-9_-]{20,}|ghp_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{82}|AIza[0-9A-Za-z_-]{35}'
-          MATCHES=$(git grep -nE "$PATTERNS" -- ':(exclude)*.lock' ':(exclude)package.json' ':(exclude)Cargo.toml' || true)
+          # Patterns aligned with scripts/no-secrets.sh — defence in depth.
+          # All distinctive prefixes (AKIA, sk-ant, sk-, ghp_, github_pat_,
+          # glpat-, AIza), so manifests like package.json / Cargo.toml are
+          # safe to scan and are no longer excluded.
+          PATTERNS='AKIA[0-9A-Z]{16}|sk-ant-[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9]{32,}|ghp_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{82}|glpat-[A-Za-z0-9_-]{20}|AIza[0-9A-Za-z_-]{35}'
+          MATCHES=$(git grep -nE "$PATTERNS" -- ':(exclude)*.lock' || true)
           if [ -n "$MATCHES" ]; then
             echo "::error::API key pattern detected:"
             echo "$MATCHES" | head -10

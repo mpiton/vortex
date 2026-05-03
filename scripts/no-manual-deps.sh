@@ -16,11 +16,14 @@ if echo "$STAGED" | grep -qE '(^|/)(pnpm-lock\.yaml|yarn\.lock)$'; then
 fi
 
 # Compute the inclusive line ranges occupied by Cargo dependency tables in the
-# staged version of the file. Handles `[dependencies]`, `[dev-dependencies]`,
-# `[build-dependencies]`, `[workspace.dependencies]`, and `[target.*.dependencies]`
-# (plus their dev-/build- variants).
+# version of the file pointed to by `<ref>:<path>` (e.g. `:src-tauri/Cargo.toml`
+# for the staged blob, `HEAD:src-tauri/Cargo.toml` for the index parent).
+# Handles `[dependencies]`, `[dev-dependencies]`, `[build-dependencies]`,
+# `[workspace.dependencies]`, and `[target.*.dependencies]` (plus dev-/build-
+# variants).
 cargo_dep_section_ranges() {
-    git show ":${1}" 2>/dev/null | awk '
+    local ref_path="$1"
+    git show "$ref_path" 2>/dev/null | awk '
         /^\[/ {
             if (in_dep && start > 0) print start "-" (NR - 1)
             in_dep = ($0 ~ /^\[(dev-|build-)?dependencies\][[:space:]]*$/ \
@@ -33,8 +36,7 @@ cargo_dep_section_ranges() {
     '
 }
 
-# Emit the new-file line numbers of every `+` line in the staged diff.
-# Skips diff metadata (+++ headers).
+# Emit the new-file line numbers of every added (`+`) line in the staged diff.
 added_line_numbers() {
     git diff --cached -U0 "$1" | awk '
         /^\+\+\+/ { next }
@@ -48,23 +50,58 @@ added_line_numbers() {
     '
 }
 
-# Returns 0 if any added line falls inside a dep-section range.
+# Emit the old-file line numbers of every removed (`-`) line in the staged diff.
+# Numbers refer to HEAD, so they should be tested against
+# `cargo_dep_section_ranges "HEAD:<file>"`.
+removed_line_numbers() {
+    git diff --cached -U0 "$1" | awk '
+        /^---/ { next }
+        /^@@/ {
+            if (match($0, /-[0-9]+/)) {
+                cur = substr($0, RSTART + 1, RLENGTH - 1) + 0
+            }
+            next
+        }
+        /^-/ { print cur; cur++ }
+    '
+}
+
+# Returns 0 if any added line falls in a dep-section range of the staged blob,
+# OR any removed line falls in a dep-section range of the HEAD blob.
+# Catches both additions and deletions so a manual `cargo remove` followed by
+# a stage of Cargo.toml-only is also blocked when Cargo.lock isn't updated.
 cargo_dep_change_detected() {
     local file="$1"
-    local ranges added line s e
-    ranges=$(cargo_dep_section_ranges "$file") || return 1
-    [ -z "$ranges" ] && return 1
-    added=$(added_line_numbers "$file")
-    [ -z "$added" ] && return 1
-    for line in $added; do
-        for r in $ranges; do
-            s="${r%-*}"
-            e="${r#*-}"
-            if [ "$line" -ge "$s" ] && [ "$line" -le "$e" ]; then
-                return 0
-            fi
+    local new_ranges old_ranges added removed line s e
+
+    new_ranges=$(cargo_dep_section_ranges ":${file}")
+    if [ -n "$new_ranges" ]; then
+        added=$(added_line_numbers "$file")
+        for line in $added; do
+            for r in $new_ranges; do
+                s="${r%-*}"
+                e="${r#*-}"
+                if [ "$line" -ge "$s" ] && [ "$line" -le "$e" ]; then
+                    return 0
+                fi
+            done
         done
-    done
+    fi
+
+    old_ranges=$(cargo_dep_section_ranges "HEAD:${file}")
+    if [ -n "$old_ranges" ]; then
+        removed=$(removed_line_numbers "$file")
+        for line in $removed; do
+            for r in $old_ranges; do
+                s="${r%-*}"
+                e="${r#*-}"
+                if [ "$line" -ge "$s" ] && [ "$line" -le "$e" ]; then
+                    return 0
+                fi
+            done
+        done
+    fi
+
     return 1
 }
 
@@ -84,9 +121,10 @@ for cargo_toml in src-tauri/Cargo.toml Cargo.toml; do
                 echo "Correct procedure:"
                 echo "  cargo add <crate>            # or cargo add --dev / --build"
                 echo "  cargo add <crate>@<version>  # explicit constraint if needed"
+                echo "  cargo remove <crate>         # for deletions"
                 echo ""
                 echo "This updates $lock automatically."
-                echo "Revert your manual change then use cargo add."
+                echo "Revert your manual change then use the cargo command above."
                 exit 1
             fi
         fi
@@ -94,10 +132,23 @@ for cargo_toml in src-tauri/Cargo.toml Cargo.toml; do
 done
 
 # === package.json ===
-# Detect dependency-table changes via jq diff against HEAD. Avoids the
-# false positives that hit a top-level "version" / "name" bump.
+# Fail closed if jq is missing — the policy is non-negotiable, so a tooling gap
+# must block the commit instead of silently letting manual dep edits through.
+require_jq() {
+    if ! command -v jq >/dev/null 2>&1; then
+        echo "BLOCKED: jq is required for the no-manual-deps hook." >&2
+        echo "Install jq before committing:" >&2
+        echo "  Linux:   sudo apt install jq    # or your distro equivalent" >&2
+        echo "  macOS:   brew install jq" >&2
+        echo "  Windows: scoop install jq       # or choco install jq" >&2
+        exit 1
+    fi
+}
+
+# Detect dependency-table changes via jq diff against HEAD. Compares the
+# four standard sections so a top-level "version" / "name" bump never triggers.
 pkg_dep_change_detected() {
-    command -v jq >/dev/null 2>&1 || return 1
+    require_jq
     local sect old new
     for sect in dependencies devDependencies peerDependencies optionalDependencies; do
         old=$(git show "HEAD:package.json" 2>/dev/null \
@@ -119,6 +170,7 @@ if echo "$STAGED" | grep -qF "package.json"; then
             echo "Correct procedure:"
             echo "  npm install <package>      # runtime dependency"
             echo "  npm install -D <package>   # devDependency"
+            echo "  npm uninstall <package>    # for deletions"
             echo ""
             echo "This updates package-lock.json automatically."
             exit 1
