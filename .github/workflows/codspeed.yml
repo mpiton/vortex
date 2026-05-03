@@ -20,10 +20,14 @@ jobs:
   codspeed:
     name: Run benchmarks
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: src-tauri
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Linux dependencies
+        working-directory: .
         run: >
           sudo apt-get update &&
           sudo apt-get install -y
@@ -40,10 +44,10 @@ jobs:
           bins: cargo-codspeed
 
       - name: Build the benchmark target(s)
-        run: cargo codspeed build --manifest-path src-tauri/Cargo.toml
+        run: cargo codspeed build
 
       - name: Run the benchmarks
         uses: CodSpeedHQ/action@v4
         with:
           mode: simulation
-          run: cargo codspeed run --manifest-path src-tauri/Cargo.toml
+          run: cd src-tauri && cargo codspeed run

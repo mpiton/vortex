@@ -1,11 +1,11 @@
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
-use vortex_lib::domain::model::{
-    AppConfig, ChecksumAlgorithm, ConfigPatch, Download, DownloadId, Priority, Segment, Url,
-};
+use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use vortex_lib::domain::model::config::{
     apply_patch, normalize_link_check_parallelism, normalize_max_concurrent,
 };
 use vortex_lib::domain::model::link::LinkStatus;
+use vortex_lib::domain::model::{
+    AppConfig, ChecksumAlgorithm, ConfigPatch, Download, DownloadId, Priority, Segment, Url,
+};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -13,7 +13,12 @@ use vortex_lib::domain::model::link::LinkStatus;
 
 fn make_download() -> Download {
     let url = Url::new("https://cdn.example.com/releases/v2.0/archive.tar.gz").unwrap();
-    Download::new(DownloadId(1), url, "archive.tar.gz".to_string(), "/tmp".to_string())
+    Download::new(
+        DownloadId(1),
+        url,
+        "archive.tar.gz".to_string(),
+        "/tmp".to_string(),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -179,9 +184,7 @@ fn bench_checksum_detection(c: &mut Criterion) {
     });
 
     group.bench_function("detect_md5", |b| {
-        b.iter(|| {
-            ChecksumAlgorithm::detect_from_hex(black_box("d41d8cd98f00b204e9800998ecf8427e"))
-        })
+        b.iter(|| ChecksumAlgorithm::detect_from_hex(black_box("d41d8cd98f00b204e9800998ecf8427e")))
     });
 
     group.bench_function("reject_invalid", |b| {
