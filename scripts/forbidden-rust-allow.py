@@ -13,9 +13,22 @@ and walks every `#[allow(...)]` group with `re.DOTALL`, then reports a
 `file:line: snippet` hit when one of the forbidden tokens appears anywhere
 inside the captured argument list.
 
-Exits 1 with the hit list on stdout when any are found, 0 otherwise. Used
-by the `forbidden-tools` CI job and is safe to run locally.
+Behaviour:
+- Both outer (`#[allow(...)]`) and inner (`#![allow(...)]`) attribute forms
+  are inspected.
+- Line and block comments are stripped before scanning so a comment that
+  literally mentions `#[allow(dead_code)]` (e.g. a TODO note) does not
+  produce a false positive.
+- A suppression is tolerated when the immediately preceding non-blank line
+  is a `// TODO(task-N): ...` comment that documents the cleanup task.
+  This is the only escape hatch — silent suppressions still fail the gate.
+
+Exits 1 with the hit list on stdout when any are found, 0 otherwise. Any
+other exit code (e.g. propagated exception) signals a real failure that
+the CI step must abort on.
 """
+from __future__ import annotations
+
 import re
 import subprocess
 import sys
@@ -23,8 +36,55 @@ import sys
 FORBIDDEN = re.compile(
     r"\b(dead_code|unused|unused_variables|unused_imports)\b"
 )
-ALLOW_GROUP = re.compile(r"#\[allow\(([^)]*)\)\]", re.DOTALL)
+# Outer `#[allow(...)]` and inner `#![allow(...)]`. Optional whitespace
+# around the brackets / `allow` keyword. Lazy `(.*?)` body so the match
+# terminates at the first `)]` even when the body itself contains
+# parenthesised forms (e.g. `clippy::needless_pass_by_value`).
+ALLOW_GROUP = re.compile(r"#!?\[\s*allow\s*\((.*?)\)\s*\]", re.DOTALL)
+LINE_COMMENT = re.compile(r"//[^\n]*")
+BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.DOTALL)
+TODO_TASK = re.compile(r"^\s*//\s*TODO\(\s*[A-Za-z0-9_-]+\s*\)\s*:")
 MAX_HITS = 20
+
+
+def strip_comments_preserving_lines(text: str) -> str:
+    """Remove `//` and `/* ... */` comments while keeping line numbers stable.
+
+    Each stripped span is replaced with the same number of newlines so a
+    later `text[:start].count("\\n")` call still maps to the original line.
+    """
+
+    def blank_keep_lines(m: re.Match[str]) -> str:
+        return "\n" * m.group(0).count("\n")
+
+    text = BLOCK_COMMENT.sub(blank_keep_lines, text)
+    text = LINE_COMMENT.sub("", text)
+    return text
+
+
+def line_offset(text: str, line_num: int) -> int:
+    """Return byte offset of the start of `line_num` (1-indexed) in `text`."""
+    if line_num <= 1:
+        return 0
+    pos = 0
+    for _ in range(line_num - 1):
+        nl = text.find("\n", pos)
+        if nl == -1:
+            return len(text)
+        pos = nl + 1
+    return pos
+
+
+def previous_nonblank_line(text: str, pos: int) -> str:
+    """Return the previous non-blank line ending before `pos` (or '')."""
+    head = text[:pos]
+    lines = head.split("\n")
+    # The last entry in `lines` is the partial line containing `pos`;
+    # walk backwards looking for a non-blank predecessor.
+    for line in reversed(lines[:-1]):
+        if line.strip():
+            return line
+    return ""
 
 
 def main() -> int:
@@ -38,13 +98,23 @@ def main() -> int:
                 text = fh.read()
         except OSError:
             continue
-        for m in ALLOW_GROUP.finditer(text):
-            if FORBIDDEN.search(m.group(1)):
-                line = text[: m.start()].count("\n") + 1
-                snippet = " ".join(m.group(0).split())[:120]
-                hits.append(f"{f}:{line}: {snippet}")
-                if len(hits) >= MAX_HITS:
-                    break
+        stripped = strip_comments_preserving_lines(text)
+        for m in ALLOW_GROUP.finditer(stripped):
+            if not FORBIDDEN.search(m.group(1)):
+                continue
+            line_num = stripped[: m.start()].count("\n") + 1
+            # Documented-TODO escape hatch: the line above must be a
+            # `// TODO(task-N): ...` comment. The match offset is in
+            # `stripped`; map it back to the original text via line_num
+            # so the comment we removed is still observable.
+            orig_offset = line_offset(text, line_num)
+            prior = previous_nonblank_line(text, orig_offset)
+            if TODO_TASK.match(prior):
+                continue
+            snippet = " ".join(m.group(0).split())[:120]
+            hits.append(f"{f}:{line_num}: {snippet}")
+            if len(hits) >= MAX_HITS:
+                break
         if len(hits) >= MAX_HITS:
             break
     if hits:

@@ -144,8 +144,12 @@ jobs:
 
       - name: Reject pnpm-lock.yaml / yarn.lock
         run: |
-          if [ -f pnpm-lock.yaml ] || [ -f yarn.lock ]; then
-            echo "::error::pnpm-lock.yaml / yarn.lock detected."
+          # Scan every tracked path (not just root) so a nested
+          # `tools/yarn.lock` cannot bypass the policy.
+          FORBIDDEN_LOCKS=$(git ls-files | grep -E '(^|/)(pnpm-lock\.yaml|yarn\.lock)$' || true)
+          if [ -n "$FORBIDDEN_LOCKS" ]; then
+            echo "::error::pnpm-lock.yaml / yarn.lock detected:"
+            echo "$FORBIDDEN_LOCKS"
             echo "Vortex uses npm only. Remove these files."
             exit 1
           fi
@@ -172,9 +176,22 @@ jobs:
           #   #[allow(
           #       dead_code,
           #   )]
-          # The script exits 1 with the hit list on stdout when any are
-          # found, 0 otherwise.
-          BAD_RUST=$(python3 scripts/forbidden-rust-allow.py || true)
+          # Convention: exit 0 = clean, exit 1 = hits found (output captured),
+          # any other status = real failure (Python crash, missing tool, etc).
+          # We must distinguish those — a blanket `|| true` would mask real
+          # errors and silently let suppressions through.
+          BAD_RUST_OUTPUT=$(python3 scripts/forbidden-rust-allow.py 2>&1) \
+            || BAD_RUST_STATUS=$?
+          BAD_RUST_STATUS=${BAD_RUST_STATUS:-0}
+          case "$BAD_RUST_STATUS" in
+            0) BAD_RUST="" ;;
+            1) BAD_RUST="$BAD_RUST_OUTPUT" ;;
+            *)
+              echo "::error::scripts/forbidden-rust-allow.py crashed (exit $BAD_RUST_STATUS):"
+              echo "$BAD_RUST_OUTPUT"
+              exit "$BAD_RUST_STATUS"
+              ;;
+          esac
           # `git grep` exits non-zero when it finds no match — that is the
           # success path here, so shield the assignment with `|| true` rather
           # than disabling errexit for the whole step.

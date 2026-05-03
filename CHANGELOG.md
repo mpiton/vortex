@@ -19,6 +19,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **PR #140 review round 6** (scope `ci`): cubic + chatgpt-codex round-5 follow-up.
+  - `.github/workflows/ci.yml` `forbidden-tools` no longer swallows scanner failures with `|| true`. Captures both stdout and exit status: `0` = clean, `1` = hits found (output is the report), any other code = real failure that aborts the step.
+  - `scripts/forbidden-rust-allow.py` regex now matches both outer `#[allow(...)]` and inner `#![allow(...)]` attributes (`#!?\[\s*allow\s*\((.*?)\)\s*\]`). Lazy body `(.*?)` instead of `[^)]*` so allow lists containing parens (e.g. `clippy::needless_pass_by_value()`) don't terminate the match early.
+  - Scanner strips line and block comments before matching (preserving line numbers via newline-padded substitution) so a TODO note that mentions `#[allow(dead_code)]` literally no longer trips the gate. Adds a documented escape hatch: a suppression is tolerated when the immediately preceding non-blank line is a `// TODO(task-N): ...` comment. Silent suppressions still fail.
+  - `forbidden-tools` lockfile rejection switched from root-only `[ -f pnpm-lock.yaml ]` to a tracked-paths `git ls-files | grep -E '(^|/)(pnpm-lock\.yaml|yarn\.lock)$'` scan so a nested `tools/yarn.lock` cannot bypass the gate.
+
 - **PR #140 review round 5** (scope `ci`): closed coderabbit / cubic / chatgpt-codex flags from round 4, including a critical YAML parse failure introduced by the round-4 inline Python heredoc.
   - **Critical**: `.github/workflows/ci.yml` Python heredoc body lacked the indentation required by the `run: |` block scalar, breaking YAML parse and preventing the `forbidden-tools` job from loading. Extracted the scanner to `scripts/forbidden-rust-allow.py` and call it as `python3 scripts/forbidden-rust-allow.py`. The script slurps each `*.rs` file and walks every `#[allow(...)]` group with `re.DOTALL`, exits 1 with hits on stdout when any are found.
   - `secrets-scan` API key job no longer echoes the matched secret value into CI logs. `git grep -n` returns `file:line:matched_text`, so the report now passes through `awk -F: '{print $1 ":" $2}'` to keep only `file:line`.
