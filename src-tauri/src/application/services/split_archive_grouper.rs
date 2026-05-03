@@ -65,6 +65,17 @@ const MIN_PARTS_TO_GROUP: usize = 2;
 /// `BTreeMap` worth of cluster state.
 pub const MAX_LINKS: usize = 500;
 
+/// Upper bound on a single part's numeric suffix. Real-world split
+/// archives top out at a few hundred volumes, so a payload like
+/// `name.part1000000000.rar` is either a typo or a hostile input
+/// trying to force `compute_missing_parts` into a multi-billion-step
+/// iteration. Matchers reject anything past this cap, which makes the
+/// filename fall through to the unmatched path. The two unbounded
+/// regexes (modern RAR's `\d+` and legacy RAR's `\d{2,}`) are the only
+/// ones that need the explicit check; the other formats already pin
+/// the suffix at 3 digits via `\d{3}`.
+const MAX_PART_INDEX: u32 = 10_000;
+
 /// One archive format the grouper recognises. Carried alongside the
 /// detected base name so the missing-part error message can render the
 /// right suffix (`part05.rar` vs `7z.005`) and the `external_id` can
@@ -177,25 +188,22 @@ pub(crate) struct DetectedPart {
 /// before the generic `.7z.NNN` / `.zip.NNN` matchers so
 /// `archive.tar.gz.001` is not mis-classified as a 7z volume.
 pub(crate) fn detect_from_filename(file_name: &str) -> Option<DetectedPart> {
-    if let Some(part) = match_part_rar(file_name) {
-        return Some(part);
+    let detected = match_part_rar(file_name)
+        .or_else(|| match_tar_split(file_name))
+        .or_else(|| match_seven_z(file_name))
+        .or_else(|| match_zip_split(file_name))
+        .or_else(|| match_legacy_rar(file_name))
+        .or_else(|| match_legacy_rar_header(file_name))?;
+    // Cap absurd part indices so a hostile `name.part1000000000.rar`
+    // cannot force `compute_missing_parts` into a multi-billion-step
+    // iteration. Applied after the cascade so a rejected index does
+    // not silently fall through to `match_legacy_rar_header` and end
+    // up classified as a header (`name.part1000000000` would otherwise
+    // become base + part 0, which is meaningless).
+    if detected.part_num > MAX_PART_INDEX {
+        return None;
     }
-    if let Some(part) = match_tar_split(file_name) {
-        return Some(part);
-    }
-    if let Some(part) = match_seven_z(file_name) {
-        return Some(part);
-    }
-    if let Some(part) = match_zip_split(file_name) {
-        return Some(part);
-    }
-    if let Some(part) = match_legacy_rar(file_name) {
-        return Some(part);
-    }
-    if let Some(part) = match_legacy_rar_header(file_name) {
-        return Some(part);
-    }
-    None
+    Some(detected)
 }
 
 fn match_part_rar(file_name: &str) -> Option<DetectedPart> {
@@ -270,10 +278,15 @@ fn match_legacy_rar(file_name: &str) -> Option<DetectedPart> {
     // Translate `.r00` → part 1, `.r01` → part 2, … so the legacy set
     // shares the same 1-based numbering as the modern formats. The
     // optional terminal `.rar` header file is treated as part 0 by
-    // [`match_legacy_rar_header`].
+    // [`match_legacy_rar_header`]. `checked_add` guards against `u32`
+    // overflow on a `raw_num == u32::MAX` payload; the global cap in
+    // [`detect_from_filename`] then rejects anything above
+    // [`MAX_PART_INDEX`] so the iteration in `compute_missing_parts`
+    // stays bounded.
+    let part_num = raw_num.checked_add(1)?;
     Some(DetectedPart {
         base,
-        part_num: raw_num + 1,
+        part_num,
         format: SplitArchiveFormat::LegacyRar,
     })
 }
@@ -349,7 +362,15 @@ impl SplitArchiveGrouper {
 
         let mut out = Vec::new();
         for ((base, format), mut parts) in clusters {
-            if parts.len() < MIN_PARTS_TO_GROUP {
+            // Threshold counts distinct part numbers, not raw link
+            // count: two mirrors of `name.part01.rar` describe one
+            // volume, so they must not satisfy the singleton guard on
+            // their own. Otherwise duplicate URLs for the same part
+            // would create a "complete" group with `missing_parts`
+            // empty even though only one volume is actually present.
+            let distinct_parts: std::collections::HashSet<u32> =
+                parts.iter().map(|(n, _)| *n).collect();
+            if distinct_parts.len() < MIN_PARTS_TO_GROUP {
                 continue;
             }
             parts.sort_by_key(|(n, _)| *n);
@@ -911,6 +932,66 @@ mod tests {
         let results = grouper.group_all(&links, 0).expect("group");
         assert!(results.is_empty());
         assert!(repo.list().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_detect_rejects_part_num_above_max_part_index() {
+        // Modern RAR: an absurd part number forces an unbounded
+        // `compute_missing_parts` iteration if accepted. The matcher
+        // must drop it instead.
+        let huge = format!("movie.part{}.rar", MAX_PART_INDEX + 1);
+        assert!(detect_from_filename(&huge).is_none());
+        // Still accept the boundary value itself.
+        let at_cap = format!("movie.part{}.rar", MAX_PART_INDEX);
+        assert!(detect_from_filename(&at_cap).is_some());
+    }
+
+    #[test]
+    fn test_detect_legacy_rar_rejects_index_above_cap() {
+        // Legacy RAR's raw suffix is one less than the stored part
+        // number (`r00` → 1), so the rejection threshold is `MAX_PART_INDEX - 1`.
+        let huge = format!("backup.r{}", MAX_PART_INDEX);
+        assert!(detect_from_filename(&huge).is_none());
+        let at_cap = format!("backup.r{}", MAX_PART_INDEX - 1);
+        assert!(detect_from_filename(&at_cap).is_some());
+    }
+
+    #[test]
+    fn test_group_all_distinct_parts_required_for_min_threshold() {
+        // Two mirrors of the same part should not satisfy
+        // MIN_PARTS_TO_GROUP — only one actual volume is present, so
+        // the resolver should send it through the regular single-file
+        // path, not create a misleading "complete" package.
+        let (repo, bus) = arc_repo_and_bus();
+        let grouper = SplitArchiveGrouper::new(repo.clone(), bus);
+        let links = vec![
+            link("https://mirror1.com/movie.part01.rar", "movie.part01.rar"),
+            link("https://mirror2.com/movie.part01.rar", "movie.part01.rar"),
+        ];
+
+        let results = grouper.group_all(&links, 0).expect("group");
+        assert!(
+            results.is_empty(),
+            "duplicate mirrors of one part must not satisfy MIN_PARTS_TO_GROUP"
+        );
+        assert!(repo.list().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_group_all_distinct_parts_threshold_groups_two_real_volumes() {
+        // Two real volumes (one mirror per volume) still groups, even
+        // though parts.len() and distinct count happen to match — sanity
+        // check that the new gate did not regress the happy path.
+        let (repo, bus) = arc_repo_and_bus();
+        let grouper = SplitArchiveGrouper::new(repo, bus);
+        let links = vec![
+            link("https://ex.com/movie.part01.rar", "movie.part01.rar"),
+            link("https://ex.com/movie.part02.rar", "movie.part02.rar"),
+        ];
+
+        let results = grouper.group_all(&links, 0).expect("group");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].urls.len(), 2);
     }
 
     #[test]
