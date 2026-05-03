@@ -76,3 +76,30 @@ export interface PlaylistGroupResult {
   created: boolean;
   itemCount: number;
 }
+
+/** Mirror of [`SplitArchiveLinkInputDto`](src-tauri/src/adapters/driving/tauri_ipc.rs).
+ * Used as the input payload to the `link_group_split_archives` IPC. */
+export interface SplitArchiveLinkInput {
+  url: string;
+  filename: string;
+}
+
+/** Mirror of [`SplitArchiveGroupResultDto`](src-tauri/src/adapters/driving/tauri_ipc.rs).
+ * Returned by the `link_group_split_archives` IPC. One entry per detected
+ * base name; `missingParts` is non-empty when the input batch had gaps in
+ * the part numbering (the backend also fires a `split-archive-incomplete`
+ * event in that case). */
+export interface SplitArchiveGroupResult {
+  packageId: string;
+  baseName: string;
+  packageName: string;
+  /** True when the package was just created, false when an existing
+   * package with the same `baseName` was reused. */
+  created: boolean;
+  /** URLs that belong to this group, sorted by detected part number. */
+  urls: string[];
+  /** Human-readable suffixes (e.g. `"part05.rar"`, `"7z.003"`) of the
+   * parts that should exist between part 1 and the highest detected
+   * part number but are absent from the input batch. */
+  missingParts: string[];
+}

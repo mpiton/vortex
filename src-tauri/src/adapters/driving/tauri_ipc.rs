@@ -880,6 +880,73 @@ pub async fn link_group_playlists(
         .collect())
 }
 
+/// Inbound IPC payload for [`link_group_split_archives`]. Mirrors
+/// [`crate::application::services::SplitArchiveLink`] in camelCase.
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SplitArchiveLinkInputDto {
+    pub url: String,
+    pub filename: String,
+}
+
+/// IPC return shape for [`link_group_split_archives`]. Mirrors
+/// [`crate::application::services::SplitArchiveGroupResult`] in
+/// camelCase so the Link Grabber preview can render the "Will create
+/// package X with N parts (Y missing)" banner before Start.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SplitArchiveGroupResultDto {
+    pub package_id: String,
+    pub base_name: String,
+    pub package_name: String,
+    pub created: bool,
+    pub urls: Vec<String>,
+    pub missing_parts: Vec<String>,
+}
+
+#[tauri::command]
+pub async fn link_group_split_archives(
+    state: State<'_, AppState>,
+    links: Vec<SplitArchiveLinkInputDto>,
+) -> Result<Vec<SplitArchiveGroupResultDto>, String> {
+    use crate::application::commands::GroupSplitArchivesCommand;
+    use crate::application::services::SplitArchiveLink;
+
+    let cmd = GroupSplitArchivesCommand {
+        links: links
+            .into_iter()
+            .map(|l| SplitArchiveLink {
+                url: l.url,
+                filename: l.filename,
+            })
+            .collect(),
+    };
+
+    let results = state
+        .command_bus
+        .handle_group_split_archives(cmd)
+        .await
+        .map_err(|e| match &e {
+            AppError::Validation(msg) => msg.clone(),
+            other => {
+                tracing::error!(error = %other, "split-archive grouping failed");
+                "Failed to group split archives".to_string()
+            }
+        })?;
+
+    Ok(results
+        .into_iter()
+        .map(|r| SplitArchiveGroupResultDto {
+            package_id: r.package_id.as_str().to_string(),
+            base_name: r.base_name,
+            package_name: r.package_name,
+            created: r.created,
+            urls: r.urls,
+            missing_parts: r.missing_parts,
+        })
+        .collect())
+}
+
 // ── Clipboard ────────────────────────────────────────────────────────
 
 #[tauri::command]

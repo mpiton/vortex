@@ -20,6 +20,7 @@ mod export_accounts;
 mod export_history;
 mod extract_archive;
 mod group_playlists;
+mod group_split_archives;
 mod import_accounts;
 mod install_plugin;
 mod move_package_to_folder;
@@ -210,6 +211,17 @@ pub struct GroupPlaylistsCommand {
     pub groups: Vec<crate::application::services::PlaylistGroup>,
 }
 impl Command for GroupPlaylistsCommand {}
+
+/// Auto-group resolved split-archive parts into one [`Package`] per
+/// detected base name. Re-running with the same set reuses the existing
+/// package (PRD-v2 §P1.12). The handler also detects gaps in the part
+/// numbering and emits [`crate::domain::event::DomainEvent::SplitArchiveIncomplete`]
+/// so the UI can warn the user before the extraction step blocks.
+#[derive(Debug)]
+pub struct GroupSplitArchivesCommand {
+    pub links: Vec<crate::application::services::SplitArchiveLink>,
+}
+impl Command for GroupSplitArchivesCommand {}
 
 // Handler: task 23 (settings)
 #[derive(Debug)]

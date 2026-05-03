@@ -56,6 +56,7 @@ fn event_name(event: &DomainEvent) -> &'static str {
         DomainEvent::PackageCreated { .. } => "package-created",
         DomainEvent::PackageUpdated { .. } => "package-updated",
         DomainEvent::PackageDeleted { .. } => "package-deleted",
+        DomainEvent::SplitArchiveIncomplete { .. } => "split-archive-incomplete",
         DomainEvent::ClipboardUrlDetected { .. } => "clipboard-url-detected",
         DomainEvent::SettingsUpdated => "settings-updated",
         DomainEvent::ChecksumVerified { .. } => "checksum-verified",
@@ -234,6 +235,17 @@ fn event_payload(event: &DomainEvent) -> serde_json::Value {
         }
         DomainEvent::LinkStatusUpdated { url, status } => {
             json!({ "url": url, "status": link_status_payload(status) })
+        }
+        DomainEvent::SplitArchiveIncomplete {
+            package_id,
+            base_name,
+            missing_parts,
+        } => {
+            json!({
+                "packageId": package_id.to_string(),
+                "baseName": base_name,
+                "missingParts": missing_parts,
+            })
         }
     }
 }

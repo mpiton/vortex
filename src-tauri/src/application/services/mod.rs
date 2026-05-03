@@ -6,6 +6,7 @@ pub mod history_backfill;
 pub mod playlist_grouper;
 pub mod queue_config_bridge;
 pub mod queue_manager;
+pub mod split_archive_grouper;
 pub mod startup_recovery;
 
 pub use account_rotator::AccountRotator;
@@ -16,3 +17,4 @@ pub use history_backfill::backfill_history_for_completed_downloads;
 pub use playlist_grouper::{PlaylistGroup, PlaylistGroupResult, PlaylistGrouper};
 pub use queue_config_bridge::subscribe_queue_to_config;
 pub use queue_manager::QueueManager;
+pub use split_archive_grouper::{SplitArchiveGroupResult, SplitArchiveGrouper, SplitArchiveLink};

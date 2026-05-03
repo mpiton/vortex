@@ -143,7 +143,8 @@ fn record_download_event(store: &DownloadLogStore, event: &DomainEvent) {
         | DomainEvent::NoAccountAvailable { .. }
         | DomainEvent::AccountSelected { .. }
         | DomainEvent::AccountExhausted { .. }
-        | DomainEvent::LinkStatusUpdated { .. } => {}
+        | DomainEvent::LinkStatusUpdated { .. }
+        | DomainEvent::SplitArchiveIncomplete { .. } => {}
     }
 }
 
