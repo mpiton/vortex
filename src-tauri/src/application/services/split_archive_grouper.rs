@@ -192,6 +192,9 @@ pub(crate) fn detect_from_filename(file_name: &str) -> Option<DetectedPart> {
     if let Some(part) = match_legacy_rar(file_name) {
         return Some(part);
     }
+    if let Some(part) = match_legacy_rar_header(file_name) {
+        return Some(part);
+    }
     None
 }
 
@@ -266,13 +269,30 @@ fn match_legacy_rar(file_name: &str) -> Option<DetectedPart> {
     let raw_num = caps.name("num")?.as_str().parse::<u32>().ok()?;
     // Translate `.r00` → part 1, `.r01` → part 2, … so the legacy set
     // shares the same 1-based numbering as the modern formats. The
-    // optional terminal `.rar` header file is treated as part 0 by the
-    // dedicated check below — we skip terminal `.rar` here because the
-    // base-strip rule would otherwise pick up everything that ends in
-    // `.rar`.
+    // optional terminal `.rar` header file is treated as part 0 by
+    // [`match_legacy_rar_header`].
     Some(DetectedPart {
         base,
         part_num: raw_num + 1,
+        format: SplitArchiveFormat::LegacyRar,
+    })
+}
+
+fn match_legacy_rar_header(file_name: &str) -> Option<DetectedPart> {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    // The terminal `.rar` header in a legacy multi-volume set
+    // (`name.rar` + `name.r00` + `name.r01`…). Tried last in
+    // [`detect_from_filename`] so the more specific patterns
+    // (`name.partNN.rar`, `name.rNN`) win first. A standalone `.rar`
+    // (no companion `.rNN`) survives detection but gets dropped by
+    // [`MIN_PARTS_TO_GROUP`], so it does not produce a spurious
+    // singleton package.
+    let re = RE.get_or_init(|| Regex::new(r"^(?P<base>.+?)\.rar$").unwrap());
+    let caps = re.captures(file_name)?;
+    let base = caps.name("base")?.as_str().to_string();
+    Some(DetectedPart {
+        base,
+        part_num: 0,
         format: SplitArchiveFormat::LegacyRar,
     })
 }
@@ -419,8 +439,10 @@ impl SplitArchiveGrouper {
 }
 
 /// Walk `parts` (sorted ascending by part number) from the format's
-/// natural baseline (1 for every supported format here) up to the
-/// highest seen number, emitting a human-readable suffix for every gap.
+/// natural baseline up to the highest seen number, emitting a
+/// human-readable suffix for every gap. Legacy RAR starts at 0 because
+/// the terminal `.rar` header is part 0; all other supported formats
+/// are 1-based.
 fn compute_missing_parts(
     format: SplitArchiveFormat,
     sorted_parts: &[(u32, String)],
@@ -430,8 +452,12 @@ fn compute_missing_parts(
     }
     let max = sorted_parts.last().map(|(n, _)| *n).unwrap_or(0);
     let present: std::collections::HashSet<u32> = sorted_parts.iter().map(|(n, _)| *n).collect();
+    let start = match format {
+        SplitArchiveFormat::LegacyRar => 0,
+        _ => 1,
+    };
     let mut missing = Vec::new();
-    for n in 1..=max {
+    for n in start..=max {
         if !present.contains(&n) {
             missing.push(format.part_suffix(n));
         }
@@ -530,10 +556,27 @@ mod tests {
     #[test]
     fn test_detect_returns_none_for_regular_filename() {
         assert!(detect_from_filename("photo.jpg").is_none());
-        assert!(detect_from_filename("archive.rar").is_none());
         assert!(detect_from_filename("archive.zip").is_none());
         assert!(detect_from_filename("archive.7z").is_none());
         assert!(detect_from_filename("notes.tar.gz").is_none());
+    }
+
+    #[test]
+    fn test_detect_legacy_rar_header_is_part_zero() {
+        let part = detect_from_filename("backup.rar").expect("matches");
+        assert_eq!(part.base, "backup");
+        assert_eq!(part.part_num, 0);
+        assert_eq!(part.format, SplitArchiveFormat::LegacyRar);
+    }
+
+    #[test]
+    fn test_modern_part_rar_wins_over_legacy_header_match() {
+        // `name.part01.rar` ends in `.rar` so the legacy-header regex
+        // would also match — order in `detect_from_filename` must keep
+        // PartRar primary so the part number is preserved.
+        let part = detect_from_filename("movie.part01.rar").expect("matches");
+        assert_eq!(part.format, SplitArchiveFormat::PartRar);
+        assert_eq!(part.part_num, 1);
     }
 
     #[test]
@@ -807,6 +850,67 @@ mod tests {
                 "split-archive:zip:mix".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn test_group_all_legacy_rar_includes_terminal_header() {
+        // `backup.rar` + `backup.r00` + `backup.r01` is a valid legacy
+        // 3-volume set. The header file (`backup.rar`) used to be
+        // dropped because detection only matched `.rNN`, leaving the
+        // cluster a singleton that fell below MIN_PARTS_TO_GROUP.
+        let (repo, bus) = arc_repo_and_bus();
+        let grouper = SplitArchiveGrouper::new(repo.clone(), bus.clone());
+        let links = vec![
+            link("https://ex.com/backup.rar", "backup.rar"),
+            link("https://ex.com/backup.r00", "backup.r00"),
+            link("https://ex.com/backup.r01", "backup.r01"),
+        ];
+
+        let results = grouper.group_all(&links, 0).expect("group");
+        assert_eq!(results.len(), 1, "all three volumes share one package");
+        let r = &results[0];
+        assert_eq!(r.urls.len(), 3);
+        assert!(r.missing_parts.is_empty());
+        assert_eq!(r.base_name, "backup");
+
+        let stored = repo.list().unwrap();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(
+            stored[0].external_id(),
+            Some("split-archive:legacy-rar:backup")
+        );
+    }
+
+    #[test]
+    fn test_group_all_legacy_rar_reports_missing_header() {
+        // Inverse of the previous test: `.r00` + `.r01` only — the
+        // header (.rar, part 0) is reported as missing so the UI can
+        // tell the user to fetch it.
+        let (repo, bus) = arc_repo_and_bus();
+        let grouper = SplitArchiveGrouper::new(repo, bus);
+        let links = vec![
+            link("https://ex.com/backup.r00", "backup.r00"),
+            link("https://ex.com/backup.r01", "backup.r01"),
+        ];
+
+        let results = grouper.group_all(&links, 0).expect("group");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].missing_parts, vec!["rar".to_string()]);
+    }
+
+    #[test]
+    fn test_group_all_drops_lone_legacy_rar_header() {
+        // A standalone `.rar` (no `.rNN` companion) is just a regular
+        // RAR archive, not a split set — MIN_PARTS_TO_GROUP must keep
+        // it out of the package list so the resolver sends it through
+        // the regular single-file path.
+        let (repo, bus) = arc_repo_and_bus();
+        let grouper = SplitArchiveGrouper::new(repo.clone(), bus);
+        let links = vec![link("https://ex.com/lonely.rar", "lonely.rar")];
+
+        let results = grouper.group_all(&links, 0).expect("group");
+        assert!(results.is_empty());
+        assert!(repo.list().unwrap().is_empty());
     }
 
     #[test]

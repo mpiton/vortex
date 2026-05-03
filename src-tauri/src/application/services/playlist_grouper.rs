@@ -100,40 +100,14 @@ impl PlaylistGrouper {
             return Err(AppError::Validation("playlist_id must not be empty".into()));
         }
 
-        let _guard = acquire_grouper_lock();
+        // Hold the shared grouper lock only across the find-then-save
+        // window. Releasing it before publishing keeps a slow subscriber
+        // from blocking other concurrent grouping calls (and avoids the
+        // re-entrant-publish deadlock risk if a subscriber ends up
+        // touching a grouper itself).
+        let (package_id, name, created) = {
+            let _guard = acquire_grouper_lock();
 
-        if let Some(existing) = self.repo.find_by_external_id(trimmed_id)? {
-            return Ok(PlaylistGroupResult {
-                package_id: existing.id().clone(),
-                package_name: existing.name().to_string(),
-                created: false,
-                item_count: group.item_count,
-            });
-        }
-
-        let trimmed_name = group.playlist_name.trim();
-        let name = if trimmed_name.is_empty() {
-            fallback_name()
-        } else {
-            trimmed_name.to_string()
-        };
-
-        let package_id = PackageId::new(Uuid::new_v4().to_string());
-        let mut package = Package::new(
-            package_id.clone(),
-            name.clone(),
-            PackageSourceType::Playlist,
-            created_at_ms,
-        );
-        package.set_external_id(Some(trimmed_id.to_string()));
-
-        // Save with conflict-recovery: a cross-process writer (the lock
-        // above only serialises within one process) may have inserted
-        // the same `external_id` between our `find_by_external_id` and
-        // here, in which case the SQLite UNIQUE index makes our save
-        // fail. Re-querying decides whether the failure was a race
-        // (return the existing package as a reuse) or a real error.
-        if let Err(save_err) = self.repo.save(&package) {
             if let Some(existing) = self.repo.find_by_external_id(trimmed_id)? {
                 return Ok(PlaylistGroupResult {
                     package_id: existing.id().clone(),
@@ -142,8 +116,43 @@ impl PlaylistGrouper {
                     item_count: group.item_count,
                 });
             }
-            return Err(save_err.into());
-        }
+
+            let trimmed_name = group.playlist_name.trim();
+            let name = if trimmed_name.is_empty() {
+                fallback_name()
+            } else {
+                trimmed_name.to_string()
+            };
+
+            let package_id = PackageId::new(Uuid::new_v4().to_string());
+            let mut package = Package::new(
+                package_id.clone(),
+                name.clone(),
+                PackageSourceType::Playlist,
+                created_at_ms,
+            );
+            package.set_external_id(Some(trimmed_id.to_string()));
+
+            // Save with conflict-recovery: a cross-process writer (the lock
+            // above only serialises within one process) may have inserted
+            // the same `external_id` between our `find_by_external_id` and
+            // here, in which case the SQLite UNIQUE index makes our save
+            // fail. Re-querying decides whether the failure was a race
+            // (return the existing package as a reuse) or a real error.
+            if let Err(save_err) = self.repo.save(&package) {
+                if let Some(existing) = self.repo.find_by_external_id(trimmed_id)? {
+                    return Ok(PlaylistGroupResult {
+                        package_id: existing.id().clone(),
+                        package_name: existing.name().to_string(),
+                        created: false,
+                        item_count: group.item_count,
+                    });
+                }
+                return Err(save_err.into());
+            }
+
+            (package_id, name, true)
+        };
 
         self.event_bus.publish(DomainEvent::PackageCreated {
             id: package_id.clone(),
@@ -153,7 +162,7 @@ impl PlaylistGrouper {
         Ok(PlaylistGroupResult {
             package_id,
             package_name: name,
-            created: true,
+            created,
             item_count: group.item_count,
         })
     }
