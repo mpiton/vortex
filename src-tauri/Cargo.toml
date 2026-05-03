@@ -69,5 +69,10 @@ tauri-plugin-pilot = "0.4.0"
 windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem"] }
 
 [dev-dependencies]
+criterion = { version = "4.6.0", package = "codspeed-criterion-compat" }
 tempfile = "3.27.0"
 wiremock = "0.6.5"
+
+[[bench]]
+name = "domain_benchmarks"
+harness = false
