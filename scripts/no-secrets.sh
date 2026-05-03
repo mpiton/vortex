@@ -25,7 +25,7 @@ if [ -n "$SECRET_FILES" ]; then
 fi
 
 # Check content: grep known API key patterns in the diff
-CONTENT_LEAK=$(git diff --cached -U0 | grep -E '^\+' | grep -iE \
+CONTENT_LEAK=$(git diff --cached -U0 | grep -E '^\+[^+]' | grep -iE \
     -e 'AKIA[0-9A-Z]{16}' \
     -e 'ASIA[0-9A-Z]{16}' \
     -e 'sk-ant-[A-Za-z0-9_-]{20,}' \

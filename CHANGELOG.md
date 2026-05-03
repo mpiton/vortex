@@ -19,6 +19,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **PR #140 review round 4** (scope `ci`): closed coderabbit / chatgpt-codex flags from the round-3 push.
+  - `scripts/no-secrets.sh` `^\+` filter now anchored as `^\+[^+]` so the diff metadata line `+++ b/<path>` cannot trip the API key content scan when a tracked filename happens to share a key prefix.
+  - `.github/workflows/ci.yml` `forbidden-tools` Rust-suppression scanner replaced with a Python slurp-and-regex pass so multiline forms like `#[allow(\n    clippy::xxx,\n    dead_code,\n)]` are caught. `git grep` is line-oriented and missed those.
+  - `chatgpt-codex` flagged the `oxfmt --check 'src/**/*.{ts,tsx,css,json}' …` invocation as a literal-path bug; not applicable. `oxfmt --help` documents glob support and `oxfmt --version 0.47.0 --check` against the same quoted glob locally returns "Finished in … on 260 files", so the pattern is expanded by oxfmt itself.
+
 - **PR #140 review round 3** (scope `ci`): closed the third pass of coderabbit / cubic flags.
   - `.github/workflows/ci.yml` `forbidden-tools` config-rejection step previously only checked root dotfiles via `ls -1`. Now scans every tracked path with `git ls-files | grep -E '(^|/)(\.eslintrc.*|eslint\.config\..+|biome\.json.*|biome\.jsonc.*|\.prettierrc.*|prettier\.config\..+)$'` so flat-config files (`eslint.config.ts`, `prettier.config.js`) and nested manifests are caught.
   - `forbidden-tools` Rust suppression regex was anchored to the first argument inside `#[allow(...)]`. Replaced with `#\[allow\([^]]*\b(dead_code|unused|unused_variables|unused_imports)\b` so a suppression like `#[allow(clippy::module_name_repetitions, dead_code)]` no longer slips through.

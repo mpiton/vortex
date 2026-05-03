@@ -163,9 +163,35 @@ jobs:
       - name: Reject #[allow] / @ts-ignore / oxlint-disable
         run: |
           set +e
-          # Match the suppression token regardless of its position inside
-          # `#[allow(...)]`, e.g. `#[allow(clippy::xxx, dead_code)]`.
-          BAD_RUST=$(git grep -nE '#\[allow\([^]]*\b(dead_code|unused|unused_variables|unused_imports)\b' -- '*.rs' | head -20)
+          # Multi-line aware Rust scanner: `git grep` is line-oriented, so
+          # `#[allow(\n    dead_code,\n)]` slips through. Slurp each .rs file
+          # and walk every `#[allow(...)]` group with a regex that spans
+          # newlines, then match the forbidden tokens inside the captured
+          # argument list.
+          BAD_RUST=$(python3 - <<'PY'
+import re, subprocess, sys
+
+files = subprocess.check_output(['git', 'ls-files', '*.rs'], text=True).split()
+forbidden = re.compile(r'\b(dead_code|unused|unused_variables|unused_imports)\b')
+hits = []
+for f in files:
+    try:
+        with open(f, encoding='utf-8', errors='replace') as fh:
+            text = fh.read()
+    except OSError:
+        continue
+    for m in re.finditer(r'#\[allow\(([^)]*)\)\]', text, re.DOTALL):
+        if forbidden.search(m.group(1)):
+            line = text[:m.start()].count('\n') + 1
+            snippet = ' '.join(m.group(0).split())[:120]
+            hits.append(f'{f}:{line}: {snippet}')
+            if len(hits) >= 20:
+                break
+    if len(hits) >= 20:
+        break
+sys.stdout.write('\n'.join(hits))
+PY
+)
           BAD_TS=$(git grep -nE '@ts-ignore|@ts-expect-error|oxlint-disable' -- '*.ts' '*.tsx' '*.js' '*.jsx' | head -20)
           if [ -n "$BAD_RUST" ] || [ -n "$BAD_TS" ]; then
             echo "::error::Error suppression detected (forbidden):"
