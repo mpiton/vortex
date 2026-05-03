@@ -5,6 +5,7 @@
 [![Built with Tauri](https://img.shields.io/badge/built%20with-Tauri%202-24c8db?logo=tauri)](https://tauri.app)
 [![Rust](https://img.shields.io/badge/rust-1.95-orange?logo=rust)](src-tauri/Cargo.toml)
 [![CI](https://github.com/mpiton/vortex/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/mpiton/vortex/actions/workflows/ci.yml)
+[![CodSpeed](https://img.shields.io/endpoint?url=https://codspeed.io/badge.json)](https://codspeed.io/mpiton/vortex?utm_source=badge)
 
 Open-source desktop download manager — successor to JDownloader. Tauri 2 + Rust backend + React 19 frontend, hexagonal architecture, CQRS, WASM plugin system (Extism).
 
