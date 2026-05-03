@@ -8,10 +8,13 @@
 //! instead of producing a duplicate (PRD-v2 §P1.12).
 //!
 //! The grouper is the single point of truth for that idempotency: it
-//! looks up the package by its `external_id` (`split-archive:{base}`)
-//! and either returns the existing one or creates a new one. The
-//! caller (the resolver / Link Grabber pipeline) then attaches the
-//! resolved items by id once the downloads have been persisted.
+//! looks up the package by its `external_id`
+//! (`split-archive:{format_tag}:{base}`) and either returns the
+//! existing one or creates a new one. The format tag is part of the
+//! key so a RAR set and a ZIP set sharing a base name produce two
+//! distinct packages. The caller (the resolver / Link Grabber
+//! pipeline) then attaches the resolved items by id once the
+//! downloads have been persisted.
 //!
 //! Domain-pure: no plugin loader, no IPC, no HTTP. Just `PackageRepository`
 //! + `EventBus`. Tests run entirely in-memory.
@@ -29,12 +32,13 @@
 //! flowing through the resolver as before.
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+use std::sync::{Arc, OnceLock};
 
 use regex::Regex;
 use uuid::Uuid;
 
 use crate::application::error::AppError;
+use crate::application::services::group_lock::acquire_grouper_lock;
 use crate::domain::event::DomainEvent;
 use crate::domain::model::package::{Package, PackageId, PackageSourceType};
 use crate::domain::ports::driven::{EventBus, PackageRepository};
@@ -42,7 +46,10 @@ use crate::domain::ports::driven::{EventBus, PackageRepository};
 /// Stable namespace prefix used for the `external_id` natural key of
 /// split-archive packages. Prevents collisions with playlist packages
 /// (which use raw `playlist_id`s) and lets the SQLite UNIQUE index
-/// reject cross-process duplicates.
+/// reject cross-process duplicates. The full key embeds the format
+/// after the prefix (`split-archive:{format_tag}:{base}`) so two
+/// archives that share a base name but use different formats (a RAR
+/// set and a ZIP set both called `mix`) end up in distinct packages.
 const EXTERNAL_ID_PREFIX: &str = "split-archive:";
 
 /// Minimum number of detected parts required before the grouper bothers
@@ -51,29 +58,19 @@ const EXTERNAL_ID_PREFIX: &str = "split-archive:";
 /// other parts to it later via the package detail view.
 const MIN_PARTS_TO_GROUP: usize = 2;
 
-/// Process-wide lock that serialises the find-then-save sequence in
-/// [`SplitArchiveGrouper::group_one_base`]. Without it, two concurrent
-/// IPC invocations for the same base name could both observe "not found"
-/// and each insert a new `Package`, breaking the idempotent-reuse
-/// guarantee. Mirrors [`crate::application::services::PlaylistGrouper`]'s
-/// approach.
-fn group_lock() -> &'static Mutex<()> {
-    static GROUP_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    GROUP_LOCK.get_or_init(|| Mutex::new(()))
-}
-
-fn acquire_group_lock() -> MutexGuard<'static, ()> {
-    match group_lock().lock() {
-        Ok(g) => g,
-        Err(poisoned) => poisoned.into_inner(),
-    }
-}
+/// Upper bound on the number of links accepted by a single grouping
+/// call. Mirrors `MAX_URLS` in
+/// [`crate::application::commands::resolve_links`]: keeps a malicious
+/// or accidental million-link payload from allocating an unbounded
+/// `BTreeMap` worth of cluster state.
+pub const MAX_LINKS: usize = 500;
 
 /// One archive format the grouper recognises. Carried alongside the
 /// detected base name so the missing-part error message can render the
-/// right suffix (`part05.rar` vs `7z.005`).
+/// right suffix (`part05.rar` vs `7z.005`) and the `external_id` can
+/// distinguish a RAR set from a ZIP set sharing the same base name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum SplitArchiveFormat {
+pub(crate) enum SplitArchiveFormat {
     /// Modern RAR — `name.part01.rar`.
     PartRar,
     /// Legacy RAR — `name.r00`, `name.r01`, … plus the terminal `.rar`
@@ -92,9 +89,14 @@ pub enum SplitArchiveFormat {
 }
 
 impl SplitArchiveFormat {
-    /// Render the human-readable suffix for a given part number, used
-    /// in the `missing_parts` list of [`SplitArchiveGroupResult`] and
-    /// the matching [`DomainEvent::SplitArchiveIncomplete`] event.
+    /// Suffix the user would type (e.g. `"part05.rar"`, `"7z.003"`),
+    /// surfaced in `missing_parts` and the matching
+    /// [`DomainEvent::SplitArchiveIncomplete`] event.
+    ///
+    /// Legacy RAR uses 0-based suffixes on disk (`r00`, `r01`, …) but
+    /// we store as 1-based part numbers internally so every format
+    /// shares the same numbering: detection adds 1 (`r00` → part 1),
+    /// rendering subtracts 1 (part 1 → `r00`).
     fn part_suffix(self, part_num: u32) -> String {
         match self {
             Self::PartRar => format!("part{:02}.rar", part_num),
@@ -102,8 +104,6 @@ impl SplitArchiveFormat {
                 if part_num == 0 {
                     "rar".to_string()
                 } else {
-                    // r00 is part 1 in our 1-based numbering; r01 is part 2, etc.
-                    // Surface the original suffix the user would type.
                     format!("r{:02}", part_num.saturating_sub(1))
                 }
             }
@@ -112,6 +112,22 @@ impl SplitArchiveFormat {
             Self::TarGz => format!("tar.gz.{:03}", part_num),
             Self::TarBz2 => format!("tar.bz2.{:03}", part_num),
             Self::TarXz => format!("tar.xz.{:03}", part_num),
+        }
+    }
+
+    /// Stable, URL-safe tag used inside the package `external_id`.
+    /// Distinct values across formats are required so a RAR set and a
+    /// ZIP set sharing a base name end up in two different packages
+    /// instead of silently colliding under the same external_id.
+    fn as_tag(self) -> &'static str {
+        match self {
+            Self::PartRar => "part-rar",
+            Self::LegacyRar => "legacy-rar",
+            Self::SevenZ => "7z",
+            Self::Zip => "zip",
+            Self::TarGz => "tar-gz",
+            Self::TarBz2 => "tar-bz2",
+            Self::TarXz => "tar-xz",
         }
     }
 }
@@ -147,22 +163,20 @@ pub struct SplitArchiveGroupResult {
     pub missing_parts: Vec<String>,
 }
 
-/// Detection output for a single filename. Consumed only inside this
-/// module — exposed publicly so adapters / tests can reuse the matcher
-/// without re-implementing the regex logic.
+/// Detection output for a single filename — internal carrier between
+/// `detect_from_filename` and the cluster builder.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DetectedPart {
+pub(crate) struct DetectedPart {
     pub base: String,
     pub part_num: u32,
     pub format: SplitArchiveFormat,
 }
 
 /// Try every supported pattern in order and return the first match.
-/// Returns `None` for filenames that are not part of any recognised
-/// split-archive set. The order matters: the more specific tarball
-/// patterns must be tried before the generic `.7z.NNN` / `.zip.NNN`
-/// matchers so `archive.tar.gz.001` does not get mis-classified.
-pub fn detect_from_filename(file_name: &str) -> Option<DetectedPart> {
+/// Order matters: the more specific tarball patterns must be tried
+/// before the generic `.7z.NNN` / `.zip.NNN` matchers so
+/// `archive.tar.gz.001` is not mis-classified as a 7z volume.
+pub(crate) fn detect_from_filename(file_name: &str) -> Option<DetectedPart> {
     if let Some(part) = match_part_rar(file_name) {
         return Some(part);
     }
@@ -273,22 +287,31 @@ impl SplitArchiveGrouper {
         Self { repo, event_bus }
     }
 
-    /// Cluster `links` by detected base name and create / reuse one
-    /// [`Package`] per cluster. Links that do not match any split-archive
-    /// pattern are silently dropped from the result — the caller is
-    /// expected to handle them through the regular resolver path.
+    /// Cluster `links` by detected base name + format and create /
+    /// reuse one [`Package`] per cluster. Links that do not match any
+    /// split-archive pattern are silently dropped from the result — the
+    /// caller is expected to handle them through the regular resolver
+    /// path. Clusters with fewer than [`MIN_PARTS_TO_GROUP`] detected
+    /// parts are also dropped (a singleton is more useful as a
+    /// stand-alone download than as a half-empty package).
     ///
-    /// Clusters with fewer than [`MIN_PARTS_TO_GROUP`] detected parts
-    /// are also dropped: a single `.part01.rar` is more useful as a
-    /// stand-alone download than as a half-empty package.
+    /// Returns `AppError::Validation` when `links.len()` exceeds
+    /// [`MAX_LINKS`] so a runaway IPC payload cannot allocate
+    /// unbounded cluster state.
     pub fn group_all(
         &self,
         links: &[SplitArchiveLink],
         created_at_ms: u64,
     ) -> Result<Vec<SplitArchiveGroupResult>, AppError> {
-        // Cluster by detected base name. `BTreeMap` keeps the output
-        // deterministic (alphabetical) which matters for snapshot tests
-        // and the Link Grabber preview.
+        if links.len() > MAX_LINKS {
+            return Err(AppError::Validation(format!(
+                "Too many links: {} (max {MAX_LINKS})",
+                links.len()
+            )));
+        }
+
+        // `BTreeMap` keeps the output deterministic (alphabetical),
+        // which matters for snapshot tests and Link-Grabber preview.
         let mut clusters: BTreeMap<(String, SplitArchiveFormat), Vec<(u32, String)>> =
             BTreeMap::new();
         for link in links {
@@ -309,8 +332,6 @@ impl SplitArchiveGrouper {
             if parts.len() < MIN_PARTS_TO_GROUP {
                 continue;
             }
-            // Sort by part number so the `urls` field of the result is
-            // ordered the way the user expects.
             parts.sort_by_key(|(n, _)| *n);
             let result = self.group_one_base(&base, format, &parts, created_at_ms)?;
             out.push(result);
@@ -331,69 +352,53 @@ impl SplitArchiveGrouper {
                 "split-archive base name must not be empty".into(),
             ));
         }
-        let external_id = format!("{EXTERNAL_ID_PREFIX}{trimmed_base}");
+        // Format is part of the natural key: a RAR set and a ZIP set
+        // sharing the same base name must produce two distinct packages.
+        let external_id = format!("{EXTERNAL_ID_PREFIX}{}:{trimmed_base}", format.as_tag());
         let urls: Vec<String> = sorted_parts.iter().map(|(_, u)| u.clone()).collect();
         let missing = compute_missing_parts(format, sorted_parts);
 
-        let _guard = acquire_group_lock();
+        // Hold the lock only across the find-then-save sequence; drop
+        // it before publishing events so synchronous subscribers cannot
+        // block other concurrent grouping calls.
+        let (package_id, package_name, created) = {
+            let _guard = acquire_grouper_lock();
 
-        if let Some(existing) = self.repo.find_by_external_id(&external_id)? {
-            if !missing.is_empty() {
-                self.event_bus.publish(DomainEvent::SplitArchiveIncomplete {
-                    package_id: existing.id().clone(),
-                    base_name: trimmed_base.to_string(),
-                    missing_parts: missing.clone(),
-                });
+            if let Some(existing) = self.repo.find_by_external_id(&external_id)? {
+                (existing.id().clone(), existing.name().to_string(), false)
+            } else {
+                let new_id = PackageId::new(Uuid::new_v4().to_string());
+                let mut package = Package::new(
+                    new_id.clone(),
+                    trimmed_base.to_string(),
+                    PackageSourceType::SplitArchive,
+                    created_at_ms,
+                );
+                package.set_external_id(Some(external_id.clone()));
+
+                match self.repo.save(&package) {
+                    Ok(()) => (new_id, trimmed_base.to_string(), true),
+                    Err(save_err) => {
+                        // Cross-process race: another writer inserted the
+                        // same `external_id` between our `find` and
+                        // `save`. Re-query and surface the winner as a
+                        // reuse instead of bubbling the UNIQUE error.
+                        if let Some(existing) = self.repo.find_by_external_id(&external_id)? {
+                            (existing.id().clone(), existing.name().to_string(), false)
+                        } else {
+                            return Err(save_err.into());
+                        }
+                    }
+                }
             }
-            return Ok(SplitArchiveGroupResult {
-                package_id: existing.id().clone(),
-                base_name: trimmed_base.to_string(),
-                package_name: existing.name().to_string(),
-                created: false,
-                urls,
-                missing_parts: missing,
+        };
+
+        if created {
+            self.event_bus.publish(DomainEvent::PackageCreated {
+                id: package_id.clone(),
+                name: package_name.clone(),
             });
         }
-
-        let package_id = PackageId::new(Uuid::new_v4().to_string());
-        let mut package = Package::new(
-            package_id.clone(),
-            trimmed_base.to_string(),
-            PackageSourceType::SplitArchive,
-            created_at_ms,
-        );
-        package.set_external_id(Some(external_id.clone()));
-
-        if let Err(save_err) = self.repo.save(&package) {
-            // Cross-process race: another writer inserted the same
-            // `external_id` between our `find` and `save`. Re-query and
-            // surface the winner as a reuse instead of bubbling the
-            // UNIQUE constraint error to the caller.
-            if let Some(existing) = self.repo.find_by_external_id(&external_id)? {
-                if !missing.is_empty() {
-                    self.event_bus.publish(DomainEvent::SplitArchiveIncomplete {
-                        package_id: existing.id().clone(),
-                        base_name: trimmed_base.to_string(),
-                        missing_parts: missing.clone(),
-                    });
-                }
-                return Ok(SplitArchiveGroupResult {
-                    package_id: existing.id().clone(),
-                    base_name: trimmed_base.to_string(),
-                    package_name: existing.name().to_string(),
-                    created: false,
-                    urls,
-                    missing_parts: missing,
-                });
-            }
-            return Err(save_err.into());
-        }
-
-        self.event_bus.publish(DomainEvent::PackageCreated {
-            id: package_id.clone(),
-            name: trimmed_base.to_string(),
-        });
-
         if !missing.is_empty() {
             self.event_bus.publish(DomainEvent::SplitArchiveIncomplete {
                 package_id: package_id.clone(),
@@ -405,8 +410,8 @@ impl SplitArchiveGrouper {
         Ok(SplitArchiveGroupResult {
             package_id,
             base_name: trimmed_base.to_string(),
-            package_name: trimmed_base.to_string(),
-            created: true,
+            package_name,
+            created,
             urls,
             missing_parts: missing,
         })
@@ -592,7 +597,10 @@ mod tests {
         let stored = repo.list().unwrap();
         assert_eq!(stored.len(), 1);
         assert_eq!(stored[0].source_type(), PackageSourceType::SplitArchive);
-        assert_eq!(stored[0].external_id(), Some("split-archive:movie"));
+        assert_eq!(
+            stored[0].external_id(),
+            Some("split-archive:part-rar:movie")
+        );
         assert!(
             stored[0].auto_extract(),
             "split-archive packages must default to auto_extract=true so the \
@@ -772,9 +780,10 @@ mod tests {
     }
 
     #[test]
-    fn test_group_all_clusters_only_within_same_format() {
-        // Same base name but different formats should land in different
-        // clusters (RAR set and ZIP set are distinct archives).
+    fn test_group_all_creates_distinct_packages_for_same_base_across_formats() {
+        // A RAR set and a ZIP set sharing the same base name describe
+        // two different archives — they must produce two packages, not
+        // collapse under a single external_id.
         let (repo, bus) = arc_repo_and_bus();
         let grouper = SplitArchiveGrouper::new(repo.clone(), bus.clone());
         let mut links = ten_part_links("ex.com", "mix");
@@ -783,12 +792,41 @@ mod tests {
 
         let results = grouper.group_all(&links, 0).expect("group");
         assert_eq!(results.len(), 2);
-        // Same external_id_prefix + same base would collide; we currently
-        // namespace by base only, so both clusters share the same
-        // external_id. The grouper picks the first cluster; the second
-        // reuses the package. That is acceptable: the user almost never
-        // mixes formats for the same base name. We assert the count
-        // here (one package) to lock the behaviour.
-        assert_eq!(repo.list().unwrap().len(), 1);
+        let stored = repo.list().unwrap();
+        assert_eq!(stored.len(), 2, "RAR and ZIP must not share a package");
+
+        let mut external_ids: Vec<String> = stored
+            .iter()
+            .filter_map(|p| p.external_id().map(str::to_string))
+            .collect();
+        external_ids.sort();
+        assert_eq!(
+            external_ids,
+            vec![
+                "split-archive:part-rar:mix".to_string(),
+                "split-archive:zip:mix".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_group_all_caps_link_count_to_avoid_dos() {
+        // The IPC entry-point can hand us an arbitrarily large batch;
+        // the grouper must reject it instead of allocating unbounded
+        // cluster state. Mirrors `MAX_URLS` in `resolve_links`.
+        let (repo, bus) = arc_repo_and_bus();
+        let grouper = SplitArchiveGrouper::new(repo, bus);
+
+        let oversize: Vec<SplitArchiveLink> = (0..MAX_LINKS + 1)
+            .map(|n| {
+                let name = format!("file{n}.bin");
+                link(&format!("https://ex.com/{name}"), &name)
+            })
+            .collect();
+
+        let err = grouper
+            .group_all(&oversize, 0)
+            .expect_err("oversize batch must be rejected");
+        assert!(matches!(err, AppError::Validation(_)));
     }
 }

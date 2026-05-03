@@ -22,38 +22,16 @@
 //! the grouper only cares about the natural key, not about which
 //! plugin emitted it.
 
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+use std::sync::Arc;
 
 use uuid::Uuid;
 
 use crate::application::error::AppError;
+use crate::application::services::group_lock::acquire_grouper_lock;
 use crate::domain::event::DomainEvent;
 use crate::domain::model::package::{Package, PackageId, PackageSourceType};
 use crate::domain::ports::driven::EventBus;
 use crate::domain::ports::driven::PackageRepository;
-
-/// Process-wide lock that serialises the find-then-save sequence in
-/// [`PlaylistGrouper::group_one`]. Without it, two concurrent IPC
-/// invocations (rapid double-Start, two windows) for the same
-/// `playlist_id` could both observe "not found" and each insert a new
-/// `Package`, breaking the idempotent-reuse guarantee. The lock is held
-/// only across the lookup + save, never during downstream work, so the
-/// contention window is tiny (a few SQLite writes).
-fn group_lock() -> &'static Mutex<()> {
-    static GROUP_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    GROUP_LOCK.get_or_init(|| Mutex::new(()))
-}
-
-/// Acquire the global grouper lock, recovering from a poisoned mutex
-/// (a previous panic while holding the guard) instead of panicking
-/// again. Domain state lives in SQLite, not in the lock guard, so the
-/// next caller can safely proceed.
-fn acquire_group_lock() -> MutexGuard<'static, ()> {
-    match group_lock().lock() {
-        Ok(g) => g,
-        Err(poisoned) => poisoned.into_inner(),
-    }
-}
 
 /// One playlist seen by the resolver. The grouper turns one or more
 /// `PlaylistGroup` instances into a `Package` per unique `playlist_id`.
@@ -122,7 +100,7 @@ impl PlaylistGrouper {
             return Err(AppError::Validation("playlist_id must not be empty".into()));
         }
 
-        let _guard = acquire_group_lock();
+        let _guard = acquire_grouper_lock();
 
         if let Some(existing) = self.repo.find_by_external_id(trimmed_id)? {
             return Ok(PlaylistGroupResult {
@@ -201,6 +179,8 @@ impl PlaylistGrouper {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
     use super::*;
 
     use crate::application::commands::tests_support::{CapturingEventBus, InMemoryPackageRepo};

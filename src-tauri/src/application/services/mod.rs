@@ -2,6 +2,7 @@ pub mod account_rotator;
 pub mod account_selector;
 pub mod checksum_validator;
 pub mod engine_config_bridge;
+pub(crate) mod group_lock;
 pub mod history_backfill;
 pub mod playlist_grouper;
 pub mod queue_config_bridge;
