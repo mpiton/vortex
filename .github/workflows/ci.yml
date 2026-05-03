@@ -122,7 +122,8 @@ jobs:
           # All distinctive prefixes (AKIA, sk-ant, sk-, ghp_, github_pat_,
           # glpat-, AIza), so manifests like package.json / Cargo.toml are
           # safe to scan and are no longer excluded.
-          PATTERNS='AKIA[0-9A-Z]{16}|sk-ant-[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9]{32,}|ghp_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{82}|glpat-[A-Za-z0-9_-]{20}|AIza[0-9A-Za-z_-]{35}'
+          # `ASIA…` covers temporary STS credentials (vs long-lived `AKIA…`).
+          PATTERNS='AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|sk-ant-[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9]{32,}|ghp_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{82}|glpat-[A-Za-z0-9_-]{20}|AIza[0-9A-Za-z_-]{35}'
           MATCHES=$(git grep -nE "$PATTERNS" -- ':(exclude)*.lock' || true)
           if [ -n "$MATCHES" ]; then
             echo "::error::API key pattern detected:"
@@ -146,7 +147,12 @@ jobs:
 
       - name: Reject Biome / ESLint / Prettier configs
         run: |
-          FORBIDDEN=$(ls -1 .eslintrc* biome.json* .prettierrc* 2>/dev/null || true)
+          # Scan all tracked paths (not just root dotfiles) so flat-config
+          # files like `eslint.config.ts` or a nested `packages/foo/biome.json`
+          # cannot bypass the policy.
+          FORBIDDEN=$(git ls-files | grep -E \
+            '(^|/)(\.eslintrc.*|eslint\.config\..+|biome\.json.*|biome\.jsonc.*|\.prettierrc.*|prettier\.config\..+)$' \
+            || true)
           if [ -n "$FORBIDDEN" ]; then
             echo "::error::Forbidden lint/format configs detected:"
             echo "$FORBIDDEN"
@@ -157,7 +163,9 @@ jobs:
       - name: Reject #[allow] / @ts-ignore / oxlint-disable
         run: |
           set +e
-          BAD_RUST=$(git grep -nE '#\[allow\((dead_code|unused|unused_variables|unused_imports)' -- '*.rs' | head -20)
+          # Match the suppression token regardless of its position inside
+          # `#[allow(...)]`, e.g. `#[allow(clippy::xxx, dead_code)]`.
+          BAD_RUST=$(git grep -nE '#\[allow\([^]]*\b(dead_code|unused|unused_variables|unused_imports)\b' -- '*.rs' | head -20)
           BAD_TS=$(git grep -nE '@ts-ignore|@ts-expect-error|oxlint-disable' -- '*.ts' '*.tsx' '*.js' '*.jsx' | head -20)
           if [ -n "$BAD_RUST" ] || [ -n "$BAD_TS" ]; then
             echo "::error::Error suppression detected (forbidden):"

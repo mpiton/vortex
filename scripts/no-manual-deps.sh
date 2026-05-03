@@ -23,7 +23,10 @@ fi
 # variants).
 cargo_dep_section_ranges() {
     local ref_path="$1"
-    git show "$ref_path" 2>/dev/null | awk '
+    # `git show` exits non-zero for new files (no HEAD blob) or unstaged paths.
+    # Funnel through `|| true` so the awk pipe still runs on empty input under
+    # `set -euo pipefail` and the function returns 0 with no output.
+    { git show "$ref_path" 2>/dev/null || true; } | awk '
         /^\[/ {
             if (in_dep && start > 0) print start "-" (NR - 1)
             in_dep = ($0 ~ /^\[(dev-|build-)?dependencies\][[:space:]]*$/ \

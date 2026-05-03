@@ -19,6 +19,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **PR #140 review round 3** (scope `ci`): closed the third pass of coderabbit / cubic flags.
+  - `.github/workflows/ci.yml` `forbidden-tools` config-rejection step previously only checked root dotfiles via `ls -1`. Now scans every tracked path with `git ls-files | grep -E '(^|/)(\.eslintrc.*|eslint\.config\..+|biome\.json.*|biome\.jsonc.*|\.prettierrc.*|prettier\.config\..+)$'` so flat-config files (`eslint.config.ts`, `prettier.config.js`) and nested manifests are caught.
+  - `forbidden-tools` Rust suppression regex was anchored to the first argument inside `#[allow(...)]`. Replaced with `#\[allow\([^]]*\b(dead_code|unused|unused_variables|unused_imports)\b` so a suppression like `#[allow(clippy::module_name_repetitions, dead_code)]` no longer slips through.
+  - `secrets-scan` API key pattern set adds `ASIA[0-9A-Z]{16}` for AWS temporary STS credentials (the long-lived `AKIA…` form was already matched).
+  - `scripts/no-manual-deps.sh` `cargo_dep_section_ranges` now wraps the `git show` call in `{ ... || true; }` so a missing HEAD blob (new manifest, freshly added file) emits empty awk input instead of tripping `set -euo pipefail`. Smoke-tested with a brand-new `Cargo.toml` + dep + no lockfile → still blocked correctly.
+
 - **PR #140 review round 2** (scope `ci`): closed the remaining gaps surfaced by the second pass of chatgpt-codex / cubic / coderabbit findings.
   - `scripts/no-manual-deps.sh` now also flags Cargo dependency *deletions*, not just additions. A new `removed_line_numbers` helper feeds the same range-overlap check, but against `cargo_dep_section_ranges` of the HEAD blob — a manual `cargo remove` (or sed `/^foo = /d`) that omits an updated lockfile is rejected. New error message lists `cargo remove` / `npm uninstall` alongside the add commands.
   - `pkg_dep_change_detected` now fails closed when `jq` is absent. A `require_jq` helper prints install instructions for Linux / macOS / Windows and exits 1 instead of returning "no change" — the policy is non-negotiable, so a missing tool blocks the commit instead of silently disabling the gate.
