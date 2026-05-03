@@ -31,6 +31,9 @@ jobs:
         with:
           workspaces: src-tauri
 
+      - name: Install cargo-codspeed
+        run: cargo install cargo-codspeed
+
       - name: Build benchmarks
         working-directory: src-tauri
         run: cargo codspeed build -m simulation --bench domain_benchmarks
