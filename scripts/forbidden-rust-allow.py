@@ -114,9 +114,25 @@ def strip_comments_preserving_lines(text: str) -> str:
                 break
             i = nl
             continue
-        # `/* ... */` block comment
+        # `/* ... */` block comment — Rust permits nesting, so track depth.
+        # `/* outer /* inner */ still outer */` is one comment.
         if c == "/" and i + 1 < n and text[i + 1] == "*":
-            close = text.find("*/", i + 2)
+            depth = 1
+            j = i + 2
+            close = -1
+            while j < n - 1:
+                if text[j] == "/" and text[j + 1] == "*":
+                    depth += 1
+                    j += 2
+                    continue
+                if text[j] == "*" and text[j + 1] == "/":
+                    depth -= 1
+                    if depth == 0:
+                        close = j
+                        break
+                    j += 2
+                    continue
+                j += 1
             if close == -1:
                 # Unterminated — skip the rest, preserving newlines so
                 # downstream line numbers still map.

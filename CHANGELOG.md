@@ -19,6 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **PR #140 review round 9** (scope `ci`): cubic round-8 follow-up.
+  - `scripts/forbidden-rust-allow.py` block-comment branch in `strip_comments_preserving_lines` now tracks Rust's nestable `/* /* … */ … */` form via a depth counter. The previous `text.find("*/", i + 2)` returned the first `*/`, so an outer comment that wrapped an inner block was only partially stripped — any `#[allow(...)]` text that lived between the inner close and the outer close could leak through unstripped. Verified with `/* outer /* inner */ #[allow(dead_code)] still outer */` → not flagged; `/* /* nested */ */ #[allow(dead_code)]` on the following line → flagged.
+
 - **PR #140 review round 8** (scope `ci`): cubic + chatgpt-codex round-7 follow-up.
   - `scripts/forbidden-rust-allow.py` comment stripper rewritten as a small state machine that walks the source tracking string-literal (`"..."` with `\\` escapes) and char-literal (`'.'`) state. The previous regex (`/\*[^"]*?\*/`) failed on a block comment that legitimately contained a `"`, e.g. `/* note: "this code is dead" */`, so the comment wasn't stripped and a literal `#[allow(dead_code)]` mention inside it tripped the gate. Now both directions hold: a `/*` inside a string literal does not open a comment, and a `"` inside a comment does not open a string literal.
   - `.github/workflows/ci.yml` `changelog-check` and `.github/workflows/mutants.yml` `incremental` jobs both switched from a two-dot endpoint diff (`git diff $BASE $HEAD` / `origin/${base_ref}..`) to a three-dot merge-base range (`${BASE}...${HEAD}` / `origin/${base_ref}...HEAD`). Without this, upstream churn on the base branch since the PR diverged was being attributed to the PR — a docs-only PR could be flagged as code-changed, and `cargo-mutants` could exercise files outside the PR's scope.
