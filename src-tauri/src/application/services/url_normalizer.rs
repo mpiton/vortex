@@ -1,69 +1,36 @@
-//! URL normalization for duplicate detection (PRD §6.2.2).
+//! Lexical URL canonicaliser used by duplicate detection (PRD §6.2.2).
 //!
-//! Produces a canonical string for a URL by lowercasing the scheme and
-//! host, stripping the fragment, default ports, trailing slash, and a
-//! curated list of well-known tracking query parameters
-//! (`utm_*`, `fbclid`, `gclid`, …). The result is purely lexical — two
-//! URLs that differ only in tracking metadata or capitalisation collapse
-//! to the same key, so a freshly pasted "shared from Twitter" link
-//! matches the original entry already in the queue / history.
+//! Two URLs that differ only in capitalisation, default port, fragment
+//! or a curated set of tracker query parameters (`utm_*`, `fbclid`,
+//! `gclid`, …) collapse to the same key, so a freshly pasted
+//! "shared from Twitter"-style link matches the original entry already
+//! in the queue / history. Path case is intentionally preserved
+//! because most CDNs serve case-sensitive paths — collapsing them
+//! would create false duplicate hits across genuinely distinct files.
 //!
-//! The normalizer never fetches the network and does not require the
-//! `url` crate (kept out of the dependency tree to avoid bloating the
-//! Tauri bundle); parsing is a small hand-rolled scanner that mirrors
-//! the rules already used by `domain::model::download::Url`.
+//! Hand-rolled scanner — the `url` crate stays out of the Tauri bundle.
 
-/// Canonicalise a URL string.
-///
-/// Behaviour:
-///
-/// * Whitespace is trimmed.
-/// * The scheme and host components are lowercased.
-/// * The default port (`:80` for `http`, `:443` for `https`, `:21` for
-///   `ftp`) is stripped.
-/// * Tracking query parameters (`utm_*`, `fbclid`, `gclid`, `mc_cid`,
-///   `mc_eid`, `igshid`, `vero_id`, …) are removed, comparing parameter
-///   names case-insensitively. Remaining parameters are kept in their
-///   original order so the caller can still distinguish requests that
-///   genuinely depend on parameter ordering.
-/// * The fragment (`#…`) is removed.
-/// * A trailing `/` on the empty path is preserved as `/`; bare hosts
-///   without a path get a `/` appended so `https://example.com` and
-///   `https://example.com/` collapse to the same key.
-/// * Schemes that the rest of Vortex never rewrites (`magnet:`, `file:`,
-///   …) are returned trimmed but otherwise untouched, so duplicate
-///   detection on non-HTTP entries falls back to byte-for-byte equality.
+/// Canonicalise a URL string. Non-HTTP schemes (`magnet:`, `file:`, …)
+/// round-trip through `trim` only so duplicate detection on those
+/// entries falls back to byte-for-byte equality.
 pub fn normalize_url(url: &str) -> String {
     let trimmed = url.trim();
     if trimmed.is_empty() {
         return String::new();
     }
 
-    let lower_for_scheme = trimmed.to_ascii_lowercase();
-    let scheme_len = if lower_for_scheme.starts_with("https://") {
-        "https://".len()
-    } else if lower_for_scheme.starts_with("http://") {
-        "http://".len()
-    } else if lower_for_scheme.starts_with("ftp://") {
-        "ftp://".len()
-    } else {
-        return trimmed.to_string();
+    let (scheme, scheme_len) = match detect_scheme(trimmed) {
+        Some(s) => s,
+        None => return trimmed.to_string(),
     };
-    let scheme = &lower_for_scheme[..scheme_len - 3];
 
     let after_scheme = &trimmed[scheme_len..];
-
-    // Strip fragment first so it never leaks into the path/query.
-    let (without_frag, _frag) = match after_scheme.find('#') {
-        Some(i) => (&after_scheme[..i], Some(&after_scheme[i..])),
-        None => (after_scheme, None),
-    };
-
-    let (authority_path, query) = match without_frag.find('?') {
-        Some(i) => (&without_frag[..i], Some(&without_frag[i + 1..])),
-        None => (without_frag, None),
-    };
-
+    let without_frag = after_scheme
+        .split_once('#')
+        .map_or(after_scheme, |(a, _)| a);
+    let (authority_path, query) = without_frag
+        .split_once('?')
+        .map_or((without_frag, None), |(a, q)| (a, Some(q)));
     let (authority_raw, path) = match authority_path.find('/') {
         Some(i) => (&authority_path[..i], &authority_path[i..]),
         None => (authority_path, "/"),
@@ -75,11 +42,7 @@ pub fn normalize_url(url: &str) -> String {
 
     let authority_lower = authority_raw.to_ascii_lowercase();
     let canonical_authority = strip_default_port(scheme, &authority_lower);
-
-    let canonical_query = match query {
-        Some(q) => filter_tracking_params(q),
-        None => String::new(),
-    };
+    let canonical_query = query.map(filter_tracking_params).unwrap_or_default();
 
     let mut out = String::with_capacity(trimmed.len());
     out.push_str(scheme);
@@ -93,10 +56,30 @@ pub fn normalize_url(url: &str) -> String {
     out
 }
 
+/// Detect the URL scheme via case-insensitive prefix match without
+/// allocating a lowercased copy of the whole URL. Returns the
+/// canonical lowercase scheme + the byte length consumed including the
+/// `://` separator.
+fn detect_scheme(url: &str) -> Option<(&'static str, usize)> {
+    const CANDIDATES: &[(&str, usize)] = &[
+        ("https", "https://".len()),
+        ("http", "http://".len()),
+        ("ftp", "ftp://".len()),
+    ];
+    for (scheme, total_len) in CANDIDATES {
+        if url.len() >= *total_len
+            && url[..scheme.len()].eq_ignore_ascii_case(scheme)
+            && &url[scheme.len()..*total_len] == "://"
+        {
+            return Some((*scheme, *total_len));
+        }
+    }
+    None
+}
+
 /// `true` when a parameter name is on the curated tracker block-list.
-///
-/// Matching is case-insensitive. Wildcards are spelled out instead of
-/// using a regex so the cost stays predictable on huge URL batches.
+/// Wildcards are spelled out instead of using a regex so the cost
+/// stays predictable on 500-URL batches.
 fn is_tracking_param(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
 

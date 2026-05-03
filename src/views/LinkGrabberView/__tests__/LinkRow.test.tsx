@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { useLinkGrabberStore } from "@/stores/linkGrabberStore";
 import { LinkRow } from "../LinkRow";
-import type { ResolvedLink } from "../types";
+import type { DuplicateCheck, DuplicateSource, ResolvedLink } from "../types";
 
 beforeEach(() => {
   useLinkGrabberStore.getState().reset();
@@ -20,6 +20,20 @@ const baseLink: ResolvedLink = {
   isMedia: false,
 };
 
+function makeDuplicate(
+  source: DuplicateSource | null,
+  isDuplicate = true,
+  existingFilename: string | null = "file.zip",
+): DuplicateCheck {
+  return {
+    url: baseLink.originalUrl,
+    isDuplicate,
+    source,
+    existingId: source ? "42" : null,
+    existingFilename,
+  };
+}
+
 function renderRow(link: ResolvedLink) {
   return render(
     <TooltipProvider>
@@ -35,59 +49,29 @@ describe("LinkRow duplicate badge", () => {
   });
 
   it("renders an 'Already in active' badge when source is active", () => {
-    renderRow({
-      ...baseLink,
-      duplicate: {
-        url: baseLink.originalUrl,
-        isDuplicate: true,
-        source: "active",
-        existingId: "42",
-        existingFilename: "file.zip",
-      },
-    });
+    renderRow({ ...baseLink, duplicate: makeDuplicate("active") });
     expect(screen.getByText("Already in active")).toBeInTheDocument();
   });
 
   it("renders an 'Already in history' badge when source is history", () => {
-    renderRow({
-      ...baseLink,
-      duplicate: {
-        url: baseLink.originalUrl,
-        isDuplicate: true,
-        source: "history",
-        existingId: "7",
-        existingFilename: "old.zip",
-      },
-    });
+    renderRow({ ...baseLink, duplicate: makeDuplicate("history", true, "old.zip") });
     expect(screen.getByText("Already in history")).toBeInTheDocument();
   });
 
   it("does not render the badge when isDuplicate is false", () => {
-    renderRow({
-      ...baseLink,
-      duplicate: {
-        url: baseLink.originalUrl,
-        isDuplicate: false,
-        source: null,
-        existingId: null,
-        existingFilename: null,
-      },
-    });
+    renderRow({ ...baseLink, duplicate: makeDuplicate(null, false, null) });
     expect(screen.queryByText(/Already in/)).not.toBeInTheDocument();
   });
 
   it("exposes data-duplicate=active on the row when active", () => {
-    renderRow({
-      ...baseLink,
-      duplicate: {
-        url: baseLink.originalUrl,
-        isDuplicate: true,
-        source: "active",
-        existingId: "1",
-        existingFilename: "file.zip",
-      },
-    });
+    renderRow({ ...baseLink, duplicate: makeDuplicate("active") });
     const row = screen.getByTestId(`link-row-${baseLink.originalUrl}`);
     expect(row.dataset.duplicate).toBe("active");
+  });
+
+  it("exposes data-duplicate=none on a unique link", () => {
+    renderRow(baseLink);
+    const row = screen.getByTestId(`link-row-${baseLink.originalUrl}`);
+    expect(row.dataset.duplicate).toBe("none");
   });
 });

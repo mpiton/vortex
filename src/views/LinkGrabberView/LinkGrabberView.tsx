@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useLocation, useNavigate } from "react-router";
 import { Switch } from "@/components/ui/switch";
@@ -60,12 +60,19 @@ export function LinkGrabberView() {
         for (const check of checks) {
           byUrl.set(check.url, check);
         }
-        setResolvedLinks((prev) =>
-          prev.map((link) => {
+        setResolvedLinks((prev) => {
+          let changed = false;
+          const next = prev.map((link) => {
             const probe = byUrl.get(link.originalUrl);
-            return probe ? { ...link, duplicate: probe } : link;
-          }),
-        );
+            if (!probe || link.duplicate === probe) return link;
+            changed = true;
+            return { ...link, duplicate: probe };
+          });
+          // Skip the state update when no link's duplicate field actually
+          // moved — keeps downstream memos and effects from re-running
+          // for an all-unique batch.
+          return changed ? next : prev;
+        });
       },
     },
   );
@@ -141,52 +148,42 @@ export function LinkGrabberView() {
     }
   };
 
+  // The bulk-start helpers gate every row through this predicate. Without
+  // the `online` check, rows whose live probe is offline / premiumOnly /
+  // unknown would still trigger `download_start` and burn IPC calls. The
+  // duplicate gate is opt-out via the `Skip duplicates` checkbox so
+  // power users can force-redownload.
+  const isStartable = (link: ResolvedLink) => {
+    const effectiveStatus = liveStatuses[link.originalUrl]?.kind ?? link.status;
+    if (effectiveStatus !== "online") return false;
+    if (skipDuplicates && link.duplicate?.isDuplicate) return false;
+    return true;
+  };
+
+  const startLink = (link: ResolvedLink) => {
+    // `originalUrl` fallback: a row that flipped to online via
+    // `link_check_online` after resolve had no `resolvedUrl`; using the
+    // original lets the bulk action honour its own "online" badge.
+    const url = link.resolvedUrl ?? link.originalUrl;
+    if (url) startDownload({ url });
+  };
+
   const handleStartSelected = () => {
     for (const id of selectedLinkIds) {
       const link = resolvedLinks.find((l) => l.id === id);
-      if (!link) continue;
-      // Mirror `handleStartAllOnline`: only start rows whose effective
-      // status is `online` (preferring the live probe over the static
-      // resolve outcome), and fall back to `originalUrl` when the
-      // initial resolve produced no `resolvedUrl`. Without the status
-      // gate, selecting rows under `filter="all"` would trigger a burst
-      // of failed `download_start` calls for offline / premiumOnly /
-      // unknown rows.
-      const effectiveStatus = liveStatuses[link.originalUrl]?.kind ?? link.status;
-      if (effectiveStatus !== "online") continue;
-      if (skipDuplicates && link.duplicate?.isDuplicate) continue;
-      const url = link.resolvedUrl ?? link.originalUrl;
-      if (url) {
-        startDownload({ url });
-      }
+      if (link && isStartable(link)) startLink(link);
     }
   };
 
   const handleStartAllOnline = () => {
     for (const link of resolvedLinks) {
-      // Prefer the live probe status so a row that flipped to offline /
-      // unknown / premiumOnly mid-flight cannot still be started in
-      // bulk just because the static metadata says "online".
-      const effectiveStatus = liveStatuses[link.originalUrl]?.kind ?? link.status;
-      if (effectiveStatus !== "online") continue;
-      if (skipDuplicates && link.duplicate?.isDuplicate) continue;
-      // Fallback to `originalUrl` when the initial resolve produced no
-      // `resolvedUrl` (offline / error at resolve time) but a later
-      // `link_check_online` event flipped the row to online. Without
-      // this, the row's "online" badge contradicts the bulk action,
-      // which silently skips it. If `originalUrl` is a page rather
-      // than a direct download URL, `download_start` surfaces the
-      // failure via the standard error toast.
-      const url = link.resolvedUrl ?? link.originalUrl;
-      if (url) {
-        startDownload({ url });
-      }
+      if (isStartable(link)) startLink(link);
     }
   };
 
-  const duplicateCount = resolvedLinks.reduce(
-    (n, link) => (link.duplicate?.isDuplicate ? n + 1 : n),
-    0,
+  const duplicateCount = useMemo(
+    () => resolvedLinks.reduce((n, link) => (link.duplicate?.isDuplicate ? n + 1 : n), 0),
+    [resolvedLinks],
   );
 
   const handleMediaClick = (link: ResolvedLink) => {

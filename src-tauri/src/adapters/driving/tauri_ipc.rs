@@ -38,6 +38,25 @@ use crate::application::queries::{
     ListHistoryQuery, ListPackageDownloadsQuery, ListPackagesQuery, ListPluginsQuery,
     SearchHistoryQuery, TopModulesQuery,
 };
+
+/// IPC mirror of [`DuplicateSource`] — serialised as a lowercase tag
+/// so the frontend gets `"active"` / `"history"` instead of the
+/// PascalCase enum default.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DuplicateSourceDto {
+    Active,
+    History,
+}
+
+impl From<DuplicateSource> for DuplicateSourceDto {
+    fn from(s: DuplicateSource) -> Self {
+        match s {
+            DuplicateSource::Active => Self::Active,
+            DuplicateSource::History => Self::History,
+        }
+    }
+}
 use crate::application::query_bus::QueryBus;
 use crate::application::read_models::account_view::{AccountTrafficDto, AccountViewDto};
 use crate::application::read_models::download_detail_view::DownloadDetailViewDto;
@@ -815,17 +834,14 @@ pub async fn link_check_online(
         })
 }
 
-/// IPC return shape for [`link_detect_duplicates`].
-///
-/// One entry per input URL, in the same order the caller submitted.
-/// `source` matches the `LinkDuplicateSource` union the frontend
-/// expects (`"active" | "history" | null`).
+/// IPC return shape for [`link_detect_duplicates`]. One entry per
+/// input URL, in the same order the caller submitted.
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DuplicateCheckDto {
     pub url: String,
     pub is_duplicate: bool,
-    pub source: Option<&'static str>,
+    pub source: Option<DuplicateSourceDto>,
     pub existing_id: Option<String>,
     pub existing_filename: Option<String>,
 }
@@ -846,10 +862,7 @@ pub async fn link_detect_duplicates(
                 .map(|c| DuplicateCheckDto {
                     url: c.url,
                     is_duplicate: c.is_duplicate,
-                    source: c.source.map(|s| match s {
-                        DuplicateSource::Active => "active",
-                        DuplicateSource::History => "history",
-                    }),
+                    source: c.source.map(DuplicateSourceDto::from),
                     existing_id: c.existing_id,
                     existing_filename: c.existing_filename,
                 })

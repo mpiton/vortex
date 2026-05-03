@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { formatBytes } from "@/lib/format";
 import { useLinkGrabberStore } from "@/stores/linkGrabberStore";
-import type { LinkStatus, ResolvedLink } from "./types";
+import type { DuplicateSource, LinkStatus, ResolvedLink } from "./types";
 
 interface LinkRowProps {
   link: ResolvedLink;
@@ -38,20 +38,22 @@ const statusBadgeColor: Record<LinkStatus, string> = {
   error: "bg-yellow-500/15 text-yellow-700 dark:text-yellow-300",
 };
 
+const duplicateLabelMap: Record<DuplicateSource, string> = {
+  active: "Already in active",
+  history: "Already in history",
+};
+
 export function LinkRow({ link, selected, onSelect, onMediaClick, onRetry }: LinkRowProps) {
   const liveStatus = useLinkGrabberStore((s) => s.statuses[link.originalUrl]);
   const effectiveStatus: LinkStatus = liveStatus?.kind ?? link.status;
   const showRetry = effectiveStatus === "unknown" && onRetry !== undefined;
 
   const duplicate = link.duplicate?.isDuplicate ? link.duplicate : null;
-  const duplicateLabel = duplicate
-    ? duplicate.source === "active"
-      ? "Already in active"
-      : "Already in history"
-    : null;
-  const duplicateTooltip = duplicate?.existingFilename
-    ? `${duplicateLabel}: ${duplicate.existingFilename}`
-    : (duplicateLabel ?? "");
+  const duplicateLabel = duplicate?.source ? duplicateLabelMap[duplicate.source] : null;
+  const duplicateTooltip =
+    duplicate?.existingFilename && duplicateLabel
+      ? `${duplicateLabel}: ${duplicate.existingFilename}`
+      : (duplicateLabel ?? "");
 
   return (
     <div
@@ -60,7 +62,7 @@ export function LinkRow({ link, selected, onSelect, onMediaClick, onRetry }: Lin
       }`}
       data-testid={`link-row-${link.originalUrl}`}
       data-status={effectiveStatus}
-      data-duplicate={duplicate ? duplicate.source : "no"}
+      data-duplicate={duplicate?.source ?? "none"}
     >
       <Checkbox checked={selected} onCheckedChange={onSelect} aria-label="Select link" />
       <span
