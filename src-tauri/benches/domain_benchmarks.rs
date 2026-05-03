@@ -1,4 +1,4 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use vortex_lib::domain::model::config::{
     apply_patch, normalize_link_check_parallelism, normalize_max_concurrent,
 };
