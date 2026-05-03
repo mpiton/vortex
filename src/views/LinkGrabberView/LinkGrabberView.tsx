@@ -120,11 +120,15 @@ export function LinkGrabberView() {
     for (const id of selectedLinkIds) {
       const link = resolvedLinks.find((l) => l.id === id);
       if (!link) continue;
-      // Mirror the live-online fallback used by `handleStartAllOnline`:
-      // when the user explicitly selects a row whose initial resolve
-      // produced no `resolvedUrl` but `link_check_online` later flipped
-      // it to online, fall back to `originalUrl` so the action matches
-      // the visible badge instead of silently skipping.
+      // Mirror `handleStartAllOnline`: only start rows whose effective
+      // status is `online` (preferring the live probe over the static
+      // resolve outcome), and fall back to `originalUrl` when the
+      // initial resolve produced no `resolvedUrl`. Without the status
+      // gate, selecting rows under `filter="all"` would trigger a burst
+      // of failed `download_start` calls for offline / premiumOnly /
+      // unknown rows.
+      const effectiveStatus = liveStatuses[link.originalUrl]?.kind ?? link.status;
+      if (effectiveStatus !== "online") continue;
       const url = link.resolvedUrl ?? link.originalUrl;
       if (url) {
         startDownload({ url });
