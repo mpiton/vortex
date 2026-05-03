@@ -22,38 +22,16 @@
 //! the grouper only cares about the natural key, not about which
 //! plugin emitted it.
 
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+use std::sync::Arc;
 
 use uuid::Uuid;
 
 use crate::application::error::AppError;
+use crate::application::services::group_lock::acquire_grouper_lock;
 use crate::domain::event::DomainEvent;
 use crate::domain::model::package::{Package, PackageId, PackageSourceType};
 use crate::domain::ports::driven::EventBus;
 use crate::domain::ports::driven::PackageRepository;
-
-/// Process-wide lock that serialises the find-then-save sequence in
-/// [`PlaylistGrouper::group_one`]. Without it, two concurrent IPC
-/// invocations (rapid double-Start, two windows) for the same
-/// `playlist_id` could both observe "not found" and each insert a new
-/// `Package`, breaking the idempotent-reuse guarantee. The lock is held
-/// only across the lookup + save, never during downstream work, so the
-/// contention window is tiny (a few SQLite writes).
-fn group_lock() -> &'static Mutex<()> {
-    static GROUP_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    GROUP_LOCK.get_or_init(|| Mutex::new(()))
-}
-
-/// Acquire the global grouper lock, recovering from a poisoned mutex
-/// (a previous panic while holding the guard) instead of panicking
-/// again. Domain state lives in SQLite, not in the lock guard, so the
-/// next caller can safely proceed.
-fn acquire_group_lock() -> MutexGuard<'static, ()> {
-    match group_lock().lock() {
-        Ok(g) => g,
-        Err(poisoned) => poisoned.into_inner(),
-    }
-}
 
 /// One playlist seen by the resolver. The grouper turns one or more
 /// `PlaylistGroup` instances into a `Package` per unique `playlist_id`.
@@ -122,40 +100,14 @@ impl PlaylistGrouper {
             return Err(AppError::Validation("playlist_id must not be empty".into()));
         }
 
-        let _guard = acquire_group_lock();
+        // Hold the shared grouper lock only across the find-then-save
+        // window. Releasing it before publishing keeps a slow subscriber
+        // from blocking other concurrent grouping calls (and avoids the
+        // re-entrant-publish deadlock risk if a subscriber ends up
+        // touching a grouper itself).
+        let (package_id, name, created) = {
+            let _guard = acquire_grouper_lock();
 
-        if let Some(existing) = self.repo.find_by_external_id(trimmed_id)? {
-            return Ok(PlaylistGroupResult {
-                package_id: existing.id().clone(),
-                package_name: existing.name().to_string(),
-                created: false,
-                item_count: group.item_count,
-            });
-        }
-
-        let trimmed_name = group.playlist_name.trim();
-        let name = if trimmed_name.is_empty() {
-            fallback_name()
-        } else {
-            trimmed_name.to_string()
-        };
-
-        let package_id = PackageId::new(Uuid::new_v4().to_string());
-        let mut package = Package::new(
-            package_id.clone(),
-            name.clone(),
-            PackageSourceType::Playlist,
-            created_at_ms,
-        );
-        package.set_external_id(Some(trimmed_id.to_string()));
-
-        // Save with conflict-recovery: a cross-process writer (the lock
-        // above only serialises within one process) may have inserted
-        // the same `external_id` between our `find_by_external_id` and
-        // here, in which case the SQLite UNIQUE index makes our save
-        // fail. Re-querying decides whether the failure was a race
-        // (return the existing package as a reuse) or a real error.
-        if let Err(save_err) = self.repo.save(&package) {
             if let Some(existing) = self.repo.find_by_external_id(trimmed_id)? {
                 return Ok(PlaylistGroupResult {
                     package_id: existing.id().clone(),
@@ -164,8 +116,43 @@ impl PlaylistGrouper {
                     item_count: group.item_count,
                 });
             }
-            return Err(save_err.into());
-        }
+
+            let trimmed_name = group.playlist_name.trim();
+            let name = if trimmed_name.is_empty() {
+                fallback_name()
+            } else {
+                trimmed_name.to_string()
+            };
+
+            let package_id = PackageId::new(Uuid::new_v4().to_string());
+            let mut package = Package::new(
+                package_id.clone(),
+                name.clone(),
+                PackageSourceType::Playlist,
+                created_at_ms,
+            );
+            package.set_external_id(Some(trimmed_id.to_string()));
+
+            // Save with conflict-recovery: a cross-process writer (the lock
+            // above only serialises within one process) may have inserted
+            // the same `external_id` between our `find_by_external_id` and
+            // here, in which case the SQLite UNIQUE index makes our save
+            // fail. Re-querying decides whether the failure was a race
+            // (return the existing package as a reuse) or a real error.
+            if let Err(save_err) = self.repo.save(&package) {
+                if let Some(existing) = self.repo.find_by_external_id(trimmed_id)? {
+                    return Ok(PlaylistGroupResult {
+                        package_id: existing.id().clone(),
+                        package_name: existing.name().to_string(),
+                        created: false,
+                        item_count: group.item_count,
+                    });
+                }
+                return Err(save_err.into());
+            }
+
+            (package_id, name, true)
+        };
 
         self.event_bus.publish(DomainEvent::PackageCreated {
             id: package_id.clone(),
@@ -175,7 +162,7 @@ impl PlaylistGrouper {
         Ok(PlaylistGroupResult {
             package_id,
             package_name: name,
-            created: true,
+            created,
             item_count: group.item_count,
         })
     }
@@ -201,6 +188,8 @@ impl PlaylistGrouper {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
     use super::*;
 
     use crate::application::commands::tests_support::{CapturingEventBus, InMemoryPackageRepo};

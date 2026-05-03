@@ -223,6 +223,16 @@ pub enum DomainEvent {
         id: PackageId,
         delete_downloads: bool,
     },
+    /// Emitted by the split-archive grouper when the resolved link set
+    /// for a base name is missing one or more numbered parts. The UI
+    /// surfaces a notification so the user can fetch the gap before the
+    /// extraction step blocks. `missing_parts` lists the human-readable
+    /// suffixes (e.g. `"part05.rar"`, `"7z.003"`) of the gaps detected.
+    SplitArchiveIncomplete {
+        package_id: PackageId,
+        base_name: String,
+        missing_parts: Vec<String>,
+    },
 
     // Clipboard
     ClipboardUrlDetected {
@@ -443,6 +453,23 @@ mod tests {
         let s = format!("{cascade:?}");
         assert!(s.contains("PackageDeleted"));
         assert!(s.contains("pkg-del"));
+    }
+
+    #[test]
+    fn test_split_archive_incomplete_event_carries_missing_parts() {
+        let event = DomainEvent::SplitArchiveIncomplete {
+            package_id: PackageId::new("pkg-split"),
+            base_name: "movie".to_string(),
+            missing_parts: vec!["part05.rar".to_string(), "part07.rar".to_string()],
+        };
+        let s = format!("{event:?}");
+        assert!(s.contains("SplitArchiveIncomplete"));
+        assert!(s.contains("pkg-split"));
+        assert!(s.contains("movie"));
+        assert!(s.contains("part05.rar"));
+
+        let cloned = event.clone();
+        assert_eq!(event, cloned);
     }
 
     #[test]
