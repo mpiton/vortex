@@ -42,7 +42,12 @@ FORBIDDEN = re.compile(
 # parenthesised forms (e.g. `clippy::needless_pass_by_value`).
 ALLOW_GROUP = re.compile(r"#!?\[\s*allow\s*\((.*?)\)\s*\]", re.DOTALL)
 LINE_COMMENT = re.compile(r"//[^\n]*")
-BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.DOTALL)
+# Conservative block-comment matcher: refuse to span a `"` so a Rust
+# string literal containing `/*` doesn't trick the scanner into stripping
+# real `#[allow(...)]` attributes that happen to live between those quotes.
+# This is a heuristic — a perfect strip would need a Rust lexer — but it
+# covers every realistic case while staying byte-cheap.
+BLOCK_COMMENT = re.compile(r'/\*[^"]*?\*/', re.DOTALL)
 TODO_TASK = re.compile(r"^\s*//\s*TODO\(\s*[A-Za-z0-9_-]+\s*\)\s*:")
 MAX_HITS = 20
 

@@ -23,6 +23,20 @@ jobs:
         id: tag
         run: echo "version=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
 
+      - name: Validate semver tag shape
+        run: |
+          # The trigger glob (`v[0-9]*.[0-9]*.[0-9]*`) is intentionally
+          # permissive because `on.push.tags` doesn't support regex
+          # quantifiers. A malformed tag like `v1foo.2.3` still fires
+          # the workflow, so reject anything that isn't strict semver
+          # (with optional `-prerelease` and `+build` suffixes) before
+          # the build matrix consumes capacity.
+          VERSION='${{ steps.tag.outputs.version }}'
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Tag '${GITHUB_REF}' is not a valid semver release tag (got version='${VERSION}')."
+            exit 1
+          fi
+
       - name: Verify Cargo.toml version
         run: |
           CARGO_VERSION=$(grep -m1 '^version' src-tauri/Cargo.toml | cut -d'"' -f2)

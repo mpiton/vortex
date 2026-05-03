@@ -19,6 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **PR #140 review round 7** (scope `ci`): chatgpt-codex + cubic round-6 follow-up.
+  - `.github/workflows/release.yml` `verify-tag` job now runs an explicit semver shape check (`^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$`) before any other validation. The trigger glob is necessarily permissive (`on.push.tags` doesn't accept regex quantifiers), so a malformed tag like `v1foo.2.3` would still fire the workflow and burn CI capacity downstream. The early bash regex aborts the run with a clear error before the build matrix starts.
+  - `scripts/forbidden-rust-allow.py` block-comment stripper switched from `/\*.*?\*/` to `/\*[^"]*?\*/`. A Rust string literal containing `/*` no longer tricks the scanner into stripping real `#[allow(...)]` attributes that happen to live between the opening and closing quotes. Verified with a synthetic `let s = "/* …"; #[allow(dead_code)] fn dead() {}; let t = "*/"`-shaped fixture: the `#[allow(dead_code)]` is now caught instead of silently swept up.
+
 - **PR #140 review round 6** (scope `ci`): cubic + chatgpt-codex round-5 follow-up.
   - `.github/workflows/ci.yml` `forbidden-tools` no longer swallows scanner failures with `|| true`. Captures both stdout and exit status: `0` = clean, `1` = hits found (output is the report), any other code = real failure that aborts the step.
   - `scripts/forbidden-rust-allow.py` regex now matches both outer `#[allow(...)]` and inner `#![allow(...)]` attributes (`#!?\[\s*allow\s*\((.*?)\)\s*\]`). Lazy body `(.*?)` instead of `[^)]*` so allow lists containing parens (e.g. `clippy::needless_pass_by_value()`) don't terminate the match early.
