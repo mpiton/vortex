@@ -266,7 +266,8 @@
     "actions": {
       "selectAll": "Tout sélectionner ({{count}})",
       "startSelected": "Démarrer la sélection ({{count}})",
-      "startAllOnline": "Tout démarrer en ligne"
+      "startAllOnline": "Tout démarrer en ligne",
+      "skipDuplicates": "Ignorer les doublons"
     },
     "grouping": {
       "label": "Regrouper en paquets :",

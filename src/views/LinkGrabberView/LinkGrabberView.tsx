@@ -14,7 +14,7 @@ import { PackageGrouping } from "./PackageGrouping";
 import { ActionsBar } from "./ActionsBar";
 import { ResolvedLinksSection } from "./ResolvedLinksSection";
 import { MediaGrabberDialog } from "./MediaGrabberDialog";
-import type { ResolvedLink, FilterType, GroupingMode } from "./types";
+import type { DuplicateCheck, ResolvedLink, FilterType, GroupingMode } from "./types";
 import type {
   MediaDownloadResult,
   MediaGrabberOptions,
@@ -34,6 +34,7 @@ export function LinkGrabberView() {
   const [groupingMode, setGroupingMode] = useState<GroupingMode>("hostname");
   const [selectedMediaLink, setSelectedMediaLink] = useState<ResolvedLink | null>(null);
   const [mediaGrabberOpen, setMediaGrabberOpen] = useState(false);
+  const [skipDuplicates, setSkipDuplicates] = useState(true);
 
   const initialClipboardEnabled = useSettingsStore((s) => s.config?.clipboardMonitoring ?? false);
   const { isEnabled: clipboardMonitoringEnabled, toggle: toggleClipboard } =
@@ -48,6 +49,25 @@ export function LinkGrabberView() {
 
   const { mutate: checkLinksOnline } = useTauriMutation<void, { urls: string[] }>(
     "link_check_online",
+  );
+
+  const { mutate: detectDuplicates } = useTauriMutation<DuplicateCheck[], { urls: string[] }>(
+    "link_detect_duplicates",
+    {
+      onSuccess: (checks) => {
+        if (checks.length === 0) return;
+        const byUrl = new Map<string, DuplicateCheck>();
+        for (const check of checks) {
+          byUrl.set(check.url, check);
+        }
+        setResolvedLinks((prev) =>
+          prev.map((link) => {
+            const probe = byUrl.get(link.originalUrl);
+            return probe ? { ...link, duplicate: probe } : link;
+          }),
+        );
+      },
+    },
   );
 
   const { mutate: resolveLinks, isPending: isResolving } = useTauriMutation<
@@ -81,6 +101,13 @@ export function LinkGrabberView() {
             },
           },
         );
+      }
+      // Run duplicate detection over the full resolve batch (including
+      // ftp:// / magnet: rows — duplicate detection is purely lexical
+      // and does not require an HTTP probe).
+      const allUrls = resolved.map((link) => link.originalUrl);
+      if (allUrls.length > 0) {
+        detectDuplicates({ urls: allUrls });
       }
       toast.success(t("linkGrabber.toast.resolveSuccess", { count: resolved.length }));
     },
@@ -127,6 +154,7 @@ export function LinkGrabberView() {
       // unknown rows.
       const effectiveStatus = liveStatuses[link.originalUrl]?.kind ?? link.status;
       if (effectiveStatus !== "online") continue;
+      if (skipDuplicates && link.duplicate?.isDuplicate) continue;
       const url = link.resolvedUrl ?? link.originalUrl;
       if (url) {
         startDownload({ url });
@@ -141,6 +169,7 @@ export function LinkGrabberView() {
       // bulk just because the static metadata says "online".
       const effectiveStatus = liveStatuses[link.originalUrl]?.kind ?? link.status;
       if (effectiveStatus !== "online") continue;
+      if (skipDuplicates && link.duplicate?.isDuplicate) continue;
       // Fallback to `originalUrl` when the initial resolve produced no
       // `resolvedUrl` (offline / error at resolve time) but a later
       // `link_check_online` event flipped the row to online. Without
@@ -154,6 +183,11 @@ export function LinkGrabberView() {
       }
     }
   };
+
+  const duplicateCount = resolvedLinks.reduce(
+    (n, link) => (link.duplicate?.isDuplicate ? n + 1 : n),
+    0,
+  );
 
   const handleMediaClick = (link: ResolvedLink) => {
     setSelectedMediaLink(link);
@@ -326,6 +360,9 @@ export function LinkGrabberView() {
           <ActionsBar
             selectedCount={selectedLinkIds.length}
             totalCount={resolvedLinks.length}
+            duplicateCount={duplicateCount}
+            skipDuplicates={skipDuplicates}
+            onSkipDuplicatesChange={setSkipDuplicates}
             onStartSelected={handleStartSelected}
             onStartAll={handleStartAllOnline}
             onClearAll={() => {

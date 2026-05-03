@@ -266,7 +266,8 @@
     "actions": {
       "selectAll": "Select All ({{count}})",
       "startSelected": "Start Selected ({{count}})",
-      "startAllOnline": "Start All Online"
+      "startAllOnline": "Start All Online",
+      "skipDuplicates": "Skip duplicates"
     },
     "grouping": {
       "label": "Group Into Packages:",

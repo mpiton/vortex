@@ -1,9 +1,13 @@
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { useTranslation } from "react-i18next";
 
 interface ActionsBarProps {
   selectedCount: number;
   totalCount: number;
+  duplicateCount: number;
+  skipDuplicates: boolean;
+  onSkipDuplicatesChange: (value: boolean) => void;
   onStartSelected: () => void;
   onStartAll: () => void;
   onClearAll: () => void;
@@ -13,6 +17,9 @@ interface ActionsBarProps {
 export function ActionsBar({
   selectedCount,
   totalCount,
+  duplicateCount,
+  skipDuplicates,
+  onSkipDuplicatesChange,
   onStartSelected,
   onStartAll,
   onClearAll,
@@ -21,7 +28,7 @@ export function ActionsBar({
   const { t } = useTranslation();
 
   return (
-    <div className="flex gap-2">
+    <div className="flex flex-wrap items-center gap-2">
       <Button onClick={onSelectAll} variant="outline" size="sm">
         {t("linkGrabber.actions.selectAll", { count: totalCount })}
       </Button>
@@ -36,6 +43,22 @@ export function ActionsBar({
       <Button onClick={onClearAll} variant="destructive" size="sm">
         {t("common.clear")}
       </Button>
+      <label className="ml-auto flex shrink-0 items-center gap-2 text-sm">
+        <Checkbox
+          id="link-grabber-skip-duplicates"
+          checked={skipDuplicates}
+          onCheckedChange={(checked) => onSkipDuplicatesChange(!!checked)}
+          aria-label={t("linkGrabber.actions.skipDuplicates", {
+            defaultValue: "Skip duplicates",
+          })}
+        />
+        <span>
+          {t("linkGrabber.actions.skipDuplicates", { defaultValue: "Skip duplicates" })}
+          {duplicateCount > 0 && (
+            <span className="ml-1 text-xs text-muted-foreground">({duplicateCount})</span>
+          )}
+        </span>
+      </label>
     </div>
   );
 }
