@@ -4,8 +4,65 @@
 //! Actual handler implementations will be added in tasks 11-12.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use tokio::sync::Semaphore;
 
 use crate::application::services::{AccountRotator, AccountSelector};
+use crate::domain::model::config::{
+    DEFAULT_LINK_CHECK_PARALLELISM, normalize_link_check_parallelism,
+};
+
+/// Shared, runtime-resizable concurrency limiter for `link_check_online`.
+///
+/// Wraps a single `Arc<Semaphore>` so the global cap holds across
+/// overlapping invocations, plus a `resize` method so a settings change
+/// to `link_check_parallelism` takes effect without restarting the app.
+/// Growing the cap calls `add_permits` directly (immediate). Shrinking
+/// the cap spawns a background task that acquires the surplus permits
+/// and `forget`s them so they leave circulation permanently — that path
+/// blocks on in-flight probes finishing, which is intentional: we never
+/// violate the new cap, we just take up to one probe-duration to reach
+/// it.
+pub struct LinkCheckLimiter {
+    semaphore: Arc<Semaphore>,
+    capacity: AtomicUsize,
+}
+
+impl LinkCheckLimiter {
+    pub fn new(initial: usize) -> Self {
+        Self {
+            semaphore: Arc::new(Semaphore::new(initial)),
+            capacity: AtomicUsize::new(initial),
+        }
+    }
+
+    pub fn semaphore(&self) -> Arc<Semaphore> {
+        Arc::clone(&self.semaphore)
+    }
+
+    /// Apply the new cap to the underlying semaphore. Safe to call from
+    /// anywhere a tokio runtime is in scope (the shrink path uses
+    /// `Handle::try_current` so it degrades to a no-op outside one,
+    /// e.g. in sync unit tests — there the new cap takes effect on the
+    /// next time a runtime is created).
+    pub fn resize(&self, new_capacity: usize) {
+        let old = self.capacity.swap(new_capacity, Ordering::SeqCst);
+        if new_capacity > old {
+            self.semaphore.add_permits(new_capacity - old);
+        } else if new_capacity < old {
+            let delta = (old - new_capacity) as u32;
+            let sem = Arc::clone(&self.semaphore);
+            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                handle.spawn(async move {
+                    if let Ok(permit) = sem.acquire_many_owned(delta).await {
+                        permit.forget();
+                    }
+                });
+            }
+        }
+    }
+}
 use crate::domain::ports::driven::{
     AccountCredentialStore, AccountRepository, AccountValidator, ArchiveExtractor,
     ChecksumComputer, ClipboardObserver, ConfigStore, CredentialStore, DownloadEngine,
@@ -47,6 +104,16 @@ pub struct CommandBus {
     /// observe the same min/max and write colliding `queue_position`
     /// values, breaking deterministic ordering.
     queue_position_lock: tokio::sync::Mutex<()>,
+    /// Shared, runtime-resizable limiter that enforces
+    /// `AppConfig::link_check_parallelism` globally across overlapping
+    /// `handle_check_online` invocations. Without a shared instance,
+    /// two batches launched back-to-back (e.g. paste followed by
+    /// per-row retry) would each create their own per-call semaphore
+    /// and the aggregate in-flight HEAD count could reach 2× the
+    /// configured cap. `handle_update_config` calls
+    /// `LinkCheckLimiter::resize` after persisting a settings change so
+    /// the new cap takes effect without restarting the app.
+    link_check_limiter: Arc<LinkCheckLimiter>,
 }
 
 impl CommandBus {
@@ -65,6 +132,18 @@ impl CommandBus {
         history_repo: Arc<dyn HistoryRepository>,
         plugin_store_client: Option<Arc<dyn PluginStoreClient>>,
     ) -> Self {
+        // Seed the shared link-check semaphore from the persisted
+        // config so the global concurrency cap matches the value the
+        // user picked. Falls back to the PRD default when the store
+        // can't be read (boot path with corrupt config) — preferable
+        // to panicking and matches the runtime behaviour of
+        // `normalize_link_check_parallelism`.
+        let initial_parallelism = config_store
+            .get_config()
+            .ok()
+            .map(|c| normalize_link_check_parallelism(c.link_check_parallelism))
+            .unwrap_or(DEFAULT_LINK_CHECK_PARALLELISM as usize);
+        let link_check_limiter = Arc::new(LinkCheckLimiter::new(initial_parallelism));
         Self {
             download_repo,
             download_engine,
@@ -90,6 +169,7 @@ impl CommandBus {
             account_rotator: None,
             passphrase_codec: None,
             queue_position_lock: tokio::sync::Mutex::new(()),
+            link_check_limiter,
         }
     }
 
@@ -196,6 +276,14 @@ impl CommandBus {
         self.queue_position_lock.lock().await
     }
 
+    /// Shared limiter that bounds in-flight `link_check_online` probes
+    /// globally across overlapping invocations. Pass-through for the
+    /// runtime-resizable wrapper (the underlying `Arc<Semaphore>` is
+    /// reachable via `LinkCheckLimiter::semaphore`).
+    pub(crate) fn link_check_limiter(&self) -> Arc<LinkCheckLimiter> {
+        Arc::clone(&self.link_check_limiter)
+    }
+
     /// Builder-style setter for the checksum computer port. Kept optional so
     /// existing test fixtures don't have to construct one when they don't
     /// exercise the verify-checksum path.
@@ -230,6 +318,10 @@ impl CommandBus {
 
     pub fn http_client(&self) -> &dyn HttpClient {
         self.http_client.as_ref()
+    }
+
+    pub(crate) fn http_client_arc(&self) -> Arc<dyn HttpClient> {
+        Arc::clone(&self.http_client)
     }
 
     pub fn plugin_loader(&self) -> &dyn PluginLoader {
@@ -719,6 +811,48 @@ mod tests {
     #[test]
     fn test_command_bus_new_compiles() {
         let _bus = make_command_bus();
+    }
+
+    /// Growing the limiter via `resize` adds permits immediately so the
+    /// next acquire succeeds against the new cap.
+    #[tokio::test]
+    async fn test_link_check_limiter_resize_grows_permits_immediately() {
+        let limiter = LinkCheckLimiter::new(2);
+        let sem = limiter.semaphore();
+        // Take 2 permits, leaving 0 free at cap=2.
+        let _p1 = sem.clone().acquire_owned().await.unwrap();
+        let _p2 = sem.clone().acquire_owned().await.unwrap();
+        assert_eq!(sem.available_permits(), 0);
+
+        limiter.resize(5);
+        // 5 - 2 = 3 new permits should now be free.
+        assert_eq!(sem.available_permits(), 3);
+    }
+
+    /// Shrinking the limiter via `resize` permanently removes the
+    /// surplus permits; once any in-flight permits are released, the
+    /// total free capacity matches the new cap.
+    #[tokio::test]
+    async fn test_link_check_limiter_resize_shrinks_to_new_cap() {
+        let limiter = LinkCheckLimiter::new(8);
+        let sem = limiter.semaphore();
+        assert_eq!(sem.available_permits(), 8);
+
+        limiter.resize(3);
+        // The shrink path spawns a task that acquires+forgets the
+        // delta. Yield until it runs.
+        tokio::task::yield_now().await;
+        // At cap=8 with no in-flight permits, the spawn task should
+        // have grabbed 5 and forgotten them, leaving 3.
+        // Loop briefly in case the runtime hasn't scheduled the task
+        // yet — under tokio current_thread it may need another tick.
+        for _ in 0..10 {
+            if sem.available_permits() == 3 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(sem.available_permits(), 3);
     }
 
     #[test]

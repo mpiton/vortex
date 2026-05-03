@@ -456,7 +456,7 @@ impl EventBus for CapturingEventBus {
 
 // ── Stubs for the unrelated ports the bus still requires ─────────────
 
-struct StubDownloadRepo;
+pub(crate) struct StubDownloadRepo;
 impl DownloadRepository for StubDownloadRepo {
     fn find_by_id(&self, _id: DownloadId) -> Result<Option<Download>, DomainError> {
         Ok(None)
@@ -472,7 +472,7 @@ impl DownloadRepository for StubDownloadRepo {
     }
 }
 
-struct StubDownloadEngine;
+pub(crate) struct StubDownloadEngine;
 impl DownloadEngine for StubDownloadEngine {
     fn start(&self, _download: &Download) -> Result<(), DomainError> {
         Ok(())
@@ -488,7 +488,7 @@ impl DownloadEngine for StubDownloadEngine {
     }
 }
 
-struct StubFileStorage;
+pub(crate) struct StubFileStorage;
 impl FileStorage for StubFileStorage {
     fn create_file(&self, _path: &Path, _size: u64) -> Result<(), DomainError> {
         Ok(())
@@ -537,7 +537,7 @@ impl HttpClient for StubHttpClient {
     }
 }
 
-struct StubPluginLoader;
+pub(crate) struct StubPluginLoader;
 impl PluginLoader for StubPluginLoader {
     fn load(&self, _manifest: &PluginManifest) -> Result<(), DomainError> {
         Ok(())
@@ -572,7 +572,7 @@ impl ConfigStore for StubConfigStore {
     }
 }
 
-struct StubCredentialStore;
+pub(crate) struct StubCredentialStore;
 impl CredentialStore for StubCredentialStore {
     fn get(&self, _service: &str) -> Result<Option<Credential>, DomainError> {
         Ok(None)
@@ -585,7 +585,7 @@ impl CredentialStore for StubCredentialStore {
     }
 }
 
-struct StubClipboardObserver;
+pub(crate) struct StubClipboardObserver;
 impl ClipboardObserver for StubClipboardObserver {
     fn start(&self) -> Result<(), DomainError> {
         Ok(())
@@ -598,7 +598,7 @@ impl ClipboardObserver for StubClipboardObserver {
     }
 }
 
-struct StubArchiveExtractor;
+pub(crate) struct StubArchiveExtractor;
 impl ArchiveExtractor for StubArchiveExtractor {
     fn detect_format(&self, _file_path: &Path) -> Result<Option<ArchiveFormat>, DomainError> {
         Ok(None)

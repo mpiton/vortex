@@ -1,9 +1,14 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { ResolvedLinksSection, groupLinks } from "../ResolvedLinksSection";
+import { useLinkGrabberStore } from "@/stores/linkGrabberStore";
+import { ResolvedLinksSection, applyFilter, groupLinks } from "../ResolvedLinksSection";
 import type { ResolvedLink } from "../types";
+
+beforeEach(() => {
+  useLinkGrabberStore.getState().reset();
+});
 
 const MOCK_LINKS: ResolvedLink[] = [
   {
@@ -109,9 +114,7 @@ describe("ResolvedLinksSection", () => {
       name: /Select all in example\.com/i,
     });
     await user.click(groupCheckboxes[0]);
-    expect(onSelectIds).toHaveBeenCalledWith(
-      expect.arrayContaining(["1", "3"]),
-    );
+    expect(onSelectIds).toHaveBeenCalledWith(expect.arrayContaining(["1", "3"]));
   });
 
   it("individual checkbox toggles selection", async () => {
@@ -131,5 +134,105 @@ describe("ResolvedLinksSection", () => {
     });
     await user.click(linkCheckboxes[0]);
     expect(onSelectIds).toHaveBeenCalledWith(["1"]);
+  });
+
+  it("renders a retry button only when the live status is unknown", async () => {
+    const user = userEvent.setup();
+    const onRetry = vi.fn();
+    const links: ResolvedLink[] = [
+      {
+        id: "u",
+        originalUrl: "https://timeout/",
+        resolvedUrl: null,
+        filename: null,
+        sizeBytes: null,
+        status: "online",
+        moduleName: "core-http",
+        isMedia: false,
+      },
+      {
+        id: "ok",
+        originalUrl: "https://ok/",
+        resolvedUrl: null,
+        filename: "ok.zip",
+        sizeBytes: null,
+        status: "online",
+        moduleName: "core-http",
+        isMedia: false,
+      },
+    ];
+    useLinkGrabberStore.getState().setStatus("https://timeout/", { kind: "unknown" });
+    renderWithProvider(
+      <ResolvedLinksSection
+        links={links}
+        filter="all"
+        groupingMode="none"
+        selectedIds={[]}
+        onSelectIds={vi.fn()}
+        onRetry={onRetry}
+      />,
+    );
+    const retryButtons = screen.getAllByRole("button", { name: /retry-link-check/i });
+    expect(retryButtons).toHaveLength(1);
+    await user.click(retryButtons[0]);
+    expect(onRetry).toHaveBeenCalledWith("https://timeout/");
+  });
+
+  it("Online filter prefers the live status from the store over the static one", () => {
+    const links: ResolvedLink[] = [
+      {
+        id: "x",
+        originalUrl: "https://maybe-online/",
+        resolvedUrl: null,
+        filename: null,
+        sizeBytes: null,
+        // Static state says "checking" but the live event has flipped to "offline".
+        status: "checking",
+        moduleName: "core-http",
+        isMedia: false,
+      },
+    ];
+    useLinkGrabberStore.getState().setStatus("https://maybe-online/", {
+      kind: "offline",
+    });
+    renderWithProvider(
+      <ResolvedLinksSection
+        links={links}
+        filter="online"
+        groupingMode="none"
+        selectedIds={[]}
+        onSelectIds={vi.fn()}
+      />,
+    );
+    expect(screen.queryByText("https://maybe-online/")).not.toBeInTheDocument();
+  });
+});
+
+describe("applyFilter", () => {
+  const link = (id: string, status: ResolvedLink["status"]): ResolvedLink => ({
+    id,
+    originalUrl: `https://${id}/`,
+    resolvedUrl: null,
+    filename: null,
+    sizeBytes: null,
+    status,
+    moduleName: "core-http",
+    isMedia: false,
+  });
+
+  it("filters online based on live status when present", () => {
+    const links = [link("a", "checking"), link("b", "checking")];
+    const result = applyFilter(links, "online", {
+      "https://a/": { kind: "online", filename: null, size: null, resumable: null },
+    });
+    expect(result.map((l) => l.id)).toEqual(["a"]);
+  });
+
+  it("groups offline + unknown together for the offline filter", () => {
+    const links = [link("a", "online"), link("b", "offline"), link("c", "checking")];
+    const result = applyFilter(links, "offline", {
+      "https://c/": { kind: "unknown" },
+    });
+    expect(result.map((l) => l.id).sort()).toEqual(["b", "c"]);
   });
 });

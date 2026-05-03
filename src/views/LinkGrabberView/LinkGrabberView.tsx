@@ -5,7 +5,9 @@ import { Switch } from "@/components/ui/switch";
 import { useTauriMutation } from "@/api/hooks";
 import { toast } from "@/lib/toast";
 import { useSettingsStore } from "@/stores/settingsStore";
+import { useLinkGrabberStore } from "@/stores/linkGrabberStore";
 import { useClipboardMonitoring } from "@/hooks/useClipboardMonitoring";
+import { useLinkStatusEvents } from "@/hooks/useLinkStatusEvents";
 import { PasteZone } from "./PasteZone";
 import { FilterBar } from "./FilterBar";
 import { PackageGrouping } from "./PackageGrouping";
@@ -37,6 +39,17 @@ export function LinkGrabberView() {
   const { isEnabled: clipboardMonitoringEnabled, toggle: toggleClipboard } =
     useClipboardMonitoring(initialClipboardEnabled);
 
+  // Subscribe once for the lifetime of this view so backend
+  // `link-status-updated` events update the per-row badge and filters.
+  useLinkStatusEvents();
+  const resetLinkStatuses = useLinkGrabberStore((s) => s.reset);
+  const setManyLinkStatuses = useLinkGrabberStore((s) => s.setManyStatuses);
+  const liveStatuses = useLinkGrabberStore((s) => s.statuses);
+
+  const { mutate: checkLinksOnline } = useTauriMutation<void, { urls: string[] }>(
+    "link_check_online",
+  );
+
   const { mutate: resolveLinks, isPending: isResolving } = useTauriMutation<
     ResolvedLink[],
     { urls: string[] }
@@ -44,6 +57,33 @@ export function LinkGrabberView() {
     onSuccess: (resolved) => {
       setResolvedLinks(resolved);
       setSelectedLinkIds([]);
+      // Reset the previous batch's live statuses so a stale "offline"
+      // badge from an earlier paste does not bleed onto a new URL.
+      resetLinkStatuses();
+      const eligibleUrls = resolved
+        .map((link) => link.originalUrl)
+        .filter(
+          (u) => u.toLowerCase().startsWith("http://") || u.toLowerCase().startsWith("https://"),
+        );
+      if (eligibleUrls.length > 0) {
+        // Pre-seed every row with `checking` so the spinner appears
+        // synchronously instead of waiting for the backend's first
+        // event to land.
+        setManyLinkStatuses(eligibleUrls.map((url) => [url, { kind: "checking" }] as const));
+        checkLinksOnline(
+          { urls: eligibleUrls },
+          {
+            // Without this, an IPC failure leaves every row stuck on the
+            // optimistic `checking` spinner; downgrade to `unknown` so
+            // the row clears and the retry button surfaces.
+            onError: () => {
+              setManyLinkStatuses(
+                eligibleUrls.map((url) => [url, { kind: "unknown" }] as const),
+              );
+            },
+          },
+        );
+      }
       toast.success(t("linkGrabber.toast.resolveSuccess", { count: resolved.length }));
     },
   });
@@ -79,16 +119,40 @@ export function LinkGrabberView() {
   const handleStartSelected = () => {
     for (const id of selectedLinkIds) {
       const link = resolvedLinks.find((l) => l.id === id);
-      if (link?.resolvedUrl) {
-        startDownload({ url: link.resolvedUrl });
+      if (!link) continue;
+      // Mirror `handleStartAllOnline`: only start rows whose effective
+      // status is `online` (preferring the live probe over the static
+      // resolve outcome), and fall back to `originalUrl` when the
+      // initial resolve produced no `resolvedUrl`. Without the status
+      // gate, selecting rows under `filter="all"` would trigger a burst
+      // of failed `download_start` calls for offline / premiumOnly /
+      // unknown rows.
+      const effectiveStatus = liveStatuses[link.originalUrl]?.kind ?? link.status;
+      if (effectiveStatus !== "online") continue;
+      const url = link.resolvedUrl ?? link.originalUrl;
+      if (url) {
+        startDownload({ url });
       }
     }
   };
 
   const handleStartAllOnline = () => {
     for (const link of resolvedLinks) {
-      if (link.status === "online" && link.resolvedUrl) {
-        startDownload({ url: link.resolvedUrl });
+      // Prefer the live probe status so a row that flipped to offline /
+      // unknown / premiumOnly mid-flight cannot still be started in
+      // bulk just because the static metadata says "online".
+      const effectiveStatus = liveStatuses[link.originalUrl]?.kind ?? link.status;
+      if (effectiveStatus !== "online") continue;
+      // Fallback to `originalUrl` when the initial resolve produced no
+      // `resolvedUrl` (offline / error at resolve time) but a later
+      // `link_check_online` event flipped the row to online. Without
+      // this, the row's "online" badge contradicts the bulk action,
+      // which silently skips it. If `originalUrl` is a page rather
+      // than a direct download URL, `download_start` surfaces the
+      // failure via the standard error toast.
+      const url = link.resolvedUrl ?? link.originalUrl;
+      if (url) {
+        startDownload({ url });
       }
     }
   };
@@ -106,8 +170,7 @@ export function LinkGrabberView() {
     // than on `playlistItems.length`. The selection list is empty by
     // default — the backend interprets that as "download every track" —
     // so a `> 0` check would skip grouping for the most common path.
-    const isPlaylistDownload =
-      options.isPlaylist === true || options.playlistItems.length > 0;
+    const isPlaylistDownload = options.isPlaylist === true || options.playlistItems.length > 0;
 
     // Step 1 — start the downloads first. Creating / reusing the package
     // before this would leave an empty package behind on every failed
@@ -138,7 +201,7 @@ export function LinkGrabberView() {
         const groupItemCount =
           options.playlistItems.length > 0
             ? options.playlistItems.length
-            : options.playlistItemCount ?? 0;
+            : (options.playlistItemCount ?? 0);
         // Prefer the canonical playlist key (e.g. `youtube:playlist:PLxxx`)
         // so equivalent URLs (`watch?v=…&list=…` vs `playlist?list=…`)
         // dedupe to the same package. Falls back to the raw URL when the
@@ -174,9 +237,7 @@ export function LinkGrabberView() {
           }),
         ),
       );
-      const failedAttachCount = attachOutcomes.filter(
-        (o) => o.status === "rejected",
-      ).length;
+      const failedAttachCount = attachOutcomes.filter((o) => o.status === "rejected").length;
       if (failedAttachCount > 0) {
         toast.error(
           t("linkGrabber.toast.playlistAttachFailed", {
@@ -272,6 +333,7 @@ export function LinkGrabberView() {
             onClearAll={() => {
               setResolvedLinks([]);
               setSelectedLinkIds([]);
+              resetLinkStatuses();
             }}
             onSelectAll={() => setSelectedLinkIds(resolvedLinks.map((l) => l.id))}
           />
@@ -282,6 +344,20 @@ export function LinkGrabberView() {
             selectedIds={selectedLinkIds}
             onSelectIds={setSelectedLinkIds}
             onMediaClick={handleMediaClick}
+            onRetry={(url) => {
+              // Optimistically flip the row back to "checking" so the
+              // spinner returns immediately; the backend will replace
+              // the status when its probe lands.
+              setManyLinkStatuses([[url, { kind: "checking" }]]);
+              checkLinksOnline(
+                { urls: [url] },
+                {
+                  onError: () => {
+                    setManyLinkStatuses([[url, { kind: "unknown" }]]);
+                  },
+                },
+              );
+            }}
           />
         </>
       )}
