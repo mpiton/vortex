@@ -14,12 +14,11 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::sync::OwnedSemaphorePermit;
 
 use crate::application::command_bus::CommandBus;
 use crate::application::error::AppError;
 use crate::domain::event::DomainEvent;
-use crate::domain::model::config::normalize_link_check_parallelism;
 use crate::domain::model::http::HttpResponse;
 use crate::domain::model::link::LinkStatus;
 use crate::domain::ports::driven::HttpClient;
@@ -43,9 +42,13 @@ impl CommandBus {
         }
 
         let config = self.config_store().get_config().map_err(AppError::from)?;
-        let parallelism = normalize_link_check_parallelism(config.link_check_parallelism);
         let timeout = Duration::from_secs(config.link_check_timeout_secs.max(1) as u64);
-        let semaphore = Arc::new(Semaphore::new(parallelism));
+        // Use the shared semaphore from `CommandBus` so the configured
+        // `link_check_parallelism` cap is enforced globally — without
+        // it, two overlapping `handle_check_online` invocations would
+        // each create their own per-call semaphore and the aggregate
+        // in-flight HEAD count could reach 2× the cap.
+        let semaphore = self.link_check_semaphore();
         let http_client = self.http_client_arc();
         let event_bus = self.event_bus_arc();
 
@@ -634,6 +637,118 @@ mod tests {
         assert!(
             peak <= 3,
             "peak concurrency {peak} exceeded configured cap of 3"
+        );
+        assert!(peak >= 1, "no probes ever ran");
+    }
+
+    /// Regression — `link_check_parallelism` must hold across overlapping
+    /// `handle_check_online` invocations. Two batches launched in
+    /// parallel previously each created their own per-call semaphore,
+    /// so the aggregate in-flight HEAD count could reach 2× the cap.
+    /// The shared `CommandBus::link_check_semaphore` keeps the bound
+    /// global.
+    #[tokio::test]
+    async fn handle_check_online_caps_concurrency_across_overlapping_batches() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::time::Duration;
+
+        struct ConcurrencyTracker {
+            in_flight: AtomicUsize,
+            peak: AtomicUsize,
+        }
+
+        impl ConcurrencyTracker {
+            fn new() -> Arc<Self> {
+                Arc::new(Self {
+                    in_flight: AtomicUsize::new(0),
+                    peak: AtomicUsize::new(0),
+                })
+            }
+
+            fn enter(&self) {
+                let now = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+                let mut peak = self.peak.load(Ordering::SeqCst);
+                while now > peak {
+                    match self
+                        .peak
+                        .compare_exchange(peak, now, Ordering::SeqCst, Ordering::SeqCst)
+                    {
+                        Ok(_) => break,
+                        Err(actual) => peak = actual,
+                    }
+                }
+            }
+
+            fn leave(&self) {
+                self.in_flight.fetch_sub(1, Ordering::SeqCst);
+            }
+        }
+
+        struct TrackingHttp {
+            tracker: Arc<ConcurrencyTracker>,
+        }
+
+        impl HttpClient for TrackingHttp {
+            fn head(&self, _url: &str) -> Result<HttpResponse, DomainError> {
+                self.tracker.enter();
+                std::thread::sleep(Duration::from_millis(120));
+                self.tracker.leave();
+                Ok(HttpResponse {
+                    status_code: 200,
+                    headers: HashMap::new(),
+                    body: vec![],
+                })
+            }
+            fn get_range(
+                &self,
+                _url: &str,
+                _start: u64,
+                _end: u64,
+            ) -> Result<Vec<u8>, DomainError> {
+                Ok(vec![])
+            }
+            fn supports_range(&self, _url: &str) -> Result<bool, DomainError> {
+                Ok(false)
+            }
+        }
+
+        let tracker = ConcurrencyTracker::new();
+        let http = Arc::new(TrackingHttp {
+            tracker: tracker.clone(),
+        });
+        let event_bus = Arc::new(CapturingBus::new());
+        let cfg = AppConfig {
+            link_check_parallelism: 3,
+            ..AppConfig::default()
+        };
+        let config = Arc::new(InMemoryConfig::new(cfg));
+        let bus = Arc::new(build_bus(http, event_bus, config));
+
+        // Two overlapping batches of 6 URLs each. With a per-call
+        // semaphore the aggregate peak could reach 6 (3 per batch);
+        // with the shared semaphore it must stay <= 3.
+        let bus_a = bus.clone();
+        let bus_b = bus.clone();
+        let urls_a: Vec<String> = (0..6).map(|i| format!("https://a.example/{i}")).collect();
+        let urls_b: Vec<String> = (0..6).map(|i| format!("https://b.example/{i}")).collect();
+        let task_a = tokio::spawn(async move {
+            bus_a
+                .handle_check_online(CheckOnlineCommand { urls: urls_a })
+                .await
+                .expect("ok");
+        });
+        let task_b = tokio::spawn(async move {
+            bus_b
+                .handle_check_online(CheckOnlineCommand { urls: urls_b })
+                .await
+                .expect("ok");
+        });
+        let _ = tokio::join!(task_a, task_b);
+
+        let peak = tracker.peak.load(Ordering::SeqCst);
+        assert!(
+            peak <= 3,
+            "peak concurrency {peak} exceeded global cap of 3 across overlapping batches"
         );
         assert!(peak >= 1, "no probes ever ran");
     }

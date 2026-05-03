@@ -5,7 +5,12 @@
 
 use std::sync::Arc;
 
+use tokio::sync::Semaphore;
+
 use crate::application::services::{AccountRotator, AccountSelector};
+use crate::domain::model::config::{
+    DEFAULT_LINK_CHECK_PARALLELISM, normalize_link_check_parallelism,
+};
 use crate::domain::ports::driven::{
     AccountCredentialStore, AccountRepository, AccountValidator, ArchiveExtractor,
     ChecksumComputer, ClipboardObserver, ConfigStore, CredentialStore, DownloadEngine,
@@ -47,6 +52,15 @@ pub struct CommandBus {
     /// observe the same min/max and write colliding `queue_position`
     /// values, breaking deterministic ordering.
     queue_position_lock: tokio::sync::Mutex<()>,
+    /// Shared semaphore that enforces `AppConfig::link_check_parallelism`
+    /// globally across overlapping `handle_check_online` invocations.
+    /// Without a shared instance, two batches launched back-to-back
+    /// (e.g. paste followed by per-row retry) would each create their
+    /// own per-call semaphore and the aggregate in-flight HEAD count
+    /// could reach 2× the configured cap. Capacity is fixed at
+    /// construction time from the persisted config; runtime changes to
+    /// `link_check_parallelism` take effect on next app start.
+    link_check_semaphore: Arc<Semaphore>,
 }
 
 impl CommandBus {
@@ -65,6 +79,18 @@ impl CommandBus {
         history_repo: Arc<dyn HistoryRepository>,
         plugin_store_client: Option<Arc<dyn PluginStoreClient>>,
     ) -> Self {
+        // Seed the shared link-check semaphore from the persisted
+        // config so the global concurrency cap matches the value the
+        // user picked. Falls back to the PRD default when the store
+        // can't be read (boot path with corrupt config) — preferable
+        // to panicking and matches the runtime behaviour of
+        // `normalize_link_check_parallelism`.
+        let initial_parallelism = config_store
+            .get_config()
+            .ok()
+            .map(|c| normalize_link_check_parallelism(c.link_check_parallelism))
+            .unwrap_or(DEFAULT_LINK_CHECK_PARALLELISM as usize);
+        let link_check_semaphore = Arc::new(Semaphore::new(initial_parallelism));
         Self {
             download_repo,
             download_engine,
@@ -90,6 +116,7 @@ impl CommandBus {
             account_rotator: None,
             passphrase_codec: None,
             queue_position_lock: tokio::sync::Mutex::new(()),
+            link_check_semaphore,
         }
     }
 
@@ -194,6 +221,12 @@ impl CommandBus {
     /// with respect to other queue mutations.
     pub(crate) async fn lock_queue_positions(&self) -> tokio::sync::MutexGuard<'_, ()> {
         self.queue_position_lock.lock().await
+    }
+
+    /// Shared semaphore that bounds in-flight `link_check_online`
+    /// probes globally across overlapping invocations.
+    pub(crate) fn link_check_semaphore(&self) -> Arc<Semaphore> {
+        Arc::clone(&self.link_check_semaphore)
     }
 
     /// Builder-style setter for the checksum computer port. Kept optional so
