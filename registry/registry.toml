@@ -71,3 +71,15 @@ checksum_sha256      = "5775871ba142ac7ae665e6fb46c71754d4318709f0d95b5af7af9f7b
 checksum_sha256_toml = "88f1e8444027b28e3e05e96123295697e8abe204e86f605a2036694a85cd42c0"
 official             = true
 min_vortex_version   = "0.1.0"
+
+[[plugin]]
+name                 = "vortex-mod-pixeldrain"
+description          = "Pixeldrain free hoster — direct download via the public JSON API"
+author               = "vortex-community"
+version              = "1.0.0"
+category             = "hoster"
+repository           = "https://github.com/mpiton/vortex-mod-pixeldrain"
+checksum_sha256      = "d6b6af345c2597d46d80471d70a2778d57e0c6ad457e8fb39b7c306400da143d"
+checksum_sha256_toml = "02bd992f8dcf1c055c3941aa4021cd47dfba70720ddc65bc9adb33f1f4cf8a24"
+official             = true
+min_vortex_version   = "0.1.0"
