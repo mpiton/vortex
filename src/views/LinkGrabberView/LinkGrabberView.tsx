@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useLocation, useNavigate } from "react-router";
 import { Switch } from "@/components/ui/switch";
@@ -51,31 +51,46 @@ export function LinkGrabberView() {
     "link_check_online",
   );
 
+  // Monotonic counter so a stale `link_detect_duplicates` response from
+  // an earlier resolve cannot clobber the duplicate state of a newer
+  // batch. Each resolve increments it; each per-call `onSuccess`
+  // captures the value at dispatch time and bails when superseded.
+  const detectBatchRef = useRef(0);
   const { mutate: detectDuplicates } = useTauriMutation<DuplicateCheck[], { urls: string[] }>(
     "link_detect_duplicates",
-    {
-      onSuccess: (checks) => {
-        if (checks.length === 0) return;
-        const byUrl = new Map<string, DuplicateCheck>();
-        for (const check of checks) {
-          byUrl.set(check.url, check);
-        }
-        setResolvedLinks((prev) => {
-          let changed = false;
-          const next = prev.map((link) => {
-            const probe = byUrl.get(link.originalUrl);
-            if (!probe || link.duplicate === probe) return link;
-            changed = true;
-            return { ...link, duplicate: probe };
-          });
-          // Skip the state update when no link's duplicate field actually
-          // moved — keeps downstream memos and effects from re-running
-          // for an all-unique batch.
-          return changed ? next : prev;
-        });
-      },
-    },
   );
+
+  const dispatchDuplicateDetection = (urls: string[]) => {
+    if (urls.length === 0) return;
+    detectBatchRef.current += 1;
+    const batchId = detectBatchRef.current;
+    detectDuplicates(
+      { urls },
+      {
+        onSuccess: (checks) => {
+          if (batchId !== detectBatchRef.current) return;
+          if (checks.length === 0) return;
+          const byUrl = new Map<string, DuplicateCheck>();
+          for (const check of checks) {
+            byUrl.set(check.url, check);
+          }
+          setResolvedLinks((prev) => {
+            let changed = false;
+            const next = prev.map((link) => {
+              const probe = byUrl.get(link.originalUrl);
+              if (!probe || link.duplicate === probe) return link;
+              changed = true;
+              return { ...link, duplicate: probe };
+            });
+            // Skip the state update when no link's duplicate field actually
+            // moved — keeps downstream memos and effects from re-running
+            // for an all-unique batch.
+            return changed ? next : prev;
+          });
+        },
+      },
+    );
+  };
 
   const { mutate: resolveLinks, isPending: isResolving } = useTauriMutation<
     ResolvedLink[],
@@ -112,10 +127,7 @@ export function LinkGrabberView() {
       // Run duplicate detection over the full resolve batch (including
       // ftp:// / magnet: rows — duplicate detection is purely lexical
       // and does not require an HTTP probe).
-      const allUrls = resolved.map((link) => link.originalUrl);
-      if (allUrls.length > 0) {
-        detectDuplicates({ urls: allUrls });
-      }
+      dispatchDuplicateDetection(resolved.map((link) => link.originalUrl));
       toast.success(t("linkGrabber.toast.resolveSuccess", { count: resolved.length }));
     },
   });
@@ -156,7 +168,16 @@ export function LinkGrabberView() {
   const isStartable = (link: ResolvedLink) => {
     const effectiveStatus = liveStatuses[link.originalUrl]?.kind ?? link.status;
     if (effectiveStatus !== "online") return false;
-    if (skipDuplicates && link.duplicate?.isDuplicate) return false;
+    // While `Skip duplicates` is on, also block rows whose duplicate
+    // probe hasn't returned yet. The backend always emits a
+    // `DuplicateCheck` per input URL, so `link.duplicate === undefined`
+    // means the IPC roundtrip is still in flight — letting the row
+    // through here would defeat the safety toggle when the user hits
+    // Start the moment paste/resolve completes.
+    if (skipDuplicates) {
+      if (link.duplicate === undefined) return false;
+      if (link.duplicate?.isDuplicate) return false;
+    }
     return true;
   };
 

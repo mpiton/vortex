@@ -1,4 +1,5 @@
 import { Loader2, Check, X, AlertCircle, HelpCircle, Lock, RotateCcw, Copy } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -38,21 +39,25 @@ const statusBadgeColor: Record<LinkStatus, string> = {
   error: "bg-yellow-500/15 text-yellow-700 dark:text-yellow-300",
 };
 
-const duplicateLabelMap: Record<DuplicateSource, string> = {
-  active: "Already in active",
-  history: "Already in history",
+const duplicateLabelKeyMap: Record<DuplicateSource, string> = {
+  active: "linkGrabber.duplicate.active",
+  history: "linkGrabber.duplicate.history",
 };
 
 export function LinkRow({ link, selected, onSelect, onMediaClick, onRetry }: LinkRowProps) {
+  const { t } = useTranslation();
   const liveStatus = useLinkGrabberStore((s) => s.statuses[link.originalUrl]);
   const effectiveStatus: LinkStatus = liveStatus?.kind ?? link.status;
   const showRetry = effectiveStatus === "unknown" && onRetry !== undefined;
 
   const duplicate = link.duplicate?.isDuplicate ? link.duplicate : null;
-  const duplicateLabel = duplicate?.source ? duplicateLabelMap[duplicate.source] : null;
+  const duplicateLabel = duplicate?.source ? t(duplicateLabelKeyMap[duplicate.source]) : null;
   const duplicateTooltip =
     duplicate?.existingFilename && duplicateLabel
-      ? `${duplicateLabel}: ${duplicate.existingFilename}`
+      ? t("linkGrabber.duplicate.tooltipWithFilename", {
+          label: duplicateLabel,
+          filename: duplicate.existingFilename,
+        })
       : (duplicateLabel ?? "");
 
   return (

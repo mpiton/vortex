@@ -269,6 +269,11 @@
       "startAllOnline": "Start All Online",
       "skipDuplicates": "Skip duplicates"
     },
+    "duplicate": {
+      "active": "Already in active",
+      "history": "Already in history",
+      "tooltipWithFilename": "{{label}}: {{filename}}"
+    },
     "grouping": {
       "label": "Group Into Packages:",
       "none": "No Grouping",

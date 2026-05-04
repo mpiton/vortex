@@ -40,8 +40,7 @@ pub fn normalize_url(url: &str) -> String {
         return trimmed.to_string();
     }
 
-    let authority_lower = authority_raw.to_ascii_lowercase();
-    let canonical_authority = strip_default_port(scheme, &authority_lower);
+    let canonical_authority = canonicalize_authority(scheme, authority_raw);
     let canonical_query = query.map(filter_tracking_params).unwrap_or_default();
 
     let mut out = String::with_capacity(trimmed.len());
@@ -68,13 +67,32 @@ fn detect_scheme(url: &str) -> Option<(&'static str, usize)> {
     ];
     for (scheme, total_len) in CANDIDATES {
         if url.len() >= *total_len
-            && url[..scheme.len()].eq_ignore_ascii_case(scheme)
-            && &url[scheme.len()..*total_len] == "://"
+            && url
+                .get(..scheme.len())
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case(scheme))
+            && url.get(scheme.len()..*total_len) == Some("://")
         {
             return Some((*scheme, *total_len));
         }
     }
     None
+}
+
+/// Normalize the authority while preserving userinfo (`user:pass@`)
+/// case. Lowercasing userinfo would silently merge distinct credentials
+/// (`Alice:Pwd@host` vs `alice:pwd@host`) — RFC 3986 leaves the case
+/// of userinfo octets producer-defined.
+fn canonicalize_authority(scheme: &str, authority: &str) -> String {
+    let (userinfo, host_port) = authority
+        .rsplit_once('@')
+        .map_or(("", authority), |(u, h)| (u, h));
+    let host_port_lower = host_port.to_ascii_lowercase();
+    let canonical_host = strip_default_port(scheme, &host_port_lower);
+    if userinfo.is_empty() {
+        canonical_host
+    } else {
+        format!("{userinfo}@{canonical_host}")
+    }
 }
 
 /// `true` when a parameter name is on the curated tracker block-list.
@@ -322,6 +340,42 @@ mod tests {
         assert_eq!(
             normalize_url("https://example.com/page?utm_source=abc"),
             "https://example.com/page"
+        );
+    }
+
+    #[test]
+    fn normalize_url_does_not_panic_on_non_ascii_prefix() {
+        // A URL pasted with a stray emoji or non-ASCII prefix would
+        // panic at byte-slicing in the old `detect_scheme`. Verify the
+        // safe-accessor port returns the input untouched (no recognised
+        // scheme) instead of crashing.
+        assert_eq!(
+            normalize_url("\u{1F60A}https://example.com/file.zip"),
+            "\u{1F60A}https://example.com/file.zip"
+        );
+        assert_eq!(
+            normalize_url("©http://example.com/x"),
+            "©http://example.com/x"
+        );
+    }
+
+    #[test]
+    fn normalize_url_preserves_userinfo_case() {
+        // Userinfo is producer-defined per RFC 3986; lowercasing it
+        // would falsely merge distinct credentials.
+        assert_eq!(
+            normalize_url("https://Alice:S3cret@example.com/file.zip"),
+            "https://Alice:S3cret@example.com/file.zip"
+        );
+        // Host is still lowercased.
+        assert_eq!(
+            normalize_url("https://Alice@Example.COM/x"),
+            "https://Alice@example.com/x"
+        );
+        // Default port is still stripped from the host portion only.
+        assert_eq!(
+            normalize_url("https://Alice:Pwd@example.com:443/x"),
+            "https://Alice:Pwd@example.com/x"
         );
     }
 }
