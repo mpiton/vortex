@@ -4,6 +4,7 @@
 //! Handler implementations live in submodules and add methods to `QueryBus`.
 
 mod count_by_state;
+mod detect_duplicates;
 mod find_package_by_external_id;
 mod get_account;
 mod get_account_traffic;
@@ -173,3 +174,5 @@ pub struct FindPackageByExternalIdQuery {
     pub external_id: String,
 }
 impl Query for FindPackageByExternalIdQuery {}
+
+pub use detect_duplicates::{DetectDuplicatesQuery, DuplicateSource};

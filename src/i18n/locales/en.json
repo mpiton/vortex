@@ -266,7 +266,13 @@
     "actions": {
       "selectAll": "Select All ({{count}})",
       "startSelected": "Start Selected ({{count}})",
-      "startAllOnline": "Start All Online"
+      "startAllOnline": "Start All Online",
+      "skipDuplicates": "Skip duplicates"
+    },
+    "duplicate": {
+      "active": "Already in active",
+      "history": "Already in history",
+      "tooltipWithFilename": "{{label}}: {{filename}}"
     },
     "grouping": {
       "label": "Group Into Packages:",

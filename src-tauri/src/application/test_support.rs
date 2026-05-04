@@ -479,6 +479,45 @@ impl DownloadReadRepository for StubDownloadReadRepo {
     }
 }
 
+/// In-memory `DownloadReadRepository` whose `find_downloads` returns
+/// the seeded view list verbatim. Filters / sort / pagination are
+/// ignored — sufficient for query tests that just want to assert which
+/// rows the handler sees.
+pub(crate) struct InMemoryDownloadReadRepo {
+    views: Mutex<Vec<DownloadView>>,
+}
+
+impl InMemoryDownloadReadRepo {
+    pub(crate) fn with_views(views: Vec<DownloadView>) -> Self {
+        Self {
+            views: Mutex::new(views),
+        }
+    }
+}
+
+impl DownloadReadRepository for InMemoryDownloadReadRepo {
+    fn find_downloads(
+        &self,
+        _: Option<DownloadFilter>,
+        _: Option<SortOrder>,
+        _: Option<usize>,
+        _: Option<usize>,
+    ) -> Result<Vec<DownloadView>, DomainError> {
+        Ok(self.views.lock().unwrap().clone())
+    }
+
+    fn find_download_detail(
+        &self,
+        _: DownloadId,
+    ) -> Result<Option<DownloadDetailView>, DomainError> {
+        Ok(None)
+    }
+
+    fn count_by_state(&self) -> Result<StateCountMap, DomainError> {
+        Ok(HashMap::new())
+    }
+}
+
 struct StubStatsRepo;
 impl StatsRepository for StubStatsRepo {
     fn record_completed(&self, _: u64, _: u64) -> Result<(), DomainError> {
@@ -544,6 +583,22 @@ impl ArchiveExtractor for StubQueryArchiveExtractor {
 pub(crate) fn make_history_query_bus(history: Arc<dyn HistoryRepository>) -> QueryBus {
     QueryBus::new(
         Arc::new(StubDownloadReadRepo),
+        history,
+        Arc::new(StubStatsRepo),
+        Arc::new(StubPluginReadRepo),
+        Arc::new(StubQueryArchiveExtractor),
+    )
+}
+
+/// Build a [`QueryBus`] wired with both a download-read repository and
+/// a history repository. Used by handlers that cross-reference the two
+/// (e.g. duplicate detection).
+pub(crate) fn make_history_and_downloads_query_bus(
+    downloads: Arc<dyn DownloadReadRepository>,
+    history: Arc<dyn HistoryRepository>,
+) -> QueryBus {
+    QueryBus::new(
+        downloads,
         history,
         Arc::new(StubStatsRepo),
         Arc::new(StubPluginReadRepo),

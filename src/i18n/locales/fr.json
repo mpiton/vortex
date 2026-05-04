@@ -266,7 +266,13 @@
     "actions": {
       "selectAll": "Tout sélectionner ({{count}})",
       "startSelected": "Démarrer la sélection ({{count}})",
-      "startAllOnline": "Tout démarrer en ligne"
+      "startAllOnline": "Tout démarrer en ligne",
+      "skipDuplicates": "Ignorer les doublons"
+    },
+    "duplicate": {
+      "active": "Déjà dans la file active",
+      "history": "Déjà dans l'historique",
+      "tooltipWithFilename": "{{label}} : {{filename}}"
     },
     "grouping": {
       "label": "Regrouper en paquets :",

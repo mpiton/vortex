@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useLocation, useNavigate } from "react-router";
 import { Switch } from "@/components/ui/switch";
@@ -14,7 +14,7 @@ import { PackageGrouping } from "./PackageGrouping";
 import { ActionsBar } from "./ActionsBar";
 import { ResolvedLinksSection } from "./ResolvedLinksSection";
 import { MediaGrabberDialog } from "./MediaGrabberDialog";
-import type { ResolvedLink, FilterType, GroupingMode } from "./types";
+import type { DuplicateCheck, ResolvedLink, FilterType, GroupingMode } from "./types";
 import type {
   MediaDownloadResult,
   MediaGrabberOptions,
@@ -34,6 +34,7 @@ export function LinkGrabberView() {
   const [groupingMode, setGroupingMode] = useState<GroupingMode>("hostname");
   const [selectedMediaLink, setSelectedMediaLink] = useState<ResolvedLink | null>(null);
   const [mediaGrabberOpen, setMediaGrabberOpen] = useState(false);
+  const [skipDuplicates, setSkipDuplicates] = useState(true);
 
   const initialClipboardEnabled = useSettingsStore((s) => s.config?.clipboardMonitoring ?? false);
   const { isEnabled: clipboardMonitoringEnabled, toggle: toggleClipboard } =
@@ -49,6 +50,83 @@ export function LinkGrabberView() {
   const { mutate: checkLinksOnline } = useTauriMutation<void, { urls: string[] }>(
     "link_check_online",
   );
+
+  // Single source of truth for which URL represents a row across both
+  // duplicate detection and `download_start`. A redirected link with a
+  // `resolvedUrl` of the post-redirect canonical form must dedupe on
+  // that same canonical — otherwise the row could pass dedupe (since
+  // `originalUrl` is unique) yet `startDownload` re-queues a URL that
+  // already exists in active/history.
+  const getDuplicateKey = (link: ResolvedLink) => link.resolvedUrl ?? link.originalUrl;
+
+  // Monotonic counter so a stale `link_detect_duplicates` response from
+  // an earlier resolve cannot clobber the duplicate state of a newer
+  // batch. Each resolve increments it; each per-call `onSuccess`
+  // captures the value at dispatch time and bails when superseded.
+  const detectBatchRef = useRef(0);
+  const { mutate: detectDuplicates } = useTauriMutation<DuplicateCheck[], { urls: string[] }>(
+    "link_detect_duplicates",
+  );
+
+  const dispatchDuplicateDetection = (links: ResolvedLink[]) => {
+    if (links.length === 0) return;
+    detectBatchRef.current += 1;
+    const batchId = detectBatchRef.current;
+    // Probe on the same identity as `startLink` (canonical URL after
+    // redirects). Collapse rows that share a canonical so the IPC sees
+    // each URL once, but key off each row's own value — avoiding an
+    // intermediate Map<originalUrl, …> that would silently drop a row
+    // when two rows happen to share an `originalUrl`.
+    const urls = [
+      ...new Set(links.map((link) => getDuplicateKey(link)).filter((u) => u.length > 0)),
+    ];
+    const inFlight = new Set(urls);
+    detectDuplicates(
+      { urls },
+      {
+        onSuccess: (checks) => {
+          if (batchId !== detectBatchRef.current) return;
+          if (checks.length === 0) return;
+          const byUrl = new Map<string, DuplicateCheck>();
+          for (const check of checks) {
+            byUrl.set(check.url, check);
+          }
+          setResolvedLinks((prev) => {
+            let changed = false;
+            const next = prev.map((link) => {
+              const probe = byUrl.get(getDuplicateKey(link));
+              if (!probe || link.duplicate === probe) return link;
+              changed = true;
+              return { ...link, duplicate: probe };
+            });
+            // Skip the state update when no link's duplicate field actually
+            // moved — keeps downstream memos and effects from re-running
+            // for an all-unique batch.
+            return changed ? next : prev;
+          });
+        },
+        onError: () => {
+          // IPC failed → resolve every row in this batch to the
+          // sentinel `null` so `isStartable` no longer treats them as
+          // "still loading" and silently rejects them. We can't tell
+          // whether they're duplicates, but blocking the entire bulk
+          // start when the user explicitly hit Start is worse than
+          // letting the download proceed without the dup check.
+          if (batchId !== detectBatchRef.current) return;
+          setResolvedLinks((prev) => {
+            let changed = false;
+            const next = prev.map((link) => {
+              if (!inFlight.has(getDuplicateKey(link))) return link;
+              if (link.duplicate !== undefined) return link;
+              changed = true;
+              return { ...link, duplicate: null };
+            });
+            return changed ? next : prev;
+          });
+        },
+      },
+    );
+  };
 
   const { mutate: resolveLinks, isPending: isResolving } = useTauriMutation<
     ResolvedLink[],
@@ -82,6 +160,10 @@ export function LinkGrabberView() {
           },
         );
       }
+      // Run duplicate detection over the full resolve batch (including
+      // ftp:// / magnet: rows — duplicate detection is purely lexical
+      // and does not require an HTTP probe).
+      dispatchDuplicateDetection(resolved);
       toast.success(t("linkGrabber.toast.resolveSuccess", { count: resolved.length }));
     },
   });
@@ -114,46 +196,60 @@ export function LinkGrabberView() {
     }
   };
 
-  const handleStartSelected = () => {
-    for (const id of selectedLinkIds) {
-      const link = resolvedLinks.find((l) => l.id === id);
-      if (!link) continue;
-      // Mirror `handleStartAllOnline`: only start rows whose effective
-      // status is `online` (preferring the live probe over the static
-      // resolve outcome), and fall back to `originalUrl` when the
-      // initial resolve produced no `resolvedUrl`. Without the status
-      // gate, selecting rows under `filter="all"` would trigger a burst
-      // of failed `download_start` calls for offline / premiumOnly /
-      // unknown rows.
-      const effectiveStatus = liveStatuses[link.originalUrl]?.kind ?? link.status;
-      if (effectiveStatus !== "online") continue;
-      const url = link.resolvedUrl ?? link.originalUrl;
-      if (url) {
-        startDownload({ url });
-      }
+  // The bulk-start helpers gate every row through this predicate. Without
+  // the `online` check, rows whose live probe is offline / premiumOnly /
+  // unknown would still trigger `download_start` and burn IPC calls. The
+  // duplicate gate is opt-out via the `Skip duplicates` checkbox so
+  // power users can force-redownload.
+  const isStartable = (link: ResolvedLink) => {
+    const effectiveStatus = liveStatuses[link.originalUrl]?.kind ?? link.status;
+    if (effectiveStatus !== "online") return false;
+    // While `Skip duplicates` is on, also block rows whose duplicate
+    // probe hasn't returned yet. The backend always emits a
+    // `DuplicateCheck` per input URL, so `link.duplicate === undefined`
+    // means the IPC roundtrip is still in flight — letting the row
+    // through here would defeat the safety toggle when the user hits
+    // Start the moment paste/resolve completes.
+    if (skipDuplicates) {
+      if (link.duplicate === undefined) return false;
+      if (link.duplicate?.isDuplicate) return false;
+    }
+    return true;
+  };
+
+  // Gate + collapse a bulk start by canonical URL. `dispatchDuplicateDetection`
+  // already collapses probes to unique canonical URLs; without the same
+  // dedupe here, two rows that resolve to the same `getDuplicateKey`
+  // (mirror sites, redirects to the same target) would both pass the
+  // duplicate gate when neither is in active/history yet, and we'd
+  // queue the same download twice from a single paste batch.
+  const startLinks = (links: ResolvedLink[]) => {
+    const started = new Set<string>();
+    for (const link of links) {
+      if (!isStartable(link)) continue;
+      const url = getDuplicateKey(link);
+      if (!url) continue;
+      if (skipDuplicates && started.has(url)) continue;
+      started.add(url);
+      startDownload({ url });
     }
   };
 
-  const handleStartAllOnline = () => {
-    for (const link of resolvedLinks) {
-      // Prefer the live probe status so a row that flipped to offline /
-      // unknown / premiumOnly mid-flight cannot still be started in
-      // bulk just because the static metadata says "online".
-      const effectiveStatus = liveStatuses[link.originalUrl]?.kind ?? link.status;
-      if (effectiveStatus !== "online") continue;
-      // Fallback to `originalUrl` when the initial resolve produced no
-      // `resolvedUrl` (offline / error at resolve time) but a later
-      // `link_check_online` event flipped the row to online. Without
-      // this, the row's "online" badge contradicts the bulk action,
-      // which silently skips it. If `originalUrl` is a page rather
-      // than a direct download URL, `download_start` surfaces the
-      // failure via the standard error toast.
-      const url = link.resolvedUrl ?? link.originalUrl;
-      if (url) {
-        startDownload({ url });
-      }
-    }
+  const handleStartSelected = () => {
+    const selected = selectedLinkIds
+      .map((id) => resolvedLinks.find((l) => l.id === id))
+      .filter((link): link is ResolvedLink => link !== undefined);
+    startLinks(selected);
   };
+
+  const handleStartAllOnline = () => {
+    startLinks(resolvedLinks);
+  };
+
+  const duplicateCount = useMemo(
+    () => resolvedLinks.reduce((n, link) => (link.duplicate?.isDuplicate ? n + 1 : n), 0),
+    [resolvedLinks],
+  );
 
   const handleMediaClick = (link: ResolvedLink) => {
     setSelectedMediaLink(link);
@@ -326,6 +422,9 @@ export function LinkGrabberView() {
           <ActionsBar
             selectedCount={selectedLinkIds.length}
             totalCount={resolvedLinks.length}
+            duplicateCount={duplicateCount}
+            skipDuplicates={skipDuplicates}
+            onSkipDuplicatesChange={setSkipDuplicates}
             onStartSelected={handleStartSelected}
             onStartAll={handleStartAllOnline}
             onClearAll={() => {

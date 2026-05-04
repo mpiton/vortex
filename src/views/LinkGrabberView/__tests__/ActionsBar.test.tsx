@@ -7,6 +7,9 @@ describe("ActionsBar", () => {
   const defaultProps = {
     selectedCount: 0,
     totalCount: 10,
+    duplicateCount: 0,
+    skipDuplicates: true,
+    onSkipDuplicatesChange: vi.fn(),
     onStartSelected: vi.fn(),
     onStartAll: vi.fn(),
     onClearAll: vi.fn(),
@@ -44,5 +47,29 @@ describe("ActionsBar", () => {
 
     await user.click(screen.getByRole("button", { name: "Clear" }));
     expect(onClearAll).toHaveBeenCalledOnce();
+  });
+
+  it("should render the skip-duplicates checkbox checked when enabled", () => {
+    render(<ActionsBar {...defaultProps} skipDuplicates={true} />);
+    expect(screen.getByRole("checkbox", { name: "Skip duplicates" })).toBeChecked();
+  });
+
+  it("should call onSkipDuplicatesChange when the checkbox is toggled", async () => {
+    const user = userEvent.setup();
+    const onSkipDuplicatesChange = vi.fn();
+    render(
+      <ActionsBar
+        {...defaultProps}
+        skipDuplicates={false}
+        onSkipDuplicatesChange={onSkipDuplicatesChange}
+      />,
+    );
+    await user.click(screen.getByRole("checkbox", { name: "Skip duplicates" }));
+    expect(onSkipDuplicatesChange).toHaveBeenCalledWith(true);
+  });
+
+  it("should display the duplicate count next to the skip-duplicates label when > 0", () => {
+    render(<ActionsBar {...defaultProps} duplicateCount={3} />);
+    expect(screen.getByText("(3)")).toBeInTheDocument();
   });
 });

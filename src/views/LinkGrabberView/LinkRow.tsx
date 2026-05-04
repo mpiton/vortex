@@ -1,10 +1,11 @@
-import { Loader2, Check, X, AlertCircle, HelpCircle, Lock, RotateCcw } from "lucide-react";
+import { Loader2, Check, X, AlertCircle, HelpCircle, Lock, RotateCcw, Copy } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { formatBytes } from "@/lib/format";
 import { useLinkGrabberStore } from "@/stores/linkGrabberStore";
-import type { LinkStatus, ResolvedLink } from "./types";
+import type { DuplicateSource, LinkStatus, ResolvedLink } from "./types";
 
 interface LinkRowProps {
   link: ResolvedLink;
@@ -38,10 +39,26 @@ const statusBadgeColor: Record<LinkStatus, string> = {
   error: "bg-yellow-500/15 text-yellow-700 dark:text-yellow-300",
 };
 
+const duplicateLabelKeyMap: Record<DuplicateSource, string> = {
+  active: "linkGrabber.duplicate.active",
+  history: "linkGrabber.duplicate.history",
+};
+
 export function LinkRow({ link, selected, onSelect, onMediaClick, onRetry }: LinkRowProps) {
+  const { t } = useTranslation();
   const liveStatus = useLinkGrabberStore((s) => s.statuses[link.originalUrl]);
   const effectiveStatus: LinkStatus = liveStatus?.kind ?? link.status;
   const showRetry = effectiveStatus === "unknown" && onRetry !== undefined;
+
+  const duplicate = link.duplicate?.isDuplicate ? link.duplicate : null;
+  const duplicateLabel = duplicate?.source ? t(duplicateLabelKeyMap[duplicate.source]) : null;
+  const duplicateTooltip =
+    duplicate?.existingFilename && duplicateLabel
+      ? t("linkGrabber.duplicate.tooltipWithFilename", {
+          label: duplicateLabel,
+          filename: duplicate.existingFilename,
+        })
+      : (duplicateLabel ?? "");
 
   return (
     <div
@@ -50,6 +67,7 @@ export function LinkRow({ link, selected, onSelect, onMediaClick, onRetry }: Lin
       }`}
       data-testid={`link-row-${link.originalUrl}`}
       data-status={effectiveStatus}
+      data-duplicate={duplicate?.source ?? "none"}
     >
       <Checkbox checked={selected} onCheckedChange={onSelect} aria-label="Select link" />
       <span
@@ -58,6 +76,23 @@ export function LinkRow({ link, selected, onSelect, onMediaClick, onRetry }: Lin
       >
         {statusIconMap[effectiveStatus]}
       </span>
+      {duplicate && (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span
+              tabIndex={0}
+              role="status"
+              aria-label={duplicateTooltip}
+              data-testid={`link-row-duplicate-${link.originalUrl}`}
+              className="flex h-5 shrink-0 items-center gap-1 rounded bg-orange-500/15 px-1.5 text-xs font-medium text-orange-700 dark:text-orange-300"
+            >
+              <Copy className="h-3 w-3" aria-hidden="true" />
+              {duplicateLabel}
+            </span>
+          </TooltipTrigger>
+          <TooltipContent>{duplicateTooltip}</TooltipContent>
+        </Tooltip>
+      )}
       <Tooltip>
         <TooltipTrigger asChild>
           <span tabIndex={0} className="min-w-0 flex-1 truncate text-sm font-semibold">

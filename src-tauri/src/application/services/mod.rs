@@ -4,11 +4,13 @@ pub mod checksum_validator;
 pub mod engine_config_bridge;
 pub(crate) mod group_lock;
 pub mod history_backfill;
+pub mod history_paginate;
 pub mod playlist_grouper;
 pub mod queue_config_bridge;
 pub mod queue_manager;
 pub mod split_archive_grouper;
 pub mod startup_recovery;
+pub mod url_normalizer;
 
 pub use account_rotator::AccountRotator;
 pub use account_selector::AccountSelector;

@@ -7,30 +7,15 @@ use serde::Serialize;
 use crate::application::command_bus::CommandBus;
 use crate::application::commands::{ExportHistoryCommand, ExportHistoryFormat};
 use crate::application::error::AppError;
+use crate::application::services::history_paginate::list_full_history;
 use crate::domain::model::views::HistoryEntry;
-use crate::domain::ports::driven::history_repository::MAX_HISTORY_PAGE_SIZE;
 
 impl CommandBus {
     pub async fn handle_export_history(
         &self,
         cmd: ExportHistoryCommand,
     ) -> Result<usize, AppError> {
-        // `list` is capped at MAX_HISTORY_PAGE_SIZE per the port contract, so
-        // we page through it to produce a full export instead of silently
-        // truncating the file at 500 rows.
-        let mut entries: Vec<HistoryEntry> = Vec::new();
-        let mut offset = 0usize;
-        loop {
-            let page =
-                self.history_repo()
-                    .list(None, None, Some(MAX_HISTORY_PAGE_SIZE), Some(offset))?;
-            let len = page.len();
-            entries.extend(page);
-            if len < MAX_HISTORY_PAGE_SIZE {
-                break;
-            }
-            offset += MAX_HISTORY_PAGE_SIZE;
-        }
+        let entries = list_full_history(self.history_repo())?;
 
         let bytes = match cmd.format {
             ExportHistoryFormat::Csv => encode_csv(&entries).into_bytes(),
