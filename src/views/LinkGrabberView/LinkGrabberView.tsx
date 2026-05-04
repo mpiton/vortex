@@ -72,13 +72,14 @@ export function LinkGrabberView() {
     if (links.length === 0) return;
     detectBatchRef.current += 1;
     const batchId = detectBatchRef.current;
-    // Key on the same identity as `startLink`: redirected rows must
-    // dedupe on the URL that will actually be sent to `download_start`.
-    const keyByOriginal = new Map<string, string>();
-    for (const link of links) {
-      keyByOriginal.set(link.originalUrl, getDuplicateKey(link));
-    }
-    const urls = [...new Set(keyByOriginal.values())];
+    // Probe on the same identity as `startLink` (canonical URL after
+    // redirects). Collapse rows that share a canonical so the IPC sees
+    // each URL once, but key off each row's own value — avoiding an
+    // intermediate Map<originalUrl, …> that would silently drop a row
+    // when two rows happen to share an `originalUrl`.
+    const urls = [
+      ...new Set(links.map((link) => getDuplicateKey(link)).filter((u) => u.length > 0)),
+    ];
     const inFlight = new Set(urls);
     detectDuplicates(
       { urls },
