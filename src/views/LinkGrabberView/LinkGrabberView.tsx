@@ -51,6 +51,14 @@ export function LinkGrabberView() {
     "link_check_online",
   );
 
+  // Single source of truth for which URL represents a row across both
+  // duplicate detection and `download_start`. A redirected link with a
+  // `resolvedUrl` of the post-redirect canonical form must dedupe on
+  // that same canonical — otherwise the row could pass dedupe (since
+  // `originalUrl` is unique) yet `startDownload` re-queues a URL that
+  // already exists in active/history.
+  const getDuplicateKey = (link: ResolvedLink) => link.resolvedUrl ?? link.originalUrl;
+
   // Monotonic counter so a stale `link_detect_duplicates` response from
   // an earlier resolve cannot clobber the duplicate state of a newer
   // batch. Each resolve increments it; each per-call `onSuccess`
@@ -60,10 +68,17 @@ export function LinkGrabberView() {
     "link_detect_duplicates",
   );
 
-  const dispatchDuplicateDetection = (urls: string[]) => {
-    if (urls.length === 0) return;
+  const dispatchDuplicateDetection = (links: ResolvedLink[]) => {
+    if (links.length === 0) return;
     detectBatchRef.current += 1;
     const batchId = detectBatchRef.current;
+    // Key on the same identity as `startLink`: redirected rows must
+    // dedupe on the URL that will actually be sent to `download_start`.
+    const keyByOriginal = new Map<string, string>();
+    for (const link of links) {
+      keyByOriginal.set(link.originalUrl, getDuplicateKey(link));
+    }
+    const urls = [...new Set(keyByOriginal.values())];
     const inFlight = new Set(urls);
     detectDuplicates(
       { urls },
@@ -78,7 +93,7 @@ export function LinkGrabberView() {
           setResolvedLinks((prev) => {
             let changed = false;
             const next = prev.map((link) => {
-              const probe = byUrl.get(link.originalUrl);
+              const probe = byUrl.get(getDuplicateKey(link));
               if (!probe || link.duplicate === probe) return link;
               changed = true;
               return { ...link, duplicate: probe };
@@ -100,7 +115,7 @@ export function LinkGrabberView() {
           setResolvedLinks((prev) => {
             let changed = false;
             const next = prev.map((link) => {
-              if (!inFlight.has(link.originalUrl)) return link;
+              if (!inFlight.has(getDuplicateKey(link))) return link;
               if (link.duplicate !== undefined) return link;
               changed = true;
               return { ...link, duplicate: null };
@@ -147,7 +162,7 @@ export function LinkGrabberView() {
       // Run duplicate detection over the full resolve batch (including
       // ftp:// / magnet: rows — duplicate detection is purely lexical
       // and does not require an HTTP probe).
-      dispatchDuplicateDetection(resolved.map((link) => link.originalUrl));
+      dispatchDuplicateDetection(resolved);
       toast.success(t("linkGrabber.toast.resolveSuccess", { count: resolved.length }));
     },
   });
@@ -205,7 +220,10 @@ export function LinkGrabberView() {
     // `originalUrl` fallback: a row that flipped to online via
     // `link_check_online` after resolve had no `resolvedUrl`; using the
     // original lets the bulk action honour its own "online" badge.
-    const url = link.resolvedUrl ?? link.originalUrl;
+    // Same identity as `getDuplicateKey` — the URL passed to
+    // `download_start` must match the one we asked the duplicate
+    // detector to evaluate.
+    const url = getDuplicateKey(link);
     if (url) startDownload({ url });
   };
 
