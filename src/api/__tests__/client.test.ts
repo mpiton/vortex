@@ -29,6 +29,37 @@ describe("tauriInvoke", () => {
     await tauriInvoke("list_downloads");
     expect(invoke).toHaveBeenCalledWith("list_downloads", undefined);
   });
+
+  it("should normalize circular-reference rejections without leaking JSON TypeError", async () => {
+    const circular: Record<string, unknown> = { code: "E_CIRC" };
+    circular.self = circular;
+    vi.mocked(invoke).mockRejectedValueOnce(circular);
+    await expect(tauriInvoke("any_command")).rejects.not.toThrow(/circular structure/i);
+    vi.mocked(invoke).mockRejectedValueOnce(circular);
+    await expect(tauriInvoke("any_command")).rejects.toBeInstanceOf(Error);
+  });
+
+  it("should stringify plain object rejections as JSON", async () => {
+    vi.mocked(invoke).mockRejectedValueOnce({ code: "E_BAD", reason: "nope" });
+    await expect(tauriInvoke("any_command")).rejects.toThrow(/E_BAD/);
+  });
+
+  it("should wrap string rejections without JSON-quoting", async () => {
+    vi.mocked(invoke).mockRejectedValueOnce("plain failure");
+    await expect(tauriInvoke("any_command")).rejects.toThrow("plain failure");
+  });
+
+  it("should not produce a blank error message when rejection is undefined", async () => {
+    vi.mocked(invoke).mockRejectedValueOnce(undefined);
+    await expect(tauriInvoke("any_command")).rejects.toThrow(/.+/);
+  });
+
+  it("should not produce a blank error message when rejection stringifies to undefined", async () => {
+    vi.mocked(invoke).mockRejectedValueOnce(() => "fn rejection");
+    await expect(tauriInvoke("any_command")).rejects.toThrow(/.+/);
+    vi.mocked(invoke).mockRejectedValueOnce(Symbol("E_SYM"));
+    await expect(tauriInvoke("any_command")).rejects.toThrow(/.+/);
+  });
 });
 
 describe("queryClient", () => {
