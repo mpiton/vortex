@@ -216,28 +216,33 @@ export function LinkGrabberView() {
     return true;
   };
 
-  const startLink = (link: ResolvedLink) => {
-    // `originalUrl` fallback: a row that flipped to online via
-    // `link_check_online` after resolve had no `resolvedUrl`; using the
-    // original lets the bulk action honour its own "online" badge.
-    // Same identity as `getDuplicateKey` — the URL passed to
-    // `download_start` must match the one we asked the duplicate
-    // detector to evaluate.
-    const url = getDuplicateKey(link);
-    if (url) startDownload({ url });
+  // Gate + collapse a bulk start by canonical URL. `dispatchDuplicateDetection`
+  // already collapses probes to unique canonical URLs; without the same
+  // dedupe here, two rows that resolve to the same `getDuplicateKey`
+  // (mirror sites, redirects to the same target) would both pass the
+  // duplicate gate when neither is in active/history yet, and we'd
+  // queue the same download twice from a single paste batch.
+  const startLinks = (links: ResolvedLink[]) => {
+    const started = new Set<string>();
+    for (const link of links) {
+      if (!isStartable(link)) continue;
+      const url = getDuplicateKey(link);
+      if (!url) continue;
+      if (skipDuplicates && started.has(url)) continue;
+      started.add(url);
+      startDownload({ url });
+    }
   };
 
   const handleStartSelected = () => {
-    for (const id of selectedLinkIds) {
-      const link = resolvedLinks.find((l) => l.id === id);
-      if (link && isStartable(link)) startLink(link);
-    }
+    const selected = selectedLinkIds
+      .map((id) => resolvedLinks.find((l) => l.id === id))
+      .filter((link): link is ResolvedLink => link !== undefined);
+    startLinks(selected);
   };
 
   const handleStartAllOnline = () => {
-    for (const link of resolvedLinks) {
-      if (isStartable(link)) startLink(link);
-    }
+    startLinks(resolvedLinks);
   };
 
   const duplicateCount = useMemo(
