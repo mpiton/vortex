@@ -3,7 +3,12 @@ import { QueryClient } from "@tanstack/react-query";
 
 function toError(err: unknown): Error {
   if (err instanceof Error) return err;
-  return new Error(typeof err === "string" ? err : JSON.stringify(err));
+  if (typeof err === "string") return new Error(err);
+  try {
+    return new Error(JSON.stringify(err));
+  } catch {
+    return new Error(String(err));
+  }
 }
 
 export async function tauriInvoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
