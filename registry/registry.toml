@@ -59,3 +59,15 @@ checksum_sha256      = "e0af384e218947dc8574feb32483ad4eabff4f81682dd7d215c9d480
 checksum_sha256_toml = "d3116c6df5804d708ee16e0d7c0513e22bda0375af29f70d4f5368c561bff393"
 official             = true
 min_vortex_version   = "0.1.0"
+
+[[plugin]]
+name                 = "vortex-mod-mediafire"
+description          = "MediaFire free hoster — direct download URL resolution from public file pages"
+author               = "vortex-community"
+version              = "1.0.0"
+category             = "hoster"
+repository           = "https://github.com/mpiton/vortex-mod-mediafire"
+checksum_sha256      = "5775871ba142ac7ae665e6fb46c71754d4318709f0d95b5af7af9f7bef8ef942"
+checksum_sha256_toml = "88f1e8444027b28e3e05e96123295697e8abe204e86f605a2036694a85cd42c0"
+official             = true
+min_vortex_version   = "0.1.0"
