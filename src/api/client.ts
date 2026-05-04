@@ -5,7 +5,8 @@ function toError(err: unknown): Error {
   if (err instanceof Error) return err;
   if (typeof err === "string") return new Error(err);
   try {
-    return new Error(JSON.stringify(err));
+    const message = JSON.stringify(err);
+    return new Error(message ?? String(err));
   } catch {
     return new Error(String(err));
   }

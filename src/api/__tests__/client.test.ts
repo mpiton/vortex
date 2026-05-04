@@ -48,6 +48,18 @@ describe("tauriInvoke", () => {
     vi.mocked(invoke).mockRejectedValueOnce("plain failure");
     await expect(tauriInvoke("any_command")).rejects.toThrow("plain failure");
   });
+
+  it("should not produce a blank error message when rejection is undefined", async () => {
+    vi.mocked(invoke).mockRejectedValueOnce(undefined);
+    await expect(tauriInvoke("any_command")).rejects.toThrow(/.+/);
+  });
+
+  it("should not produce a blank error message when rejection stringifies to undefined", async () => {
+    vi.mocked(invoke).mockRejectedValueOnce(() => "fn rejection");
+    await expect(tauriInvoke("any_command")).rejects.toThrow(/.+/);
+    vi.mocked(invoke).mockRejectedValueOnce(Symbol("E_SYM"));
+    await expect(tauriInvoke("any_command")).rejects.toThrow(/.+/);
+  });
 });
 
 describe("queryClient", () => {
