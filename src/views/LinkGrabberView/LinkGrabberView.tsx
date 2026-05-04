@@ -64,6 +64,7 @@ export function LinkGrabberView() {
     if (urls.length === 0) return;
     detectBatchRef.current += 1;
     const batchId = detectBatchRef.current;
+    const inFlight = new Set(urls);
     detectDuplicates(
       { urls },
       {
@@ -85,6 +86,25 @@ export function LinkGrabberView() {
             // Skip the state update when no link's duplicate field actually
             // moved — keeps downstream memos and effects from re-running
             // for an all-unique batch.
+            return changed ? next : prev;
+          });
+        },
+        onError: () => {
+          // IPC failed → resolve every row in this batch to the
+          // sentinel `null` so `isStartable` no longer treats them as
+          // "still loading" and silently rejects them. We can't tell
+          // whether they're duplicates, but blocking the entire bulk
+          // start when the user explicitly hit Start is worse than
+          // letting the download proceed without the dup check.
+          if (batchId !== detectBatchRef.current) return;
+          setResolvedLinks((prev) => {
+            let changed = false;
+            const next = prev.map((link) => {
+              if (!inFlight.has(link.originalUrl)) return link;
+              if (link.duplicate !== undefined) return link;
+              changed = true;
+              return { ...link, duplicate: null };
+            });
             return changed ? next : prev;
           });
         },
