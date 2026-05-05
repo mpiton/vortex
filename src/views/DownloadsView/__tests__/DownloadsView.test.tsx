@@ -137,6 +137,8 @@ describe("DownloadsView", () => {
             userAgent: null,
             logs: [],
             segments: [],
+            mirrors: [],
+            currentMirrorIndex: 0,
           };
         default:
           return undefined;
@@ -344,6 +346,8 @@ describe("DownloadsView", () => {
             userAgent: null,
             logs: [],
             segments: [],
+            mirrors: [],
+            currentMirrorIndex: 0,
           };
         case "download_remove":
           if (payload.id === 2) {
@@ -412,6 +416,8 @@ describe("DownloadsView", () => {
             userAgent: null,
             logs: [],
             segments: [],
+            mirrors: [],
+            currentMirrorIndex: 0,
           };
         case "download_remove":
           if (payload.id === 1) {
