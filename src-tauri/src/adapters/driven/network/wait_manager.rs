@@ -19,7 +19,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use tokio::task::JoinHandle;
 use tokio::time::Duration;
@@ -29,10 +29,6 @@ use crate::domain::event::DomainEvent;
 use crate::domain::model::download::DownloadId;
 use crate::domain::ports::driven::{Clock, DownloadRepository, EventBus};
 
-/// Manages active wait tickets across all hostnames.
-///
-/// One instance is shared across the whole app (held in `AppState`).
-/// All public methods are cheap to call and `Send + Sync`.
 pub struct WaitManager {
     download_repo: Arc<dyn DownloadRepository>,
     event_bus: Arc<dyn EventBus>,
@@ -41,7 +37,6 @@ pub struct WaitManager {
 }
 
 impl WaitManager {
-    /// Wire the manager with its three driven dependencies.
     pub fn new(
         download_repo: Arc<dyn DownloadRepository>,
         event_bus: Arc<dyn EventBus>,
@@ -55,17 +50,16 @@ impl WaitManager {
         })
     }
 
-    /// Park a download in the `Waiting` state for `total_seconds`.
-    ///
-    /// Loads the aggregate from the write repository, transitions it to
-    /// `Waiting`, persists, then publishes both
-    /// [`DomainEvent::DownloadWaiting`] (state transition signal, kept
-    /// for backward compatibility) and
-    /// [`DomainEvent::DownloadWaitingStarted`] (rich payload with the
-    /// absolute deadline + reason for the UI countdown).
-    ///
-    /// A background tokio task is spawned for the timer; on natural
-    /// expiry it calls into [`Self::expire_wait`].
+    /// Recovers from a poisoned mutex by extracting the inner state. The
+    /// only way the lock can be poisoned is a panic inside one of the
+    /// (very small) critical sections in this module — at which point
+    /// the map is structurally fine and there is no recovery left to
+    /// do, so dropping the poison flag and continuing is preferable to
+    /// crashing every subsequent `cancel_wait` / `skip_wait` call.
+    fn handles(&self) -> MutexGuard<'_, HashMap<DownloadId, JoinHandle<()>>> {
+        self.handles.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
     pub async fn schedule_wait(
         self: &Arc<Self>,
         id: DownloadId,
@@ -77,7 +71,7 @@ impl WaitManager {
             .find_by_id(id)?
             .ok_or_else(|| AppError::NotFound(format!("download #{}", id.0)))?;
 
-        download.wait().map_err(AppError::from)?;
+        download.wait()?;
         self.download_repo.save(&download)?;
 
         let until_unix_ms = self
@@ -93,27 +87,27 @@ impl WaitManager {
             reason,
         });
 
+        // Reserve the slot under the same lock that the spawned task will
+        // later use to remove itself. Without this, a `total_seconds == 0`
+        // wait (or a `tokio::time::advance` in tests) could let the timer
+        // fire and call `expire_wait` *before* the parent inserted the
+        // handle, leaving an orphan `JoinHandle` in the map.
+        let mut guard = self.handles();
         let me = Arc::clone(self);
         let handle = tokio::spawn(async move {
             tokio::time::sleep(Duration::from_secs(u64::from(total_seconds))).await;
-            // Best-effort: the resume can only fail if the aggregate
-            // was concurrently moved to a non-Waiting state (e.g. the
-            // user cancelled). In that case the cancel path already
-            // emitted DownloadWaitingEnded so we silently drop the
-            // expiry signal instead of re-transitioning.
-            let _ = me.expire_wait(id);
+            if let Err(e) = me.expire_wait(id) {
+                // The aggregate moved out of `Waiting` between the timer
+                // arming and now (cancel / fail flow ran first). Logged
+                // but not surfaced — the cancel path already published
+                // its own `DownloadWaitingEnded`.
+                tracing::debug!("wait expiry for download #{} dropped: {e}", id.0);
+            }
         });
-
-        self.handles
-            .lock()
-            .expect("wait handles poisoned")
-            .insert(id, handle);
+        guard.insert(id, handle);
         Ok(())
     }
 
-    /// User-initiated skip — premium hosters often expose a "skip the
-    /// queue" path that costs traffic but bypasses the cooldown. Aborts
-    /// the timer and immediately resumes the download.
     pub fn skip_wait(self: &Arc<Self>, id: DownloadId) -> Result<(), AppError> {
         if !self.abort_handle(id) {
             return Err(AppError::NotFound(format!(
@@ -124,10 +118,7 @@ impl WaitManager {
         self.resume_aggregate(id, /* expired_naturally = */ false)
     }
 
-    /// Aborts the wait timer without transitioning the aggregate.
-    /// Called by the cancel/fail flow after the state machine has
-    /// already moved the download out of `Waiting`. Safe to call when
-    /// no wait is active (no-op + emits `DownloadWaitingEnded`-free).
+    /// No-op when no wait is active.
     pub fn cancel_wait(&self, id: DownloadId) {
         if self.abort_handle(id) {
             self.event_bus.publish(DomainEvent::DownloadWaitingEnded {
@@ -137,15 +128,13 @@ impl WaitManager {
         }
     }
 
-    /// Number of currently parked downloads. Useful for tray badges and
-    /// tests asserting on cleanup.
+    #[cfg(test)]
     pub fn active_count(&self) -> usize {
-        self.handles.lock().expect("wait handles poisoned").len()
+        self.handles().len()
     }
 
     fn abort_handle(&self, id: DownloadId) -> bool {
-        let mut guard = self.handles.lock().expect("wait handles poisoned");
-        match guard.remove(&id) {
+        match self.handles().remove(&id) {
             Some(handle) => {
                 handle.abort();
                 true
@@ -155,12 +144,7 @@ impl WaitManager {
     }
 
     fn expire_wait(self: &Arc<Self>, id: DownloadId) -> Result<(), AppError> {
-        // Drop our own handle entry so `active_count` settles even if no
-        // one calls `cancel_wait` (timer fired naturally).
-        self.handles
-            .lock()
-            .expect("wait handles poisoned")
-            .remove(&id);
+        self.handles().remove(&id);
         self.resume_aggregate(id, /* expired_naturally = */ true)
     }
 
@@ -173,7 +157,7 @@ impl WaitManager {
             .download_repo
             .find_by_id(id)?
             .ok_or_else(|| AppError::NotFound(format!("download #{}", id.0)))?;
-        let resume_event = download.resume_from_wait().map_err(AppError::from)?;
+        let resume_event = download.resume_from_wait()?;
         self.download_repo.save(&download)?;
 
         self.event_bus.publish(DomainEvent::DownloadWaitingEnded {
@@ -291,20 +275,10 @@ mod tests {
         }
     }
 
-    /// Pumps the single-threaded paused runtime so any spawned task that
-    /// just woke from `tokio::time::sleep` (after a `time::advance`) gets
-    /// to run through to completion before assertions execute.
-    async fn drain_scheduler() {
-        for _ in 0..10 {
-            tokio::task::yield_now().await;
-        }
-    }
-
-    /// Lets every spawned wait-task park inside `tokio::time::sleep`
-    /// before the test calls `time::advance`. Without this the spawned
-    /// future has merely been queued by `tokio::spawn` and never reached
-    /// its first `.await`, so advancing the paused clock wakes nothing.
-    async fn settle_spawns() {
+    /// Pumps the single-threaded paused runtime — needed both before
+    /// `time::advance` (so spawned tasks reach their first `.sleep().await`)
+    /// and after (so the wake path runs through `expire_wait` to completion).
+    async fn pump_runtime() {
         for _ in 0..10 {
             tokio::task::yield_now().await;
         }
@@ -376,12 +350,12 @@ mod tests {
         mgr.schedule_wait(DownloadId(1), 30, "cooldown".into())
             .await
             .expect("schedule_wait");
-        settle_spawns().await;
+        pump_runtime().await;
 
         // Advance past the deadline + drain the scheduler so the spawned
         // task wakes from `sleep` and runs through `expire_wait`.
         tokio::time::advance(Duration::from_secs(31)).await;
-        drain_scheduler().await;
+        pump_runtime().await;
 
         let events = bus.snapshot();
         let ended = events.iter().find_map(|e| match e {
@@ -416,7 +390,7 @@ mod tests {
         mgr.cancel_wait(DownloadId(1));
         // Even if we let time fly, the timer is already aborted.
         tokio::time::advance(Duration::from_secs(120)).await;
-        drain_scheduler().await;
+        pump_runtime().await;
 
         let events = bus.snapshot();
         let ended = events.iter().find_map(|e| match e {
@@ -493,11 +467,11 @@ mod tests {
         mgr.schedule_wait(DownloadId(3), 60, "c".into())
             .await
             .unwrap();
-        settle_spawns().await;
+        pump_runtime().await;
         assert_eq!(mgr.active_count(), 3);
 
         tokio::time::advance(Duration::from_secs(15)).await;
-        drain_scheduler().await;
+        pump_runtime().await;
         // #1 expired, #2 and #3 still parked.
         assert_eq!(
             repo.state_of(DownloadId(1)),
@@ -508,7 +482,7 @@ mod tests {
         assert_eq!(mgr.active_count(), 2);
 
         tokio::time::advance(Duration::from_secs(20)).await;
-        drain_scheduler().await;
+        pump_runtime().await;
         // #2 expired now.
         assert_eq!(
             repo.state_of(DownloadId(2)),
@@ -518,7 +492,7 @@ mod tests {
         assert_eq!(mgr.active_count(), 1);
 
         tokio::time::advance(Duration::from_secs(60)).await;
-        drain_scheduler().await;
+        pump_runtime().await;
         assert_eq!(
             repo.state_of(DownloadId(3)),
             Some(DownloadState::Downloading)

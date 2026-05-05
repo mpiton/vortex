@@ -10,11 +10,8 @@ export interface CountdownState {
 }
 
 /**
- * Live countdown to a Unix-millisecond deadline. Re-renders the host
- * component once per second so the displayed `MM:SS` label stays
- * truthful without each row scheduling its own `setInterval`. Pass
- * `null` when there is no active wait — the hook becomes a no-op and
- * the timer is not scheduled.
+ * Live countdown to a Unix-millisecond deadline. Pass `null` when there
+ * is no active wait — the hook becomes a no-op and no timer is scheduled.
  */
 export function useCountdown(untilUnixMs: number | null): CountdownState {
   const [now, setNow] = useState<number>(() => Date.now());
@@ -25,7 +22,13 @@ export function useCountdown(untilUnixMs: number | null): CountdownState {
     }
     setNow(Date.now());
     const interval = setInterval(() => {
-      setNow(Date.now());
+      const current = Date.now();
+      setNow(current);
+      // Stop the timer once the deadline is reached: further ticks would
+      // only trigger no-op re-renders.
+      if (current >= untilUnixMs) {
+        clearInterval(interval);
+      }
     }, 1_000);
     return () => clearInterval(interval);
   }, [untilUnixMs]);

@@ -28,16 +28,17 @@ export function useDownloadEvents(): void {
   useTauriEvent<DownloadIdPayload>("download-checking", invalidateDownloads);
   useTauriEvent<DownloadIdPayload>("download-removed", invalidateDownloads);
   useTauriEvent<DownloadIdPayload>("download-extracting", invalidateDownloads);
+  // The accompanying `download-waiting` / `download-resumed-from-wait`
+  // events already trigger query invalidation; these two only sync the
+  // per-row wait ticket into the store for the countdown UI.
   useTauriEvent<DownloadWaitingStartedPayload>("download-waiting-started", (payload) => {
     useDownloadStore.getState().setWait(String(payload.id), {
       untilUnixMs: payload.untilUnixMs,
       totalSeconds: payload.totalSeconds,
       reason: payload.reason,
     });
-    invalidateDownloads();
   });
   useTauriEvent<DownloadWaitingEndedPayload>("download-waiting-ended", (payload) => {
     useDownloadStore.getState().clearWait(String(payload.id));
-    invalidateDownloads();
   });
 }

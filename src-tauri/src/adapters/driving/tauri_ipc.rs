@@ -474,6 +474,9 @@ pub async fn download_remove(
     id: u64,
     delete_files: bool,
 ) -> Result<(), String> {
+    // Abort any pending wait timer so a long hoster cooldown doesn't keep
+    // the spawned task alive after the download is gone.
+    state.wait_manager.cancel_wait(DownloadId(id));
     let cmd = RemoveDownloadCommand {
         id: DownloadId(id),
         delete_files,
