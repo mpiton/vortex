@@ -95,3 +95,15 @@ checksum_sha256      = "97661c3fe8f686771a0675421e51b477ff7c559091906e22b8c7ab99
 checksum_sha256_toml = "389889b55b8d1abc3fbace42a77a48815813d86de066ca404533647fb3b5dd9d"
 official             = true
 min_vortex_version   = "0.1.0"
+
+[[plugin]]
+name                 = "vortex-mod-mega"
+description          = "MEGA hoster — file + folder URL resolution with AES-128-CTR streaming decryption + chunk-MAC verification (E2E client-side)"
+author               = "vortex-community"
+version              = "1.0.0"
+category             = "hoster"
+repository           = "https://github.com/mpiton/vortex-mod-mega"
+checksum_sha256      = "ee4fd7716f56802e43cef2804ddf6a49346177b716afffc974867a3316290f07"
+checksum_sha256_toml = "c9420281eb587afc938142c5f70104b0febb176fe68cd2ec441c275c0b4ef805"
+official             = true
+min_vortex_version   = "0.1.0"
