@@ -4,6 +4,11 @@ use crate::domain::model::checksum::ChecksumAlgorithm;
 use crate::domain::model::mirror::{Mirror, sort_by_priority as sort_mirrors_by_priority};
 use crate::domain::model::queue::Priority;
 
+/// Upper bound on mirrors per download. Real-world Metalinks rarely
+/// exceed a dozen; the cap defends against a hostile or malformed
+/// `.metalink` that ships thousands of entries.
+pub const MAX_MIRRORS_PER_DOWNLOAD: usize = 64;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct DownloadId(pub u64);
 
@@ -168,15 +173,9 @@ pub struct Download {
     module_name: Option<String>,
     account_id: Option<u64>,
     destination_path: String,
-    /// Alternative source URLs (Metalink mirrors). Sorted by priority
-    /// descending; the engine starts with `mirrors[current_mirror_index]`
-    /// and falls back to the next entry on persistent fetch failure.
     /// Empty when the download has a single source — in that case
-    /// [`Download::active_url`] returns the canonical `url` field.
+    /// [`Download::active_url`] returns the canonical `url` field instead.
     mirrors: Vec<Mirror>,
-    /// Index into `mirrors` of the candidate currently in flight. Always
-    /// `0` when `mirrors` is empty. Bumped by [`Download::advance_mirror`]
-    /// on adapter-level failover.
     current_mirror_index: u32,
     created_at: u64,
     updated_at: u64,
@@ -349,9 +348,13 @@ impl Download {
         self
     }
 
-    /// In-place equivalent of [`Download::with_mirrors`].
+    /// In-place equivalent of [`Download::with_mirrors`]. Truncates to
+    /// [`MAX_MIRRORS_PER_DOWNLOAD`] after sorting so a malformed Metalink
+    /// with thousands of entries cannot bloat `mirrors_json` or hang the
+    /// failover loop on a noisy long tail.
     pub fn set_mirrors(&mut self, mut mirrors: Vec<Mirror>) {
         sort_mirrors_by_priority(&mut mirrors);
+        mirrors.truncate(MAX_MIRRORS_PER_DOWNLOAD);
         self.mirrors = mirrors;
         self.current_mirror_index = 0;
     }

@@ -1,6 +1,7 @@
 use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};
 
+use crate::adapters::driven::sqlite::util::safe_u32;
 use crate::domain::error::DomainError;
 use crate::domain::model::checksum::ChecksumAlgorithm;
 use crate::domain::model::download::{Download, DownloadId, DownloadState, FileSize, Url};
@@ -81,13 +82,15 @@ pub struct Model {
     pub account_id: Option<i64>,
     pub destination_path: String,
     pub error_message: Option<String>,
-    /// JSON-encoded list of [`Mirror`] entries. `None` when the download
-    /// has a single source — keeps storage compact for the common path.
+    /// `None` keeps storage compact for the common single-source path —
+    /// JSON serialisation is only paid when a Metalink is attached.
     pub mirrors_json: Option<String>,
-    /// Cursor into [`Self::mirrors_json`] of the candidate currently in
-    /// flight. Resets to `0` on manual retry. Persisted so a crash
-    /// resumes from the working mirror, not from the always-failing
-    /// highest-priority entry.
+    /// Cursor into the parsed mirror list. Persisted so a future call
+    /// site can mark a failing mirror at the domain level (via
+    /// [`Download::advance_mirror`]) and have the next `start()` resume
+    /// from that slot rather than the always-failing highest-priority
+    /// entry. The current engine still drives failover with its own
+    /// in-task cursor, so a crash mid-failover restarts from slot 0.
     pub current_mirror_index: i32,
     pub created_at: i64,
     pub updated_at: i64,
@@ -154,7 +157,7 @@ impl Model {
             self.account_id.map(|id| id as u64),
             self.destination_path,
             deserialize_mirrors(self.mirrors_json.as_deref())?,
-            u32::try_from(self.current_mirror_index).unwrap_or(0),
+            safe_u32(self.current_mirror_index as i64),
             self.created_at as u64,
             self.updated_at as u64,
         ))

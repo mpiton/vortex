@@ -94,7 +94,7 @@ function DownloadDetailContent({
           <SpeedSparkline downloadId={downloadId} />
           <Separator />
           <SourceInfoSection download={detail} />
-          {detail.mirrors && detail.mirrors.length > 0 ? (
+          {detail.mirrors.length > 0 ? (
             <>
               <Separator />
               <MirrorsSection download={detail} />

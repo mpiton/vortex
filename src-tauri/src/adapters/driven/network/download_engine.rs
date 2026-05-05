@@ -350,21 +350,21 @@ impl DownloadEngine for SegmentedDownloadEngine {
                 // `cancel_token`; the attempt token cascades from it via
                 // `child_token()` so a real cancel still aborts segments.
                 let attempt_token = cancel_token.child_token();
-                let outcome = run_mirror_attempt(
+                let outcome = run_mirror_attempt(MirrorAttemptParams {
                     url,
                     download_id,
                     segments_count,
-                    client.clone(),
-                    file_storage.clone(),
-                    event_bus.clone(),
-                    dest_path.clone(),
-                    pause_rx.clone(),
-                    cancel_token.clone(),
+                    client: client.clone(),
+                    file_storage: file_storage.clone(),
+                    event_bus: event_bus.clone(),
+                    dest_path: dest_path.clone(),
+                    pause_rx: pause_rx.clone(),
+                    user_cancel_token: cancel_token.clone(),
                     attempt_token,
                     min_segment_bytes,
-                    dynamic_split_enabled.clone(),
-                    dynamic_split_min_remaining_bytes.clone(),
-                )
+                    dynamic_split_enabled: dynamic_split_enabled.clone(),
+                    dynamic_split_min_remaining_bytes: dynamic_split_min_remaining_bytes.clone(),
+                })
                 .await;
 
                 match outcome {
@@ -463,8 +463,7 @@ impl DownloadEngine for SegmentedDownloadEngine {
 /// Run one mirror attempt: probe metadata, plan segments, dispatch
 /// workers, await completion. Returns the outcome so the caller can
 /// either fall back to the next mirror or finalise the download.
-#[allow(clippy::too_many_arguments)]
-async fn run_mirror_attempt(
+struct MirrorAttemptParams {
     url: String,
     download_id: DownloadId,
     segments_count: u32,
@@ -478,7 +477,24 @@ async fn run_mirror_attempt(
     min_segment_bytes: u64,
     dynamic_split_enabled: Arc<AtomicBool>,
     dynamic_split_min_remaining_bytes: Arc<AtomicU64>,
-) -> AttemptOutcome {
+}
+
+async fn run_mirror_attempt(params: MirrorAttemptParams) -> AttemptOutcome {
+    let MirrorAttemptParams {
+        url,
+        download_id,
+        segments_count,
+        client,
+        file_storage,
+        event_bus,
+        dest_path,
+        pause_rx,
+        user_cancel_token,
+        attempt_token,
+        min_segment_bytes,
+        dynamic_split_enabled,
+        dynamic_split_min_remaining_bytes,
+    } = params;
     let (total_size, supports_range) =
         match SegmentedDownloadEngine::probe_remote_metadata(&client, &url).await {
             Ok(metadata) => metadata,

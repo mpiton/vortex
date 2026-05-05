@@ -304,7 +304,7 @@ impl DownloadReadRepository for SqliteDownloadReadRepo {
                         country: m.country().map(|s| s.to_string()),
                     })
                     .collect(),
-                current_mirror_index: u32::try_from(model.current_mirror_index).unwrap_or(0),
+                current_mirror_index: safe_u32(model.current_mirror_index as i64),
                 created_at,
                 updated_at,
             };

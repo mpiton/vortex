@@ -1,19 +1,12 @@
 import type { DownloadDetailView } from "@/types/download";
+import { getHostname } from "@/lib/url";
 
 interface MirrorsSectionProps {
   download: DownloadDetailView;
 }
 
-function getHostname(url: string): string {
-  try {
-    return new URL(url).hostname;
-  } catch {
-    return url;
-  }
-}
-
 export function MirrorsSection({ download }: MirrorsSectionProps) {
-  if (!download.mirrors || download.mirrors.length === 0) {
+  if (download.mirrors.length === 0) {
     return null;
   }
 
