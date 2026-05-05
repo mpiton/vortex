@@ -34,6 +34,7 @@ pub use adapters::driven::logging::download_log_store::{
 };
 pub use adapters::driven::network::ReqwestHttpClient;
 pub use adapters::driven::network::SegmentedDownloadEngine;
+pub use adapters::driven::network::WaitManager;
 pub use adapters::driven::notification::spawn_notification_bridge;
 pub use adapters::driven::plugin::builtin::HttpModule;
 pub use adapters::driven::plugin::capabilities::SharedHostResources;
@@ -77,8 +78,8 @@ pub use adapters::driving::tauri_ipc::{
     download_media_start, download_move_to_bottom, download_move_to_top, download_open_file,
     download_open_folder, download_pause, download_pause_all, download_redownload, download_remove,
     download_reorder_queue, download_resume, download_resume_all, download_retry,
-    download_set_priority, download_start, download_verify_checksum, history_clear,
-    history_delete_entry, history_export, history_get_by_id, history_list,
+    download_set_priority, download_skip_wait, download_start, download_verify_checksum,
+    history_clear, history_delete_entry, history_export, history_get_by_id, history_list,
     history_purge_older_than, history_search, link_check_online, link_detect_duplicates,
     link_group_playlists, link_group_split_archives, link_resolve, package_add_download,
     package_create, package_delete, package_find_by_external_id, package_get, package_list,
@@ -362,6 +363,7 @@ pub fn run() {
             // take ownership of the write repo.
             let download_repo_for_backfill: Arc<dyn DownloadRepository> = download_repo.clone();
             let history_repo_for_backfill: Arc<dyn HistoryRepository> = history_repo.clone();
+            let download_repo_for_wait: Arc<dyn DownloadRepository> = download_repo.clone();
             let command_bus = Arc::new(
                 CommandBus::new(
                     download_repo,
@@ -406,11 +408,17 @@ pub fn run() {
 
             // ── Register AppState ───────────────────────────────────
             let app_plugin_loader: Arc<dyn PluginLoader> = plugin_loader_impl.clone();
+            let wait_manager = WaitManager::new(
+                download_repo_for_wait,
+                event_bus.clone(),
+                Arc::new(SystemClock) as Arc<dyn Clock>,
+            );
             app.manage(AppState {
                 command_bus,
                 query_bus,
                 download_log_store: download_log_store.clone(),
                 plugin_loader: app_plugin_loader,
+                wait_manager,
             });
 
             // ── System tray ─────────────────────────────────────────
@@ -521,6 +529,7 @@ pub fn run() {
             download_pause,
             download_resume,
             download_cancel,
+            download_skip_wait,
             download_change_directory,
             download_change_directory_bulk,
             download_retry,

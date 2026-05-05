@@ -24,9 +24,12 @@ describe("useDownloadProgress", () => {
       updateProgress: mockUpdateProgress,
       progressMap: {},
       countByState: {},
+      waitMap: {},
       removeProgress: vi.fn(),
       updateCountByState: vi.fn(),
       clearAllProgress: vi.fn(),
+      setWait: vi.fn(),
+      clearWait: vi.fn(),
     });
   });
 

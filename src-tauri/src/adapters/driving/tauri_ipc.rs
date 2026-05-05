@@ -10,6 +10,7 @@ use tauri::State;
 use tracing;
 
 use crate::adapters::driven::logging::download_log_store::DownloadLogStore;
+use crate::adapters::driven::network::WaitManager;
 use crate::application::command_bus::CommandBus;
 use crate::application::commands::store_install::{StoreInstallCommand, StoreUpdateCommand};
 use crate::application::commands::{
@@ -84,6 +85,7 @@ pub struct AppState {
     pub query_bus: Arc<QueryBus>,
     pub download_log_store: Arc<DownloadLogStore>,
     pub plugin_loader: Arc<dyn PluginLoader>,
+    pub wait_manager: Arc<WaitManager>,
 }
 
 #[tauri::command]
@@ -128,11 +130,26 @@ pub async fn download_resume(state: State<'_, AppState>, id: u64) -> Result<(), 
 
 #[tauri::command]
 pub async fn download_cancel(state: State<'_, AppState>, id: u64) -> Result<(), String> {
+    // Abort any active wait timer first so we don't get a spurious resume
+    // event publish racing with the cancel emission.
+    state.wait_manager.cancel_wait(DownloadId(id));
     let cmd = CancelDownloadCommand { id: DownloadId(id) };
     state
         .command_bus
         .handle_cancel_download(cmd)
         .await
+        .map_err(|e| e.to_string())
+}
+
+/// User-initiated skip of a hoster wait countdown. Aborts the timer and
+/// resumes the download to `Downloading` immediately. Plugins / premium
+/// flows that legitimately bypass the cooldown are expected to call this
+/// path (or `WaitManager::skip_wait` directly from a command handler).
+#[tauri::command]
+pub async fn download_skip_wait(state: State<'_, AppState>, id: u64) -> Result<(), String> {
+    state
+        .wait_manager
+        .skip_wait(DownloadId(id))
         .map_err(|e| e.to_string())
 }
 

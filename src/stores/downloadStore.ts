@@ -9,14 +9,32 @@ interface DownloadProgress {
   lastSampleTime: number;
 }
 
+export interface WaitTicket {
+  /** Unix epoch milliseconds when the wait expires. */
+  untilUnixMs: number;
+  /** Original wait length, in seconds, as supplied by the hoster plugin. */
+  totalSeconds: number;
+  /** Human-readable reason rendered next to the countdown. */
+  reason: string;
+}
+
 interface DownloadStoreState {
   progressMap: Record<string, DownloadProgress>;
   countByState: Record<string, number>;
+  /**
+   * Active wait tickets indexed by download id. A row is parked in the
+   * `Waiting` state for as long as its entry exists here. Entries are
+   * pruned by `clearWait` when the backend emits
+   * `download-waiting-ended`.
+   */
+  waitMap: Record<string, WaitTicket>;
 
   updateProgress: (id: string, downloadedBytes: number, totalBytes: number) => void;
   removeProgress: (id: string) => void;
   updateCountByState: (counts: Record<string, number>) => void;
   clearAllProgress: () => void;
+  setWait: (id: string, ticket: WaitTicket) => void;
+  clearWait: (id: string) => void;
 }
 
 export const selectTotalSpeed = (state: DownloadStoreState): number =>
@@ -28,6 +46,7 @@ export const selectActiveCount = (state: DownloadStoreState): number =>
 export const useDownloadStore = create<DownloadStoreState>((set) => ({
   progressMap: {},
   countByState: {},
+  waitMap: {},
 
   updateProgress: (id, downloadedBytes, totalBytes) =>
     set((s) => {
@@ -67,4 +86,13 @@ export const useDownloadStore = create<DownloadStoreState>((set) => ({
   updateCountByState: (counts) => set({ countByState: counts }),
 
   clearAllProgress: () => set({ progressMap: {} }),
+
+  setWait: (id, ticket) => set((s) => ({ waitMap: { ...s.waitMap, [id]: ticket } })),
+
+  clearWait: (id) =>
+    set((s) => {
+      if (!(id in s.waitMap)) return s;
+      const { [id]: _removed, ...rest } = s.waitMap;
+      return { waitMap: rest };
+    }),
 }));

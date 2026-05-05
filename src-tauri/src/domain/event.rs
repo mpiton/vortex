@@ -133,6 +133,27 @@ pub enum DomainEvent {
     DownloadWaiting {
         id: DownloadId,
     },
+    /// Emitted by the wait manager when a hoster requests a delay before
+    /// the download can resume. Carries the absolute deadline (Unix epoch
+    /// milliseconds) so the frontend can render a live countdown without
+    /// trusting client clock drift, plus the original `total_seconds` and
+    /// human-readable `reason` (e.g. `"hoster cooldown"`, `"captcha
+    /// solved, awaiting download slot"`).
+    DownloadWaitingStarted {
+        id: DownloadId,
+        until_unix_ms: u64,
+        total_seconds: u32,
+        reason: String,
+    },
+    /// Emitted by the wait manager when a wait ticket is consumed —
+    /// either because the timer expired naturally (`expired_naturally =
+    /// true`) or because the user skipped / cancelled the download
+    /// (`expired_naturally = false`). Subscribers cleaning up timers can
+    /// listen on this event regardless of the cause.
+    DownloadWaitingEnded {
+        id: DownloadId,
+        expired_naturally: bool,
+    },
     DownloadChecking {
         id: DownloadId,
     },
@@ -470,6 +491,39 @@ mod tests {
 
         let cloned = event.clone();
         assert_eq!(event, cloned);
+    }
+
+    #[test]
+    fn test_download_waiting_started_carries_deadline_and_reason() {
+        let event = DomainEvent::DownloadWaitingStarted {
+            id: DownloadId(11),
+            until_unix_ms: 1_700_000_000_000,
+            total_seconds: 60,
+            reason: "hoster cooldown".to_string(),
+        };
+        let s = format!("{event:?}");
+        assert!(s.contains("DownloadWaitingStarted"));
+        assert!(s.contains("11"));
+        assert!(s.contains("1700000000000"));
+        assert!(s.contains("hoster cooldown"));
+        let cloned = event.clone();
+        assert_eq!(event, cloned);
+    }
+
+    #[test]
+    fn test_download_waiting_ended_distinguishes_expiry_from_cancel() {
+        let expired = DomainEvent::DownloadWaitingEnded {
+            id: DownloadId(12),
+            expired_naturally: true,
+        };
+        let cancelled = DomainEvent::DownloadWaitingEnded {
+            id: DownloadId(12),
+            expired_naturally: false,
+        };
+        assert_ne!(expired, cancelled);
+        let s = format!("{expired:?}");
+        assert!(s.contains("DownloadWaitingEnded"));
+        assert!(s.contains("expired_naturally"));
     }
 
     #[test]

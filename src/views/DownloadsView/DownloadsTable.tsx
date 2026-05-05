@@ -56,6 +56,7 @@ import { StateIndicator } from "./StateIndicator";
 import { ProgressCell } from "./ProgressCell";
 import { SpeedCell } from "./SpeedCell";
 import { EtaCell } from "./EtaCell";
+import { WaitCountdownCell } from "./WaitCountdownCell";
 
 type Translate = (key: string, options?: Record<string, unknown>) => string;
 
@@ -494,7 +495,12 @@ function getColumns(t: Translate): ColumnDef<DownloadView>[] {
     {
       id: "eta",
       header: t("downloads.table.columns.eta"),
-      cell: ({ row }) => <EtaCell downloadId={row.original.id} />,
+      cell: ({ row }) =>
+        row.original.state === "Waiting" ? (
+          <WaitCountdownCell downloadId={row.original.id} />
+        ) : (
+          <EtaCell downloadId={row.original.id} />
+        ),
       enableSorting: false,
     },
     {

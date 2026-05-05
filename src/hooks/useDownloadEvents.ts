@@ -1,10 +1,13 @@
 import { useTauriEvent } from "@/hooks/useTauriEvent";
 import { queryClient } from "@/api/client";
 import { downloadQueries } from "@/api/queries";
+import { useDownloadStore } from "@/stores/downloadStore";
 import type {
   DownloadIdPayload,
   DownloadFailedPayload,
   DownloadRetryingPayload,
+  DownloadWaitingStartedPayload,
+  DownloadWaitingEndedPayload,
 } from "@/types/events";
 
 export function useDownloadEvents(): void {
@@ -25,4 +28,16 @@ export function useDownloadEvents(): void {
   useTauriEvent<DownloadIdPayload>("download-checking", invalidateDownloads);
   useTauriEvent<DownloadIdPayload>("download-removed", invalidateDownloads);
   useTauriEvent<DownloadIdPayload>("download-extracting", invalidateDownloads);
+  useTauriEvent<DownloadWaitingStartedPayload>("download-waiting-started", (payload) => {
+    useDownloadStore.getState().setWait(String(payload.id), {
+      untilUnixMs: payload.untilUnixMs,
+      totalSeconds: payload.totalSeconds,
+      reason: payload.reason,
+    });
+    invalidateDownloads();
+  });
+  useTauriEvent<DownloadWaitingEndedPayload>("download-waiting-ended", (payload) => {
+    useDownloadStore.getState().clearWait(String(payload.id));
+    invalidateDownloads();
+  });
 }

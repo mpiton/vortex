@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { useDownloadStore, selectActiveCount, selectTotalSpeed } from "@/stores/downloadStore";
 
 beforeEach(() => {
-  useDownloadStore.setState({ progressMap: {}, countByState: {} });
+  useDownloadStore.setState({ progressMap: {}, countByState: {}, waitMap: {} });
 });
 
 describe("useDownloadStore — updateProgress", () => {
@@ -61,6 +61,67 @@ describe("useDownloadStore — clearAllProgress", () => {
     useDownloadStore.getState().updateProgress("1", 100, 200);
     useDownloadStore.getState().clearAllProgress();
     expect(useDownloadStore.getState().progressMap).toEqual({});
+  });
+});
+
+describe("useDownloadStore — wait map", () => {
+  it("should set a wait ticket on setWait", () => {
+    useDownloadStore.getState().setWait("42", {
+      untilUnixMs: 1_700_000_000_000,
+      totalSeconds: 60,
+      reason: "hoster cooldown",
+    });
+    expect(useDownloadStore.getState().waitMap["42"]).toEqual({
+      untilUnixMs: 1_700_000_000_000,
+      totalSeconds: 60,
+      reason: "hoster cooldown",
+    });
+  });
+
+  it("should overwrite the ticket when setWait is called twice", () => {
+    useDownloadStore.getState().setWait("42", {
+      untilUnixMs: 1,
+      totalSeconds: 10,
+      reason: "first",
+    });
+    useDownloadStore.getState().setWait("42", {
+      untilUnixMs: 2,
+      totalSeconds: 20,
+      reason: "second",
+    });
+    expect(useDownloadStore.getState().waitMap["42"].totalSeconds).toBe(20);
+  });
+
+  it("should remove the entry on clearWait", () => {
+    useDownloadStore.getState().setWait("42", {
+      untilUnixMs: 1,
+      totalSeconds: 10,
+      reason: "x",
+    });
+    useDownloadStore.getState().clearWait("42");
+    expect(useDownloadStore.getState().waitMap["42"]).toBeUndefined();
+  });
+
+  it("should be a no-op when clearWait is called for an unknown id", () => {
+    const before = useDownloadStore.getState().waitMap;
+    useDownloadStore.getState().clearWait("does-not-exist");
+    expect(useDownloadStore.getState().waitMap).toBe(before);
+  });
+
+  it("should track multiple concurrent waits independently", () => {
+    useDownloadStore.getState().setWait("1", {
+      untilUnixMs: 100,
+      totalSeconds: 30,
+      reason: "a",
+    });
+    useDownloadStore.getState().setWait("2", {
+      untilUnixMs: 200,
+      totalSeconds: 60,
+      reason: "b",
+    });
+    expect(Object.keys(useDownloadStore.getState().waitMap)).toHaveLength(2);
+    useDownloadStore.getState().clearWait("1");
+    expect(Object.keys(useDownloadStore.getState().waitMap)).toEqual(["2"]);
   });
 });
 
