@@ -387,6 +387,35 @@ impl DownloadEngine for SegmentedDownloadEngine {
                                 previous_error = %err,
                                 "switching to next mirror after failure"
                             );
+                            // Wipe the previous mirror's partial file + meta so
+                            // the next attempt starts clean. The pre-allocation
+                            // step uses `create_new(true)` and would otherwise
+                            // collide with the existing file when meta is
+                            // present, sinking the retry before it ever opens
+                            // a connection. Bytes from mirror N are not safe to
+                            // splice with mirror N+1 anyway (the servers may
+                            // serve subtly different payloads).
+                            let storage = file_storage.clone();
+                            let path = dest_path.clone();
+                            let _ = tokio::task::spawn_blocking(move || {
+                                if let Err(e) = storage.delete_meta(&path) {
+                                    tracing::debug!(
+                                        path = %path.display(),
+                                        error = %e,
+                                        "failed to delete stale meta before mirror retry"
+                                    );
+                                }
+                                if path.exists()
+                                    && let Err(e) = std::fs::remove_file(&path)
+                                {
+                                    tracing::warn!(
+                                        path = %path.display(),
+                                        error = %e,
+                                        "failed to remove stale file before mirror retry"
+                                    );
+                                }
+                            })
+                            .await;
                             event_bus.publish(DomainEvent::MirrorSwitched {
                                 id: download_id,
                                 new_mirror_index: mirror_idx as u32,

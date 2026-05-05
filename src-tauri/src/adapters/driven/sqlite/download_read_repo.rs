@@ -275,6 +275,24 @@ impl DownloadReadRepository for SqliteDownloadReadRepo {
                 if stored > 0 { stored } else { created_at }
             };
 
+            let mirrors: Vec<MirrorView> =
+                download::deserialize_mirrors(model.mirrors_json.as_deref())?
+                    .into_iter()
+                    .map(|m| MirrorView {
+                        url: m.url().as_str().to_string(),
+                        priority: m.priority(),
+                        country: m.country().map(|s| s.to_string()),
+                    })
+                    .collect();
+            // Clamp the persisted cursor against the live mirror list — a row
+            // with mirrors_json shrunk by a manual edit (or a future migration
+            // that drops entries) must not surface an out-of-range slot.
+            let clamped_mirror_index = if mirrors.is_empty() {
+                0
+            } else {
+                safe_u32(model.current_mirror_index as i64).min((mirrors.len() - 1) as u32)
+            };
+
             let detail = DownloadDetailView {
                 id: DownloadId(safe_u64(model.id)),
                 file_name: model.file_name.clone(),
@@ -296,15 +314,8 @@ impl DownloadReadRepository for SqliteDownloadReadRepo {
                 resume_supported: model.resume_supported != 0,
                 retry_count: safe_u32(model.retry_count as i64),
                 max_retries: safe_u32(model.max_retries as i64),
-                mirrors: download::deserialize_mirrors(model.mirrors_json.as_deref())?
-                    .into_iter()
-                    .map(|m| MirrorView {
-                        url: m.url().as_str().to_string(),
-                        priority: m.priority(),
-                        country: m.country().map(|s| s.to_string()),
-                    })
-                    .collect(),
-                current_mirror_index: safe_u32(model.current_mirror_index as i64),
+                mirrors,
+                current_mirror_index: clamped_mirror_index,
                 created_at,
                 updated_at,
             };

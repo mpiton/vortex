@@ -45,6 +45,10 @@ enum BridgeMessage {
         download_id: i64,
         segment_index: i32,
     },
+    MirrorSwitched {
+        download_id: i64,
+        new_mirror_index: i32,
+    },
 }
 
 /// Register the SQLite progress bridge on the given event bus.
@@ -93,6 +97,12 @@ pub fn spawn_sqlite_progress_bridge(event_bus: &dyn EventBus, db: DatabaseConnec
                     segment_index,
                 } => {
                     fail_segment(&db, download_id, segment_index).await;
+                }
+                BridgeMessage::MirrorSwitched {
+                    download_id,
+                    new_mirror_index,
+                } => {
+                    update_mirror_cursor(&db, download_id, new_mirror_index).await;
                 }
             }
         }
@@ -178,6 +188,15 @@ fn event_to_message(event: &DomainEvent) -> Option<BridgeMessage> {
         } => Some(BridgeMessage::SegmentFailed {
             download_id: download_id.0 as i64,
             segment_index: *segment_index as i32,
+        }),
+
+        DomainEvent::MirrorSwitched {
+            id,
+            new_mirror_index,
+            ..
+        } => Some(BridgeMessage::MirrorSwitched {
+            download_id: id.0 as i64,
+            new_mirror_index: *new_mirror_index as i32,
         }),
 
         _ => None,
@@ -291,6 +310,26 @@ async fn complete_segment(db: &DatabaseConnection, download_id: i64, segment_ind
             segment_index,
             error = %e,
             "progress_bridge: failed to mark segment completed"
+        );
+    }
+}
+
+/// Persist the active mirror cursor whenever the engine switches over to a
+/// different source. Without this update, `download_read_repo` keeps reporting
+/// slot 0 as active even after a runtime failover, so the details panel shows
+/// the wrong mirror as the live one.
+async fn update_mirror_cursor(db: &DatabaseConnection, download_id: i64, new_mirror_index: i32) {
+    let stmt = Statement::from_sql_and_values(
+        DatabaseBackend::Sqlite,
+        "UPDATE downloads SET current_mirror_index = ? WHERE id = ?",
+        [new_mirror_index.into(), download_id.into()],
+    );
+    if let Err(e) = db.execute(stmt).await {
+        tracing::warn!(
+            download_id,
+            new_mirror_index,
+            error = %e,
+            "progress_bridge: failed to persist mirror cursor"
         );
     }
 }
@@ -524,5 +563,44 @@ mod tests {
             Some(10_000_000),
             "existing non-zero total_bytes must not be overwritten"
         );
+    }
+
+    #[tokio::test]
+    async fn test_update_mirror_cursor_persists_new_index() {
+        let db = setup_test_db().await.unwrap();
+        insert_download_row(&db, 77, None, 0).await;
+
+        update_mirror_cursor(&db, 77, 2).await;
+
+        let row = download::Entity::find_by_id(77)
+            .one(&db)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            row.current_mirror_index, 2,
+            "cursor must be written through to the row so the read model surfaces the live mirror"
+        );
+    }
+
+    #[test]
+    fn test_event_to_message_maps_mirror_switched() {
+        use crate::domain::model::download::DownloadId;
+
+        let event = DomainEvent::MirrorSwitched {
+            id: DownloadId(7),
+            new_mirror_index: 3,
+            new_url: "https://m4.example.com/file".to_string(),
+        };
+        match event_to_message(&event) {
+            Some(BridgeMessage::MirrorSwitched {
+                download_id,
+                new_mirror_index,
+            }) => {
+                assert_eq!(download_id, 7);
+                assert_eq!(new_mirror_index, 3);
+            }
+            other => panic!("expected MirrorSwitched message, got {other:?}"),
+        }
     }
 }
