@@ -107,3 +107,15 @@ checksum_sha256      = "ee4fd7716f56802e43cef2804ddf6a49346177b716afffc974867a33
 checksum_sha256_toml = "c9420281eb587afc938142c5f70104b0febb176fe68cd2ec441c275c0b4ef805"
 official             = true
 min_vortex_version   = "0.1.0"
+
+[[plugin]]
+name                 = "vortex-mod-1fichier"
+description          = "1fichier hoster — free (60s wait + captcha stub) and premium (API key)"
+author               = "vortex-community"
+version              = "1.0.0"
+category             = "hoster"
+repository           = "https://github.com/mpiton/vortex-mod-1fichier"
+checksum_sha256      = "02035a49da81566cf7e4ff64cd0b5ed858e05dfdca643dbd14e53b359d93232c"
+checksum_sha256_toml = "c16cb7d418ee6d261114b0ed66701629f7aa7b92317dc97fb7593ede9487c091"
+official             = true
+min_vortex_version   = "0.1.0"
