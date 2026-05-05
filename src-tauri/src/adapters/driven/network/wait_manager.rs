@@ -19,6 +19,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use tokio::task::JoinHandle;
@@ -29,11 +30,22 @@ use crate::domain::event::DomainEvent;
 use crate::domain::model::download::DownloadId;
 use crate::domain::ports::driven::{Clock, DownloadRepository, EventBus};
 
+/// One scheduled wait: the timer plus a generation token. The token
+/// disambiguates a stale timer that has already woken from `sleep` from
+/// the live entry that replaced it — without it, the stale task would
+/// `remove(id)` (matching by `DownloadId` alone), evict the fresh
+/// handle and resume the aggregate against the old deadline.
+struct WaitEntry {
+    generation: u64,
+    handle: JoinHandle<()>,
+}
+
 pub struct WaitManager {
     download_repo: Arc<dyn DownloadRepository>,
     event_bus: Arc<dyn EventBus>,
     clock: Arc<dyn Clock>,
-    handles: Mutex<HashMap<DownloadId, JoinHandle<()>>>,
+    handles: Mutex<HashMap<DownloadId, WaitEntry>>,
+    next_generation: AtomicU64,
 }
 
 impl WaitManager {
@@ -47,6 +59,7 @@ impl WaitManager {
             event_bus,
             clock,
             handles: Mutex::new(HashMap::new()),
+            next_generation: AtomicU64::new(0),
         })
     }
 
@@ -56,7 +69,7 @@ impl WaitManager {
     /// the map is structurally fine and there is no recovery left to
     /// do, so dropping the poison flag and continuing is preferable to
     /// crashing every subsequent `cancel_wait` / `skip_wait` call.
-    fn handles(&self) -> MutexGuard<'_, HashMap<DownloadId, JoinHandle<()>>> {
+    fn handles(&self) -> MutexGuard<'_, HashMap<DownloadId, WaitEntry>> {
         self.handles.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
@@ -93,10 +106,11 @@ impl WaitManager {
         // fire and call `expire_wait` *before* the parent inserted the
         // handle, leaving an orphan `JoinHandle` in the map.
         let mut guard = self.handles();
+        let generation = self.next_generation.fetch_add(1, Ordering::SeqCst);
         let me = Arc::clone(self);
         let handle = tokio::spawn(async move {
             tokio::time::sleep(Duration::from_secs(u64::from(total_seconds))).await;
-            if let Err(e) = me.expire_wait(id) {
+            if let Err(e) = me.expire_wait(id, generation) {
                 // The aggregate moved out of `Waiting` between the timer
                 // arming and now (cancel / fail flow ran first). Logged
                 // but not surfaced — the cancel path already published
@@ -107,9 +121,13 @@ impl WaitManager {
         // Replacing an entry: abort the previous timer so the stale task
         // can't fire its `expire_wait` against the new deadline. Dropping
         // a `JoinHandle` only detaches it — `abort()` is required to
-        // actually stop the task.
-        if let Some(previous) = guard.insert(id, handle) {
-            previous.abort();
+        // actually stop the task. The generation token also makes the
+        // race-by-replace safe: if the stale task already passed its
+        // last `.await` before we abort, its `expire_wait` will see a
+        // mismatched generation and bail instead of removing the new
+        // handle.
+        if let Some(previous) = guard.insert(id, WaitEntry { generation, handle }) {
+            previous.handle.abort();
         }
         Ok(())
     }
@@ -141,23 +159,31 @@ impl WaitManager {
 
     fn abort_handle(&self, id: DownloadId) -> bool {
         match self.handles().remove(&id) {
-            Some(handle) => {
-                handle.abort();
+            Some(entry) => {
+                entry.handle.abort();
                 true
             }
             None => false,
         }
     }
 
-    fn expire_wait(self: &Arc<Self>, id: DownloadId) -> Result<(), AppError> {
+    fn expire_wait(self: &Arc<Self>, id: DownloadId, generation: u64) -> Result<(), AppError> {
         // `cancel_wait` / `skip_wait` race with the timer: they remove the
         // handle and call `abort()`, but `abort()` is cooperative — once
         // the sleep wakes and the task is past its last `.await`, it will
-        // run to completion. Detect that case via the empty `remove` and
-        // bail out so the cancelled wait isn't spuriously resumed.
-        if self.handles().remove(&id).is_none() {
-            return Ok(());
+        // run to completion. The same applies to `schedule_wait` replacing
+        // an entry: the stale task may already be past its `.await` and
+        // would otherwise evict the fresh handle. Match the generation
+        // token recorded at scheduling time and only remove if it's still
+        // ours; bail out otherwise.
+        let mut guard = self.handles();
+        match guard.get(&id) {
+            Some(entry) if entry.generation == generation => {
+                guard.remove(&id);
+            }
+            _ => return Ok(()),
         }
+        drop(guard);
         self.resume_aggregate(id, /* expired_naturally = */ true)
     }
 
@@ -535,6 +561,63 @@ mod tests {
         let (mgr, _repo, bus) = setup(0);
         mgr.cancel_wait(DownloadId(404));
         assert!(bus.snapshot().is_empty());
+    }
+
+    /// Regression: when the previous timer has already woken from `sleep`
+    /// (deadline elapsed) but is still queued, rescheduling must not let
+    /// it evict the fresh handle. Without the generation token,
+    /// `expire_wait` matches by `DownloadId` alone and removes the new
+    /// entry, resuming the aggregate against the stale deadline.
+    #[tokio::test(start_paused = true)]
+    async fn stale_timer_does_not_evict_replaced_handle() {
+        let (mgr, repo, bus) = setup(1_700_000_000_000);
+        repo.insert(make_downloading(1));
+
+        mgr.schedule_wait(DownloadId(1), 10, "first".into())
+            .await
+            .expect("schedule_wait");
+        pump_runtime().await;
+
+        // Push past the first deadline so the stale timer is woken and
+        // queued, but DON'T pump_runtime — we want to interleave the
+        // reschedule before `expire_wait` runs.
+        tokio::time::advance(Duration::from_secs(11)).await;
+
+        // Reset to Downloading so the second `schedule_wait`'s state
+        // transition is legal (the registry race is what we exercise).
+        repo.insert(make_downloading(1));
+        mgr.schedule_wait(DownloadId(1), 60, "second".into())
+            .await
+            .expect("schedule_wait");
+
+        // Now let the queued stale timer run. With the generation token
+        // it sees a mismatch and bails; without it, it would `remove(&id)`
+        // and resume the aggregate against the elapsed deadline.
+        pump_runtime().await;
+        assert_eq!(
+            repo.state_of(DownloadId(1)),
+            Some(DownloadState::Waiting),
+            "stale timer must not resume the aggregate after reschedule"
+        );
+        assert_eq!(mgr.active_count(), 1);
+        let ended_count = bus
+            .snapshot()
+            .iter()
+            .filter(|e| matches!(e, DomainEvent::DownloadWaitingEnded { .. }))
+            .count();
+        assert_eq!(
+            ended_count, 0,
+            "no Ended event should fire from the stale timer"
+        );
+
+        // The fresh timer still expires correctly at its own deadline.
+        tokio::time::advance(Duration::from_secs(60)).await;
+        pump_runtime().await;
+        assert_eq!(
+            repo.state_of(DownloadId(1)),
+            Some(DownloadState::Downloading)
+        );
+        assert_eq!(mgr.active_count(), 0);
     }
 
     /// Regression: rescheduling the same `DownloadId` must abort the
