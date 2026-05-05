@@ -49,6 +49,10 @@ enum BridgeMessage {
         download_id: i64,
         new_mirror_index: i32,
     },
+    /// Reset the cursor on terminal failure so the next manual / automatic
+    /// retry restarts from the highest-priority mirror instead of resuming on
+    /// the last-tried slot (which is where a full exhaustion run leaves it).
+    MirrorCursorReset { download_id: i64 },
 }
 
 /// Register the SQLite progress bridge on the given event bus.
@@ -103,6 +107,9 @@ pub fn spawn_sqlite_progress_bridge(event_bus: &dyn EventBus, db: DatabaseConnec
                     new_mirror_index,
                 } => {
                     update_mirror_cursor(&db, download_id, new_mirror_index).await;
+                }
+                BridgeMessage::MirrorCursorReset { download_id } => {
+                    update_mirror_cursor(&db, download_id, 0).await;
                 }
             }
         }
@@ -197,6 +204,15 @@ fn event_to_message(event: &DomainEvent) -> Option<BridgeMessage> {
         } => Some(BridgeMessage::MirrorSwitched {
             download_id: id.0 as i64,
             new_mirror_index: *new_mirror_index as i32,
+        }),
+
+        // After a terminal failure (mirror exhaustion or any other path that
+        // surfaces `DownloadFailed`) the persisted cursor is wherever the last
+        // attempt left it — usually the bottom-priority slot. Reset to 0 so
+        // the next retry walks the mirror list from the top instead of
+        // skipping the higher-priority entries that may have recovered.
+        DomainEvent::DownloadFailed { id, .. } => Some(BridgeMessage::MirrorCursorReset {
+            download_id: id.0 as i64,
         }),
 
         _ => None,
@@ -602,5 +618,42 @@ mod tests {
             }
             other => panic!("expected MirrorSwitched message, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_event_to_message_maps_download_failed_to_cursor_reset() {
+        use crate::domain::model::download::DownloadId;
+
+        let event = DomainEvent::DownloadFailed {
+            id: DownloadId(11),
+            error: "all mirrors exhausted".to_string(),
+        };
+        match event_to_message(&event) {
+            Some(BridgeMessage::MirrorCursorReset { download_id }) => {
+                assert_eq!(download_id, 11);
+            }
+            other => panic!("expected MirrorCursorReset message, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_download_failed_resets_persisted_mirror_cursor_to_zero() {
+        let db = setup_test_db().await.unwrap();
+        insert_download_row(&db, 88, None, 0).await;
+        update_mirror_cursor(&db, 88, 4).await;
+
+        // Reset path: every DownloadFailed event must zero the cursor so the
+        // next retry walks the mirror list from the top.
+        update_mirror_cursor(&db, 88, 0).await;
+
+        let row = download::Entity::find_by_id(88)
+            .one(&db)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            row.current_mirror_index, 0,
+            "DownloadFailed must reset the persisted mirror cursor so retries start fresh"
+        );
     }
 }
