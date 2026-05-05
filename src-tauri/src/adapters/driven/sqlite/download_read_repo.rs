@@ -5,8 +5,8 @@ use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, QueryOr
 use crate::domain::error::DomainError;
 use crate::domain::model::download::{DownloadId, DownloadState};
 use crate::domain::model::views::{
-    DownloadDetailView, DownloadFilter, DownloadView, SegmentView, SortDirection, SortField,
-    SortOrder, StateCountMap,
+    DownloadDetailView, DownloadFilter, DownloadView, MirrorView, SegmentView, SortDirection,
+    SortField, SortOrder, StateCountMap,
 };
 use crate::domain::ports::driven::download_read_repository::DownloadReadRepository;
 
@@ -296,6 +296,15 @@ impl DownloadReadRepository for SqliteDownloadReadRepo {
                 resume_supported: model.resume_supported != 0,
                 retry_count: safe_u32(model.retry_count as i64),
                 max_retries: safe_u32(model.max_retries as i64),
+                mirrors: download::deserialize_mirrors(model.mirrors_json.as_deref())?
+                    .into_iter()
+                    .map(|m| MirrorView {
+                        url: m.url().as_str().to_string(),
+                        priority: m.priority(),
+                        country: m.country().map(|s| s.to_string()),
+                    })
+                    .collect(),
+                current_mirror_index: u32::try_from(model.current_mirror_index).unwrap_or(0),
                 created_at,
                 updated_at,
             };
@@ -379,6 +388,8 @@ mod tests {
             account_id: Set(None),
             destination_path: Set("/tmp/downloads".to_string()),
             error_message: Set(None),
+            mirrors_json: Set(None),
+            current_mirror_index: Set(0),
             created_at: Set(1000 + id),
             updated_at: Set(2000 + id),
         };
@@ -482,6 +493,8 @@ mod tests {
             account_id: Set(None),
             destination_path: Set("/tmp/downloads/video.mp4".to_string()),
             error_message: Set(Some("tls handshake failed".to_string())),
+            mirrors_json: Set(None),
+            current_mirror_index: Set(0),
             created_at: Set(1003),
             updated_at: Set(2003),
         };
@@ -577,6 +590,8 @@ mod tests {
             account_id: Set(None),
             destination_path: Set("/tmp/downloads/file1.zip".to_string()),
             error_message: Set(None),
+            mirrors_json: Set(None),
+            current_mirror_index: Set(0),
             created_at: Set(0),
             updated_at: Set(0),
         };
@@ -618,6 +633,8 @@ mod tests {
             account_id: Set(None),
             destination_path: Set("/tmp/downloads/file1.zip".to_string()),
             error_message: Set(None),
+            mirrors_json: Set(None),
+            current_mirror_index: Set(0),
             created_at: Set(0),
             updated_at: Set(1_700_000_000_123_i64),
         };
@@ -660,6 +677,8 @@ mod tests {
             account_id: Set(None),
             destination_path: Set("/tmp/downloads/file1.zip".to_string()),
             error_message: Set(None),
+            mirrors_json: Set(None),
+            current_mirror_index: Set(0),
             created_at: Set(0),
             updated_at: Set(0),
         };
@@ -701,6 +720,8 @@ mod tests {
             account_id: Set(None),
             destination_path: Set("/tmp/a.zip".to_string()),
             error_message: Set(None),
+            mirrors_json: Set(None),
+            current_mirror_index: Set(0),
             created_at: Set(1000),
             updated_at: Set(2000),
         };
@@ -727,6 +748,8 @@ mod tests {
             account_id: Set(None),
             destination_path: Set("/tmp/b.zip".to_string()),
             error_message: Set(None),
+            mirrors_json: Set(None),
+            current_mirror_index: Set(0),
             created_at: Set(1001),
             updated_at: Set(2001),
         };
@@ -774,6 +797,8 @@ mod tests {
             account_id: Set(None),
             destination_path: Set("/tmp/downloads/legacy.zip".to_string()),
             error_message: Set(None),
+            mirrors_json: Set(None),
+            current_mirror_index: Set(0),
             created_at: Set(0),
             updated_at: Set(0),
         };

@@ -171,6 +171,17 @@ pub enum DomainEvent {
         downloaded_bytes: u64,
         total_bytes: u64,
     },
+    /// Emitted by the download engine when a Metalink mirror fails and
+    /// the engine falls back to the next entry in the priority-sorted
+    /// list. Carries the new mirror URL (resolved at switch time, not
+    /// the canonical download URL) and the index inside
+    /// [`Download::mirrors`] so the detail panel can highlight the
+    /// active source.
+    MirrorSwitched {
+        id: DownloadId,
+        new_mirror_index: u32,
+        new_url: String,
+    },
     /// File checksum was computed and matched the expected value.
     ChecksumVerified {
         id: DownloadId,
@@ -534,6 +545,20 @@ mod tests {
         let s = format!("{event:?}");
         assert!(s.contains("ClipboardUrlDetected"));
         assert!(s.contains("example.com"));
+    }
+
+    #[test]
+    fn test_mirror_switched_event_carries_index_and_url() {
+        let event = DomainEvent::MirrorSwitched {
+            id: DownloadId(7),
+            new_mirror_index: 1,
+            new_url: "https://mirror2.example.com/file.zip".to_string(),
+        };
+        let s = format!("{event:?}");
+        assert!(s.contains("MirrorSwitched"));
+        assert!(s.contains("mirror2.example.com"));
+        let cloned = event.clone();
+        assert_eq!(event, cloned);
     }
 
     #[test]

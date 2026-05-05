@@ -620,6 +620,8 @@ mod tests {
             None,
             None,
             "/old/folder/file.bin".to_string(),
+            Vec::new(),
+            0,
             0,
             0,
         );
@@ -742,6 +744,8 @@ mod tests {
             None,
             None,
             "/dl/x.zip".to_string(),
+            Vec::new(),
+            0,
             0,
             0,
         );
@@ -796,6 +800,8 @@ mod tests {
             None,
             None,
             "/dl/check.bin".to_string(),
+            Vec::new(),
+            0,
             0,
             0,
         );
@@ -979,6 +985,8 @@ mod tests {
             None,
             None,
             "/old/b.bin".to_string(),
+            Vec::new(),
+            0,
             0,
             0,
         );

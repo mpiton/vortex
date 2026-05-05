@@ -1,9 +1,59 @@
 use sea_orm::entity::prelude::*;
+use serde::{Deserialize, Serialize};
 
 use crate::domain::error::DomainError;
 use crate::domain::model::checksum::ChecksumAlgorithm;
 use crate::domain::model::download::{Download, DownloadId, DownloadState, FileSize, Url};
+use crate::domain::model::mirror::Mirror;
 use crate::domain::model::queue::Priority;
+
+/// Persistence DTO for [`Mirror`]. Lives in the adapter so the domain
+/// stays serde-free per the architecture rule.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct MirrorJsonDto {
+    url: String,
+    priority: u8,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    country: Option<String>,
+}
+
+impl MirrorJsonDto {
+    fn from_domain(m: &Mirror) -> Self {
+        Self {
+            url: m.url().as_str().to_string(),
+            priority: m.priority(),
+            country: m.country().map(|s| s.to_string()),
+        }
+    }
+
+    fn into_domain(self) -> Result<Mirror, DomainError> {
+        let url = Url::new(&self.url)?;
+        Mirror::new(url, self.priority, self.country)
+    }
+}
+
+fn serialize_mirrors(mirrors: &[Mirror]) -> Option<String> {
+    if mirrors.is_empty() {
+        return None;
+    }
+    let dtos: Vec<MirrorJsonDto> = mirrors.iter().map(MirrorJsonDto::from_domain).collect();
+    // The DTO shape is fully owned and validated, so a serialisation
+    // failure here would only be reached through an OOM — surfacing it
+    // as `None` keeps the column nullable instead of poisoning the row.
+    serde_json::to_string(&dtos).ok()
+}
+
+pub(crate) fn deserialize_mirrors(json: Option<&str>) -> Result<Vec<Mirror>, DomainError> {
+    let Some(raw) = json else {
+        return Ok(Vec::new());
+    };
+    if raw.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    let dtos: Vec<MirrorJsonDto> = serde_json::from_str(raw)
+        .map_err(|e| DomainError::StorageError(format!("invalid mirrors_json: {e}")))?;
+    dtos.into_iter().map(|d| d.into_domain()).collect()
+}
 
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel)]
 #[sea_orm(table_name = "downloads")]
@@ -31,6 +81,14 @@ pub struct Model {
     pub account_id: Option<i64>,
     pub destination_path: String,
     pub error_message: Option<String>,
+    /// JSON-encoded list of [`Mirror`] entries. `None` when the download
+    /// has a single source — keeps storage compact for the common path.
+    pub mirrors_json: Option<String>,
+    /// Cursor into [`Self::mirrors_json`] of the candidate currently in
+    /// flight. Resets to `0` on manual retry. Persisted so a crash
+    /// resumes from the working mirror, not from the always-failing
+    /// highest-priority entry.
+    pub current_mirror_index: i32,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -95,6 +153,8 @@ impl Model {
             self.module_name,
             self.account_id.map(|id| id as u64),
             self.destination_path,
+            deserialize_mirrors(self.mirrors_json.as_deref())?,
+            u32::try_from(self.current_mirror_index).unwrap_or(0),
             self.created_at as u64,
             self.updated_at as u64,
         ))
@@ -128,6 +188,8 @@ impl ActiveModel {
             account_id: Set(download.account_id().map(|id| id as i64)),
             destination_path: Set(download.destination_path().to_string()),
             error_message: Set(None),
+            mirrors_json: Set(serialize_mirrors(download.mirrors())),
+            current_mirror_index: Set(download.current_mirror_index() as i32),
             created_at: Set(download.created_at() as i64),
             updated_at: Set(download.updated_at() as i64),
         }

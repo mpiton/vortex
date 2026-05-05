@@ -412,6 +412,8 @@ mod tests {
             account_id: Set(None),
             destination_path: Set("/tmp/file.bin".to_string()),
             error_message: Set(None),
+            mirrors_json: Set(None),
+            current_mirror_index: Set(0),
             created_at: Set(1),
             updated_at: Set(1),
         }

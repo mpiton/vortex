@@ -40,6 +40,15 @@ pub struct DownloadView {
     pub created_at: u64,
 }
 
+/// One alternative source for a download as it appears in the detail
+/// panel (Metalink mirror).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MirrorView {
+    pub url: String,
+    pub priority: u8,
+    pub country: Option<String>,
+}
+
 /// Detailed view of a single download, including segment breakdown.
 ///
 /// Used by the detail panel / side panel UI. Includes all fields from
@@ -66,6 +75,13 @@ pub struct DownloadDetailView {
     pub resume_supported: bool,
     pub retry_count: u32,
     pub max_retries: u32,
+    /// Sorted list of alternative source URLs. Empty when the download
+    /// has a single canonical URL.
+    pub mirrors: Vec<MirrorView>,
+    /// Index into `mirrors` of the source currently in use. `0` when
+    /// `mirrors` is empty. The detail panel highlights this slot so the
+    /// user can see which mirror the engine ended up on.
+    pub current_mirror_index: u32,
     pub created_at: u64,
     pub updated_at: u64,
 }

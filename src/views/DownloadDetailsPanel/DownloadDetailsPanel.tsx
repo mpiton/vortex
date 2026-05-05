@@ -8,6 +8,7 @@ import { MetricsSection } from "./MetricsSection";
 import { SegmentVisualization } from "./SegmentVisualization";
 import { SpeedSparkline } from "./SpeedSparkline";
 import { SourceInfoSection } from "./SourceInfoSection";
+import { MirrorsSection } from "./MirrorsSection";
 import { IntegritySection } from "./IntegritySection";
 import { ModuleSection } from "./ModuleSection";
 import { LogsSection } from "./LogsSection";
@@ -93,6 +94,12 @@ function DownloadDetailContent({
           <SpeedSparkline downloadId={downloadId} />
           <Separator />
           <SourceInfoSection download={detail} />
+          {detail.mirrors && detail.mirrors.length > 0 ? (
+            <>
+              <Separator />
+              <MirrorsSection download={detail} />
+            </>
+          ) : null}
           <Separator />
           <IntegritySection download={detail} />
           <Separator />

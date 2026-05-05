@@ -2,7 +2,25 @@
 
 use serde::Serialize;
 
-use crate::domain::model::views::{DownloadDetailView, SegmentView};
+use crate::domain::model::views::{DownloadDetailView, MirrorView, SegmentView};
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MirrorViewDto {
+    pub url: String,
+    pub priority: u8,
+    pub country: Option<String>,
+}
+
+impl From<MirrorView> for MirrorViewDto {
+    fn from(m: MirrorView) -> Self {
+        Self {
+            url: m.url,
+            priority: m.priority,
+            country: m.country,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -49,6 +67,8 @@ pub struct DownloadDetailViewDto {
     pub resume_supported: bool,
     pub retry_count: u32,
     pub max_retries: u32,
+    pub mirrors: Vec<MirrorViewDto>,
+    pub current_mirror_index: u32,
     pub created_at: u64,
     pub updated_at: u64,
 }
@@ -76,6 +96,8 @@ impl From<DownloadDetailView> for DownloadDetailViewDto {
             resume_supported: v.resume_supported,
             retry_count: v.retry_count,
             max_retries: v.max_retries,
+            mirrors: v.mirrors.into_iter().map(MirrorViewDto::from).collect(),
+            current_mirror_index: v.current_mirror_index,
             created_at: v.created_at,
             updated_at: v.updated_at,
         }
@@ -126,6 +148,8 @@ mod tests {
             resume_supported: true,
             retry_count: 1,
             max_retries: 5,
+            mirrors: Vec::new(),
+            current_mirror_index: 0,
             created_at: 1700000000,
             updated_at: 1700000100,
         };
@@ -133,6 +157,59 @@ mod tests {
         assert_eq!(dto.id, "7");
         assert_eq!(dto.state, "Paused");
         assert!(dto.segments.is_empty());
+    }
+
+    #[test]
+    fn test_download_detail_view_dto_includes_mirrors_camel_case() {
+        let view = DownloadDetailView {
+            id: DownloadId(8),
+            file_name: "f.zip".to_string(),
+            url: "https://primary.example.com/f.zip".to_string(),
+            source_hostname: "primary.example.com".to_string(),
+            state: DownloadState::Downloading,
+            progress_percent: 0.0,
+            speed_bytes_per_sec: 0,
+            downloaded_bytes: 0,
+            total_bytes: None,
+            eta_seconds: None,
+            segments: vec![],
+            checksum_expected: None,
+            checksum_computed: None,
+            checksum_algorithm: None,
+            destination_path: "/tmp/f.zip".to_string(),
+            module_name: None,
+            account_name: None,
+            resume_supported: true,
+            retry_count: 0,
+            max_retries: 5,
+            mirrors: vec![
+                MirrorView {
+                    url: "https://m1.example.com/f.zip".to_string(),
+                    priority: 80,
+                    country: Some("US".to_string()),
+                },
+                MirrorView {
+                    url: "https://m2.example.com/f.zip".to_string(),
+                    priority: 40,
+                    country: None,
+                },
+            ],
+            current_mirror_index: 1,
+            created_at: 0,
+            updated_at: 0,
+        };
+        let dto = DownloadDetailViewDto::from(view);
+        let value = serde_json::to_value(&dto).unwrap();
+        assert!(value.get("mirrors").is_some(), "mirrors field present");
+        assert!(
+            value.get("currentMirrorIndex").is_some(),
+            "currentMirrorIndex camel-cased"
+        );
+        let mirrors = value.get("mirrors").unwrap().as_array().unwrap();
+        assert_eq!(mirrors.len(), 2);
+        assert_eq!(mirrors[0]["priority"].as_u64(), Some(80));
+        assert_eq!(mirrors[0]["country"].as_str(), Some("US"));
+        assert_eq!(value["currentMirrorIndex"].as_u64(), Some(1));
     }
 
     #[test]
@@ -158,6 +235,8 @@ mod tests {
             resume_supported: false,
             retry_count: 0,
             max_retries: 5,
+            mirrors: Vec::new(),
+            current_mirror_index: 0,
             created_at: 0,
             updated_at: 0,
         };

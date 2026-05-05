@@ -77,6 +77,7 @@ fn event_name(event: &DomainEvent) -> &'static str {
         DomainEvent::AccountSelected { .. } => "account-selected",
         DomainEvent::AccountExhausted { .. } => "account-exhausted",
         DomainEvent::LinkStatusUpdated { .. } => "link-status-updated",
+        DomainEvent::MirrorSwitched { .. } => "mirror-switched",
     }
 }
 
@@ -269,6 +270,17 @@ fn event_payload(event: &DomainEvent) -> serde_json::Value {
             json!({
                 "id": id.0,
                 "expiredNaturally": expired_naturally,
+            })
+        }
+        DomainEvent::MirrorSwitched {
+            id,
+            new_mirror_index,
+            new_url,
+        } => {
+            json!({
+                "id": id.0,
+                "newMirrorIndex": new_mirror_index,
+                "newUrl": new_url,
             })
         }
     }
