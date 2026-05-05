@@ -42,6 +42,8 @@ fn event_name(event: &DomainEvent) -> &'static str {
         DomainEvent::DownloadFailed { .. } => "download-failed",
         DomainEvent::DownloadRetrying { .. } => "download-retrying",
         DomainEvent::DownloadWaiting { .. } => "download-waiting",
+        DomainEvent::DownloadWaitingStarted { .. } => "download-waiting-started",
+        DomainEvent::DownloadWaitingEnded { .. } => "download-waiting-ended",
         DomainEvent::DownloadChecking { .. } => "download-checking",
         DomainEvent::DownloadCancelled { .. } => "download-cancelled",
         DomainEvent::DownloadRemoved { .. } => "download-removed",
@@ -245,6 +247,28 @@ fn event_payload(event: &DomainEvent) -> serde_json::Value {
                 "packageId": package_id.to_string(),
                 "baseName": base_name,
                 "missingParts": missing_parts,
+            })
+        }
+        DomainEvent::DownloadWaitingStarted {
+            id,
+            until_unix_ms,
+            total_seconds,
+            reason,
+        } => {
+            json!({
+                "id": id.0,
+                "untilUnixMs": until_unix_ms,
+                "totalSeconds": total_seconds,
+                "reason": reason,
+            })
+        }
+        DomainEvent::DownloadWaitingEnded {
+            id,
+            expired_naturally,
+        } => {
+            json!({
+                "id": id.0,
+                "expiredNaturally": expired_naturally,
             })
         }
     }

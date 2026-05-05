@@ -43,6 +43,25 @@ fn record_download_event(store: &DownloadLogStore, event: &DomainEvent) {
         DomainEvent::DownloadWaiting { id } => {
             store.push(id.0, "[INFO] Download waiting".to_string());
         }
+        DomainEvent::DownloadWaitingStarted {
+            id,
+            total_seconds,
+            reason,
+            ..
+        } => {
+            store.push(id.0, format!("[INFO] Waiting {total_seconds}s ({reason})"));
+        }
+        DomainEvent::DownloadWaitingEnded {
+            id,
+            expired_naturally,
+        } => {
+            let suffix = if *expired_naturally {
+                "expired"
+            } else {
+                "ended early"
+            };
+            store.push(id.0, format!("[INFO] Wait {suffix}"));
+        }
         DomainEvent::DownloadChecking { id } => {
             store.push(id.0, "[INFO] Checking download".to_string());
         }

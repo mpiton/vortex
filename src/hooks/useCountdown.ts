@@ -1,0 +1,59 @@
+import { useEffect, useState } from "react";
+
+export interface CountdownState {
+  /** Whole seconds remaining until the deadline. Clamped to [0, ∞). */
+  remainingSeconds: number;
+  /** `MM:SS` (or `HH:MM:SS` past one hour) label, ready to render. */
+  label: string;
+  /** `true` once `remainingSeconds` hits zero. */
+  expired: boolean;
+}
+
+/**
+ * Live countdown to a Unix-millisecond deadline. Pass `null` when there
+ * is no active wait — the hook becomes a no-op and no timer is scheduled.
+ */
+export function useCountdown(untilUnixMs: number | null): CountdownState {
+  const [now, setNow] = useState<number>(() => Date.now());
+
+  useEffect(() => {
+    if (untilUnixMs === null) {
+      return;
+    }
+    const initial = Date.now();
+    setNow(initial);
+    // Skip the timer entirely when the deadline is already in the past:
+    // the first interval tick would otherwise fire a no-op render before
+    // cleanup.
+    if (initial >= untilUnixMs) {
+      return;
+    }
+    const interval = setInterval(() => {
+      const current = Date.now();
+      setNow(current);
+      if (current >= untilUnixMs) {
+        clearInterval(interval);
+      }
+    }, 1_000);
+    return () => clearInterval(interval);
+  }, [untilUnixMs]);
+
+  const remainingMs = untilUnixMs === null ? 0 : Math.max(0, untilUnixMs - now);
+  const remainingSeconds = Math.ceil(remainingMs / 1_000);
+  return {
+    remainingSeconds,
+    label: formatCountdown(remainingSeconds),
+    expired: remainingSeconds === 0,
+  };
+}
+
+function formatCountdown(totalSeconds: number): string {
+  const hours = Math.floor(totalSeconds / 3_600);
+  const minutes = Math.floor((totalSeconds % 3_600) / 60);
+  const seconds = totalSeconds % 60;
+  const pad = (n: number) => n.toString().padStart(2, "0");
+  if (hours > 0) {
+    return `${pad(hours)}:${pad(minutes)}:${pad(seconds)}`;
+  }
+  return `${pad(minutes)}:${pad(seconds)}`;
+}

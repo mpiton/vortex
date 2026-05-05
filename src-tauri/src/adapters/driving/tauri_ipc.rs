@@ -10,6 +10,7 @@ use tauri::State;
 use tracing;
 
 use crate::adapters::driven::logging::download_log_store::DownloadLogStore;
+use crate::adapters::driven::network::WaitManager;
 use crate::application::command_bus::CommandBus;
 use crate::application::commands::store_install::{StoreInstallCommand, StoreUpdateCommand};
 use crate::application::commands::{
@@ -84,6 +85,7 @@ pub struct AppState {
     pub query_bus: Arc<QueryBus>,
     pub download_log_store: Arc<DownloadLogStore>,
     pub plugin_loader: Arc<dyn PluginLoader>,
+    pub wait_manager: Arc<WaitManager>,
 }
 
 #[tauri::command]
@@ -128,11 +130,31 @@ pub async fn download_resume(state: State<'_, AppState>, id: u64) -> Result<(), 
 
 #[tauri::command]
 pub async fn download_cancel(state: State<'_, AppState>, id: u64) -> Result<(), String> {
+    // Run the cancel command first so a fallible failure leaves the
+    // wait timer intact — without this, a DB error would strand the
+    // download in `Waiting` with no way to resume itself. The
+    // expire-vs-abort race during command execution is handled in
+    // `WaitManager::expire_wait`, which short-circuits once a peer
+    // path has removed its handle.
     let cmd = CancelDownloadCommand { id: DownloadId(id) };
     state
         .command_bus
         .handle_cancel_download(cmd)
         .await
+        .map_err(|e| e.to_string())?;
+    state.wait_manager.cancel_wait(DownloadId(id));
+    Ok(())
+}
+
+/// User-initiated skip of a hoster wait countdown. Aborts the timer and
+/// resumes the download to `Downloading` immediately. Plugins / premium
+/// flows that legitimately bypass the cooldown are expected to call this
+/// path (or `WaitManager::skip_wait` directly from a command handler).
+#[tauri::command]
+pub async fn download_skip_wait(state: State<'_, AppState>, id: u64) -> Result<(), String> {
+    state
+        .wait_manager
+        .skip_wait(DownloadId(id))
         .map_err(|e| e.to_string())
 }
 
@@ -461,11 +483,16 @@ pub async fn download_remove(
         id: DownloadId(id),
         delete_files,
     };
+    // Run the fallible remove first — if it errors out we leave the wait
+    // timer intact so the download isn't stranded in `Waiting` with no
+    // expiry (same pattern as `download_cancel`).
     state
         .command_bus
         .handle_remove_download(cmd)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    state.wait_manager.cancel_wait(DownloadId(id));
+    Ok(())
 }
 
 #[tauri::command]

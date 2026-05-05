@@ -21,6 +21,18 @@ export interface DownloadProgressPayload {
   totalBytes: number;
 }
 
+export interface DownloadWaitingStartedPayload {
+  id: number;
+  untilUnixMs: number;
+  totalSeconds: number;
+  reason: string;
+}
+
+export interface DownloadWaitingEndedPayload {
+  id: number;
+  expiredNaturally: boolean;
+}
+
 export interface SegmentPayload {
   downloadId: number;
   segmentId: number;
@@ -64,6 +76,8 @@ export type TauriEventMap = {
   "download-failed": DownloadFailedPayload;
   "download-retrying": DownloadRetryingPayload;
   "download-waiting": DownloadIdPayload;
+  "download-waiting-started": DownloadWaitingStartedPayload;
+  "download-waiting-ended": DownloadWaitingEndedPayload;
   "download-checking": DownloadIdPayload;
   "download-cancelled": DownloadIdPayload;
   "download-removed": DownloadIdPayload;

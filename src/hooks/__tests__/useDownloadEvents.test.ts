@@ -97,8 +97,8 @@ describe("useDownloadEvents", () => {
     });
   });
 
-  it("should subscribe to exactly 13 lifecycle events", () => {
+  it("should subscribe to exactly 15 lifecycle events", () => {
     renderHook(() => useDownloadEvents());
-    expect(useTauriEvent).toHaveBeenCalledTimes(13);
+    expect(useTauriEvent).toHaveBeenCalledTimes(15);
   });
 });
