@@ -104,7 +104,13 @@ impl WaitManager {
                 tracing::debug!("wait expiry for download #{} dropped: {e}", id.0);
             }
         });
-        guard.insert(id, handle);
+        // Replacing an entry: abort the previous timer so the stale task
+        // can't fire its `expire_wait` against the new deadline. Dropping
+        // a `JoinHandle` only detaches it — `abort()` is required to
+        // actually stop the task.
+        if let Some(previous) = guard.insert(id, handle) {
+            previous.abort();
+        }
         Ok(())
     }
 
@@ -144,7 +150,14 @@ impl WaitManager {
     }
 
     fn expire_wait(self: &Arc<Self>, id: DownloadId) -> Result<(), AppError> {
-        self.handles().remove(&id);
+        // `cancel_wait` / `skip_wait` race with the timer: they remove the
+        // handle and call `abort()`, but `abort()` is cooperative — once
+        // the sleep wakes and the task is past its last `.await`, it will
+        // run to completion. Detect that case via the empty `remove` and
+        // bail out so the cancelled wait isn't spuriously resumed.
+        if self.handles().remove(&id).is_none() {
+            return Ok(());
+        }
         self.resume_aggregate(id, /* expired_naturally = */ true)
     }
 
@@ -522,5 +535,53 @@ mod tests {
         let (mgr, _repo, bus) = setup(0);
         mgr.cancel_wait(DownloadId(404));
         assert!(bus.snapshot().is_empty());
+    }
+
+    /// Regression: rescheduling the same `DownloadId` must abort the
+    /// previous timer instead of leaking it. Without `previous.abort()`
+    /// the older task would survive, fire at its stale deadline and
+    /// race with the newer one.
+    #[tokio::test(start_paused = true)]
+    async fn rescheduling_same_id_aborts_previous_timer() {
+        let (mgr, repo, bus) = setup(1_700_000_000_000);
+        repo.insert(make_downloading(1));
+
+        mgr.schedule_wait(DownloadId(1), 30, "first".into())
+            .await
+            .expect("schedule_wait");
+
+        // Reset to Downloading so the second `schedule_wait`'s state
+        // transition succeeds — the registry is what we're exercising.
+        repo.insert(make_downloading(1));
+
+        mgr.schedule_wait(DownloadId(1), 60, "second".into())
+            .await
+            .expect("schedule_wait");
+        pump_runtime().await;
+        assert_eq!(mgr.active_count(), 1);
+
+        // Past the first deadline but before the second.
+        tokio::time::advance(Duration::from_secs(35)).await;
+        pump_runtime().await;
+        assert_eq!(
+            repo.state_of(DownloadId(1)),
+            Some(DownloadState::Waiting),
+            "first timer must have been aborted"
+        );
+        let ended_count = bus
+            .snapshot()
+            .iter()
+            .filter(|e| matches!(e, DomainEvent::DownloadWaitingEnded { .. }))
+            .count();
+        assert_eq!(ended_count, 0);
+
+        // Past the second deadline.
+        tokio::time::advance(Duration::from_secs(30)).await;
+        pump_runtime().await;
+        assert_eq!(
+            repo.state_of(DownloadId(1)),
+            Some(DownloadState::Downloading)
+        );
+        assert_eq!(mgr.active_count(), 0);
     }
 }

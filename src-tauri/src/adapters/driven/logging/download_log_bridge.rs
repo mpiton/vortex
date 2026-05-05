@@ -58,7 +58,7 @@ fn record_download_event(store: &DownloadLogStore, event: &DomainEvent) {
             let suffix = if *expired_naturally {
                 "expired"
             } else {
-                "skipped"
+                "ended early"
             };
             store.push(id.0, format!("[INFO] Wait {suffix}"));
         }

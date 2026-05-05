@@ -69,4 +69,14 @@ describe("useCountdown", () => {
     rerender({ until: Date.now() + 30_000 });
     expect(result.current.remainingSeconds).toBe(30);
   });
+
+  it("should not schedule an interval when the deadline is already past", () => {
+    const setIntervalSpy = vi.spyOn(globalThis, "setInterval");
+    const until = Date.now() - 1_000;
+    const { result } = renderHook(() => useCountdown(until));
+    expect(result.current.remainingSeconds).toBe(0);
+    expect(result.current.expired).toBe(true);
+    expect(setIntervalSpy).not.toHaveBeenCalled();
+    setIntervalSpy.mockRestore();
+  });
 });

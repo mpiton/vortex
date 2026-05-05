@@ -130,15 +130,20 @@ pub async fn download_resume(state: State<'_, AppState>, id: u64) -> Result<(), 
 
 #[tauri::command]
 pub async fn download_cancel(state: State<'_, AppState>, id: u64) -> Result<(), String> {
-    // Abort any active wait timer first so we don't get a spurious resume
-    // event publish racing with the cancel emission.
-    state.wait_manager.cancel_wait(DownloadId(id));
+    // Run the cancel command first so a fallible failure leaves the
+    // wait timer intact — without this, a DB error would strand the
+    // download in `Waiting` with no way to resume itself. The
+    // expire-vs-abort race during command execution is handled in
+    // `WaitManager::expire_wait`, which short-circuits once a peer
+    // path has removed its handle.
     let cmd = CancelDownloadCommand { id: DownloadId(id) };
     state
         .command_bus
         .handle_cancel_download(cmd)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    state.wait_manager.cancel_wait(DownloadId(id));
+    Ok(())
 }
 
 /// User-initiated skip of a hoster wait countdown. Aborts the timer and

@@ -20,12 +20,17 @@ export function useCountdown(untilUnixMs: number | null): CountdownState {
     if (untilUnixMs === null) {
       return;
     }
-    setNow(Date.now());
+    const initial = Date.now();
+    setNow(initial);
+    // Skip the timer entirely when the deadline is already in the past:
+    // the first interval tick would otherwise fire a no-op render before
+    // cleanup.
+    if (initial >= untilUnixMs) {
+      return;
+    }
     const interval = setInterval(() => {
       const current = Date.now();
       setNow(current);
-      // Stop the timer once the deadline is reached: further ticks would
-      // only trigger no-op re-renders.
       if (current >= untilUnixMs) {
         clearInterval(interval);
       }
