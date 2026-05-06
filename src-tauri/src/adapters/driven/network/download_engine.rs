@@ -379,6 +379,18 @@ impl DownloadEngine for SegmentedDownloadEngine {
                     AttemptOutcome::Failed(err) => {
                         let next = mirror_idx + 1;
                         if next < mirror_urls.len() {
+                            // A user-cancel that landed after the attempt
+                            // returned `Failed` (or while the cleanup runs
+                            // below) must not be silently upgraded into a
+                            // mirror switch — `MirrorSwitched` persists the
+                            // cursor through the bridge, so a cancel in this
+                            // window would leave a future retry resuming
+                            // from a slot the user never asked for.
+                            if cancel_token.is_cancelled() {
+                                event_bus
+                                    .publish(DomainEvent::DownloadCancelled { id: download_id });
+                                break;
+                            }
                             mirror_idx = next;
                             tracing::info!(
                                 download_id = download_id.0,
@@ -416,6 +428,13 @@ impl DownloadEngine for SegmentedDownloadEngine {
                                 }
                             })
                             .await;
+                            // Re-check after cleanup since the user may have
+                            // hit cancel while it was running.
+                            if cancel_token.is_cancelled() {
+                                event_bus
+                                    .publish(DomainEvent::DownloadCancelled { id: download_id });
+                                break;
+                            }
                             event_bus.publish(DomainEvent::MirrorSwitched {
                                 id: download_id,
                                 new_mirror_index: mirror_idx as u32,
