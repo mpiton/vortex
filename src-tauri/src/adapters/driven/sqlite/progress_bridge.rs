@@ -107,6 +107,14 @@ pub fn spawn_sqlite_progress_bridge(event_bus: &dyn EventBus, db: DatabaseConnec
                     new_mirror_index,
                 } => {
                     update_mirror_cursor(&db, download_id, new_mirror_index).await;
+                    // Wipe persisted byte counters before the next attempt
+                    // sends fresh SegmentStarted / DownloadProgress events.
+                    // The MAX guard inside `update_download_progress` would
+                    // otherwise pin `downloaded_bytes` at the last value
+                    // written by the failed mirror until the new mirror
+                    // crosses it — the UI would show stale / inflated
+                    // progress (and ETA) until then.
+                    reset_download_bytes(&db, download_id).await;
                     // The next mirror may pick a different segment plan
                     // (no range support, fewer splits). Without this purge
                     // the read model would carry phantom segment rows from
@@ -352,6 +360,27 @@ async fn update_mirror_cursor(db: &DatabaseConnection, download_id: i64, new_mir
             new_mirror_index,
             error = %e,
             "progress_bridge: failed to persist mirror cursor"
+        );
+    }
+}
+
+/// Zero `downloaded_bytes` and clear `total_bytes` for a download. Runs from
+/// the bridge's `MirrorSwitched` handler so the new mirror attempt starts from
+/// a clean progress baseline. `update_download_progress` later restores
+/// `total_bytes` from the next progress event via its `COALESCE(NULLIF(...))`
+/// guard, and `downloaded_bytes` rises monotonically from 0 under the `MAX`
+/// guard.
+async fn reset_download_bytes(db: &DatabaseConnection, download_id: i64) {
+    let stmt = Statement::from_sql_and_values(
+        DatabaseBackend::Sqlite,
+        "UPDATE downloads SET downloaded_bytes = 0, total_bytes = NULL WHERE id = ?",
+        [download_id.into()],
+    );
+    if let Err(e) = db.execute(stmt).await {
+        tracing::warn!(
+            download_id,
+            error = %e,
+            "progress_bridge: failed to reset byte counters before mirror retry"
         );
     }
 }
@@ -680,6 +709,52 @@ mod tests {
         assert_eq!(
             row.current_mirror_index, 0,
             "DownloadFailed must reset the persisted mirror cursor so retries start fresh"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_reset_download_bytes_zeroes_downloaded_and_clears_total() {
+        let db = setup_test_db().await.unwrap();
+        // Pre-load with non-zero progress, as if the failed mirror got partway
+        // through the file before erroring out.
+        insert_download_row(&db, 110, Some(1_000_000), 700_000).await;
+
+        reset_download_bytes(&db, 110).await;
+
+        let row = download::Entity::find_by_id(110)
+            .one(&db)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            row.downloaded_bytes, 0,
+            "downloaded_bytes must drop to 0 so the MAX guard cannot pin stale values"
+        );
+        assert_eq!(
+            row.total_bytes, None,
+            "total_bytes must clear so the next progress event repopulates it via NULLIF/COALESCE"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_reset_download_bytes_then_progress_repopulates_total() {
+        let db = setup_test_db().await.unwrap();
+        insert_download_row(&db, 111, Some(1_000_000), 700_000).await;
+
+        reset_download_bytes(&db, 111).await;
+        // Mimic the first DownloadProgress event from the new mirror.
+        update_download_progress(&db, 111, 50_000, 900_000).await;
+
+        let row = download::Entity::find_by_id(111)
+            .one(&db)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.downloaded_bytes, 50_000);
+        assert_eq!(
+            row.total_bytes,
+            Some(900_000),
+            "total_bytes must accept the new mirror's value once it surfaces"
         );
     }
 
