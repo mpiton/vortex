@@ -78,6 +78,7 @@ fn event_name(event: &DomainEvent) -> &'static str {
         DomainEvent::AccountExhausted { .. } => "account-exhausted",
         DomainEvent::LinkStatusUpdated { .. } => "link-status-updated",
         DomainEvent::MirrorSwitched { .. } => "mirror-switched",
+        DomainEvent::AllMirrorsExhausted { .. } => "mirrors-exhausted",
     }
 }
 
@@ -283,6 +284,7 @@ fn event_payload(event: &DomainEvent) -> serde_json::Value {
                 "newUrl": new_url,
             })
         }
+        DomainEvent::AllMirrorsExhausted { id } => json!({ "id": id.0 }),
     }
 }
 

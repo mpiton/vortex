@@ -220,12 +220,13 @@ fn event_to_message(event: &DomainEvent) -> Option<BridgeMessage> {
             new_mirror_index: *new_mirror_index as i32,
         }),
 
-        // After a terminal failure (mirror exhaustion or any other path that
-        // surfaces `DownloadFailed`) the persisted cursor is wherever the last
-        // attempt left it — usually the bottom-priority slot. Reset to 0 so
-        // the next retry walks the mirror list from the top instead of
-        // skipping the higher-priority entries that may have recovered.
-        DomainEvent::DownloadFailed { id, .. } => Some(BridgeMessage::MirrorCursorReset {
+        // Mirror exhaustion alone resets the cursor — the engine emits this
+        // ahead of the generic `DownloadFailed` from the failover loop.
+        // Other `DownloadFailed` paths (extract errors, verify errors,
+        // domain `Download::fail()`) leave the cursor on the last-known-good
+        // slot so a re-download from the same mirror keeps working without
+        // first re-walking the mirrors that already failed.
+        DomainEvent::AllMirrorsExhausted { id } => Some(BridgeMessage::MirrorCursorReset {
             download_id: id.0 as i64,
         }),
 
@@ -676,13 +677,10 @@ mod tests {
     }
 
     #[test]
-    fn test_event_to_message_maps_download_failed_to_cursor_reset() {
+    fn test_event_to_message_maps_all_mirrors_exhausted_to_cursor_reset() {
         use crate::domain::model::download::DownloadId;
 
-        let event = DomainEvent::DownloadFailed {
-            id: DownloadId(11),
-            error: "all mirrors exhausted".to_string(),
-        };
+        let event = DomainEvent::AllMirrorsExhausted { id: DownloadId(11) };
         match event_to_message(&event) {
             Some(BridgeMessage::MirrorCursorReset { download_id }) => {
                 assert_eq!(download_id, 11);
@@ -691,14 +689,31 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_event_to_message_does_not_reset_cursor_on_generic_download_failed() {
+        use crate::domain::model::download::DownloadId;
+
+        // An extract / verify / domain-side terminal failure must leave the
+        // persisted cursor untouched so the last-known-good mirror stays
+        // active for a re-download.
+        let event = DomainEvent::DownloadFailed {
+            id: DownloadId(12),
+            error: "archive corrupt".to_string(),
+        };
+        assert!(
+            event_to_message(&event).is_none(),
+            "DownloadFailed alone must not produce a bridge message — only AllMirrorsExhausted"
+        );
+    }
+
     #[tokio::test]
-    async fn test_download_failed_resets_persisted_mirror_cursor_to_zero() {
+    async fn test_all_mirrors_exhausted_resets_persisted_mirror_cursor_to_zero() {
         let db = setup_test_db().await.unwrap();
         insert_download_row(&db, 88, None, 0).await;
         update_mirror_cursor(&db, 88, 4).await;
 
-        // Reset path: every DownloadFailed event must zero the cursor so the
-        // next retry walks the mirror list from the top.
+        // Reset path: only AllMirrorsExhausted zeroes the cursor so the next
+        // retry walks the mirror list from the top.
         update_mirror_cursor(&db, 88, 0).await;
 
         let row = download::Entity::find_by_id(88)
@@ -708,7 +723,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             row.current_mirror_index, 0,
-            "DownloadFailed must reset the persisted mirror cursor so retries start fresh"
+            "AllMirrorsExhausted must reset the persisted mirror cursor so retries start fresh"
         );
     }
 

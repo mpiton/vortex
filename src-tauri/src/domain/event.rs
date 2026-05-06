@@ -182,6 +182,16 @@ pub enum DomainEvent {
         new_mirror_index: u32,
         new_url: String,
     },
+    /// Emitted by the download engine when every Metalink mirror has been
+    /// tried and rejected. Distinct from [`DomainEvent::DownloadFailed`]
+    /// (which is also raised by post-download paths like `extract_archive`)
+    /// so the persistence bridge can reset the mirror cursor on this signal
+    /// alone — wiping it on every generic terminal failure would lose the
+    /// last-known-good slot for a file whose download succeeded but whose
+    /// extract / verify step then errored.
+    AllMirrorsExhausted {
+        id: DownloadId,
+    },
     /// File checksum was computed and matched the expected value.
     ChecksumVerified {
         id: DownloadId,

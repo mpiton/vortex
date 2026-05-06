@@ -423,6 +423,12 @@ impl DownloadEngine for SegmentedDownloadEngine {
                             });
                             continue;
                         }
+                        // Publish exhaustion before the generic terminal
+                        // event so the persistence bridge can distinguish
+                        // mirror-driven failure from post-download failures
+                        // (extract / verify / domain `fail()`) and reset the
+                        // cursor only on this signal.
+                        event_bus.publish(DomainEvent::AllMirrorsExhausted { id: download_id });
                         event_bus.publish(DomainEvent::DownloadFailed {
                             id: download_id,
                             error: err,
