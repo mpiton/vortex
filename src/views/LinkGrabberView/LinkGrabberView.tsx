@@ -21,6 +21,7 @@ import type {
   PlaylistGroupInput,
   PlaylistGroupResult,
 } from "@/types/media";
+import type { ImportContainerResult } from "@/types/container";
 import { invoke } from "@tauri-apps/api/core";
 import { canonicalPlaylistKey } from "./canonicalPlaylistKey";
 
@@ -196,34 +197,23 @@ export function LinkGrabberView() {
   };
 
   const handleContainerFiles = async (files: File[]) => {
-    // Read bytes and ship them through IPC. Done sequentially so a
-    // single failure doesn't leave half-resolved batches racing
-    // through `resolveLinks`. Files are tiny (DLCs are KBs at most),
-    // so the user-perceived cost is negligible.
+    const aggregatedUrls: string[] = [];
     for (const file of files) {
       try {
         const buffer = await file.arrayBuffer();
         const bytes = Array.from(new Uint8Array(buffer));
-        const result = await invoke<{
-          format: string;
-          fileName: string;
-          urls: string[];
-          packageId: string;
-          packageName: string;
-        }>("link_import_container", {
+        const result = await invoke<ImportContainerResult>("link_import_container", {
           fileName: file.name,
           fileBytes: bytes,
         });
         toast.success(
           t("linkGrabber.toast.containerImported", {
             count: result.urls.length,
-            fileName: result.fileName,
-            defaultValue: `Imported ${result.urls.length} links from ${result.fileName}`,
+            fileName: result.packageName,
+            defaultValue: `Imported ${result.urls.length} links from ${result.packageName}`,
           }),
         );
-        if (result.urls.length > 0) {
-          resolveLinks({ urls: result.urls });
-        }
+        aggregatedUrls.push(...result.urls);
       } catch (err) {
         toast.error(
           t("linkGrabber.toast.containerImportFailed", {
@@ -232,6 +222,9 @@ export function LinkGrabberView() {
           }),
         );
       }
+    }
+    if (aggregatedUrls.length > 0) {
+      resolveLinks({ urls: aggregatedUrls });
     }
   };
 

@@ -297,7 +297,6 @@ describe("LinkGrabberView", () => {
       if (cmd === "link_import_container") {
         return Promise.resolve({
           format: "dlc",
-          fileName: "pack.dlc",
           urls: ["https://hoster.example/a.bin", "https://hoster.example/b.bin"],
           packageId: "pkg-1",
           packageName: "pack.dlc",

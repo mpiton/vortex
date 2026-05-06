@@ -1,36 +1,23 @@
 //! Handler for [`ImportContainerCommand`](super::ImportContainerCommand).
-//!
-//! Decrypts a `.dlc` / `.ccf` / `.rsdf` / `.metalink` / `.meta4` container
-//! through the loaded `vortex-mod-containers` plugin (task 41), creates a
-//! [`Package`] of source-type [`Container`](crate::domain::model::package::PackageSourceType::Container)
-//! to hold the extracted entries, and returns the URL list to the caller.
-//! The driving adapter is responsible for routing each URL through the
-//! existing `link_resolve` pipeline so the Link Grabber UI keeps the same
-//! resolve / online-check / duplicate-detect flow as a manual paste.
 
 use std::path::Path;
 
 use serde::Deserialize;
-use uuid::Uuid;
 
 use crate::application::command_bus::CommandBus;
+use crate::application::commands::CreatePackageCommand;
 use crate::application::error::AppError;
-use crate::domain::event::DomainEvent;
-use crate::domain::model::package::{Package, PackageId, PackageSourceType};
+use crate::domain::model::package::{PackageId, PackageSourceType};
 
 const ALLOWED_EXTENSIONS: &[&str] = &["dlc", "ccf", "rsdf", "metalink", "meta4"];
 
-/// Maximum container blob size accepted by the IPC handler. Real-world
-/// JDownloader containers ship in the single-digit-KB range; the cap is
-/// generous enough for unusually large Metalink mirror lists yet small
-/// enough to keep a malicious caller from forcing the host to allocate
-/// a 100-MB plugin input buffer.
+/// Cap so a hostile caller cannot force the host to allocate an
+/// arbitrarily large plugin input buffer.
 pub const MAX_CONTAINER_BYTES: usize = 1024 * 1024;
 
 #[derive(Debug, Clone)]
 pub struct ImportContainerOutcome {
     pub format: String,
-    pub file_name: String,
     pub urls: Vec<String>,
     pub package_id: PackageId,
     pub package_name: String,
@@ -91,26 +78,18 @@ impl CommandBus {
             return Err(AppError::Plugin("container decoded with zero links".into()));
         }
 
-        let repo = self
-            .package_repo()
-            .ok_or_else(|| AppError::Validation("package repository not configured".into()))?;
         let package_name = file_name.to_string();
-        let package_id = PackageId::new(Uuid::new_v4().to_string());
-        let package = Package::new(
-            package_id.clone(),
-            package_name.clone(),
-            PackageSourceType::Container,
-            cmd.created_at_ms,
-        );
-        repo.save(&package)?;
-        self.event_bus().publish(DomainEvent::PackageCreated {
-            id: package_id.clone(),
-            name: package_name.clone(),
-        });
+        let package_id = self
+            .handle_create_package(CreatePackageCommand {
+                name: package_name.clone(),
+                source_type: PackageSourceType::Container,
+                folder_path: None,
+                created_at_ms: cmd.created_at_ms,
+            })
+            .await?;
 
         Ok(ImportContainerOutcome {
             format: response.format,
-            file_name: package_name.clone(),
             urls,
             package_id,
             package_name,
@@ -217,28 +196,48 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn test_import_container_creates_package_and_returns_urls() {
+    struct Fixture {
+        bus: crate::application::command_bus::CommandBus,
+        pkg_repo: Arc<InMemoryPackageRepo>,
+        events: Arc<CapturingEventBus>,
+    }
+
+    fn fixture(loader: Arc<dyn PluginLoader>) -> Fixture {
         let pkg_repo = Arc::new(InMemoryPackageRepo::new());
         let creds = Arc::new(InMemoryCredentialStore::new());
         let dl_repo = Arc::new(InMemoryDownloadRepo::new());
         let events = Arc::new(CapturingEventBus::new());
-        let loader = FakeContainerPluginLoader::ok(metalink_response_json());
         let bus = build_package_bus_with_plugin_loader(
             pkg_repo.clone(),
             creds,
             events.clone(),
             dl_repo,
-            loader.clone(),
+            loader,
         );
+        Fixture {
+            bus,
+            pkg_repo,
+            events,
+        }
+    }
 
-        let outcome = bus
+    fn stub_fixture() -> Fixture {
+        fixture(Arc::new(StubPluginLoader))
+    }
+
+    #[tokio::test]
+    async fn test_import_container_creates_package_and_returns_urls() {
+        let loader = FakeContainerPluginLoader::ok(metalink_response_json());
+        let f = fixture(loader.clone());
+
+        let outcome = f
+            .bus
             .handle_import_container(cmd("Apache.metalink", b"<metalink/>".to_vec()))
             .await
             .expect("import ok");
 
         assert_eq!(outcome.format, "metalink");
-        assert_eq!(outcome.file_name, "Apache.metalink");
+        assert_eq!(outcome.package_name, "Apache.metalink");
         assert_eq!(
             outcome.urls,
             vec![
@@ -246,12 +245,12 @@ mod tests {
                 "https://second.example.com/extra.bin"
             ]
         );
-        let stored = pkg_repo.find_by_id(&outcome.package_id).unwrap().unwrap();
+        let stored = f.pkg_repo.find_by_id(&outcome.package_id).unwrap().unwrap();
         assert_eq!(stored.source_type(), PackageSourceType::Container);
         assert_eq!(stored.name(), "Apache.metalink");
         let captured = loader.last_input.lock().unwrap();
         assert_eq!(captured.as_deref(), Some(b"<metalink/>".as_slice()));
-        let snapshot = events.snapshot();
+        let snapshot = f.events.snapshot();
         assert!(snapshot.iter().any(|e| matches!(
             e,
             DomainEvent::PackageCreated { id, name } if id == &outcome.package_id && name == "Apache.metalink"
@@ -260,13 +259,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_import_container_rejects_blank_file_name() {
-        let pkg_repo = Arc::new(InMemoryPackageRepo::new());
-        let creds = Arc::new(InMemoryCredentialStore::new());
-        let dl_repo = Arc::new(InMemoryDownloadRepo::new());
-        let events = Arc::new(CapturingEventBus::new());
-        let loader: Arc<dyn PluginLoader> = Arc::new(StubPluginLoader);
-        let bus = build_package_bus_with_plugin_loader(pkg_repo, creds, events, dl_repo, loader);
-        let err = bus
+        let err = stub_fixture()
+            .bus
             .handle_import_container(cmd("   ", b"any".to_vec()))
             .await
             .expect_err("blank rejected");
@@ -275,13 +269,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_import_container_rejects_unsupported_extension() {
-        let pkg_repo = Arc::new(InMemoryPackageRepo::new());
-        let creds = Arc::new(InMemoryCredentialStore::new());
-        let dl_repo = Arc::new(InMemoryDownloadRepo::new());
-        let events = Arc::new(CapturingEventBus::new());
-        let loader: Arc<dyn PluginLoader> = Arc::new(StubPluginLoader);
-        let bus = build_package_bus_with_plugin_loader(pkg_repo, creds, events, dl_repo, loader);
-        let err = bus
+        let err = stub_fixture()
+            .bus
             .handle_import_container(cmd("malicious.exe", b"data".to_vec()))
             .await
             .expect_err("rejected");
@@ -293,13 +282,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_import_container_rejects_empty_bytes() {
-        let pkg_repo = Arc::new(InMemoryPackageRepo::new());
-        let creds = Arc::new(InMemoryCredentialStore::new());
-        let dl_repo = Arc::new(InMemoryDownloadRepo::new());
-        let events = Arc::new(CapturingEventBus::new());
-        let loader: Arc<dyn PluginLoader> = Arc::new(StubPluginLoader);
-        let bus = build_package_bus_with_plugin_loader(pkg_repo, creds, events, dl_repo, loader);
-        let err = bus
+        let err = stub_fixture()
+            .bus
             .handle_import_container(cmd("foo.dlc", vec![]))
             .await
             .expect_err("rejected");
@@ -308,14 +292,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_import_container_rejects_oversize_payload() {
-        let pkg_repo = Arc::new(InMemoryPackageRepo::new());
-        let creds = Arc::new(InMemoryCredentialStore::new());
-        let dl_repo = Arc::new(InMemoryDownloadRepo::new());
-        let events = Arc::new(CapturingEventBus::new());
-        let loader: Arc<dyn PluginLoader> = Arc::new(StubPluginLoader);
-        let bus = build_package_bus_with_plugin_loader(pkg_repo, creds, events, dl_repo, loader);
         let huge = vec![0u8; super::MAX_CONTAINER_BYTES + 1];
-        let err = bus
+        let err = stub_fixture()
+            .bus
             .handle_import_container(cmd("big.dlc", huge))
             .await
             .expect_err("rejected");
@@ -324,14 +303,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_import_container_propagates_plugin_not_found() {
-        let pkg_repo = Arc::new(InMemoryPackageRepo::new());
-        let creds = Arc::new(InMemoryCredentialStore::new());
-        let dl_repo = Arc::new(InMemoryDownloadRepo::new());
-        let events = Arc::new(CapturingEventBus::new());
         let loader =
             FakeContainerPluginLoader::err(DomainError::NotFound("no container plugin".into()));
-        let bus = build_package_bus_with_plugin_loader(pkg_repo, creds, events, dl_repo, loader);
-        let err = bus
+        let err = fixture(loader)
+            .bus
             .handle_import_container(cmd("foo.dlc", b"DLC".to_vec()))
             .await
             .expect_err("propagates");
@@ -340,30 +315,22 @@ mod tests {
 
     #[tokio::test]
     async fn test_import_container_rejects_zero_link_response() {
-        let pkg_repo = Arc::new(InMemoryPackageRepo::new());
-        let creds = Arc::new(InMemoryCredentialStore::new());
-        let dl_repo = Arc::new(InMemoryDownloadRepo::new());
-        let events = Arc::new(CapturingEventBus::new());
         let loader = FakeContainerPluginLoader::ok(r#"{"format":"dlc","links":[]}"#);
-        let bus =
-            build_package_bus_with_plugin_loader(pkg_repo.clone(), creds, events, dl_repo, loader);
-        let err = bus
+        let f = fixture(loader);
+        let err = f
+            .bus
             .handle_import_container(cmd("empty.dlc", b"DLC".to_vec()))
             .await
             .expect_err("zero links rejected");
         assert!(matches!(&err, AppError::Plugin(msg) if msg.contains("zero links")));
-        assert!(pkg_repo.list().unwrap().is_empty());
+        assert!(f.pkg_repo.list().unwrap().is_empty());
     }
 
     #[tokio::test]
     async fn test_import_container_rejects_invalid_plugin_json() {
-        let pkg_repo = Arc::new(InMemoryPackageRepo::new());
-        let creds = Arc::new(InMemoryCredentialStore::new());
-        let dl_repo = Arc::new(InMemoryDownloadRepo::new());
-        let events = Arc::new(CapturingEventBus::new());
         let loader = FakeContainerPluginLoader::ok("not json");
-        let bus = build_package_bus_with_plugin_loader(pkg_repo, creds, events, dl_repo, loader);
-        let err = bus
+        let err = fixture(loader)
+            .bus
             .handle_import_container(cmd("foo.metalink", b"<x/>".to_vec()))
             .await
             .expect_err("rejected");

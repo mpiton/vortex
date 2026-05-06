@@ -96,38 +96,32 @@ impl PluginRegistry {
     }
 
     pub fn call_plugin(&self, name: &str, func: &str, input: &str) -> Result<String, DomainError> {
-        // Clone the Arc<Mutex<Plugin>> and drop the DashMap shard guard
-        // before locking. This prevents holding the shard during slow WASM execution.
-        let plugin_handle = {
-            let entry = self
-                .plugins
-                .get(name)
-                .ok_or_else(|| DomainError::NotFound(name.to_string()))?;
-            Arc::clone(&entry.plugin)
-        }; // DashMap shard guard dropped here
-        let mut plugin = plugin_handle
-            .lock()
-            .map_err(|_| DomainError::PluginError(format!("plugin '{name}' mutex poisoned")))?;
-        let fn_exists = plugin.function_exists(func);
-        tracing::info!(plugin = name, func, fn_exists, "call_plugin pre-call");
-        let result = plugin.call::<&str, &str>(func, input).map_err(|e| {
-            DomainError::PluginError(format!(
-                "plugin call failed (function_exists={fn_exists}): {e}"
-            ))
-        })?;
-        Ok(result.to_string())
+        self.call_plugin_inner(name, func, input)
     }
 
-    /// Variant of [`Self::call_plugin`] that ships a raw byte buffer to
-    /// the plugin instead of a `&str`. Container decoders take binary
-    /// blobs (DLC / CCF / RSDF / Metalink) and must not pass through a
-    /// UTF-8 conversion that would corrupt non-text bytes.
+    /// Container plugins decode binary blobs (DLC / CCF / RSDF / Metalink);
+    /// shipping them as `&str` would lossy-convert non-UTF-8 bytes.
     pub fn call_plugin_bytes(
         &self,
         name: &str,
         func: &str,
         input: &[u8],
     ) -> Result<String, DomainError> {
+        self.call_plugin_inner(name, func, input)
+    }
+
+    fn call_plugin_inner<'a, I>(
+        &self,
+        name: &str,
+        func: &str,
+        input: I,
+    ) -> Result<String, DomainError>
+    where
+        I: extism::convert::ToBytes<'a>,
+    {
+        // Clone the Arc<Mutex<Plugin>> and drop the DashMap shard guard
+        // before locking — holding the shard across a slow WASM call would
+        // block every other plugin lookup behind the same shard.
         let plugin_handle = {
             let entry = self
                 .plugins
@@ -139,8 +133,8 @@ impl PluginRegistry {
             .lock()
             .map_err(|_| DomainError::PluginError(format!("plugin '{name}' mutex poisoned")))?;
         let fn_exists = plugin.function_exists(func);
-        tracing::info!(plugin = name, func, fn_exists, "call_plugin_bytes pre-call");
-        let result = plugin.call::<&[u8], &str>(func, input).map_err(|e| {
+        tracing::debug!(plugin = name, func, fn_exists, "plugin call pre-call");
+        let result = plugin.call::<I, &str>(func, input).map_err(|e| {
             DomainError::PluginError(format!(
                 "plugin call failed (function_exists={fn_exists}): {e}"
             ))

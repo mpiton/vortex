@@ -410,10 +410,8 @@ impl PluginLoader for ExtismPluginLoader {
     }
 
     fn decrypt_container(&self, bytes: &[u8]) -> Result<String, DomainError> {
-        // Pick the first enabled `Container`-category plugin that exports
-        // a `decrypt` function. Sort by name for deterministic selection
-        // when several container plugins are loaded (e.g. third-party
-        // forks alongside `vortex-mod-containers`).
+        // Sort by name so a deterministic plugin wins when several
+        // container forks are loaded side-by-side.
         let mut infos: Vec<_> = self
             .registry
             .list_info()
@@ -436,9 +434,7 @@ impl PluginLoader for ExtismPluginLoader {
                             ))
                         });
                 }
-                Ok(false) => {
-                    tracing::debug!(plugin = info.name(), "container plugin lacks 'decrypt'");
-                }
+                Ok(false) => {}
                 Err(e) => {
                     tracing::warn!(plugin = info.name(), error = %e, "decrypt probe failed");
                 }

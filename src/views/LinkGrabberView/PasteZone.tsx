@@ -82,11 +82,6 @@ export function PasteZone({
     const containerFiles = files.filter(isContainerFile);
 
     if (containerFiles.length > 0) {
-      // Surface container files through a dedicated callback so the
-      // parent can stream their bytes to `link_import_container`. The
-      // previous behaviour synthesised fake `container:` URLs that
-      // `LinkGrabberView` then dropped on the floor — surfacing them
-      // verbatim was the original `LinkGrabberView.tsx:67` TODO.
       if (onContainerFiles) {
         onContainerFiles(containerFiles);
       }
