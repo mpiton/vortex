@@ -268,10 +268,22 @@ impl SegmentedDownloadEngine {
     }
 }
 
+/// Outcome of a single mirror attempt inside the failover loop.
+///
+/// The outer engine task converts this into a `DomainEvent`:
+/// - `Completed` → `DownloadCompleted`
+/// - `Cancelled` → `DownloadCancelled`
+/// - `Failed(_)` → either `MirrorSwitched` + retry the next mirror, or
+///   `DownloadFailed` if no mirror remains.
+enum AttemptOutcome {
+    Completed,
+    Cancelled,
+    Failed(String),
+}
+
 impl DownloadEngine for SegmentedDownloadEngine {
     fn start(&self, download: &Download) -> Result<(), DomainError> {
         let download_id = download.id();
-        let url = download.url().as_str().to_string();
         // destination_path already contains the complete file path (dir + filename).
         // Do NOT join file_name again — that would produce "dir/file.bin/file.bin".
         let dest_path = PathBuf::from(download.destination_path());
@@ -280,6 +292,22 @@ impl DownloadEngine for SegmentedDownloadEngine {
         } else {
             download.segments_count()
         };
+
+        // Snapshot the candidate URLs ahead of `tokio::spawn` so the
+        // failover loop owns them. An empty mirror list collapses to the
+        // canonical URL — single-source downloads keep their pre-mirror
+        // behaviour and never observe `MirrorSwitched`.
+        let mirror_urls: Vec<String> = if download.mirrors().is_empty() {
+            vec![download.url().as_str().to_string()]
+        } else {
+            download
+                .mirrors()
+                .iter()
+                .map(|m| m.url().as_str().to_string())
+                .collect()
+        };
+        let initial_mirror_idx =
+            (download.current_mirror_index() as usize).min(mirror_urls.len().saturating_sub(1));
 
         let cancel_token = CancellationToken::new();
         let (pause_tx, pause_rx) = watch::channel(false);
@@ -313,308 +341,120 @@ impl DownloadEngine for SegmentedDownloadEngine {
         let dynamic_split_min_remaining_bytes = self.dynamic_split_min_remaining_bytes.clone();
 
         tokio::spawn(async move {
-            let (total_size, supports_range) =
-                match Self::probe_remote_metadata(&client, &url).await {
-                    Ok(metadata) => metadata,
-                    Err(e) => {
-                        tracing::error!(
-                            download_id = download_id.0,
-                            error = %format_error_chain(&e),
-                            "metadata probe failed"
-                        );
-                        event_bus.publish(DomainEvent::DownloadFailed {
-                            id: download_id,
-                            error: format!("metadata probe failed: {}", format_error_chain(&e)),
-                        });
-                        active_downloads
-                            .lock()
-                            .expect("active_downloads lock poisoned")
-                            .remove(&download_id);
-                        return;
-                    }
-                };
-
-            // Check if cancelled during HEAD request
-            if cancel_token.is_cancelled() {
-                event_bus.publish(DomainEvent::DownloadCancelled { id: download_id });
-                active_downloads
-                    .lock()
-                    .expect("active_downloads lock poisoned")
-                    .remove(&download_id);
-                return;
-            }
-
-            // Pre-allocate file if size is known.
-            // If a stale file exists from a previous interrupted attempt with no
-            // resume state (no .vortex-meta sidecar), delete it first so
-            // create_new(true) in create_file can succeed.
-            if total_size > 0 {
-                let storage = file_storage.clone();
-                let path = dest_path.clone();
-                match tokio::task::spawn_blocking(move || {
-                    if path.exists() {
-                        let has_meta = storage.read_meta(&path).ok().flatten().is_some();
-                        if !has_meta {
-                            // Orphaned file from a previous failed attempt — remove it.
-                            if let Err(e) = std::fs::remove_file(&path) {
-                                tracing::warn!(
-                                    path = %path.display(),
-                                    error = %e,
-                                    "failed to remove stale download file; create_file may fail"
-                                );
-                            } else {
-                                tracing::debug!(
-                                    path = %path.display(),
-                                    "removed orphaned download file before re-creating"
-                                );
-                            }
-                        }
-                    }
-                    storage.create_file(&path, total_size)
-                })
-                .await
-                {
-                    Err(e) => {
-                        tracing::error!(
-                            download_id = download_id.0,
-                            error = %e,
-                            "spawn_blocking for create_file panicked"
-                        );
-                        event_bus.publish(DomainEvent::DownloadFailed {
-                            id: download_id,
-                            error: format!("file pre-allocation failed: {e}"),
-                        });
-                        active_downloads
-                            .lock()
-                            .expect("active_downloads lock poisoned")
-                            .remove(&download_id);
-                        return;
-                    }
-                    Ok(Err(e)) => {
-                        event_bus.publish(DomainEvent::DownloadFailed {
-                            id: download_id,
-                            error: format!("file pre-allocation failed: {e}"),
-                        });
-                        active_downloads
-                            .lock()
-                            .expect("active_downloads lock poisoned")
-                            .remove(&download_id);
-                        return;
-                    }
-                    Ok(Ok(())) => {}
-                }
-            }
-
-            // Determine number of segments
-            let num_segments = if supports_range && total_size > 0 {
-                segments_count
-                    .min((total_size / min_segment_bytes).max(1) as u32)
-                    .max(1)
-            } else {
-                1
-            };
-
-            // Calculate segment byte ranges
-            // end_byte == u64::MAX signals the worker to omit the Range header
-            let segments: Vec<(u64, u64)> = if supports_range && total_size > 0 && num_segments > 1
-            {
-                let segment_size = total_size / num_segments as u64;
-                (0..num_segments)
-                    .map(|i| {
-                        let start = i as u64 * segment_size;
-                        let end = if i == num_segments - 1 {
-                            total_size
-                        } else {
-                            (i as u64 + 1) * segment_size
-                        };
-                        (start, end)
-                    })
-                    .collect()
-            } else if supports_range && total_size > 0 {
-                // Single segment with range support: use exact range
-                vec![(0, total_size)]
-            } else {
-                // No range support or unknown size: download without Range header
-                vec![(0, u64::MAX)]
-            };
-
-            // Check if cancelled during setup
-            if cancel_token.is_cancelled() {
-                event_bus.publish(DomainEvent::DownloadCancelled { id: download_id });
-                active_downloads
-                    .lock()
-                    .expect("active_downloads lock poisoned")
-                    .remove(&download_id);
-                return;
-            }
-
-            event_bus.publish(DomainEvent::DownloadStarted { id: download_id });
-
-            let shared_downloaded = Arc::new(AtomicU64::new(0));
-            let mut join_set: JoinSet<(usize, Result<u64, SegmentError>)> = JoinSet::new();
-            let mut active_segments: Vec<SegmentRuntimeState> = Vec::with_capacity(segments.len());
-            for (index, (start, end)) in segments.iter().enumerate() {
-                let (end_tx, end_rx) = watch::channel(*end);
-                let progress = Arc::new(AtomicU64::new(0));
-                active_segments.push(SegmentRuntimeState {
-                    end_tx,
-                    progress: progress.clone(),
-                    started_at: std::time::Instant::now(),
-                    start_byte: *start,
-                    initial_end: *end,
-                    completed: false,
-                });
-                let params = SegmentParams {
+            let mut mirror_idx = initial_mirror_idx;
+            loop {
+                let url = mirror_urls[mirror_idx].clone();
+                // Each attempt gets a fresh attempt-scoped child token so
+                // tearing down peer segments after a failure does not also
+                // mark a user-cancel. The user-cancel signal lives on
+                // `cancel_token`; the attempt token cascades from it via
+                // `child_token()` so a real cancel still aborts segments.
+                let attempt_token = cancel_token.child_token();
+                let outcome = run_mirror_attempt(MirrorAttemptParams {
+                    url,
+                    download_id,
+                    segments_count,
                     client: client.clone(),
                     file_storage: file_storage.clone(),
                     event_bus: event_bus.clone(),
-                    download_id,
-                    segment_index: index as u32,
-                    url: url.clone(),
-                    start_byte: *start,
-                    end_byte_rx: end_rx,
-                    already_downloaded: 0,
-                    total_file_size: total_size,
                     dest_path: dest_path.clone(),
                     pause_rx: pause_rx.clone(),
-                    cancel_token: cancel_token.clone(),
-                    shared_downloaded: shared_downloaded.clone(),
-                    segment_progress: progress,
-                };
-                let slot_idx = index;
-                join_set.spawn(async move { (slot_idx, download_segment(params).await) });
-            }
+                    user_cancel_token: cancel_token.clone(),
+                    attempt_token,
+                    min_segment_bytes,
+                    dynamic_split_enabled: dynamic_split_enabled.clone(),
+                    dynamic_split_min_remaining_bytes: dynamic_split_min_remaining_bytes.clone(),
+                })
+                .await;
 
-            let mut failed = false;
-            let mut error_msg = String::new();
-            let mut next_segment_id: u32 = segments.len() as u32;
-
-            while let Some(result) = join_set.join_next().await {
-                match result {
-                    Ok((slot_idx, Ok(_bytes))) => {
-                        // Mark the slot completed instead of removing it — the
-                        // persist_split_meta call below must record completed
-                        // ranges so a crash mid-split does not lose the fact
-                        // that those bytes are already on disk.
-                        if slot_idx < active_segments.len() {
-                            active_segments[slot_idx].completed = true;
-                        }
-
-                        if dynamic_split_enabled.load(Ordering::Relaxed)
-                            && !cancel_token.is_cancelled()
-                            && let Some((idx, split_at)) = pick_split_target(
-                                &active_segments,
-                                dynamic_split_min_remaining_bytes.load(Ordering::Relaxed),
-                            )
-                        {
-                            let new_id = next_segment_id;
-                            next_segment_id += 1;
-                            // Capture state and update initial_end on success so a
-                            // subsequent pick_split_target on the same slot — or a
-                            // crash recovery via persist_split_meta — observes the
-                            // shrunk range, not the pre-split end.
-                            let initial_end = active_segments[idx].initial_end;
-                            let signal_sent = active_segments[idx].end_tx.send(split_at).is_ok();
-                            if signal_sent {
-                                active_segments[idx].initial_end = split_at;
-                            } else {
-                                tracing::warn!(
-                                    download_id = download_id.0,
-                                    original_segment_id = idx as u32,
-                                    "split skipped: target worker no longer listening"
-                                );
-                                continue;
-                            }
-                            event_bus.publish(DomainEvent::SegmentSplit {
-                                download_id,
-                                original_segment_id: idx as u32,
-                                new_segment_id: new_id,
-                                split_at,
-                            });
-
-                            let new_progress = Arc::new(AtomicU64::new(0));
-                            let (new_end_tx, new_end_rx) = watch::channel(initial_end);
-                            let new_slot_idx = active_segments.len();
-                            let params = SegmentParams {
-                                client: client.clone(),
-                                file_storage: file_storage.clone(),
-                                event_bus: event_bus.clone(),
-                                download_id,
-                                segment_index: new_id,
-                                url: url.clone(),
-                                start_byte: split_at,
-                                end_byte_rx: new_end_rx,
-                                already_downloaded: 0,
-                                total_file_size: total_size,
-                                dest_path: dest_path.clone(),
-                                pause_rx: pause_rx.clone(),
-                                cancel_token: cancel_token.clone(),
-                                shared_downloaded: shared_downloaded.clone(),
-                                segment_progress: new_progress.clone(),
-                            };
-                            join_set.spawn(async move {
-                                (new_slot_idx, download_segment(params).await)
-                            });
-                            active_segments.push(SegmentRuntimeState {
-                                end_tx: new_end_tx,
-                                progress: new_progress,
-                                started_at: std::time::Instant::now(),
-                                start_byte: split_at,
-                                initial_end,
-                                completed: false,
-                            });
-
-                            persist_split_meta(
-                                &file_storage,
-                                &dest_path,
-                                download_id,
-                                &url,
-                                total_size,
-                                &active_segments,
-                            )
-                            .await;
-                        }
+                match outcome {
+                    AttemptOutcome::Completed => {
+                        event_bus.publish(DomainEvent::DownloadCompleted { id: download_id });
+                        break;
                     }
-                    Ok((_slot_idx, Err(e))) => {
-                        // Errored slots stay in active_segments without
-                        // `completed = true`; pick_split_target ignores them
-                        // because the worker is gone (end_tx send fails) and
-                        // the cancel below tears the whole download down.
-                        match e {
-                            SegmentError::Cancelled => {
-                                cancel_token.cancel();
+                    AttemptOutcome::Cancelled => {
+                        event_bus.publish(DomainEvent::DownloadCancelled { id: download_id });
+                        break;
+                    }
+                    AttemptOutcome::Failed(err) => {
+                        let next = mirror_idx + 1;
+                        if next < mirror_urls.len() {
+                            // A user-cancel that landed after the attempt
+                            // returned `Failed` (or while the cleanup runs
+                            // below) must not be silently upgraded into a
+                            // mirror switch — `MirrorSwitched` persists the
+                            // cursor through the bridge, so a cancel in this
+                            // window would leave a future retry resuming
+                            // from a slot the user never asked for.
+                            if cancel_token.is_cancelled() {
+                                event_bus
+                                    .publish(DomainEvent::DownloadCancelled { id: download_id });
+                                break;
                             }
-                            _ => {
-                                if failed {
-                                    tracing::warn!(
-                                        download_id = download_id.0,
-                                        previous_error = %error_msg,
-                                        "additional segment failure (overwriting previous error)"
+                            mirror_idx = next;
+                            tracing::info!(
+                                download_id = download_id.0,
+                                new_mirror_index = mirror_idx,
+                                new_url = %mirror_urls[mirror_idx],
+                                previous_error = %err,
+                                "switching to next mirror after failure"
+                            );
+                            // Wipe the previous mirror's partial file + meta so
+                            // the next attempt starts clean. The pre-allocation
+                            // step uses `create_new(true)` and would otherwise
+                            // collide with the existing file when meta is
+                            // present, sinking the retry before it ever opens
+                            // a connection. Bytes from mirror N are not safe to
+                            // splice with mirror N+1 anyway (the servers may
+                            // serve subtly different payloads).
+                            let storage = file_storage.clone();
+                            let path = dest_path.clone();
+                            let _ = tokio::task::spawn_blocking(move || {
+                                if let Err(e) = storage.delete_meta(&path) {
+                                    tracing::debug!(
+                                        path = %path.display(),
+                                        error = %e,
+                                        "failed to delete stale meta before mirror retry"
                                     );
                                 }
-                                error_msg = format!("{e:?}");
-                                failed = true;
-                                cancel_token.cancel();
+                                if path.exists()
+                                    && let Err(e) = std::fs::remove_file(&path)
+                                {
+                                    tracing::warn!(
+                                        path = %path.display(),
+                                        error = %e,
+                                        "failed to remove stale file before mirror retry"
+                                    );
+                                }
+                            })
+                            .await;
+                            // Re-check after cleanup since the user may have
+                            // hit cancel while it was running.
+                            if cancel_token.is_cancelled() {
+                                event_bus
+                                    .publish(DomainEvent::DownloadCancelled { id: download_id });
+                                break;
                             }
+                            event_bus.publish(DomainEvent::MirrorSwitched {
+                                id: download_id,
+                                new_mirror_index: mirror_idx as u32,
+                                new_url: mirror_urls[mirror_idx].clone(),
+                            });
+                            continue;
                         }
-                    }
-                    Err(e) => {
-                        error_msg = format!("segment task panicked: {e}");
-                        failed = true;
-                        cancel_token.cancel();
+                        // Publish exhaustion before the generic terminal
+                        // event so the persistence bridge can distinguish
+                        // mirror-driven failure from post-download failures
+                        // (extract / verify / domain `fail()`) and reset the
+                        // cursor only on this signal.
+                        event_bus.publish(DomainEvent::AllMirrorsExhausted { id: download_id });
+                        event_bus.publish(DomainEvent::DownloadFailed {
+                            id: download_id,
+                            error: err,
+                        });
+                        break;
                     }
                 }
-            }
-
-            if failed {
-                event_bus.publish(DomainEvent::DownloadFailed {
-                    id: download_id,
-                    error: error_msg,
-                });
-            } else if cancel_token.is_cancelled() {
-                event_bus.publish(DomainEvent::DownloadCancelled { id: download_id });
-            } else {
-                event_bus.publish(DomainEvent::DownloadCompleted { id: download_id });
             }
 
             active_downloads
@@ -672,6 +512,293 @@ impl DownloadEngine for SegmentedDownloadEngine {
         active.cancel_token.cancel();
         Ok(())
     }
+}
+
+/// Run one mirror attempt: probe metadata, plan segments, dispatch
+/// workers, await completion. Returns the outcome so the caller can
+/// either fall back to the next mirror or finalise the download.
+struct MirrorAttemptParams {
+    url: String,
+    download_id: DownloadId,
+    segments_count: u32,
+    client: reqwest::Client,
+    file_storage: Arc<dyn FileStorage>,
+    event_bus: Arc<dyn EventBus>,
+    dest_path: PathBuf,
+    pause_rx: watch::Receiver<bool>,
+    user_cancel_token: CancellationToken,
+    attempt_token: CancellationToken,
+    min_segment_bytes: u64,
+    dynamic_split_enabled: Arc<AtomicBool>,
+    dynamic_split_min_remaining_bytes: Arc<AtomicU64>,
+}
+
+async fn run_mirror_attempt(params: MirrorAttemptParams) -> AttemptOutcome {
+    let MirrorAttemptParams {
+        url,
+        download_id,
+        segments_count,
+        client,
+        file_storage,
+        event_bus,
+        dest_path,
+        pause_rx,
+        user_cancel_token,
+        attempt_token,
+        min_segment_bytes,
+        dynamic_split_enabled,
+        dynamic_split_min_remaining_bytes,
+    } = params;
+    let (total_size, supports_range) =
+        match SegmentedDownloadEngine::probe_remote_metadata(&client, &url).await {
+            Ok(metadata) => metadata,
+            Err(e) => {
+                tracing::warn!(
+                    download_id = download_id.0,
+                    url = %url,
+                    error = %format_error_chain(&e),
+                    "metadata probe failed (mirror attempt)"
+                );
+                if user_cancel_token.is_cancelled() {
+                    return AttemptOutcome::Cancelled;
+                }
+                return AttemptOutcome::Failed(format!(
+                    "metadata probe failed: {}",
+                    format_error_chain(&e)
+                ));
+            }
+        };
+
+    if user_cancel_token.is_cancelled() {
+        return AttemptOutcome::Cancelled;
+    }
+
+    if total_size > 0 {
+        let storage = file_storage.clone();
+        let path = dest_path.clone();
+        match tokio::task::spawn_blocking(move || {
+            if path.exists() {
+                let has_meta = storage.read_meta(&path).ok().flatten().is_some();
+                if !has_meta {
+                    if let Err(e) = std::fs::remove_file(&path) {
+                        tracing::warn!(
+                            path = %path.display(),
+                            error = %e,
+                            "failed to remove stale download file; create_file may fail"
+                        );
+                    } else {
+                        tracing::debug!(
+                            path = %path.display(),
+                            "removed orphaned download file before re-creating"
+                        );
+                    }
+                }
+            }
+            storage.create_file(&path, total_size)
+        })
+        .await
+        {
+            Err(e) => {
+                tracing::error!(
+                    download_id = download_id.0,
+                    error = %e,
+                    "spawn_blocking for create_file panicked"
+                );
+                return AttemptOutcome::Failed(format!("file pre-allocation failed: {e}"));
+            }
+            Ok(Err(e)) => {
+                return AttemptOutcome::Failed(format!("file pre-allocation failed: {e}"));
+            }
+            Ok(Ok(())) => {}
+        }
+    }
+
+    let num_segments = if supports_range && total_size > 0 {
+        segments_count
+            .min((total_size / min_segment_bytes).max(1) as u32)
+            .max(1)
+    } else {
+        1
+    };
+
+    let segments: Vec<(u64, u64)> = if supports_range && total_size > 0 && num_segments > 1 {
+        let segment_size = total_size / num_segments as u64;
+        (0..num_segments)
+            .map(|i| {
+                let start = i as u64 * segment_size;
+                let end = if i == num_segments - 1 {
+                    total_size
+                } else {
+                    (i as u64 + 1) * segment_size
+                };
+                (start, end)
+            })
+            .collect()
+    } else if supports_range && total_size > 0 {
+        vec![(0, total_size)]
+    } else {
+        vec![(0, u64::MAX)]
+    };
+
+    if user_cancel_token.is_cancelled() {
+        return AttemptOutcome::Cancelled;
+    }
+
+    event_bus.publish(DomainEvent::DownloadStarted { id: download_id });
+
+    let shared_downloaded = Arc::new(AtomicU64::new(0));
+    let mut join_set: JoinSet<(usize, Result<u64, SegmentError>)> = JoinSet::new();
+    let mut active_segments: Vec<SegmentRuntimeState> = Vec::with_capacity(segments.len());
+    for (index, (start, end)) in segments.iter().enumerate() {
+        let (end_tx, end_rx) = watch::channel(*end);
+        let progress = Arc::new(AtomicU64::new(0));
+        active_segments.push(SegmentRuntimeState {
+            end_tx,
+            progress: progress.clone(),
+            started_at: std::time::Instant::now(),
+            start_byte: *start,
+            initial_end: *end,
+            completed: false,
+        });
+        let params = SegmentParams {
+            client: client.clone(),
+            file_storage: file_storage.clone(),
+            event_bus: event_bus.clone(),
+            download_id,
+            segment_index: index as u32,
+            url: url.clone(),
+            start_byte: *start,
+            end_byte_rx: end_rx,
+            already_downloaded: 0,
+            total_file_size: total_size,
+            dest_path: dest_path.clone(),
+            pause_rx: pause_rx.clone(),
+            cancel_token: attempt_token.clone(),
+            shared_downloaded: shared_downloaded.clone(),
+            segment_progress: progress,
+        };
+        let slot_idx = index;
+        join_set.spawn(async move { (slot_idx, download_segment(params).await) });
+    }
+
+    let mut failed = false;
+    let mut error_msg = String::new();
+    let mut next_segment_id: u32 = segments.len() as u32;
+
+    while let Some(result) = join_set.join_next().await {
+        match result {
+            Ok((slot_idx, Ok(_bytes))) => {
+                if slot_idx < active_segments.len() {
+                    active_segments[slot_idx].completed = true;
+                }
+
+                if dynamic_split_enabled.load(Ordering::Relaxed)
+                    && !attempt_token.is_cancelled()
+                    && let Some((idx, split_at)) = pick_split_target(
+                        &active_segments,
+                        dynamic_split_min_remaining_bytes.load(Ordering::Relaxed),
+                    )
+                {
+                    let new_id = next_segment_id;
+                    next_segment_id += 1;
+                    let initial_end = active_segments[idx].initial_end;
+                    let signal_sent = active_segments[idx].end_tx.send(split_at).is_ok();
+                    if signal_sent {
+                        active_segments[idx].initial_end = split_at;
+                    } else {
+                        tracing::warn!(
+                            download_id = download_id.0,
+                            original_segment_id = idx as u32,
+                            "split skipped: target worker no longer listening"
+                        );
+                        continue;
+                    }
+                    event_bus.publish(DomainEvent::SegmentSplit {
+                        download_id,
+                        original_segment_id: idx as u32,
+                        new_segment_id: new_id,
+                        split_at,
+                    });
+
+                    let new_progress = Arc::new(AtomicU64::new(0));
+                    let (new_end_tx, new_end_rx) = watch::channel(initial_end);
+                    let new_slot_idx = active_segments.len();
+                    let params = SegmentParams {
+                        client: client.clone(),
+                        file_storage: file_storage.clone(),
+                        event_bus: event_bus.clone(),
+                        download_id,
+                        segment_index: new_id,
+                        url: url.clone(),
+                        start_byte: split_at,
+                        end_byte_rx: new_end_rx,
+                        already_downloaded: 0,
+                        total_file_size: total_size,
+                        dest_path: dest_path.clone(),
+                        pause_rx: pause_rx.clone(),
+                        cancel_token: attempt_token.clone(),
+                        shared_downloaded: shared_downloaded.clone(),
+                        segment_progress: new_progress.clone(),
+                    };
+                    join_set.spawn(async move { (new_slot_idx, download_segment(params).await) });
+                    active_segments.push(SegmentRuntimeState {
+                        end_tx: new_end_tx,
+                        progress: new_progress,
+                        started_at: std::time::Instant::now(),
+                        start_byte: split_at,
+                        initial_end,
+                        completed: false,
+                    });
+
+                    persist_split_meta(
+                        &file_storage,
+                        &dest_path,
+                        download_id,
+                        &url,
+                        total_size,
+                        &active_segments,
+                    )
+                    .await;
+                }
+            }
+            Ok((_slot_idx, Err(e))) => {
+                match e {
+                    SegmentError::Cancelled => {
+                        attempt_token.cancel();
+                    }
+                    _ => {
+                        if failed {
+                            tracing::warn!(
+                                download_id = download_id.0,
+                                previous_error = %error_msg,
+                                "additional segment failure (overwriting previous error)"
+                            );
+                        }
+                        error_msg = format!("{e:?}");
+                        failed = true;
+                        // Tear down peers via the attempt-scoped token so the
+                        // user-cancel signal is not raised. The outer loop
+                        // distinguishes user-cancel from internal failure by
+                        // inspecting `user_cancel_token` after this drains.
+                        attempt_token.cancel();
+                    }
+                }
+            }
+            Err(e) => {
+                error_msg = format!("segment task panicked: {e}");
+                failed = true;
+                attempt_token.cancel();
+            }
+        }
+    }
+
+    if user_cancel_token.is_cancelled() {
+        return AttemptOutcome::Cancelled;
+    }
+    if failed {
+        return AttemptOutcome::Failed(error_msg);
+    }
+    AttemptOutcome::Completed
 }
 
 #[cfg(test)]
@@ -1258,6 +1385,302 @@ mod tests {
         assert!(
             matches!(result, Err(DomainError::NotFound(_))),
             "expected NotFound, got {result:?}"
+        );
+    }
+
+    fn make_download_with_mirrors(id: u64, mirrors: Vec<crate::domain::model::Mirror>) -> Download {
+        let download_id = DownloadId(id);
+        // The canonical URL is intentionally invalid for the mock server so
+        // failing this fallback still surfaces a clear test signal — we want
+        // every fetch to flow through `mirrors`.
+        let parsed_url = Url::new("https://invalid-canonical.example.invalid/file.bin").unwrap();
+        Download::new(
+            download_id,
+            parsed_url,
+            "test_file.bin".to_string(),
+            "/tmp/test_file.bin".to_string(),
+        )
+        .with_mirrors(mirrors)
+    }
+
+    #[tokio::test]
+    async fn test_three_mirrors_first_404_triggers_failover_to_second() {
+        // 3 mirrors. First returns 404 for the GET range request so the
+        // attempt fails; second succeeds. Engine must publish
+        // MirrorSwitched then DownloadCompleted.
+        let server = MockServer::start().await;
+        let body = vec![b'm'; 256];
+
+        // Mirror 1 — HEAD 404 (probe fail) so attempt fails fast.
+        Mock::given(method("HEAD"))
+            .and(path("/m1"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/m1"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+
+        // Mirror 2 — works.
+        Mock::given(method("HEAD"))
+            .and(path("/m2"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-length", "256")
+                    .insert_header("accept-ranges", "bytes"),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/m2"))
+            .respond_with(ResponseTemplate::new(206).set_body_bytes(body.clone()))
+            .mount(&server)
+            .await;
+
+        // Mirror 3 — also works but should not be hit (m2 succeeds first).
+        Mock::given(method("HEAD"))
+            .and(path("/m3"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-length", "256")
+                    .insert_header("accept-ranges", "bytes"),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/m3"))
+            .respond_with(ResponseTemplate::new(206).set_body_bytes(body))
+            .mount(&server)
+            .await;
+
+        let mirrors = vec![
+            crate::domain::model::Mirror::new(
+                Url::new(&format!("{}/m1", server.uri())).unwrap(),
+                90, // highest priority — tried first
+                None,
+            )
+            .unwrap(),
+            crate::domain::model::Mirror::new(
+                Url::new(&format!("{}/m2", server.uri())).unwrap(),
+                70,
+                None,
+            )
+            .unwrap(),
+            crate::domain::model::Mirror::new(
+                Url::new(&format!("{}/m3", server.uri())).unwrap(),
+                50,
+                None,
+            )
+            .unwrap(),
+        ];
+
+        let storage = Arc::new(MockFileStorage::new());
+        let bus = Arc::new(CollectingEventBus::new());
+        let engine = make_engine(storage, bus.clone());
+
+        let download = make_download_with_mirrors(100, mirrors);
+        engine.start(&download).unwrap();
+
+        let completed = bus
+            .wait_for_event_async(
+                |e| {
+                    matches!(
+                        e,
+                        DomainEvent::DownloadCompleted { id } | DomainEvent::DownloadFailed { id, .. }
+                        if id.0 == 100
+                    )
+                },
+                Duration::from_secs(10),
+            )
+            .await;
+        assert!(completed, "engine did not finish");
+
+        let events = bus.collected();
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, DomainEvent::DownloadCompleted { id } if id.0 == 100)),
+            "expected DownloadCompleted, events: {events:?}"
+        );
+
+        let switched: Vec<_> = events
+            .iter()
+            .filter_map(|e| match e {
+                DomainEvent::MirrorSwitched {
+                    id,
+                    new_mirror_index,
+                    new_url,
+                } if id.0 == 100 => Some((*new_mirror_index, new_url.clone())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            switched.len(),
+            1,
+            "exactly one mirror switch expected, got {switched:?}"
+        );
+        let (idx, url) = &switched[0];
+        assert_eq!(*idx, 1, "switched to slot 1 (priority 70)");
+        assert!(url.ends_with("/m2"), "expected /m2 mirror url, got {url}");
+    }
+
+    #[tokio::test]
+    async fn test_all_mirrors_fail_publishes_download_failed() {
+        let server = MockServer::start().await;
+
+        for p in ["/all1", "/all2"] {
+            Mock::given(method("HEAD"))
+                .and(path(p))
+                .respond_with(ResponseTemplate::new(500))
+                .mount(&server)
+                .await;
+            Mock::given(method("GET"))
+                .and(path(p))
+                .respond_with(ResponseTemplate::new(500))
+                .mount(&server)
+                .await;
+        }
+
+        let mirrors = vec![
+            crate::domain::model::Mirror::new(
+                Url::new(&format!("{}/all1", server.uri())).unwrap(),
+                80,
+                None,
+            )
+            .unwrap(),
+            crate::domain::model::Mirror::new(
+                Url::new(&format!("{}/all2", server.uri())).unwrap(),
+                40,
+                None,
+            )
+            .unwrap(),
+        ];
+
+        let storage = Arc::new(MockFileStorage::new());
+        let bus = Arc::new(CollectingEventBus::new());
+        let engine = make_engine(storage, bus.clone());
+
+        let download = make_download_with_mirrors(101, mirrors);
+        engine.start(&download).unwrap();
+
+        let done = bus
+            .wait_for_event_async(
+                |e| matches!(e, DomainEvent::DownloadFailed { id, .. } if id.0 == 101),
+                Duration::from_secs(10),
+            )
+            .await;
+        assert!(done, "expected DownloadFailed after all mirrors exhausted");
+
+        let events = bus.collected();
+        // Exactly one MirrorSwitched (between mirror 1 and mirror 2).
+        let switches: Vec<_> = events
+            .iter()
+            .filter(|e| matches!(e, DomainEvent::MirrorSwitched { id, .. } if id.0 == 101))
+            .collect();
+        assert_eq!(switches.len(), 1, "switched once before final failure");
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, DomainEvent::DownloadCompleted { id } if id.0 == 101)),
+            "must not emit DownloadCompleted on full mirror exhaustion"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_priority_respected_highest_first() {
+        // Priority order: low (10) < mid (50) < high (90). The engine
+        // must pick `high` first; we confirm by failing only `high` and
+        // observing exactly one MirrorSwitched ending on `mid`.
+        let server = MockServer::start().await;
+        let body = vec![b'p'; 128];
+
+        // high — fails
+        Mock::given(method("HEAD"))
+            .and(path("/high"))
+            .respond_with(ResponseTemplate::new(503))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/high"))
+            .respond_with(ResponseTemplate::new(503))
+            .mount(&server)
+            .await;
+        // mid — succeeds
+        Mock::given(method("HEAD"))
+            .and(path("/mid"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-length", "128")
+                    .insert_header("accept-ranges", "bytes"),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/mid"))
+            .respond_with(ResponseTemplate::new(206).set_body_bytes(body))
+            .mount(&server)
+            .await;
+        // low — must not be reached
+        Mock::given(method("HEAD"))
+            .and(path("/low"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+
+        // Insert in non-priority-order to assert the engine sorts.
+        let mirrors = vec![
+            crate::domain::model::Mirror::new(
+                Url::new(&format!("{}/low", server.uri())).unwrap(),
+                10,
+                None,
+            )
+            .unwrap(),
+            crate::domain::model::Mirror::new(
+                Url::new(&format!("{}/high", server.uri())).unwrap(),
+                90,
+                None,
+            )
+            .unwrap(),
+            crate::domain::model::Mirror::new(
+                Url::new(&format!("{}/mid", server.uri())).unwrap(),
+                50,
+                None,
+            )
+            .unwrap(),
+        ];
+
+        let storage = Arc::new(MockFileStorage::new());
+        let bus = Arc::new(CollectingEventBus::new());
+        let engine = make_engine(storage, bus.clone());
+
+        let download = make_download_with_mirrors(102, mirrors);
+        engine.start(&download).unwrap();
+
+        let done = bus
+            .wait_for_event_async(
+                |e| matches!(e, DomainEvent::DownloadCompleted { id } if id.0 == 102),
+                Duration::from_secs(10),
+            )
+            .await;
+        assert!(done, "expected DownloadCompleted via mid mirror");
+
+        let events = bus.collected();
+        let switches: Vec<_> = events
+            .iter()
+            .filter_map(|e| match e {
+                DomainEvent::MirrorSwitched { id, new_url, .. } if id.0 == 102 => {
+                    Some(new_url.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(switches.len(), 1, "exactly one switch (high → mid)");
+        assert!(
+            switches[0].ends_with("/mid"),
+            "expected switch to /mid, got {}",
+            switches[0]
         );
     }
 }

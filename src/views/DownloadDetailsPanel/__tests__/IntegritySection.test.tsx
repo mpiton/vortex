@@ -32,6 +32,8 @@ function makeDetail(overrides: Partial<DownloadDetailView> = {}): DownloadDetail
     resumeSupported: true,
     retryCount: 0,
     maxRetries: 5,
+    mirrors: [],
+    currentMirrorIndex: 0,
     createdAt: 0,
     updatedAt: 0,
     ...overrides,

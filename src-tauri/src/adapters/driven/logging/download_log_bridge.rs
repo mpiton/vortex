@@ -163,7 +163,9 @@ fn record_download_event(store: &DownloadLogStore, event: &DomainEvent) {
         | DomainEvent::AccountSelected { .. }
         | DomainEvent::AccountExhausted { .. }
         | DomainEvent::LinkStatusUpdated { .. }
-        | DomainEvent::SplitArchiveIncomplete { .. } => {}
+        | DomainEvent::SplitArchiveIncomplete { .. }
+        | DomainEvent::MirrorSwitched { .. }
+        | DomainEvent::AllMirrorsExhausted { .. } => {}
     }
 }
 

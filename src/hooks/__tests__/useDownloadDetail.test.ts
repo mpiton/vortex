@@ -31,6 +31,8 @@ function mockDownloadDetail(): DownloadDetailView {
     resumeSupported: true,
     retryCount: 0,
     maxRetries: 5,
+    mirrors: [],
+    currentMirrorIndex: 0,
     createdAt: Date.now(),
     updatedAt: Date.now(),
   };

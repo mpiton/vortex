@@ -1,7 +1,13 @@
 use crate::domain::error::DomainError;
 use crate::domain::event::DomainEvent;
 use crate::domain::model::checksum::ChecksumAlgorithm;
+use crate::domain::model::mirror::{Mirror, sort_by_priority as sort_mirrors_by_priority};
 use crate::domain::model::queue::Priority;
+
+/// Upper bound on mirrors per download. Real-world Metalinks rarely
+/// exceed a dozen; the cap defends against a hostile or malformed
+/// `.metalink` that ships thousands of entries.
+pub const MAX_MIRRORS_PER_DOWNLOAD: usize = 64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct DownloadId(pub u64);
@@ -167,6 +173,10 @@ pub struct Download {
     module_name: Option<String>,
     account_id: Option<u64>,
     destination_path: String,
+    /// Empty when the download has a single source — in that case
+    /// [`Download::active_url`] returns the canonical `url` field instead.
+    mirrors: Vec<Mirror>,
+    current_mirror_index: u32,
     created_at: u64,
     updated_at: u64,
 }
@@ -197,6 +207,8 @@ impl Download {
             module_name: None,
             account_id: None,
             destination_path,
+            mirrors: Vec::new(),
+            current_mirror_index: 0,
             created_at: 0,
             updated_at: 0,
         }
@@ -228,9 +240,18 @@ impl Download {
         module_name: Option<String>,
         account_id: Option<u64>,
         destination_path: String,
+        mirrors: Vec<Mirror>,
+        current_mirror_index: u32,
         created_at: u64,
         updated_at: u64,
     ) -> Self {
+        // Clamp the persisted index to a valid slot — a corrupted DB row
+        // pointing past the end of the list must not panic the engine.
+        let clamped_index = if mirrors.is_empty() {
+            0
+        } else {
+            current_mirror_index.min((mirrors.len() - 1) as u32)
+        };
         Download {
             id,
             url,
@@ -252,6 +273,8 @@ impl Download {
             module_name,
             account_id,
             destination_path,
+            mirrors,
+            current_mirror_index: clamped_index,
             created_at,
             updated_at,
         }
@@ -314,6 +337,73 @@ impl Download {
 
     pub fn set_destination_path(&mut self, path: String) {
         self.destination_path = path;
+    }
+
+    /// Replace the mirror list. The list is sorted highest-priority first
+    /// and the cursor is reset to slot 0 so the next [`Download::active_url`]
+    /// resolves to the best available source. Pass an empty `Vec` to clear
+    /// the alternatives and fall back to the canonical `url`.
+    pub fn with_mirrors(mut self, mirrors: Vec<Mirror>) -> Self {
+        self.set_mirrors(mirrors);
+        self
+    }
+
+    /// In-place equivalent of [`Download::with_mirrors`]. Truncates to
+    /// [`MAX_MIRRORS_PER_DOWNLOAD`] after sorting so a malformed Metalink
+    /// with thousands of entries cannot bloat `mirrors_json` or hang the
+    /// failover loop on a noisy long tail.
+    pub fn set_mirrors(&mut self, mut mirrors: Vec<Mirror>) {
+        sort_mirrors_by_priority(&mut mirrors);
+        mirrors.truncate(MAX_MIRRORS_PER_DOWNLOAD);
+        self.mirrors = mirrors;
+        self.current_mirror_index = 0;
+    }
+
+    /// Move the cursor to the next mirror. Returns the freshly selected
+    /// mirror's URL on success, or [`DomainError::NotFound`] when every
+    /// mirror has already been visited (the engine raises
+    /// `DownloadFailed` in that case).
+    pub fn advance_mirror(&mut self) -> Result<&Url, DomainError> {
+        if self.mirrors.is_empty() {
+            return Err(DomainError::NotFound("no mirrors configured".to_string()));
+        }
+        let next = self.current_mirror_index.saturating_add(1);
+        if next as usize >= self.mirrors.len() {
+            return Err(DomainError::NotFound("all mirrors exhausted".to_string()));
+        }
+        self.current_mirror_index = next;
+        Ok(self.mirrors[next as usize].url())
+    }
+
+    /// Reset the cursor back to the highest-priority mirror. Called by
+    /// the manual-retry path so a user-driven retry restarts from the
+    /// best candidate, matching the behaviour of the automatic-retry
+    /// circuit-breaker reset.
+    pub fn reset_mirror_cursor(&mut self) {
+        self.current_mirror_index = 0;
+    }
+
+    /// Sorted alternative sources. Empty when the download has no Metalink
+    /// metadata attached.
+    pub fn mirrors(&self) -> &[Mirror] {
+        &self.mirrors
+    }
+
+    /// Index into [`Download::mirrors`] of the candidate currently in use.
+    /// Always `0` when no mirrors are configured.
+    pub fn current_mirror_index(&self) -> u32 {
+        self.current_mirror_index
+    }
+
+    /// URL the engine should hit for the next fetch. Resolves to
+    /// `mirrors[current_mirror_index]` when a mirror list is configured;
+    /// falls back to the canonical [`Download::url`] otherwise so single-
+    /// source downloads keep their pre-existing behaviour.
+    pub fn active_url(&self) -> &Url {
+        match self.mirrors.get(self.current_mirror_index as usize) {
+            Some(mirror) => mirror.url(),
+            None => &self.url,
+        }
     }
 
     pub fn touch(&mut self, now: u64) {
@@ -1064,5 +1154,87 @@ mod tests {
         assert_eq!(d.account_id(), None);
         let d = d.with_account_id(42);
         assert_eq!(d.account_id(), Some(42));
+    }
+
+    fn mk_mirror(host: &str, priority: u8) -> Mirror {
+        let url = Url::new(&format!("https://{host}/file.zip")).unwrap();
+        Mirror::new(url, priority, None).unwrap()
+    }
+
+    #[test]
+    fn test_with_mirrors_sorts_highest_priority_first() {
+        let mirrors = vec![
+            mk_mirror("low.example.com", 10),
+            mk_mirror("high.example.com", 80),
+            mk_mirror("mid.example.com", 50),
+        ];
+        let d = make_download().with_mirrors(mirrors);
+        let active = d.active_url();
+        assert_eq!(active.host(), "high.example.com");
+    }
+
+    #[test]
+    fn test_active_url_falls_back_to_canonical_url_without_mirrors() {
+        let d = make_download();
+        assert_eq!(d.active_url().host(), "example.com");
+    }
+
+    #[test]
+    fn test_advance_mirror_walks_through_priority_descending_list() {
+        let mirrors = vec![
+            mk_mirror("low.example.com", 10),
+            mk_mirror("high.example.com", 80),
+            mk_mirror("mid.example.com", 50),
+        ];
+        let mut d = make_download().with_mirrors(mirrors);
+        assert_eq!(d.active_url().host(), "high.example.com");
+        let next = d.advance_mirror().unwrap();
+        assert_eq!(next.host(), "mid.example.com");
+        let next = d.advance_mirror().unwrap();
+        assert_eq!(next.host(), "low.example.com");
+    }
+
+    #[test]
+    fn test_advance_mirror_returns_not_found_when_exhausted() {
+        let mirrors = vec![
+            mk_mirror("a.example.com", 50),
+            mk_mirror("b.example.com", 30),
+        ];
+        let mut d = make_download().with_mirrors(mirrors);
+        d.advance_mirror().unwrap();
+        let err = d.advance_mirror().unwrap_err();
+        assert!(matches!(err, DomainError::NotFound(_)));
+    }
+
+    #[test]
+    fn test_advance_mirror_returns_not_found_when_no_mirrors_configured() {
+        let mut d = make_download();
+        let err = d.advance_mirror().unwrap_err();
+        assert!(matches!(err, DomainError::NotFound(_)));
+    }
+
+    #[test]
+    fn test_reset_mirror_cursor_returns_to_highest_priority() {
+        let mirrors = vec![
+            mk_mirror("low.example.com", 10),
+            mk_mirror("high.example.com", 80),
+        ];
+        let mut d = make_download().with_mirrors(mirrors);
+        d.advance_mirror().unwrap();
+        assert_eq!(d.active_url().host(), "low.example.com");
+        d.reset_mirror_cursor();
+        assert_eq!(d.active_url().host(), "high.example.com");
+    }
+
+    #[test]
+    fn test_mirrors_getter_returns_sorted_list() {
+        let mirrors = vec![
+            mk_mirror("low.example.com", 10),
+            mk_mirror("high.example.com", 80),
+        ];
+        let d = make_download().with_mirrors(mirrors);
+        assert_eq!(d.mirrors().len(), 2);
+        assert_eq!(d.mirrors()[0].priority(), 80);
+        assert_eq!(d.mirrors()[1].priority(), 10);
     }
 }

@@ -96,6 +96,8 @@ mod tests {
             None,
             None,
             "/tmp/file.zip".to_string(),
+            Vec::new(),
+            0,
             0,
             5_000,
         )

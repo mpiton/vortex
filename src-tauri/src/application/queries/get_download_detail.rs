@@ -187,6 +187,8 @@ mod tests {
             resume_supported: true,
             retry_count: 0,
             max_retries: 5,
+            mirrors: Vec::new(),
+            current_mirror_index: 0,
             created_at: 0,
             updated_at: 0,
         }

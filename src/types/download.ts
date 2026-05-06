@@ -60,6 +60,12 @@ export interface DownloadView {
   createdAt: number;
 }
 
+export interface MirrorView {
+  url: string;
+  priority: number;
+  country: string | null;
+}
+
 export interface DownloadDetailView {
   id: string;
   fileName: string;
@@ -81,6 +87,8 @@ export interface DownloadDetailView {
   resumeSupported: boolean;
   retryCount: number;
   maxRetries: number;
+  mirrors: MirrorView[];
+  currentMirrorIndex: number;
   createdAt: number;
   updatedAt: number;
 }

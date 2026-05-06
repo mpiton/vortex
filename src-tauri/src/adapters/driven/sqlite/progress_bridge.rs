@@ -45,6 +45,14 @@ enum BridgeMessage {
         download_id: i64,
         segment_index: i32,
     },
+    MirrorSwitched {
+        download_id: i64,
+        new_mirror_index: i32,
+    },
+    /// Reset the cursor on terminal failure so the next manual / automatic
+    /// retry restarts from the highest-priority mirror instead of resuming on
+    /// the last-tried slot (which is where a full exhaustion run leaves it).
+    MirrorCursorReset { download_id: i64 },
 }
 
 /// Register the SQLite progress bridge on the given event bus.
@@ -93,6 +101,29 @@ pub fn spawn_sqlite_progress_bridge(event_bus: &dyn EventBus, db: DatabaseConnec
                     segment_index,
                 } => {
                     fail_segment(&db, download_id, segment_index).await;
+                }
+                BridgeMessage::MirrorSwitched {
+                    download_id,
+                    new_mirror_index,
+                } => {
+                    update_mirror_cursor(&db, download_id, new_mirror_index).await;
+                    // Wipe persisted byte counters before the next attempt
+                    // sends fresh SegmentStarted / DownloadProgress events.
+                    // The MAX guard inside `update_download_progress` would
+                    // otherwise pin `downloaded_bytes` at the last value
+                    // written by the failed mirror until the new mirror
+                    // crosses it — the UI would show stale / inflated
+                    // progress (and ETA) until then.
+                    reset_download_bytes(&db, download_id).await;
+                    // The next mirror may pick a different segment plan
+                    // (no range support, fewer splits). Without this purge
+                    // the read model would carry phantom segment rows from
+                    // the failed attempt — the detail panel and list
+                    // segment counts both query by download_id.
+                    clear_segments_for_download(&db, download_id).await;
+                }
+                BridgeMessage::MirrorCursorReset { download_id } => {
+                    update_mirror_cursor(&db, download_id, 0).await;
                 }
             }
         }
@@ -178,6 +209,25 @@ fn event_to_message(event: &DomainEvent) -> Option<BridgeMessage> {
         } => Some(BridgeMessage::SegmentFailed {
             download_id: download_id.0 as i64,
             segment_index: *segment_index as i32,
+        }),
+
+        DomainEvent::MirrorSwitched {
+            id,
+            new_mirror_index,
+            ..
+        } => Some(BridgeMessage::MirrorSwitched {
+            download_id: id.0 as i64,
+            new_mirror_index: *new_mirror_index as i32,
+        }),
+
+        // Mirror exhaustion alone resets the cursor — the engine emits this
+        // ahead of the generic `DownloadFailed` from the failover loop.
+        // Other `DownloadFailed` paths (extract errors, verify errors,
+        // domain `Download::fail()`) leave the cursor on the last-known-good
+        // slot so a re-download from the same mirror keeps working without
+        // first re-walking the mirrors that already failed.
+        DomainEvent::AllMirrorsExhausted { id } => Some(BridgeMessage::MirrorCursorReset {
+            download_id: id.0 as i64,
         }),
 
         _ => None,
@@ -295,6 +345,67 @@ async fn complete_segment(db: &DatabaseConnection, download_id: i64, segment_ind
     }
 }
 
+/// Persist the active mirror cursor whenever the engine switches over to a
+/// different source. Without this update, `download_read_repo` keeps reporting
+/// slot 0 as active even after a runtime failover, so the details panel shows
+/// the wrong mirror as the live one.
+async fn update_mirror_cursor(db: &DatabaseConnection, download_id: i64, new_mirror_index: i32) {
+    let stmt = Statement::from_sql_and_values(
+        DatabaseBackend::Sqlite,
+        "UPDATE downloads SET current_mirror_index = ? WHERE id = ?",
+        [new_mirror_index.into(), download_id.into()],
+    );
+    if let Err(e) = db.execute(stmt).await {
+        tracing::warn!(
+            download_id,
+            new_mirror_index,
+            error = %e,
+            "progress_bridge: failed to persist mirror cursor"
+        );
+    }
+}
+
+/// Zero `downloaded_bytes` and clear `total_bytes` for a download. Runs from
+/// the bridge's `MirrorSwitched` handler so the new mirror attempt starts from
+/// a clean progress baseline. `update_download_progress` later restores
+/// `total_bytes` from the next progress event via its `COALESCE(NULLIF(...))`
+/// guard, and `downloaded_bytes` rises monotonically from 0 under the `MAX`
+/// guard.
+async fn reset_download_bytes(db: &DatabaseConnection, download_id: i64) {
+    let stmt = Statement::from_sql_and_values(
+        DatabaseBackend::Sqlite,
+        "UPDATE downloads SET downloaded_bytes = 0, total_bytes = NULL WHERE id = ?",
+        [download_id.into()],
+    );
+    if let Err(e) = db.execute(stmt).await {
+        tracing::warn!(
+            download_id,
+            error = %e,
+            "progress_bridge: failed to reset byte counters before mirror retry"
+        );
+    }
+}
+
+/// Drop every segment row belonging to a download. Called from the bridge's
+/// `MirrorSwitched` handler so the next mirror attempt starts with an empty
+/// segments table — without this the read model surfaces stale segments from
+/// the failed attempt, including ones whose state was `Error` at the moment
+/// of the switch.
+async fn clear_segments_for_download(db: &DatabaseConnection, download_id: i64) {
+    let stmt = Statement::from_sql_and_values(
+        DatabaseBackend::Sqlite,
+        "DELETE FROM download_segments WHERE download_id = ?",
+        [download_id.into()],
+    );
+    if let Err(e) = db.execute(stmt).await {
+        tracing::warn!(
+            download_id,
+            error = %e,
+            "progress_bridge: failed to clear segments before mirror retry"
+        );
+    }
+}
+
 async fn fail_segment(db: &DatabaseConnection, download_id: i64, segment_index: i32) {
     let sql = "UPDATE download_segments \
                SET state = 'Error' \
@@ -317,7 +428,7 @@ async fn fail_segment(db: &DatabaseConnection, download_id: i64, segment_index: 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sea_orm::{ActiveModelTrait, EntityTrait, Set};
+    use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};
 
     use crate::adapters::driven::sqlite::connection::setup_test_db;
     use crate::adapters::driven::sqlite::entities::{download, download_segment};
@@ -412,6 +523,8 @@ mod tests {
             account_id: Set(None),
             destination_path: Set("/tmp/file.bin".to_string()),
             error_message: Set(None),
+            mirrors_json: Set(None),
+            current_mirror_index: Set(0),
             created_at: Set(1),
             updated_at: Set(1),
         }
@@ -521,6 +634,181 @@ mod tests {
             row.total_bytes,
             Some(10_000_000),
             "existing non-zero total_bytes must not be overwritten"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_update_mirror_cursor_persists_new_index() {
+        let db = setup_test_db().await.unwrap();
+        insert_download_row(&db, 77, None, 0).await;
+
+        update_mirror_cursor(&db, 77, 2).await;
+
+        let row = download::Entity::find_by_id(77)
+            .one(&db)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            row.current_mirror_index, 2,
+            "cursor must be written through to the row so the read model surfaces the live mirror"
+        );
+    }
+
+    #[test]
+    fn test_event_to_message_maps_mirror_switched() {
+        use crate::domain::model::download::DownloadId;
+
+        let event = DomainEvent::MirrorSwitched {
+            id: DownloadId(7),
+            new_mirror_index: 3,
+            new_url: "https://m4.example.com/file".to_string(),
+        };
+        match event_to_message(&event) {
+            Some(BridgeMessage::MirrorSwitched {
+                download_id,
+                new_mirror_index,
+            }) => {
+                assert_eq!(download_id, 7);
+                assert_eq!(new_mirror_index, 3);
+            }
+            other => panic!("expected MirrorSwitched message, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_event_to_message_maps_all_mirrors_exhausted_to_cursor_reset() {
+        use crate::domain::model::download::DownloadId;
+
+        let event = DomainEvent::AllMirrorsExhausted { id: DownloadId(11) };
+        match event_to_message(&event) {
+            Some(BridgeMessage::MirrorCursorReset { download_id }) => {
+                assert_eq!(download_id, 11);
+            }
+            other => panic!("expected MirrorCursorReset message, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_event_to_message_does_not_reset_cursor_on_generic_download_failed() {
+        use crate::domain::model::download::DownloadId;
+
+        // An extract / verify / domain-side terminal failure must leave the
+        // persisted cursor untouched so the last-known-good mirror stays
+        // active for a re-download.
+        let event = DomainEvent::DownloadFailed {
+            id: DownloadId(12),
+            error: "archive corrupt".to_string(),
+        };
+        assert!(
+            event_to_message(&event).is_none(),
+            "DownloadFailed alone must not produce a bridge message — only AllMirrorsExhausted"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_all_mirrors_exhausted_resets_persisted_mirror_cursor_to_zero() {
+        let db = setup_test_db().await.unwrap();
+        insert_download_row(&db, 88, None, 0).await;
+        update_mirror_cursor(&db, 88, 4).await;
+
+        // Reset path: only AllMirrorsExhausted zeroes the cursor so the next
+        // retry walks the mirror list from the top.
+        update_mirror_cursor(&db, 88, 0).await;
+
+        let row = download::Entity::find_by_id(88)
+            .one(&db)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            row.current_mirror_index, 0,
+            "AllMirrorsExhausted must reset the persisted mirror cursor so retries start fresh"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_reset_download_bytes_zeroes_downloaded_and_clears_total() {
+        let db = setup_test_db().await.unwrap();
+        // Pre-load with non-zero progress, as if the failed mirror got partway
+        // through the file before erroring out.
+        insert_download_row(&db, 110, Some(1_000_000), 700_000).await;
+
+        reset_download_bytes(&db, 110).await;
+
+        let row = download::Entity::find_by_id(110)
+            .one(&db)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            row.downloaded_bytes, 0,
+            "downloaded_bytes must drop to 0 so the MAX guard cannot pin stale values"
+        );
+        assert_eq!(
+            row.total_bytes, None,
+            "total_bytes must clear so the next progress event repopulates it via NULLIF/COALESCE"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_reset_download_bytes_then_progress_repopulates_total() {
+        let db = setup_test_db().await.unwrap();
+        insert_download_row(&db, 111, Some(1_000_000), 700_000).await;
+
+        reset_download_bytes(&db, 111).await;
+        // Mimic the first DownloadProgress event from the new mirror.
+        update_download_progress(&db, 111, 50_000, 900_000).await;
+
+        let row = download::Entity::find_by_id(111)
+            .one(&db)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.downloaded_bytes, 50_000);
+        assert_eq!(
+            row.total_bytes,
+            Some(900_000),
+            "total_bytes must accept the new mirror's value once it surfaces"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_clear_segments_for_download_drops_all_rows_for_id() {
+        let db = setup_test_db().await.unwrap();
+        insert_download_row(&db, 99, Some(4096), 0).await;
+
+        let row_a = segment_row_id(99, 0).expect("segment_index < 100");
+        let row_b = segment_row_id(99, 1).expect("segment_index < 100");
+        insert_segment(&db, row_a, 99, 0, 0, 2048).await;
+        insert_segment(&db, row_b, 99, 1, 2048, 4096).await;
+
+        // Different download_id — must survive.
+        insert_download_row(&db, 100, Some(4096), 0).await;
+        let row_c = segment_row_id(100, 0).expect("segment_index < 100");
+        insert_segment(&db, row_c, 100, 0, 0, 4096).await;
+
+        clear_segments_for_download(&db, 99).await;
+
+        let remaining_for_99 = download_segment::Entity::find()
+            .filter(download_segment::Column::DownloadId.eq(99_i64))
+            .all(&db)
+            .await
+            .unwrap();
+        assert!(
+            remaining_for_99.is_empty(),
+            "MirrorSwitched must drop every segment row for the switching download"
+        );
+
+        let remaining_for_100 = download_segment::Entity::find()
+            .filter(download_segment::Column::DownloadId.eq(100_i64))
+            .all(&db)
+            .await
+            .unwrap();
+        assert_eq!(
+            remaining_for_100.len(),
+            1,
+            "segments belonging to other downloads must not be touched"
         );
     }
 }

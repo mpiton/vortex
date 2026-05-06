@@ -68,6 +68,12 @@ async fn persist_download<C: ConnectionTrait>(
         // MAX expression below so that progress_bridge writes
         // (which may race with state-transition saves) are never
         // regressed back to a stale lower value.
+        // CurrentMirrorIndex excluded: progress_bridge owns this
+        // column via MirrorSwitched / DownloadFailed events. A
+        // generic save() carrying a stale in-memory cursor would
+        // race with the event-driven write and overwrite a fresh
+        // failover position with the cursor at the time the
+        // aggregate was loaded.
         .update_columns([
             download::Column::Url,
             download::Column::FileName,
@@ -87,6 +93,7 @@ async fn persist_download<C: ConnectionTrait>(
             download::Column::ModuleName,
             download::Column::AccountId,
             download::Column::DestinationPath,
+            download::Column::MirrorsJson,
         ]);
     if update_error_message {
         on_conflict.update_column(download::Column::ErrorMessage);
@@ -211,6 +218,72 @@ mod tests {
             "file.zip".to_string(),
             "/tmp".to_string(),
         )
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_save_round_trips_mirrors_with_priority_and_country() {
+        let db = setup_test_db().await.expect("test db");
+        let repo = SqliteDownloadRepo::new(db);
+
+        let mirror_a = crate::domain::model::Mirror::new(
+            Url::new("https://a.example.com/file.zip").unwrap(),
+            80,
+            Some("US".to_string()),
+        )
+        .unwrap();
+        let mirror_b = crate::domain::model::Mirror::new(
+            Url::new("https://b.example.com/file.zip").unwrap(),
+            40,
+            None,
+        )
+        .unwrap();
+
+        let download = make_download(42).with_mirrors(vec![mirror_a, mirror_b]);
+        repo.save(&download).expect("save with mirrors");
+
+        let reloaded = repo
+            .find_by_id(DownloadId(42))
+            .expect("find_by_id")
+            .expect("download exists");
+        let mirrors = reloaded.mirrors();
+        assert_eq!(mirrors.len(), 2, "both mirrors round-tripped");
+        assert_eq!(mirrors[0].priority(), 80, "highest priority first");
+        assert_eq!(mirrors[0].country(), Some("US"));
+        assert_eq!(mirrors[0].url().host(), "a.example.com");
+        assert_eq!(mirrors[1].priority(), 40);
+        assert!(mirrors[1].country().is_none());
+        assert_eq!(reloaded.current_mirror_index(), 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_save_round_trips_current_mirror_index_after_advance() {
+        let db = setup_test_db().await.expect("test db");
+        let repo = SqliteDownloadRepo::new(db);
+
+        let mirrors = vec![
+            crate::domain::model::Mirror::new(
+                Url::new("https://m1.example.com/f").unwrap(),
+                90,
+                None,
+            )
+            .unwrap(),
+            crate::domain::model::Mirror::new(
+                Url::new("https://m2.example.com/f").unwrap(),
+                50,
+                None,
+            )
+            .unwrap(),
+        ];
+        let mut download = make_download(43).with_mirrors(mirrors);
+        download.advance_mirror().expect("advance to slot 1");
+        repo.save(&download).expect("save advanced");
+
+        let reloaded = repo
+            .find_by_id(DownloadId(43))
+            .expect("find")
+            .expect("exists");
+        assert_eq!(reloaded.current_mirror_index(), 1);
+        assert_eq!(reloaded.active_url().host(), "m2.example.com");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -379,6 +452,8 @@ mod tests {
             account_id: Set(None),
             destination_path: Set("/tmp".to_string()),
             error_message: Set(None),
+            mirrors_json: Set(None),
+            current_mirror_index: Set(0),
             created_at: Set(0),
             updated_at: Set(0),
         };
