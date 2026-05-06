@@ -22,6 +22,7 @@ mod extract_archive;
 mod group_playlists;
 mod group_split_archives;
 mod import_accounts;
+mod import_container;
 mod install_plugin;
 mod move_package_to_folder;
 mod move_queue;
@@ -191,6 +192,30 @@ pub struct ResolveLinksCommand {
 impl Command for ResolveLinksCommand {}
 
 pub use resolve_links::ResolvedLinkDto;
+
+/// Decrypt a container blob (DLC / CCF / RSDF / Metalink / .meta4) via
+/// the loaded `vortex-mod-containers` plugin and create a
+/// [`PackageSourceType::Container`] package to host the extracted entries.
+///
+/// The driving adapter is responsible for routing the returned URLs
+/// through `link_resolve` so the existing duplicate-detection,
+/// online-check and start-download flows apply uniformly.
+#[derive(Debug, Clone)]
+pub struct ImportContainerCommand {
+    /// Original file name, used as the package label and to validate the
+    /// extension (`.dlc` / `.ccf` / `.rsdf` / `.metalink` / `.meta4`).
+    pub file_name: String,
+    /// Raw bytes of the container file. Capped at
+    /// [`crate::application::commands::import_container::MAX_CONTAINER_BYTES`]
+    /// so a malicious caller can't force an oversize plugin call.
+    pub file_bytes: Vec<u8>,
+    /// Wall-clock millis injected by the driving adapter so handlers
+    /// stay deterministic in tests.
+    pub created_at_ms: u64,
+}
+impl Command for ImportContainerCommand {}
+
+pub use import_container::{ImportContainerOutcome, MAX_CONTAINER_BYTES};
 
 /// Probe each URL in `urls` for availability and stream a
 /// `DomainEvent::LinkStatusUpdated` per terminal transition. Bounded by

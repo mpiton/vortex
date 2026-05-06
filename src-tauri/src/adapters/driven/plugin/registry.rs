@@ -117,6 +117,36 @@ impl PluginRegistry {
         })?;
         Ok(result.to_string())
     }
+
+    /// Variant of [`Self::call_plugin`] that ships a raw byte buffer to
+    /// the plugin instead of a `&str`. Container decoders take binary
+    /// blobs (DLC / CCF / RSDF / Metalink) and must not pass through a
+    /// UTF-8 conversion that would corrupt non-text bytes.
+    pub fn call_plugin_bytes(
+        &self,
+        name: &str,
+        func: &str,
+        input: &[u8],
+    ) -> Result<String, DomainError> {
+        let plugin_handle = {
+            let entry = self
+                .plugins
+                .get(name)
+                .ok_or_else(|| DomainError::NotFound(name.to_string()))?;
+            Arc::clone(&entry.plugin)
+        };
+        let mut plugin = plugin_handle
+            .lock()
+            .map_err(|_| DomainError::PluginError(format!("plugin '{name}' mutex poisoned")))?;
+        let fn_exists = plugin.function_exists(func);
+        tracing::info!(plugin = name, func, fn_exists, "call_plugin_bytes pre-call");
+        let result = plugin.call::<&[u8], &str>(func, input).map_err(|e| {
+            DomainError::PluginError(format!(
+                "plugin call failed (function_exists={fn_exists}): {e}"
+            ))
+        })?;
+        Ok(result.to_string())
+    }
 }
 
 impl Default for PluginRegistry {

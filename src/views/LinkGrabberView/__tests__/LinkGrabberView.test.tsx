@@ -1,5 +1,5 @@
 import { beforeEach, describe, it, expect, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router";
@@ -290,6 +290,92 @@ describe("LinkGrabberView", () => {
     await waitFor(() => {
       expect(screen.getByRole("textbox")).toHaveFocus();
     });
+  });
+
+  it("should call link_import_container and resolve returned URLs when a .dlc is dropped", async () => {
+    mockInvoke.mockImplementation((cmd) => {
+      if (cmd === "link_import_container") {
+        return Promise.resolve({
+          format: "dlc",
+          fileName: "pack.dlc",
+          urls: ["https://hoster.example/a.bin", "https://hoster.example/b.bin"],
+          packageId: "pkg-1",
+          packageName: "pack.dlc",
+        });
+      }
+      return Promise.resolve([]);
+    });
+
+    renderWithProviders();
+
+    const dropZone = screen.getByTestId("paste-drop-zone");
+    const dlcBytes = new Uint8Array([0x44, 0x4c, 0x43, 0x00]); // "DLC\0"
+    const dlcFile = new File([dlcBytes], "pack.dlc", {
+      type: "application/octet-stream",
+    });
+
+    fireEvent.drop(dropZone, {
+      dataTransfer: {
+        files: [dlcFile],
+        getData: () => "",
+      },
+    });
+
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith(
+        "link_import_container",
+        expect.objectContaining({
+          fileName: "pack.dlc",
+          fileBytes: expect.any(Array),
+        }),
+      );
+    });
+
+    const importCall = mockInvoke.mock.calls.find(([c]) => c === "link_import_container");
+    const importedBytes = (importCall![1] as { fileBytes: number[] }).fileBytes;
+    expect(importedBytes).toEqual([0x44, 0x4c, 0x43, 0x00]);
+
+    await waitFor(() => {
+      expect(toast.success).toHaveBeenCalled();
+    });
+
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith(
+        "link_resolve",
+        expect.objectContaining({
+          urls: ["https://hoster.example/a.bin", "https://hoster.example/b.bin"],
+        }),
+      );
+    });
+  });
+
+  it("should toast an error when link_import_container fails", async () => {
+    mockInvoke.mockImplementation((cmd) => {
+      if (cmd === "link_import_container") {
+        return Promise.reject("Install vortex-mod-containers");
+      }
+      return Promise.resolve([]);
+    });
+
+    renderWithProviders();
+
+    const dropZone = screen.getByTestId("paste-drop-zone");
+    const dlcFile = new File([new Uint8Array([1, 2, 3])], "pack.dlc", {
+      type: "application/octet-stream",
+    });
+
+    fireEvent.drop(dropZone, {
+      dataTransfer: {
+        files: [dlcFile],
+        getData: () => "",
+      },
+    });
+
+    await waitFor(() => {
+      expect(toast.error).toHaveBeenCalled();
+    });
+    const linkResolveCalls = mockInvoke.mock.calls.filter(([c]) => c === "link_resolve");
+    expect(linkResolveCalls).toHaveLength(0);
   });
 
   it("should pre-fill the textarea and resolve links when opened with pasteContent", async () => {

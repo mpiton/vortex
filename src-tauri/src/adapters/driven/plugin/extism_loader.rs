@@ -409,6 +409,45 @@ impl PluginLoader for ExtismPluginLoader {
         })
     }
 
+    fn decrypt_container(&self, bytes: &[u8]) -> Result<String, DomainError> {
+        // Pick the first enabled `Container`-category plugin that exports
+        // a `decrypt` function. Sort by name for deterministic selection
+        // when several container plugins are loaded (e.g. third-party
+        // forks alongside `vortex-mod-containers`).
+        let mut infos: Vec<_> = self
+            .registry
+            .list_info()
+            .into_iter()
+            .filter(|i| i.is_enabled())
+            .filter(|i| i.category() == crate::domain::model::plugin::PluginCategory::Container)
+            .collect();
+        infos.sort_by(|a, b| a.name().cmp(b.name()));
+
+        for info in &infos {
+            match self.registry.function_exists(info.name(), "decrypt") {
+                Ok(true) => {
+                    return self
+                        .registry
+                        .call_plugin_bytes(info.name(), "decrypt", bytes)
+                        .map_err(|e| {
+                            DomainError::PluginError(format!(
+                                "plugin '{}' decrypt failed: {e}",
+                                info.name()
+                            ))
+                        });
+                }
+                Ok(false) => {
+                    tracing::debug!(plugin = info.name(), "container plugin lacks 'decrypt'");
+                }
+                Err(e) => {
+                    tracing::warn!(plugin = info.name(), error = %e, "decrypt probe failed");
+                }
+            }
+        }
+
+        Err(DomainError::NotFound("no container plugin loaded".into()))
+    }
+
     fn load_from_dir(&self, dir: &std::path::Path) -> Result<(), DomainError> {
         let (manifest, _wasm_path) = parse_manifest(dir)?;
         let name = manifest.info().name().to_string();
@@ -617,6 +656,19 @@ description = "Test plugin"
         let result = loader.resolve_url("magnet:?xt=urn:btih:abc123");
         assert!(result.is_ok());
         assert!(result.unwrap().is_none());
+    }
+
+    #[test]
+    fn test_decrypt_container_returns_not_found_when_no_plugin_loaded() {
+        let tmp = TempDir::new().unwrap();
+        let loader = ExtismPluginLoader::new(
+            tmp.path().to_path_buf(),
+            Arc::new(SharedHostResources::new()),
+        )
+        .unwrap();
+
+        let result = loader.decrypt_container(b"DLC\x00random");
+        assert!(matches!(result, Err(DomainError::NotFound(_))));
     }
 
     #[test]

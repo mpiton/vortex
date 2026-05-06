@@ -20,10 +20,11 @@ use crate::application::commands::{
     CreatePackageCommand, DeleteAccountCommand, DeleteHistoryEntryCommand, DeletePackageCommand,
     DisablePluginCommand, EnablePluginCommand, ExportAccountsCommand, ExportAccountsOutcome,
     ExportHistoryCommand, ExportHistoryFormat, ImportAccountsCommand, ImportAccountsOutcome,
-    InstallPluginCommand, MovePackageToFolderCommand, MoveToBottomCommand, MoveToTopCommand,
-    OpenDownloadFileCommand, OpenDownloadFolderCommand, PackageMoveOutcome, PackagePatch,
-    PauseAllDownloadsCommand, PauseDownloadCommand, PurgeHistoryCommand, RedownloadCommand,
-    RedownloadSource, RemoveDownloadCommand, RemoveDownloadFromPackageCommand, ReorderQueueCommand,
+    ImportContainerCommand, ImportContainerOutcome, InstallPluginCommand, MAX_CONTAINER_BYTES,
+    MovePackageToFolderCommand, MoveToBottomCommand, MoveToTopCommand, OpenDownloadFileCommand,
+    OpenDownloadFolderCommand, PackageMoveOutcome, PackagePatch, PauseAllDownloadsCommand,
+    PauseDownloadCommand, PurgeHistoryCommand, RedownloadCommand, RedownloadSource,
+    RemoveDownloadCommand, RemoveDownloadFromPackageCommand, ReorderQueueCommand,
     ReportBrokenPluginCommand, ResolveLinksCommand, ResolvedLinkDto, ResumeAllDownloadsCommand,
     ResumeDownloadCommand, RetryDownloadCommand, SetPackagePasswordCommand,
     SetPackagePriorityCommand, SetPriorityCommand, StartDownloadCommand,
@@ -967,6 +968,74 @@ pub async fn link_group_playlists(
             item_count: r.item_count,
         })
         .collect())
+}
+
+/// IPC return shape for [`link_import_container`]. Mirrors
+/// [`ImportContainerOutcome`] in camelCase. The frontend feeds `urls`
+/// back into `link_resolve` so the existing online-check / dedupe /
+/// start flow applies, then attaches downloads to `packageId` so they
+/// appear under the auto-built `source_type=container` package.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportContainerResultDto {
+    pub format: String,
+    pub file_name: String,
+    pub urls: Vec<String>,
+    pub package_id: String,
+    pub package_name: String,
+}
+
+impl From<ImportContainerOutcome> for ImportContainerResultDto {
+    fn from(o: ImportContainerOutcome) -> Self {
+        Self {
+            format: o.format,
+            file_name: o.file_name,
+            urls: o.urls,
+            package_id: o.package_id.as_str().to_string(),
+            package_name: o.package_name,
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn link_import_container(
+    state: State<'_, AppState>,
+    file_name: String,
+    file_bytes: Vec<u8>,
+) -> Result<ImportContainerResultDto, String> {
+    // Defensive cap mirroring the application layer so the IPC layer
+    // rejects an oversized payload before we even copy it across the
+    // bridge — Tauri's deserializer would otherwise allocate the
+    // attacker-controlled buffer up-front.
+    if file_bytes.len() > MAX_CONTAINER_BYTES {
+        return Err(format!(
+            "container file too large: {} bytes (max {MAX_CONTAINER_BYTES})",
+            file_bytes.len()
+        ));
+    }
+
+    let cmd = ImportContainerCommand {
+        file_name,
+        file_bytes,
+        created_at_ms: now_unix_ms(),
+    };
+    state
+        .command_bus
+        .handle_import_container(cmd)
+        .await
+        .map(ImportContainerResultDto::from)
+        .map_err(|e| match &e {
+            AppError::Validation(msg) => msg.clone(),
+            AppError::Plugin(msg) => msg.clone(),
+            AppError::Domain(DomainError::NotFound(_)) => {
+                "Install vortex-mod-containers to import .dlc/.ccf/.rsdf/.metalink files"
+                    .to_string()
+            }
+            other => {
+                tracing::error!(error = %other, "link_import_container failed");
+                "Failed to import container".to_string()
+            }
+        })
 }
 
 /// Inbound IPC payload for [`link_group_split_archives`]. Mirrors

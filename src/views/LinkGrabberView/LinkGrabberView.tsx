@@ -183,7 +183,6 @@ export function LinkGrabberView() {
   >("download_media_start");
 
   const handlePasteUrls = (urls: string[]) => {
-    // TODO: container: entries need a dedicated backend command for decryption
     const validUrls = urls.filter(
       (u) =>
         u.startsWith("http://") ||
@@ -193,6 +192,46 @@ export function LinkGrabberView() {
     );
     if (validUrls.length > 0) {
       resolveLinks({ urls: validUrls });
+    }
+  };
+
+  const handleContainerFiles = async (files: File[]) => {
+    // Read bytes and ship them through IPC. Done sequentially so a
+    // single failure doesn't leave half-resolved batches racing
+    // through `resolveLinks`. Files are tiny (DLCs are KBs at most),
+    // so the user-perceived cost is negligible.
+    for (const file of files) {
+      try {
+        const buffer = await file.arrayBuffer();
+        const bytes = Array.from(new Uint8Array(buffer));
+        const result = await invoke<{
+          format: string;
+          fileName: string;
+          urls: string[];
+          packageId: string;
+          packageName: string;
+        }>("link_import_container", {
+          fileName: file.name,
+          fileBytes: bytes,
+        });
+        toast.success(
+          t("linkGrabber.toast.containerImported", {
+            count: result.urls.length,
+            fileName: result.fileName,
+            defaultValue: `Imported ${result.urls.length} links from ${result.fileName}`,
+          }),
+        );
+        if (result.urls.length > 0) {
+          resolveLinks({ urls: result.urls });
+        }
+      } catch (err) {
+        toast.error(
+          t("linkGrabber.toast.containerImportFailed", {
+            fileName: file.name,
+            defaultValue: `Could not import ${file.name}: ${String(err)}`,
+          }),
+        );
+      }
     }
   };
 
@@ -410,6 +449,7 @@ export function LinkGrabberView() {
 
       <PasteZone
         onPasteUrls={handlePasteUrls}
+        onContainerFiles={handleContainerFiles}
         isLoading={isResolving}
         initialValue={pasteContent}
         initialValueToken={pasteToken}
