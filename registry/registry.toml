@@ -119,3 +119,15 @@ checksum_sha256      = "02035a49da81566cf7e4ff64cd0b5ed858e05dfdca643dbd14e53b35
 checksum_sha256_toml = "c16cb7d418ee6d261114b0ed66701629f7aa7b92317dc97fb7593ede9487c091"
 official             = true
 min_vortex_version   = "0.1.0"
+
+[[plugin]]
+name                 = "vortex-mod-containers"
+description          = "Decrypt link containers (DLC v1, CCF, RSDF) and parse Metalink (RFC 5854); pure transformation, no network capability"
+author               = "vortex-community"
+version              = "1.0.0"
+category             = "container"
+repository           = "https://github.com/mpiton/vortex-mod-containers"
+checksum_sha256      = "28ba16ce5325b48451164b7cd2062b4225f5a87a1f1c2ce7cd7e72115c12ede6"
+checksum_sha256_toml = "6d7e0152bc28c56adae29ba0e078cb511cc6aad468d2395c58d02d3b1f758dd6"
+official             = true
+min_vortex_version   = "0.1.0"
