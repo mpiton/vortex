@@ -107,6 +107,12 @@ pub fn spawn_sqlite_progress_bridge(event_bus: &dyn EventBus, db: DatabaseConnec
                     new_mirror_index,
                 } => {
                     update_mirror_cursor(&db, download_id, new_mirror_index).await;
+                    // The next mirror may pick a different segment plan
+                    // (no range support, fewer splits). Without this purge
+                    // the read model would carry phantom segment rows from
+                    // the failed attempt — the detail panel and list
+                    // segment counts both query by download_id.
+                    clear_segments_for_download(&db, download_id).await;
                 }
                 BridgeMessage::MirrorCursorReset { download_id } => {
                     update_mirror_cursor(&db, download_id, 0).await;
@@ -350,6 +356,26 @@ async fn update_mirror_cursor(db: &DatabaseConnection, download_id: i64, new_mir
     }
 }
 
+/// Drop every segment row belonging to a download. Called from the bridge's
+/// `MirrorSwitched` handler so the next mirror attempt starts with an empty
+/// segments table — without this the read model surfaces stale segments from
+/// the failed attempt, including ones whose state was `Error` at the moment
+/// of the switch.
+async fn clear_segments_for_download(db: &DatabaseConnection, download_id: i64) {
+    let stmt = Statement::from_sql_and_values(
+        DatabaseBackend::Sqlite,
+        "DELETE FROM download_segments WHERE download_id = ?",
+        [download_id.into()],
+    );
+    if let Err(e) = db.execute(stmt).await {
+        tracing::warn!(
+            download_id,
+            error = %e,
+            "progress_bridge: failed to clear segments before mirror retry"
+        );
+    }
+}
+
 async fn fail_segment(db: &DatabaseConnection, download_id: i64, segment_index: i32) {
     let sql = "UPDATE download_segments \
                SET state = 'Error' \
@@ -372,7 +398,7 @@ async fn fail_segment(db: &DatabaseConnection, download_id: i64, segment_index: 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sea_orm::{ActiveModelTrait, EntityTrait, Set};
+    use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};
 
     use crate::adapters::driven::sqlite::connection::setup_test_db;
     use crate::adapters::driven::sqlite::entities::{download, download_segment};
@@ -654,6 +680,45 @@ mod tests {
         assert_eq!(
             row.current_mirror_index, 0,
             "DownloadFailed must reset the persisted mirror cursor so retries start fresh"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_clear_segments_for_download_drops_all_rows_for_id() {
+        let db = setup_test_db().await.unwrap();
+        insert_download_row(&db, 99, Some(4096), 0).await;
+
+        let row_a = segment_row_id(99, 0).expect("segment_index < 100");
+        let row_b = segment_row_id(99, 1).expect("segment_index < 100");
+        insert_segment(&db, row_a, 99, 0, 0, 2048).await;
+        insert_segment(&db, row_b, 99, 1, 2048, 4096).await;
+
+        // Different download_id — must survive.
+        insert_download_row(&db, 100, Some(4096), 0).await;
+        let row_c = segment_row_id(100, 0).expect("segment_index < 100");
+        insert_segment(&db, row_c, 100, 0, 0, 4096).await;
+
+        clear_segments_for_download(&db, 99).await;
+
+        let remaining_for_99 = download_segment::Entity::find()
+            .filter(download_segment::Column::DownloadId.eq(99_i64))
+            .all(&db)
+            .await
+            .unwrap();
+        assert!(
+            remaining_for_99.is_empty(),
+            "MirrorSwitched must drop every segment row for the switching download"
+        );
+
+        let remaining_for_100 = download_segment::Entity::find()
+            .filter(download_segment::Column::DownloadId.eq(100_i64))
+            .all(&db)
+            .await
+            .unwrap();
+        assert_eq!(
+            remaining_for_100.len(),
+            1,
+            "segments belonging to other downloads must not be touched"
         );
     }
 }

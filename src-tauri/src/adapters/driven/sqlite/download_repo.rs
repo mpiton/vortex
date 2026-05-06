@@ -68,6 +68,12 @@ async fn persist_download<C: ConnectionTrait>(
         // MAX expression below so that progress_bridge writes
         // (which may race with state-transition saves) are never
         // regressed back to a stale lower value.
+        // CurrentMirrorIndex excluded: progress_bridge owns this
+        // column via MirrorSwitched / DownloadFailed events. A
+        // generic save() carrying a stale in-memory cursor would
+        // race with the event-driven write and overwrite a fresh
+        // failover position with the cursor at the time the
+        // aggregate was loaded.
         .update_columns([
             download::Column::Url,
             download::Column::FileName,
@@ -88,7 +94,6 @@ async fn persist_download<C: ConnectionTrait>(
             download::Column::AccountId,
             download::Column::DestinationPath,
             download::Column::MirrorsJson,
-            download::Column::CurrentMirrorIndex,
         ]);
     if update_error_message {
         on_conflict.update_column(download::Column::ErrorMessage);
