@@ -4,7 +4,8 @@
 set -euo pipefail
 
 # File patterns that typically contain secrets
-SECRET_PATTERNS='\.(env|env\..+|pem|key|p12|pfx|secret|creds|aws|netrc)$|(^|/)(\.env|\.secrets|secrets)/|(^|/)\.npmrc$|(^|/)\.pypirc$'
+SECRET_PATTERNS='\.(env|env\..+|pem|key|p12|pfx|secret|creds|aws|netrc)$|(^|/)(\.env|\.secrets|secrets)/|(^|/)\.pypirc$'
+NPMRC_AUTH_PATTERNS='(^|[[:space:]])(_authToken|_password|_auth)[[:space:]]*=|//.+:(_authToken|_password|_auth)[[:space:]]*='
 
 # List staged files (excluding deletions)
 STAGED=$(git diff --cached --diff-filter=d --name-only)
@@ -22,6 +23,20 @@ if [ -n "$SECRET_FILES" ]; then
     echo ""
     echo "If intentional, add the file to .gitignore and use a .example variant instead."
     exit 1
+fi
+
+# .npmrc is allowed for non-secret config (registries, loglevel, hoisting).
+# Reject only when the staged diff introduces auth tokens.
+NPMRC_STAGED=$(echo "$STAGED" | grep -E '(^|/)\.npmrc$' || true)
+if [ -n "$NPMRC_STAGED" ]; then
+    NPMRC_LEAK=$(git diff --cached -U0 -- $NPMRC_STAGED | grep -E '^\+' | grep -vE '^\+\+\+ [ab]/' | grep -iE "$NPMRC_AUTH_PATTERNS" || true)
+    if [ -n "$NPMRC_LEAK" ]; then
+        echo "BLOCKED: auth token detected in staged .npmrc:"
+        echo "$NPMRC_LEAK" | head -5
+        echo ""
+        echo "Move credentials to ~/.npmrc and reference them via env vars (\${NPM_TOKEN})."
+        exit 1
+    fi
 fi
 
 # Check content: grep known API key patterns in the diff
