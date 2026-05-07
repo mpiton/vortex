@@ -84,52 +84,58 @@ export function LinkGrabberView() {
     const urls = [
       ...new Set(links.map((link) => getDuplicateKey(link)).filter((u) => u.length > 0)),
     ];
-    const inFlight = new Set(urls);
-    detectDuplicates(
-      { urls },
-      {
-        onSuccess: (checks) => {
-          if (batchId !== detectBatchRef.current) return;
-          if (checks.length === 0) return;
-          const byUrl = new Map<string, DuplicateCheck>();
-          for (const check of checks) {
-            byUrl.set(check.url, check);
-          }
-          setResolvedLinks((prev) => {
-            let changed = false;
-            const next = prev.map((link) => {
-              const probe = byUrl.get(getDuplicateKey(link));
-              if (!probe || link.duplicate === probe) return link;
-              changed = true;
-              return { ...link, duplicate: probe };
+    // Backend caps `link_detect_duplicates` at 500 URLs per call. Split
+    // large batches into chunks; each chunk shares the same `batchId`
+    // so a stale resolve cannot clobber any of them.
+    for (let i = 0; i < urls.length; i += MAX_RESOLVE_URLS) {
+      const chunk = urls.slice(i, i + MAX_RESOLVE_URLS);
+      const inFlightChunk = new Set(chunk);
+      detectDuplicates(
+        { urls: chunk },
+        {
+          onSuccess: (checks) => {
+            if (batchId !== detectBatchRef.current) return;
+            if (checks.length === 0) return;
+            const byUrl = new Map<string, DuplicateCheck>();
+            for (const check of checks) {
+              byUrl.set(check.url, check);
+            }
+            setResolvedLinks((prev) => {
+              let changed = false;
+              const next = prev.map((link) => {
+                const probe = byUrl.get(getDuplicateKey(link));
+                if (!probe || link.duplicate === probe) return link;
+                changed = true;
+                return { ...link, duplicate: probe };
+              });
+              // Skip the state update when no link's duplicate field actually
+              // moved — keeps downstream memos and effects from re-running
+              // for an all-unique batch.
+              return changed ? next : prev;
             });
-            // Skip the state update when no link's duplicate field actually
-            // moved — keeps downstream memos and effects from re-running
-            // for an all-unique batch.
-            return changed ? next : prev;
-          });
-        },
-        onError: () => {
-          // IPC failed → resolve every row in this batch to the
-          // sentinel `null` so `isStartable` no longer treats them as
-          // "still loading" and silently rejects them. We can't tell
-          // whether they're duplicates, but blocking the entire bulk
-          // start when the user explicitly hit Start is worse than
-          // letting the download proceed without the dup check.
-          if (batchId !== detectBatchRef.current) return;
-          setResolvedLinks((prev) => {
-            let changed = false;
-            const next = prev.map((link) => {
-              if (!inFlight.has(getDuplicateKey(link))) return link;
-              if (link.duplicate !== undefined) return link;
-              changed = true;
-              return { ...link, duplicate: null };
+          },
+          onError: () => {
+            // IPC failed → resolve every row in this chunk to the
+            // sentinel `null` so `isStartable` no longer treats them as
+            // "still loading" and silently rejects them. We can't tell
+            // whether they're duplicates, but blocking the entire bulk
+            // start when the user explicitly hit Start is worse than
+            // letting the download proceed without the dup check.
+            if (batchId !== detectBatchRef.current) return;
+            setResolvedLinks((prev) => {
+              let changed = false;
+              const next = prev.map((link) => {
+                if (!inFlightChunk.has(getDuplicateKey(link))) return link;
+                if (link.duplicate !== undefined) return link;
+                changed = true;
+                return { ...link, duplicate: null };
+              });
+              return changed ? next : prev;
             });
-            return changed ? next : prev;
-          });
+          },
         },
-      },
-    );
+      );
+    }
   };
 
   const applyResolvedBatch = (resolved: ResolvedLink[]) => {
@@ -148,17 +154,23 @@ export function LinkGrabberView() {
       // synchronously instead of waiting for the backend's first
       // event to land.
       setManyLinkStatuses(eligibleUrls.map((url) => [url, { kind: "checking" }] as const));
-      checkLinksOnline(
-        { urls: eligibleUrls },
-        {
-          // Without this, an IPC failure leaves every row stuck on the
-          // optimistic `checking` spinner; downgrade to `unknown` so
-          // the row clears and the retry button surfaces.
-          onError: () => {
-            setManyLinkStatuses(eligibleUrls.map((url) => [url, { kind: "unknown" }] as const));
+      // Backend caps `link_check_online` at 500 URLs per call. Split
+      // larger batches so an oversized container import does not bounce
+      // the entire probe and leave every row stuck on `checking`.
+      for (let i = 0; i < eligibleUrls.length; i += MAX_RESOLVE_URLS) {
+        const chunk = eligibleUrls.slice(i, i + MAX_RESOLVE_URLS);
+        checkLinksOnline(
+          { urls: chunk },
+          {
+            // Without this, an IPC failure leaves every row stuck on the
+            // optimistic `checking` spinner; downgrade to `unknown` so
+            // the row clears and the retry button surfaces.
+            onError: () => {
+              setManyLinkStatuses(chunk.map((url) => [url, { kind: "unknown" }] as const));
+            },
           },
-        },
-      );
+        );
+      }
     }
     // Run duplicate detection over the full resolve batch (including
     // ftp:// / magnet: rows — duplicate detection is purely lexical
