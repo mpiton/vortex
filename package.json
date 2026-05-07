@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "prepare": "lefthook install",
+    "prepare": "lefthook install --force 2>/dev/null || true",
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
