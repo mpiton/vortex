@@ -290,7 +290,8 @@
       "playlistAttachFailed_other": "{{count}} downloads could not be attached to the playlist package",
       "containerImported_one": "Imported {{count}} link from {{fileName}}",
       "containerImported_other": "Imported {{count}} links from {{fileName}}",
-      "containerImportFailed": "Could not import {{fileName}}",
+      "containerImportFailed": "Could not import {{fileName}}: {{reason}}",
+      "containerTooLarge": "file is too large",
       "resolveFailed": "Failed to resolve container links",
       "clipboardReadFailed": "Could not read clipboard"
     }

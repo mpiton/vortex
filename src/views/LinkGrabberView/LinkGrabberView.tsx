@@ -232,10 +232,14 @@ export function LinkGrabberView() {
       const aggregatedUrls: string[] = [];
       for (const file of files) {
         if (file.size > MAX_CONTAINER_BYTES) {
+          const reason = t("linkGrabber.toast.containerTooLarge", {
+            defaultValue: "file is too large",
+          });
           toast.error(
             t("linkGrabber.toast.containerImportFailed", {
               fileName: file.name,
-              defaultValue: `Could not import ${file.name}: file is too large`,
+              reason,
+              defaultValue: `Could not import ${file.name}: ${reason}`,
             }),
           );
           continue;
@@ -256,10 +260,12 @@ export function LinkGrabberView() {
           );
           aggregatedUrls.push(...result.urls);
         } catch (err) {
+          const reason = String(err);
           toast.error(
             t("linkGrabber.toast.containerImportFailed", {
               fileName: file.name,
-              defaultValue: `Could not import ${file.name}: ${String(err)}`,
+              reason,
+              defaultValue: `Could not import ${file.name}: ${reason}`,
             }),
           );
         }
