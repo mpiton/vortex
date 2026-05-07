@@ -132,44 +132,46 @@ export function LinkGrabberView() {
     );
   };
 
+  const applyResolvedBatch = (resolved: ResolvedLink[]) => {
+    setResolvedLinks(resolved);
+    setSelectedLinkIds([]);
+    // Reset the previous batch's live statuses so a stale "offline"
+    // badge from an earlier paste does not bleed onto a new URL.
+    resetLinkStatuses();
+    const eligibleUrls = resolved
+      .map((link) => link.originalUrl)
+      .filter(
+        (u) => u.toLowerCase().startsWith("http://") || u.toLowerCase().startsWith("https://"),
+      );
+    if (eligibleUrls.length > 0) {
+      // Pre-seed every row with `checking` so the spinner appears
+      // synchronously instead of waiting for the backend's first
+      // event to land.
+      setManyLinkStatuses(eligibleUrls.map((url) => [url, { kind: "checking" }] as const));
+      checkLinksOnline(
+        { urls: eligibleUrls },
+        {
+          // Without this, an IPC failure leaves every row stuck on the
+          // optimistic `checking` spinner; downgrade to `unknown` so
+          // the row clears and the retry button surfaces.
+          onError: () => {
+            setManyLinkStatuses(eligibleUrls.map((url) => [url, { kind: "unknown" }] as const));
+          },
+        },
+      );
+    }
+    // Run duplicate detection over the full resolve batch (including
+    // ftp:// / magnet: rows — duplicate detection is purely lexical
+    // and does not require an HTTP probe).
+    dispatchDuplicateDetection(resolved);
+    toast.success(t("linkGrabber.toast.resolveSuccess", { count: resolved.length }));
+  };
+
   const { mutate: resolveLinks, isPending: isResolving } = useTauriMutation<
     ResolvedLink[],
     { urls: string[] }
   >("link_resolve", {
-    onSuccess: (resolved) => {
-      setResolvedLinks(resolved);
-      setSelectedLinkIds([]);
-      // Reset the previous batch's live statuses so a stale "offline"
-      // badge from an earlier paste does not bleed onto a new URL.
-      resetLinkStatuses();
-      const eligibleUrls = resolved
-        .map((link) => link.originalUrl)
-        .filter(
-          (u) => u.toLowerCase().startsWith("http://") || u.toLowerCase().startsWith("https://"),
-        );
-      if (eligibleUrls.length > 0) {
-        // Pre-seed every row with `checking` so the spinner appears
-        // synchronously instead of waiting for the backend's first
-        // event to land.
-        setManyLinkStatuses(eligibleUrls.map((url) => [url, { kind: "checking" }] as const));
-        checkLinksOnline(
-          { urls: eligibleUrls },
-          {
-            // Without this, an IPC failure leaves every row stuck on the
-            // optimistic `checking` spinner; downgrade to `unknown` so
-            // the row clears and the retry button surfaces.
-            onError: () => {
-              setManyLinkStatuses(eligibleUrls.map((url) => [url, { kind: "unknown" }] as const));
-            },
-          },
-        );
-      }
-      // Run duplicate detection over the full resolve batch (including
-      // ftp:// / magnet: rows — duplicate detection is purely lexical
-      // and does not require an HTTP probe).
-      dispatchDuplicateDetection(resolved);
-      toast.success(t("linkGrabber.toast.resolveSuccess", { count: resolved.length }));
-    },
+    onSuccess: applyResolvedBatch,
   });
 
   const { mutate: startDownload } = useTauriMutation<unknown, { url: string }>("download_start");
@@ -235,9 +237,30 @@ export function LinkGrabberView() {
         );
       }
     }
-    for (let i = 0; i < aggregatedUrls.length; i += MAX_RESOLVE_URLS) {
-      resolveLinks({ urls: aggregatedUrls.slice(i, i + MAX_RESOLVE_URLS) });
+    if (aggregatedUrls.length === 0) return;
+    if (aggregatedUrls.length <= MAX_RESOLVE_URLS) {
+      resolveLinks({ urls: aggregatedUrls });
+      return;
     }
+    // Direct invoke + manual aggregation: piping each chunk through the
+    // mutation would race onSuccess so the last chunk's response replaces
+    // earlier ones, and the user only sees the tail of a >500-URL import.
+    const merged: ResolvedLink[] = [];
+    for (let i = 0; i < aggregatedUrls.length; i += MAX_RESOLVE_URLS) {
+      try {
+        const chunk = aggregatedUrls.slice(i, i + MAX_RESOLVE_URLS);
+        const resolved = await invoke<ResolvedLink[]>("link_resolve", { urls: chunk });
+        merged.push(...resolved);
+      } catch (err) {
+        toast.error(
+          t("linkGrabber.toast.resolveFailed", {
+            defaultValue: `Failed to resolve container links: ${String(err)}`,
+          }),
+        );
+        return;
+      }
+    }
+    applyResolvedBatch(merged);
   };
 
   // The bulk-start helpers gate every row through this predicate. Without

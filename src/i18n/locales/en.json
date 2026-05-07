@@ -291,6 +291,7 @@
       "containerImported_one": "Imported {{count}} link from {{fileName}}",
       "containerImported_other": "Imported {{count}} links from {{fileName}}",
       "containerImportFailed": "Could not import {{fileName}}",
+      "resolveFailed": "Failed to resolve container links",
       "clipboardReadFailed": "Could not read clipboard"
     }
   },

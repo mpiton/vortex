@@ -291,6 +291,7 @@
       "containerImported_one": "{{count}} lien importé depuis {{fileName}}",
       "containerImported_other": "{{count}} liens importés depuis {{fileName}}",
       "containerImportFailed": "Impossible d'importer {{fileName}}",
+      "resolveFailed": "Échec de la résolution des liens du conteneur",
       "clipboardReadFailed": "Impossible de lire le presse-papiers"
     }
   },
