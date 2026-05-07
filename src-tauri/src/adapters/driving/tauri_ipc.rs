@@ -20,10 +20,11 @@ use crate::application::commands::{
     CreatePackageCommand, DeleteAccountCommand, DeleteHistoryEntryCommand, DeletePackageCommand,
     DisablePluginCommand, EnablePluginCommand, ExportAccountsCommand, ExportAccountsOutcome,
     ExportHistoryCommand, ExportHistoryFormat, ImportAccountsCommand, ImportAccountsOutcome,
-    InstallPluginCommand, MovePackageToFolderCommand, MoveToBottomCommand, MoveToTopCommand,
-    OpenDownloadFileCommand, OpenDownloadFolderCommand, PackageMoveOutcome, PackagePatch,
-    PauseAllDownloadsCommand, PauseDownloadCommand, PurgeHistoryCommand, RedownloadCommand,
-    RedownloadSource, RemoveDownloadCommand, RemoveDownloadFromPackageCommand, ReorderQueueCommand,
+    ImportContainerCommand, ImportContainerOutcome, InstallPluginCommand,
+    MovePackageToFolderCommand, MoveToBottomCommand, MoveToTopCommand, OpenDownloadFileCommand,
+    OpenDownloadFolderCommand, PackageMoveOutcome, PackagePatch, PauseAllDownloadsCommand,
+    PauseDownloadCommand, PurgeHistoryCommand, RedownloadCommand, RedownloadSource,
+    RemoveDownloadCommand, RemoveDownloadFromPackageCommand, ReorderQueueCommand,
     ReportBrokenPluginCommand, ResolveLinksCommand, ResolvedLinkDto, ResumeAllDownloadsCommand,
     ResumeDownloadCommand, RetryDownloadCommand, SetPackagePasswordCommand,
     SetPackagePriorityCommand, SetPriorityCommand, StartDownloadCommand,
@@ -967,6 +968,58 @@ pub async fn link_group_playlists(
             item_count: r.item_count,
         })
         .collect())
+}
+
+/// IPC return shape for [`link_import_container`]. Mirrors
+/// [`ImportContainerOutcome`] in camelCase.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportContainerResultDto {
+    pub format: String,
+    pub urls: Vec<String>,
+    pub package_id: String,
+    pub package_name: String,
+}
+
+impl From<ImportContainerOutcome> for ImportContainerResultDto {
+    fn from(o: ImportContainerOutcome) -> Self {
+        Self {
+            format: o.format,
+            urls: o.urls,
+            package_id: o.package_id.as_str().to_string(),
+            package_name: o.package_name,
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn link_import_container(
+    state: State<'_, AppState>,
+    file_name: String,
+    file_bytes: Vec<u8>,
+) -> Result<ImportContainerResultDto, String> {
+    let cmd = ImportContainerCommand {
+        file_name,
+        file_bytes,
+        created_at_ms: now_unix_ms(),
+    };
+    state
+        .command_bus
+        .handle_import_container(cmd)
+        .await
+        .map(ImportContainerResultDto::from)
+        .map_err(|e| match &e {
+            AppError::Validation(msg) => msg.clone(),
+            AppError::Plugin(msg) => msg.clone(),
+            AppError::Domain(DomainError::NotFound(_)) => {
+                "Install vortex-mod-containers to import .dlc/.ccf/.rsdf/.metalink/.meta4 files"
+                    .to_string()
+            }
+            other => {
+                tracing::error!(error = %other, "link_import_container failed");
+                "Failed to import container".to_string()
+            }
+        })
 }
 
 /// Inbound IPC payload for [`link_group_split_archives`]. Mirrors

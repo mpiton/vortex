@@ -135,6 +135,27 @@ pub trait PluginLoader: Send + Sync {
     fn set_runtime_config(&self, _name: &str, _key: &str, _value: &str) -> Result<(), DomainError> {
         Ok(())
     }
+
+    /// Decrypt a link container blob (DLC / CCF / RSDF / Metalink) using
+    /// an enabled plugin in the [`Container`](crate::domain::model::plugin::PluginCategory::Container)
+    /// category that exports a `decrypt` function. Implementations probe
+    /// candidates in alphabetical order by plugin name so multiple
+    /// container forks loaded side-by-side resolve deterministically.
+    ///
+    /// The returned string is the JSON shape produced by the container
+    /// plugin (matches `vortex-mod-containers::types::DecryptResponse`):
+    /// `{ "format": "dlc"|"ccf"|"rsdf"|"metalink", "links": [...] }`.
+    /// The application layer parses it.
+    ///
+    /// Returns `Err(DomainError::NotFound)` when no container plugin is
+    /// loaded so callers can surface a "Install vortex-mod-containers"
+    /// hint instead of a generic plugin error. Default returns `NotFound`
+    /// for trait-only test loaders.
+    fn decrypt_container(&self, _bytes: &[u8]) -> Result<String, DomainError> {
+        Err(DomainError::NotFound(
+            "decrypt_container not supported by this loader".into(),
+        ))
+    }
 }
 
 #[cfg(test)]
@@ -180,6 +201,13 @@ mod tests {
     fn test_get_media_variants_default_returns_not_found() {
         let loader = MinimalLoader;
         let result = loader.get_media_variants("https://vimeo.com/123");
+        assert!(matches!(result, Err(DomainError::NotFound(_))));
+    }
+
+    #[test]
+    fn test_decrypt_container_default_returns_not_found() {
+        let loader = MinimalLoader;
+        let result = loader.decrypt_container(b"DLC\x00random");
         assert!(matches!(result, Err(DomainError::NotFound(_))));
     }
 }

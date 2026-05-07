@@ -21,8 +21,12 @@ import type {
   PlaylistGroupInput,
   PlaylistGroupResult,
 } from "@/types/media";
+import type { ImportContainerResult } from "@/types/container";
 import { invoke } from "@tauri-apps/api/core";
 import { canonicalPlaylistKey } from "./canonicalPlaylistKey";
+
+const MAX_CONTAINER_BYTES = 1024 * 1024;
+const MAX_RESOLVE_URLS = 500;
 
 export function LinkGrabberView() {
   const { t } = useTranslation();
@@ -64,6 +68,13 @@ export function LinkGrabberView() {
   // batch. Each resolve increments it; each per-call `onSuccess`
   // captures the value at dispatch time and bails when superseded.
   const detectBatchRef = useRef(0);
+  // Same idea for the resolve/check_online lifecycle: the chunked
+  // container path runs a long async loop, and during that loop the
+  // user can trigger a fresh paste-resolve. Both `applyResolvedBatch`
+  // and the chunked container handler increment / capture this so a
+  // stale completion cannot replace newer state.
+  const resolveBatchRef = useRef(0);
+  const [isImportingContainers, setIsImportingContainers] = useState(false);
   const { mutate: detectDuplicates } = useTauriMutation<DuplicateCheck[], { urls: string[] }>(
     "link_detect_duplicates",
   );
@@ -80,92 +91,111 @@ export function LinkGrabberView() {
     const urls = [
       ...new Set(links.map((link) => getDuplicateKey(link)).filter((u) => u.length > 0)),
     ];
-    const inFlight = new Set(urls);
-    detectDuplicates(
-      { urls },
-      {
-        onSuccess: (checks) => {
-          if (batchId !== detectBatchRef.current) return;
-          if (checks.length === 0) return;
-          const byUrl = new Map<string, DuplicateCheck>();
-          for (const check of checks) {
-            byUrl.set(check.url, check);
-          }
-          setResolvedLinks((prev) => {
-            let changed = false;
-            const next = prev.map((link) => {
-              const probe = byUrl.get(getDuplicateKey(link));
-              if (!probe || link.duplicate === probe) return link;
-              changed = true;
-              return { ...link, duplicate: probe };
+    // Backend caps `link_detect_duplicates` at 500 URLs per call. Split
+    // large batches into chunks; each chunk shares the same `batchId`
+    // so a stale resolve cannot clobber any of them.
+    for (let i = 0; i < urls.length; i += MAX_RESOLVE_URLS) {
+      const chunk = urls.slice(i, i + MAX_RESOLVE_URLS);
+      const inFlightChunk = new Set(chunk);
+      detectDuplicates(
+        { urls: chunk },
+        {
+          onSuccess: (checks) => {
+            if (batchId !== detectBatchRef.current) return;
+            if (checks.length === 0) return;
+            const byUrl = new Map<string, DuplicateCheck>();
+            for (const check of checks) {
+              byUrl.set(check.url, check);
+            }
+            setResolvedLinks((prev) => {
+              let changed = false;
+              const next = prev.map((link) => {
+                const probe = byUrl.get(getDuplicateKey(link));
+                if (!probe || link.duplicate === probe) return link;
+                changed = true;
+                return { ...link, duplicate: probe };
+              });
+              // Skip the state update when no link's duplicate field actually
+              // moved — keeps downstream memos and effects from re-running
+              // for an all-unique batch.
+              return changed ? next : prev;
             });
-            // Skip the state update when no link's duplicate field actually
-            // moved — keeps downstream memos and effects from re-running
-            // for an all-unique batch.
-            return changed ? next : prev;
-          });
-        },
-        onError: () => {
-          // IPC failed → resolve every row in this batch to the
-          // sentinel `null` so `isStartable` no longer treats them as
-          // "still loading" and silently rejects them. We can't tell
-          // whether they're duplicates, but blocking the entire bulk
-          // start when the user explicitly hit Start is worse than
-          // letting the download proceed without the dup check.
-          if (batchId !== detectBatchRef.current) return;
-          setResolvedLinks((prev) => {
-            let changed = false;
-            const next = prev.map((link) => {
-              if (!inFlight.has(getDuplicateKey(link))) return link;
-              if (link.duplicate !== undefined) return link;
-              changed = true;
-              return { ...link, duplicate: null };
+          },
+          onError: () => {
+            // IPC failed → resolve every row in this chunk to the
+            // sentinel `null` so `isStartable` no longer treats them as
+            // "still loading" and silently rejects them. We can't tell
+            // whether they're duplicates, but blocking the entire bulk
+            // start when the user explicitly hit Start is worse than
+            // letting the download proceed without the dup check.
+            if (batchId !== detectBatchRef.current) return;
+            setResolvedLinks((prev) => {
+              let changed = false;
+              const next = prev.map((link) => {
+                if (!inFlightChunk.has(getDuplicateKey(link))) return link;
+                if (link.duplicate !== undefined) return link;
+                changed = true;
+                return { ...link, duplicate: null };
+              });
+              return changed ? next : prev;
             });
-            return changed ? next : prev;
-          });
+          },
         },
-      },
-    );
+      );
+    }
+  };
+
+  const applyResolvedBatch = (resolved: ResolvedLink[]) => {
+    resolveBatchRef.current += 1;
+    const batchId = resolveBatchRef.current;
+    setResolvedLinks(resolved);
+    setSelectedLinkIds([]);
+    // Reset the previous batch's live statuses so a stale "offline"
+    // badge from an earlier paste does not bleed onto a new URL.
+    resetLinkStatuses();
+    const eligibleUrls = resolved
+      .map((link) => link.originalUrl)
+      .filter(
+        (u) => u.toLowerCase().startsWith("http://") || u.toLowerCase().startsWith("https://"),
+      );
+    if (eligibleUrls.length > 0) {
+      // Pre-seed every row with `checking` so the spinner appears
+      // synchronously instead of waiting for the backend's first
+      // event to land.
+      setManyLinkStatuses(eligibleUrls.map((url) => [url, { kind: "checking" }] as const));
+      // Backend caps `link_check_online` at 500 URLs per call. Split
+      // larger batches so an oversized container import does not bounce
+      // the entire probe and leave every row stuck on `checking`.
+      for (let i = 0; i < eligibleUrls.length; i += MAX_RESOLVE_URLS) {
+        const chunk = eligibleUrls.slice(i, i + MAX_RESOLVE_URLS);
+        checkLinksOnline(
+          { urls: chunk },
+          {
+            // Without this, an IPC failure leaves every row stuck on the
+            // optimistic `checking` spinner; downgrade to `unknown` so
+            // the row clears and the retry button surfaces. Gated on
+            // `batchId` so a slow chunk's failure cannot flip statuses
+            // belonging to a newer resolve.
+            onError: () => {
+              if (batchId !== resolveBatchRef.current) return;
+              setManyLinkStatuses(chunk.map((url) => [url, { kind: "unknown" }] as const));
+            },
+          },
+        );
+      }
+    }
+    // Run duplicate detection over the full resolve batch (including
+    // ftp:// / magnet: rows — duplicate detection is purely lexical
+    // and does not require an HTTP probe).
+    dispatchDuplicateDetection(resolved);
+    toast.success(t("linkGrabber.toast.resolveSuccess", { count: resolved.length }));
   };
 
   const { mutate: resolveLinks, isPending: isResolving } = useTauriMutation<
     ResolvedLink[],
     { urls: string[] }
   >("link_resolve", {
-    onSuccess: (resolved) => {
-      setResolvedLinks(resolved);
-      setSelectedLinkIds([]);
-      // Reset the previous batch's live statuses so a stale "offline"
-      // badge from an earlier paste does not bleed onto a new URL.
-      resetLinkStatuses();
-      const eligibleUrls = resolved
-        .map((link) => link.originalUrl)
-        .filter(
-          (u) => u.toLowerCase().startsWith("http://") || u.toLowerCase().startsWith("https://"),
-        );
-      if (eligibleUrls.length > 0) {
-        // Pre-seed every row with `checking` so the spinner appears
-        // synchronously instead of waiting for the backend's first
-        // event to land.
-        setManyLinkStatuses(eligibleUrls.map((url) => [url, { kind: "checking" }] as const));
-        checkLinksOnline(
-          { urls: eligibleUrls },
-          {
-            // Without this, an IPC failure leaves every row stuck on the
-            // optimistic `checking` spinner; downgrade to `unknown` so
-            // the row clears and the retry button surfaces.
-            onError: () => {
-              setManyLinkStatuses(eligibleUrls.map((url) => [url, { kind: "unknown" }] as const));
-            },
-          },
-        );
-      }
-      // Run duplicate detection over the full resolve batch (including
-      // ftp:// / magnet: rows — duplicate detection is purely lexical
-      // and does not require an HTTP probe).
-      dispatchDuplicateDetection(resolved);
-      toast.success(t("linkGrabber.toast.resolveSuccess", { count: resolved.length }));
-    },
+    onSuccess: applyResolvedBatch,
   });
 
   const { mutate: startDownload } = useTauriMutation<unknown, { url: string }>("download_start");
@@ -183,7 +213,6 @@ export function LinkGrabberView() {
   >("download_media_start");
 
   const handlePasteUrls = (urls: string[]) => {
-    // TODO: container: entries need a dedicated backend command for decryption
     const validUrls = urls.filter(
       (u) =>
         u.startsWith("http://") ||
@@ -193,6 +222,87 @@ export function LinkGrabberView() {
     );
     if (validUrls.length > 0) {
       resolveLinks({ urls: validUrls });
+    }
+  };
+
+  const handleContainerFiles = async (files: File[]) => {
+    if (isImportingContainers) return;
+    setIsImportingContainers(true);
+    try {
+      const aggregatedUrls: string[] = [];
+      for (const file of files) {
+        if (file.size > MAX_CONTAINER_BYTES) {
+          const reason = t("linkGrabber.toast.containerTooLarge", {
+            defaultValue: "file is too large",
+          });
+          toast.error(
+            t("linkGrabber.toast.containerImportFailed", {
+              fileName: file.name,
+              reason,
+              defaultValue: `Could not import ${file.name}: ${reason}`,
+            }),
+          );
+          continue;
+        }
+        try {
+          const buffer = await file.arrayBuffer();
+          const bytes = Array.from(new Uint8Array(buffer));
+          const result = await invoke<ImportContainerResult>("link_import_container", {
+            fileName: file.name,
+            fileBytes: bytes,
+          });
+          toast.success(
+            t("linkGrabber.toast.containerImported", {
+              count: result.urls.length,
+              fileName: result.packageName,
+              defaultValue: `Imported ${result.urls.length} links from ${result.packageName}`,
+            }),
+          );
+          aggregatedUrls.push(...result.urls);
+        } catch (err) {
+          const reason = String(err);
+          toast.error(
+            t("linkGrabber.toast.containerImportFailed", {
+              fileName: file.name,
+              reason,
+              defaultValue: `Could not import ${file.name}: ${reason}`,
+            }),
+          );
+        }
+      }
+      if (aggregatedUrls.length === 0) return;
+      if (aggregatedUrls.length <= MAX_RESOLVE_URLS) {
+        resolveLinks({ urls: aggregatedUrls });
+        return;
+      }
+      // Direct invoke + manual aggregation: piping each chunk through the
+      // mutation would race onSuccess so the last chunk's response replaces
+      // earlier ones, and the user only sees the tail of a >500-URL import.
+      // Reserve a slot in `resolveBatchRef` *before* the loop: if the user
+      // triggers a fresh paste-resolve while we're awaiting chunk responses,
+      // its `applyResolvedBatch` will increment the ref past us and we bail
+      // instead of clobbering the newer result with stale container data.
+      resolveBatchRef.current += 1;
+      const reservedBatchId = resolveBatchRef.current;
+      const merged: ResolvedLink[] = [];
+      for (let i = 0; i < aggregatedUrls.length; i += MAX_RESOLVE_URLS) {
+        try {
+          const chunk = aggregatedUrls.slice(i, i + MAX_RESOLVE_URLS);
+          const resolved = await invoke<ResolvedLink[]>("link_resolve", { urls: chunk });
+          merged.push(...resolved);
+        } catch (err) {
+          toast.error(
+            t("linkGrabber.toast.resolveFailed", {
+              defaultValue: `Failed to resolve container links: ${String(err)}`,
+            }),
+          );
+          return;
+        }
+      }
+      if (reservedBatchId !== resolveBatchRef.current) return;
+      applyResolvedBatch(merged);
+    } finally {
+      setIsImportingContainers(false);
     }
   };
 
@@ -410,7 +520,8 @@ export function LinkGrabberView() {
 
       <PasteZone
         onPasteUrls={handlePasteUrls}
-        isLoading={isResolving}
+        onContainerFiles={handleContainerFiles}
+        isLoading={isResolving || isImportingContainers}
         initialValue={pasteContent}
         initialValueToken={pasteToken}
       />

@@ -22,6 +22,7 @@ mod extract_archive;
 mod group_playlists;
 mod group_split_archives;
 mod import_accounts;
+mod import_container;
 mod install_plugin;
 mod move_package_to_folder;
 mod move_queue;
@@ -191,6 +192,21 @@ pub struct ResolveLinksCommand {
 impl Command for ResolveLinksCommand {}
 
 pub use resolve_links::ResolvedLinkDto;
+
+/// Decrypt a container blob (DLC / CCF / RSDF / Metalink / .meta4) via
+/// a loaded container plugin and create a
+/// [`PackageSourceType::Container`] package to host the extracted entries.
+#[derive(Debug, Clone)]
+pub struct ImportContainerCommand {
+    pub file_name: String,
+    pub file_bytes: Vec<u8>,
+    /// Wall-clock millis injected by the driving adapter so handlers
+    /// stay deterministic in tests.
+    pub created_at_ms: u64,
+}
+impl Command for ImportContainerCommand {}
+
+pub use import_container::ImportContainerOutcome;
 
 /// Probe each URL in `urls` for availability and stream a
 /// `DomainEvent::LinkStatusUpdated` per terminal transition. Bounded by

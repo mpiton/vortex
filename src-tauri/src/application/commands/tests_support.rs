@@ -538,6 +538,7 @@ impl HttpClient for StubHttpClient {
 }
 
 pub(crate) struct StubPluginLoader;
+
 impl PluginLoader for StubPluginLoader {
     fn load(&self, _manifest: &PluginManifest) -> Result<(), DomainError> {
         Ok(())
@@ -785,13 +786,32 @@ pub(crate) fn build_package_bus(
     event_bus: Arc<CapturingEventBus>,
     download_repo: Arc<dyn DownloadRepository>,
 ) -> CommandBus {
+    build_package_bus_with_plugin_loader(
+        package_repo,
+        credential_store,
+        event_bus,
+        download_repo,
+        Arc::new(StubPluginLoader),
+    )
+}
+
+/// Variant of [`build_package_bus`] that lets the caller swap in a
+/// custom [`PluginLoader`] — used by `import_container` tests so the
+/// fake loader can stub out `decrypt_container`.
+pub(crate) fn build_package_bus_with_plugin_loader(
+    package_repo: Arc<dyn PackageRepository>,
+    credential_store: Arc<dyn CredentialStore>,
+    event_bus: Arc<CapturingEventBus>,
+    download_repo: Arc<dyn DownloadRepository>,
+    plugin_loader: Arc<dyn PluginLoader>,
+) -> CommandBus {
     CommandBus::new(
         download_repo,
         Arc::new(StubDownloadEngine),
         event_bus,
         Arc::new(StubFileStorage),
         Arc::new(StubHttpClient),
-        Arc::new(StubPluginLoader),
+        plugin_loader,
         Arc::new(StubConfigStore),
         credential_store,
         Arc::new(StubClipboardObserver),

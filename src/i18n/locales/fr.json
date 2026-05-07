@@ -288,6 +288,11 @@
       "playlistGroupingFailed": "Impossible de regrouper la playlist dans un paquet",
       "playlistAttachFailed_one": "{{count}} téléchargement n'a pas pu être attaché au paquet de playlist",
       "playlistAttachFailed_other": "{{count}} téléchargements n'ont pas pu être attachés au paquet de playlist",
+      "containerImported_one": "{{count}} lien importé depuis {{fileName}}",
+      "containerImported_other": "{{count}} liens importés depuis {{fileName}}",
+      "containerImportFailed": "Impossible d'importer {{fileName}} : {{reason}}",
+      "containerTooLarge": "fichier trop volumineux",
+      "resolveFailed": "Échec de la résolution des liens du conteneur",
       "clipboardReadFailed": "Impossible de lire le presse-papiers"
     }
   },

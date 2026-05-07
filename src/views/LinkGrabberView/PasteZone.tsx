@@ -4,9 +4,17 @@ import { Button } from "@/components/ui/button";
 
 interface PasteZoneProps {
   onPasteUrls: (urls: string[]) => void;
+  onContainerFiles?: (files: File[]) => void;
   isLoading?: boolean;
   initialValue?: string;
   initialValueToken?: string;
+}
+
+export const CONTAINER_EXTENSIONS = [".dlc", ".ccf", ".rsdf", ".metalink", ".meta4"] as const;
+
+export function isContainerFile(file: File): boolean {
+  const lower = file.name.toLowerCase();
+  return CONTAINER_EXTENSIONS.some((ext) => lower.endsWith(ext));
 }
 
 export function extractUrls(text: string): string[] {
@@ -16,6 +24,7 @@ export function extractUrls(text: string): string[] {
 
 export function PasteZone({
   onPasteUrls,
+  onContainerFiles,
   isLoading,
   initialValue,
   initialValueToken,
@@ -70,14 +79,12 @@ export function PasteZone({
     setIsDragging(false);
 
     const files = Array.from(e.dataTransfer?.files ?? []);
-    const containerExtensions = [".dlc", ".ccf", ".rsdf", ".metalink"];
-    const containerFiles = files.filter((f) =>
-      containerExtensions.some((ext) => f.name.toLowerCase().endsWith(ext)),
-    );
+    const containerFiles = files.filter(isContainerFile);
 
     if (containerFiles.length > 0) {
-      const containerUrls = containerFiles.map((f) => `container:${f.name}`);
-      onPasteUrls(containerUrls);
+      if (onContainerFiles) {
+        onContainerFiles(containerFiles);
+      }
       return;
     }
 
