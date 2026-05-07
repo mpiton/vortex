@@ -68,6 +68,13 @@ export function LinkGrabberView() {
   // batch. Each resolve increments it; each per-call `onSuccess`
   // captures the value at dispatch time and bails when superseded.
   const detectBatchRef = useRef(0);
+  // Same idea for the resolve/check_online lifecycle: the chunked
+  // container path runs a long async loop, and during that loop the
+  // user can trigger a fresh paste-resolve. Both `applyResolvedBatch`
+  // and the chunked container handler increment / capture this so a
+  // stale completion cannot replace newer state.
+  const resolveBatchRef = useRef(0);
+  const [isImportingContainers, setIsImportingContainers] = useState(false);
   const { mutate: detectDuplicates } = useTauriMutation<DuplicateCheck[], { urls: string[] }>(
     "link_detect_duplicates",
   );
@@ -139,6 +146,8 @@ export function LinkGrabberView() {
   };
 
   const applyResolvedBatch = (resolved: ResolvedLink[]) => {
+    resolveBatchRef.current += 1;
+    const batchId = resolveBatchRef.current;
     setResolvedLinks(resolved);
     setSelectedLinkIds([]);
     // Reset the previous batch's live statuses so a stale "offline"
@@ -164,8 +173,11 @@ export function LinkGrabberView() {
           {
             // Without this, an IPC failure leaves every row stuck on the
             // optimistic `checking` spinner; downgrade to `unknown` so
-            // the row clears and the retry button surfaces.
+            // the row clears and the retry button surfaces. Gated on
+            // `batchId` so a slow chunk's failure cannot flip statuses
+            // belonging to a newer resolve.
             onError: () => {
+              if (batchId !== resolveBatchRef.current) return;
               setManyLinkStatuses(chunk.map((url) => [url, { kind: "unknown" }] as const));
             },
           },
@@ -214,65 +226,78 @@ export function LinkGrabberView() {
   };
 
   const handleContainerFiles = async (files: File[]) => {
-    const aggregatedUrls: string[] = [];
-    for (const file of files) {
-      if (file.size > MAX_CONTAINER_BYTES) {
-        toast.error(
-          t("linkGrabber.toast.containerImportFailed", {
+    if (isImportingContainers) return;
+    setIsImportingContainers(true);
+    try {
+      const aggregatedUrls: string[] = [];
+      for (const file of files) {
+        if (file.size > MAX_CONTAINER_BYTES) {
+          toast.error(
+            t("linkGrabber.toast.containerImportFailed", {
+              fileName: file.name,
+              defaultValue: `Could not import ${file.name}: file is too large`,
+            }),
+          );
+          continue;
+        }
+        try {
+          const buffer = await file.arrayBuffer();
+          const bytes = Array.from(new Uint8Array(buffer));
+          const result = await invoke<ImportContainerResult>("link_import_container", {
             fileName: file.name,
-            defaultValue: `Could not import ${file.name}: file is too large`,
-          }),
-        );
-        continue;
+            fileBytes: bytes,
+          });
+          toast.success(
+            t("linkGrabber.toast.containerImported", {
+              count: result.urls.length,
+              fileName: result.packageName,
+              defaultValue: `Imported ${result.urls.length} links from ${result.packageName}`,
+            }),
+          );
+          aggregatedUrls.push(...result.urls);
+        } catch (err) {
+          toast.error(
+            t("linkGrabber.toast.containerImportFailed", {
+              fileName: file.name,
+              defaultValue: `Could not import ${file.name}: ${String(err)}`,
+            }),
+          );
+        }
       }
-      try {
-        const buffer = await file.arrayBuffer();
-        const bytes = Array.from(new Uint8Array(buffer));
-        const result = await invoke<ImportContainerResult>("link_import_container", {
-          fileName: file.name,
-          fileBytes: bytes,
-        });
-        toast.success(
-          t("linkGrabber.toast.containerImported", {
-            count: result.urls.length,
-            fileName: result.packageName,
-            defaultValue: `Imported ${result.urls.length} links from ${result.packageName}`,
-          }),
-        );
-        aggregatedUrls.push(...result.urls);
-      } catch (err) {
-        toast.error(
-          t("linkGrabber.toast.containerImportFailed", {
-            fileName: file.name,
-            defaultValue: `Could not import ${file.name}: ${String(err)}`,
-          }),
-        );
-      }
-    }
-    if (aggregatedUrls.length === 0) return;
-    if (aggregatedUrls.length <= MAX_RESOLVE_URLS) {
-      resolveLinks({ urls: aggregatedUrls });
-      return;
-    }
-    // Direct invoke + manual aggregation: piping each chunk through the
-    // mutation would race onSuccess so the last chunk's response replaces
-    // earlier ones, and the user only sees the tail of a >500-URL import.
-    const merged: ResolvedLink[] = [];
-    for (let i = 0; i < aggregatedUrls.length; i += MAX_RESOLVE_URLS) {
-      try {
-        const chunk = aggregatedUrls.slice(i, i + MAX_RESOLVE_URLS);
-        const resolved = await invoke<ResolvedLink[]>("link_resolve", { urls: chunk });
-        merged.push(...resolved);
-      } catch (err) {
-        toast.error(
-          t("linkGrabber.toast.resolveFailed", {
-            defaultValue: `Failed to resolve container links: ${String(err)}`,
-          }),
-        );
+      if (aggregatedUrls.length === 0) return;
+      if (aggregatedUrls.length <= MAX_RESOLVE_URLS) {
+        resolveLinks({ urls: aggregatedUrls });
         return;
       }
+      // Direct invoke + manual aggregation: piping each chunk through the
+      // mutation would race onSuccess so the last chunk's response replaces
+      // earlier ones, and the user only sees the tail of a >500-URL import.
+      // Reserve a slot in `resolveBatchRef` *before* the loop: if the user
+      // triggers a fresh paste-resolve while we're awaiting chunk responses,
+      // its `applyResolvedBatch` will increment the ref past us and we bail
+      // instead of clobbering the newer result with stale container data.
+      resolveBatchRef.current += 1;
+      const reservedBatchId = resolveBatchRef.current;
+      const merged: ResolvedLink[] = [];
+      for (let i = 0; i < aggregatedUrls.length; i += MAX_RESOLVE_URLS) {
+        try {
+          const chunk = aggregatedUrls.slice(i, i + MAX_RESOLVE_URLS);
+          const resolved = await invoke<ResolvedLink[]>("link_resolve", { urls: chunk });
+          merged.push(...resolved);
+        } catch (err) {
+          toast.error(
+            t("linkGrabber.toast.resolveFailed", {
+              defaultValue: `Failed to resolve container links: ${String(err)}`,
+            }),
+          );
+          return;
+        }
+      }
+      if (reservedBatchId !== resolveBatchRef.current) return;
+      applyResolvedBatch(merged);
+    } finally {
+      setIsImportingContainers(false);
     }
-    applyResolvedBatch(merged);
   };
 
   // The bulk-start helpers gate every row through this predicate. Without
@@ -490,7 +515,7 @@ export function LinkGrabberView() {
       <PasteZone
         onPasteUrls={handlePasteUrls}
         onContainerFiles={handleContainerFiles}
-        isLoading={isResolving}
+        isLoading={isResolving || isImportingContainers}
         initialValue={pasteContent}
         initialValueToken={pasteToken}
       />
