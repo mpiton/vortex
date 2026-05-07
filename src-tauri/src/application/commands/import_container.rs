@@ -71,8 +71,10 @@ impl CommandBus {
         let urls: Vec<String> = response
             .links
             .into_iter()
-            .map(|l| l.url)
-            .filter(|u| !u.trim().is_empty())
+            .filter_map(|l| {
+                let trimmed = l.url.trim();
+                (!trimmed.is_empty()).then(|| trimmed.to_string())
+            })
             .collect();
         if urls.is_empty() {
             return Err(AppError::Plugin("container decoded with zero links".into()));

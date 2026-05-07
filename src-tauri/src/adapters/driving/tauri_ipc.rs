@@ -1012,7 +1012,7 @@ pub async fn link_import_container(
             AppError::Validation(msg) => msg.clone(),
             AppError::Plugin(msg) => msg.clone(),
             AppError::Domain(DomainError::NotFound(_)) => {
-                "Install vortex-mod-containers to import .dlc/.ccf/.rsdf/.metalink files"
+                "Install vortex-mod-containers to import .dlc/.ccf/.rsdf/.metalink/.meta4 files"
                     .to_string()
             }
             other => {

@@ -25,6 +25,9 @@ import type { ImportContainerResult } from "@/types/container";
 import { invoke } from "@tauri-apps/api/core";
 import { canonicalPlaylistKey } from "./canonicalPlaylistKey";
 
+const MAX_CONTAINER_BYTES = 1024 * 1024;
+const MAX_RESOLVE_URLS = 500;
+
 export function LinkGrabberView() {
   const { t } = useTranslation();
   const location = useLocation();
@@ -199,6 +202,15 @@ export function LinkGrabberView() {
   const handleContainerFiles = async (files: File[]) => {
     const aggregatedUrls: string[] = [];
     for (const file of files) {
+      if (file.size > MAX_CONTAINER_BYTES) {
+        toast.error(
+          t("linkGrabber.toast.containerImportFailed", {
+            fileName: file.name,
+            defaultValue: `Could not import ${file.name}: file is too large`,
+          }),
+        );
+        continue;
+      }
       try {
         const buffer = await file.arrayBuffer();
         const bytes = Array.from(new Uint8Array(buffer));
@@ -223,8 +235,8 @@ export function LinkGrabberView() {
         );
       }
     }
-    if (aggregatedUrls.length > 0) {
-      resolveLinks({ urls: aggregatedUrls });
+    for (let i = 0; i < aggregatedUrls.length; i += MAX_RESOLVE_URLS) {
+      resolveLinks({ urls: aggregatedUrls.slice(i, i + MAX_RESOLVE_URLS) });
     }
   };
 

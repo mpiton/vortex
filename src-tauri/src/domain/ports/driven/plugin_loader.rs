@@ -137,8 +137,10 @@ pub trait PluginLoader: Send + Sync {
     }
 
     /// Decrypt a link container blob (DLC / CCF / RSDF / Metalink) using
-    /// the first loaded plugin in the [`Container`](crate::domain::model::plugin::PluginCategory::Container)
-    /// category that exports a `decrypt` function.
+    /// an enabled plugin in the [`Container`](crate::domain::model::plugin::PluginCategory::Container)
+    /// category that exports a `decrypt` function. Implementations probe
+    /// candidates in alphabetical order by plugin name so multiple
+    /// container forks loaded side-by-side resolve deterministically.
     ///
     /// The returned string is the JSON shape produced by the container
     /// plugin (matches `vortex-mod-containers::types::DecryptResponse`):

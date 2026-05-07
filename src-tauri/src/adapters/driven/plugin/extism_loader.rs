@@ -420,6 +420,7 @@ impl PluginLoader for ExtismPluginLoader {
             .filter(|i| i.category() == crate::domain::model::plugin::PluginCategory::Container)
             .collect();
         infos.sort_by(|a, b| a.name().cmp(b.name()));
+        let mut probe_error: Option<DomainError> = None;
 
         for info in &infos {
             match self.registry.function_exists(info.name(), "decrypt") {
@@ -437,10 +438,19 @@ impl PluginLoader for ExtismPluginLoader {
                 Ok(false) => {}
                 Err(e) => {
                     tracing::warn!(plugin = info.name(), error = %e, "decrypt probe failed");
+                    if probe_error.is_none() {
+                        probe_error = Some(DomainError::PluginError(format!(
+                            "plugin '{}' decrypt probe failed: {e}",
+                            info.name()
+                        )));
+                    }
                 }
             }
         }
 
+        if let Some(err) = probe_error {
+            return Err(err);
+        }
         Err(DomainError::NotFound("no container plugin loaded".into()))
     }
 
