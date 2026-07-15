@@ -83,6 +83,18 @@ impl ExtismPluginLoader {
         provenance_path: PathBuf,
     ) -> Result<Self, DomainError> {
         let plugins_dir = resolve_path(&plugins_dir)?;
+        std::fs::create_dir_all(&plugins_dir).map_err(|error| {
+            DomainError::PluginError(format!(
+                "failed to create plugin directory '{}': {error}",
+                plugins_dir.display()
+            ))
+        })?;
+        let plugins_dir = std::fs::canonicalize(&plugins_dir).map_err(|error| {
+            DomainError::PluginError(format!(
+                "failed to resolve plugin directory '{}': {error}",
+                plugins_dir.display()
+            ))
+        })?;
         let provenance_path = resolve_path(&provenance_path)?;
         if provenance_path.starts_with(&plugins_dir) {
             return Err(DomainError::ValidationError(
@@ -777,6 +789,33 @@ subprocess = ["yt-dlp"]
         );
 
         assert!(matches!(result, Err(DomainError::ValidationError(_))));
+    }
+
+    #[test]
+    fn test_new_rejects_case_only_provenance_alias_inside_plugins_dir() {
+        let temp = TempDir::new().unwrap();
+        let plugins_dir = temp.path().join("Plugins");
+        std::fs::create_dir(&plugins_dir).unwrap();
+        let canonical_plugins = std::fs::canonicalize(&plugins_dir).unwrap();
+        let case_only_parent = temp.path().join("plugins");
+        let case_only_parent_is_alias =
+            std::fs::canonicalize(&case_only_parent).is_ok_and(|path| path == canonical_plugins);
+        let provenance_path = case_only_parent.join("provenance.json");
+
+        let result = ExtismPluginLoader::new_with_provenance_path(
+            plugins_dir,
+            Arc::new(SharedHostResources::new()),
+            provenance_path,
+        );
+
+        if case_only_parent_is_alias {
+            assert!(matches!(result, Err(DomainError::ValidationError(_))));
+        } else {
+            assert!(
+                result.is_ok(),
+                "distinct case-sensitive path must remain valid"
+            );
+        }
     }
 
     #[cfg(unix)]

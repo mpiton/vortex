@@ -12,12 +12,11 @@ pub(super) fn validate_url(provider: YtDlpProvider, url: &str) -> anyhow::Result
         bail!("run_ytdlp: URL length is invalid");
     }
     let parsed = reqwest::Url::parse(url).context("run_ytdlp: invalid URL")?;
-    if !matches!(parsed.scheme(), "http" | "https") {
-        bail!("run_ytdlp: URL must use HTTP or HTTPS");
+    if parsed.scheme() != "https" {
+        bail!("run_ytdlp: URL must use HTTPS");
     }
     if provider == YtDlpProvider::Generic
-        && (parsed.scheme() != "https"
-            || !parsed.username().is_empty()
+        && (!parsed.username().is_empty()
             || parsed.password().is_some()
             || parsed.port().is_some_and(|port| port != 443))
     {
@@ -137,23 +136,33 @@ pub(super) fn ensure_private_root(root: &Path) -> anyhow::Result<()> {
     match std::fs::symlink_metadata(root) {
         Ok(_) => validate_private_root(root),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            let mut builder = std::fs::DirBuilder::new();
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::DirBuilderExt;
-                builder.mode(0o700);
-            }
-            builder.create(root).with_context(|| {
-                format!(
-                    "run_ytdlp: failed to create private root '{}'",
-                    root.display()
-                )
-            })?;
-            validate_private_root(root)
+            create_private_directory(root, "private root")
         }
         Err(error) => Err(error)
             .with_context(|| format!("run_ytdlp: failed to inspect root '{}'", root.display())),
     }
+}
+
+fn create_private_directory(path: &Path, description: &str) -> anyhow::Result<()> {
+    let mut builder = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    match builder.create(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "run_ytdlp: failed to create {description} '{}'",
+                    path.display()
+                )
+            });
+        }
+    }
+    validate_private_root(path)
 }
 
 #[cfg(unix)]
@@ -219,16 +228,7 @@ pub(super) fn ensure_owned_directory_until(path: &Path, anchor: &Path) -> anyhow
 
     for component in missing.into_iter().rev() {
         current.push(component);
-        let mut builder = std::fs::DirBuilder::new();
-        use std::os::unix::fs::DirBuilderExt;
-        builder.mode(0o700);
-        builder.create(&current).with_context(|| {
-            format!(
-                "run_ytdlp: failed to create user cache directory '{}'",
-                current.display()
-            )
-        })?;
-        validate_private_root(&current)?;
+        create_private_directory(&current, "user cache directory")?;
     }
     Ok(current)
 }
@@ -353,4 +353,28 @@ fn has_prefix(path: &Path, prefix: &str) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
         .is_some_and(|name| name.starts_with(prefix))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn already_created_private_directory_is_revalidated() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("race-winner");
+        std::fs::create_dir(&path).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+
+        let result = create_private_directory(&path, "private root");
+
+        assert!(
+            result.is_ok(),
+            "race winner must be revalidated: {result:?}"
+        );
+    }
 }

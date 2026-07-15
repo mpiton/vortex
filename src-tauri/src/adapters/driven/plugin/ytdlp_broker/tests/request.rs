@@ -66,6 +66,25 @@ fn provider_host_mismatch_is_rejected() {
 }
 
 #[test]
+fn provider_scoped_urls_require_https() {
+    for (provider, url) in [
+        (
+            YtDlpProvider::Youtube,
+            "http://www.youtube.com/watch?v=abcdefghijk",
+        ),
+        (YtDlpProvider::Vimeo, "http://vimeo.com/123456"),
+        (
+            YtDlpProvider::Soundcloud,
+            "http://soundcloud.com/artist/track",
+        ),
+    ] {
+        let error = validation::validate_url(provider, url)
+            .expect_err("provider-scoped URLs must use HTTPS");
+        assert!(error.to_string().contains("must use HTTPS"));
+    }
+}
+
+#[test]
 fn generic_metadata_rejects_loopback_and_untrusted_hosts() {
     for url in [
         "http://127.0.0.1/admin",

@@ -27,6 +27,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   resolved before containment checks, state updates use an atomic synced
   replacement, committed record sync errors no longer abort verified installs,
   and revocation sync errors remain blocking before local replacement.
+- **Lot 1 review hardening (MAT-129, MAT-131)**: reusable plugin CI now drops
+  checkout credentials, verifies the real WASM export table, builds release
+  assets in a clean directory, and rejects duplicate registry entries. Plugin
+  trust paths are canonicalized against the real filesystem, yt-dlp accepts
+  HTTPS only and tolerates concurrent private-directory creation, adaptive
+  downloads reserve destinations without overwrite races, and failed Store
+  installs clean their staging directory before returning an error.
 
 ### Fixed
 

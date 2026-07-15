@@ -11,7 +11,10 @@ mod unix {
         let outside = tempfile::tempdir().unwrap();
         let valid = executable(approved.path(), "yt-dlp", 0o700);
         let unsafe_binary = executable(outside.path(), "yt-dlp", 0o700);
-        let link = approved.path().join("linked-yt-dlp");
+        let link_dir = approved.path().join("linked");
+        std::fs::create_dir(&link_dir).unwrap();
+        std::fs::set_permissions(&link_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let link = link_dir.join("yt-dlp");
         symlink(&unsafe_binary, &link).unwrap();
 
         let found =
