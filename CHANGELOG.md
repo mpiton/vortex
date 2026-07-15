@@ -25,7 +25,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   hot-reloaded modifications, unsafe executable paths, oversized process
   output, and failed partial downloads all fail closed. Provenance paths are
   resolved before containment checks, state updates use an atomic synced
-  replacement, and failed revocations leave memory and disk consistent.
+  replacement, and failed revocations or post-rename sync errors leave memory
+  and disk consistent.
 
 ### Fixed
 

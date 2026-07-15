@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
@@ -11,6 +11,22 @@ use crate::domain::error::DomainError;
 use crate::domain::ports::driven::plugin_store_client::OfficialPluginProvenance;
 
 use super::capabilities::HostFunctionGrants;
+
+type ParentSync = fn(&Path) -> std::io::Result<()>;
+
+enum PersistResult {
+    Committed,
+    CommittedWithDurabilityError(DomainError),
+}
+
+impl PersistResult {
+    fn into_result(self) -> Result<(), DomainError> {
+        match self {
+            Self::Committed => Ok(()),
+            Self::CommittedWithDurabilityError(error) => Err(error),
+        }
+    }
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct PersistedProvenance {
@@ -29,10 +45,15 @@ struct ProvenanceFile {
 pub(super) struct OfficialProvenanceStore {
     path: PathBuf,
     entries: Mutex<HashMap<String, PersistedProvenance>>,
+    sync_parent: ParentSync,
 }
 
 impl OfficialProvenanceStore {
     pub(super) fn new(path: PathBuf) -> Result<Self, DomainError> {
+        Self::new_with_parent_sync(path, sync_parent_directory)
+    }
+
+    fn new_with_parent_sync(path: PathBuf, sync_parent: ParentSync) -> Result<Self, DomainError> {
         let entries = match std::fs::read(&path) {
             Ok(bytes) => match serde_json::from_slice::<ProvenanceFile>(&bytes) {
                 Ok(file) => file.plugins,
@@ -56,6 +77,7 @@ impl OfficialProvenanceStore {
         Ok(Self {
             path,
             entries: Mutex::new(entries),
+            sync_parent,
         })
     }
 
@@ -75,9 +97,9 @@ impl OfficialProvenanceStore {
                 manifest_sha256: provenance.manifest_sha256.to_ascii_lowercase(),
             },
         );
-        self.persist(&updated_entries)?;
+        let persist_result = self.persist(&updated_entries)?;
         *entries = updated_entries;
-        Ok(())
+        persist_result.into_result()
     }
 
     pub(super) fn grants_for(
@@ -106,13 +128,17 @@ impl OfficialProvenanceStore {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut updated_entries = entries.clone();
         if updated_entries.remove(name).is_some() {
-            self.persist(&updated_entries)?;
+            let persist_result = self.persist(&updated_entries)?;
             *entries = updated_entries;
+            return persist_result.into_result();
         }
         Ok(())
     }
 
-    fn persist(&self, entries: &HashMap<String, PersistedProvenance>) -> Result<(), DomainError> {
+    fn persist(
+        &self,
+        entries: &HashMap<String, PersistedProvenance>,
+    ) -> Result<PersistResult, DomainError> {
         let parent = self.path.parent().ok_or_else(|| {
             DomainError::PluginError(format!(
                 "plugin provenance path '{}' has no parent",
@@ -152,7 +178,7 @@ impl OfficialProvenanceStore {
         temp_path: &std::path::Path,
         parent: &std::path::Path,
         payload: &[u8],
-    ) -> Result<(), DomainError> {
+    ) -> Result<PersistResult, DomainError> {
         let mut options = std::fs::OpenOptions::new();
         options.create_new(true).write(true);
         #[cfg(unix)]
@@ -186,17 +212,26 @@ impl OfficialProvenanceStore {
                 self.path.display()
             ))
         })?;
-        #[cfg(unix)]
-        std::fs::File::open(parent)
-            .and_then(|directory| directory.sync_all())
-            .map_err(|error| {
+        match (self.sync_parent)(parent) {
+            Ok(()) => Ok(PersistResult::Committed),
+            Err(error) => Ok(PersistResult::CommittedWithDurabilityError(
                 DomainError::PluginError(format!(
                     "failed to sync plugin provenance directory '{}': {error}",
                     parent.display()
-                ))
-            })?;
-        Ok(())
+                )),
+            )),
+        }
     }
+}
+
+#[cfg(unix)]
+fn sync_parent_directory(parent: &Path) -> std::io::Result<()> {
+    std::fs::File::open(parent).and_then(|directory| directory.sync_all())
+}
+
+#[cfg(not(unix))]
+fn sync_parent_directory(_: &Path) -> std::io::Result<()> {
+    Ok(())
 }
 
 fn digest(bytes: &[u8]) -> String {
@@ -219,6 +254,10 @@ mod tests {
     #[cfg(unix)]
     use std::io::Read;
     use tempfile::TempDir;
+
+    fn fail_parent_sync(_: &Path) -> std::io::Result<()> {
+        Err(std::io::Error::other("injected parent sync failure"))
+    }
 
     #[test]
     fn test_verified_provenance_persists_and_grants_unchanged_plugin() {
@@ -346,6 +385,53 @@ mod tests {
             OfficialProvenanceStore::new(moved_state_dir.join("plugin-provenance.json")).unwrap();
         assert!(
             reloaded
+                .grants_for("vortex-mod-youtube", "1.0.0", wasm, manifest)
+                .ytdlp
+        );
+    }
+
+    #[test]
+    fn test_committed_sync_errors_keep_record_and_revoke_consistent_with_disk() {
+        let temp = TempDir::new().unwrap();
+        let state_path = temp.path().join("plugin-provenance.json");
+        let wasm = b"official wasm";
+        let manifest = b"official manifest";
+        let provenance = OfficialPluginProvenance {
+            name: "vortex-mod-youtube".into(),
+            version: "1.0.0".into(),
+            wasm_sha256: digest(wasm),
+            manifest_sha256: digest(manifest),
+        };
+        let store =
+            OfficialProvenanceStore::new_with_parent_sync(state_path.clone(), fail_parent_sync)
+                .unwrap();
+
+        let record_result = store.record(&provenance);
+
+        assert!(record_result.is_err());
+        assert!(
+            store
+                .grants_for("vortex-mod-youtube", "1.0.0", wasm, manifest)
+                .ytdlp
+        );
+        let reloaded = OfficialProvenanceStore::new(state_path.clone()).unwrap();
+        assert!(
+            reloaded
+                .grants_for("vortex-mod-youtube", "1.0.0", wasm, manifest)
+                .ytdlp
+        );
+
+        let revoke_result = store.revoke("vortex-mod-youtube");
+
+        assert!(revoke_result.is_err());
+        assert!(
+            !store
+                .grants_for("vortex-mod-youtube", "1.0.0", wasm, manifest)
+                .ytdlp
+        );
+        let reloaded = OfficialProvenanceStore::new(state_path).unwrap();
+        assert!(
+            !reloaded
                 .grants_for("vortex-mod-youtube", "1.0.0", wasm, manifest)
                 .ytdlp
         );
