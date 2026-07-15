@@ -84,13 +84,13 @@ impl CommandBus {
         // final `load()` to fail with `AlreadyExists`.
         let loader = self.plugin_loader_arc();
         let staging_for_cleanup = plugin_dir.clone();
-        tokio::task::spawn_blocking(move || match download.provenance {
+        let install_result = tokio::task::spawn_blocking(move || match download.provenance {
             Some(provenance) => loader.load_official_from_dir(&plugin_dir, &provenance),
             None => loader.load_from_dir(&plugin_dir),
         })
         .await
-        .map_err(|e| AppError::Plugin(format!("plugin install task failed: {e}")))?
-        .map_err(AppError::from)?;
+        .map_err(|e| AppError::Plugin(format!("plugin install task failed: {e}")))
+        .and_then(|result| result.map_err(AppError::from));
 
         // Staging is only meaningful until `load_from_dir` has copied the
         // files to the permanent plugins directory. After that the staged
@@ -106,6 +106,8 @@ impl CommandBus {
                 "failed to clean up plugin staging dir after install",
             );
         }
+
+        install_result?;
 
         tracing::info!(plugin = %cmd.name, "plugin installed from store");
         Ok(())
@@ -129,9 +131,74 @@ impl CommandBus {
 mod tests {
     use super::*;
     use crate::application::commands::store_refresh::write_cache;
-    use crate::domain::model::plugin::PluginCategory;
+    use crate::domain::error::DomainError;
+    use crate::domain::model::plugin::{PluginCategory, PluginInfo, PluginManifest};
     use crate::domain::model::plugin_store::{PluginStoreEntry, PluginStoreStatus};
+    use crate::domain::ports::driven::plugin_store_client::StorePluginDownload;
+    use crate::domain::ports::driven::{PluginLoader, PluginStoreClient};
+    use std::path::{Path, PathBuf};
+    use std::sync::Arc;
     use tempfile::TempDir;
+
+    struct StagingStoreClient {
+        directory: PathBuf,
+    }
+
+    impl PluginStoreClient for StagingStoreClient {
+        fn fetch_registry(&self) -> Result<Vec<PluginStoreEntry>, DomainError> {
+            Ok(Vec::new())
+        }
+
+        fn download_plugin(&self, _entry: &PluginStoreEntry) -> Result<PathBuf, DomainError> {
+            Ok(self.directory.clone())
+        }
+
+        fn download_store_plugin(&self, _name: &str) -> Result<StorePluginDownload, DomainError> {
+            Ok(StorePluginDownload {
+                directory: self.directory.clone(),
+                provenance: None,
+                min_vortex_version: None,
+            })
+        }
+    }
+
+    enum LoaderFailure {
+        Error,
+        Panic,
+    }
+
+    struct FailingDirectoryLoader {
+        failure: LoaderFailure,
+    }
+
+    impl PluginLoader for FailingDirectoryLoader {
+        fn load(&self, _manifest: &PluginManifest) -> Result<(), DomainError> {
+            Ok(())
+        }
+
+        fn load_from_dir(&self, _dir: &Path) -> Result<(), DomainError> {
+            match self.failure {
+                LoaderFailure::Error => Err(DomainError::PluginError("load failed".into())),
+                LoaderFailure::Panic => panic!("loader panicked"),
+            }
+        }
+
+        fn unload(&self, _name: &str) -> Result<(), DomainError> {
+            Ok(())
+        }
+
+        fn resolve_url(&self, _url: &str) -> Result<Option<PluginInfo>, DomainError> {
+            Ok(None)
+        }
+
+        fn list_loaded(&self) -> Result<Vec<PluginInfo>, DomainError> {
+            Ok(Vec::new())
+        }
+
+        fn set_enabled(&self, _name: &str, _enabled: bool) -> Result<(), DomainError> {
+            Ok(())
+        }
+    }
 
     fn make_entry(name: &str, version: &str) -> PluginStoreEntry {
         PluginStoreEntry {
@@ -180,6 +247,57 @@ mod tests {
             .find(|dto| dto.name == "my-plugin");
         assert!(found.is_some());
         assert_eq!(found.unwrap().version, "1.0.0");
+    }
+
+    async fn install_with_failure(failure: LoaderFailure) -> AppError {
+        let tmp = TempDir::new().unwrap();
+        let cache = tmp.path().join("cache.json");
+        write_cache(&cache, &[make_entry("my-plugin", "1.0.0")]).unwrap();
+
+        let staging = tmp.path().join("staging");
+        std::fs::create_dir_all(&staging).unwrap();
+        std::fs::write(staging.join("plugin.wasm"), b"wasm").unwrap();
+
+        let bus = crate::application::test_support::make_store_command_bus(
+            Arc::new(FailingDirectoryLoader { failure }),
+            Arc::new(StagingStoreClient {
+                directory: staging.clone(),
+            }),
+        );
+
+        let result = bus
+            .handle_store_install(
+                StoreInstallCommand {
+                    name: "my-plugin".into(),
+                },
+                &cache,
+            )
+            .await;
+
+        let error = result.expect_err("installation must propagate the loader failure");
+        assert!(
+            !staging.exists(),
+            "staging directory must be removed before the install error propagates"
+        );
+        error
+    }
+
+    #[tokio::test]
+    async fn test_store_install_cleans_staging_after_loader_error() {
+        let error = install_with_failure(LoaderFailure::Error).await;
+        assert!(matches!(
+            error,
+            AppError::Domain(DomainError::PluginError(message)) if message == "load failed"
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_store_install_cleans_staging_after_join_error() {
+        let error = install_with_failure(LoaderFailure::Panic).await;
+        assert!(matches!(
+            error,
+            AppError::Plugin(message) if message.starts_with("plugin install task failed:")
+        ));
     }
 
     #[test]

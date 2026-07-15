@@ -1588,11 +1588,9 @@ fn sanitize_extension(ext: &str) -> Result<String, String> {
 /// Errors out after 9999 collisions rather than silently overwriting — that
 /// branch is meant to *prevent* overwrites, not fall back to them.
 ///
-/// Race condition note: TOCTOU-safe this is not — another process could create
-/// the same path between the `exists()` check and the subsequent
-/// `rename`/`copy`. That would result in an overwrite. For downloads, the
-/// window is small and the alternative (`O_EXCL`-style create + rename) is not
-/// available on `std::fs::rename`. Accepted as a practical compromise.
+/// This helper only suggests a free path and is not TOCTOU-safe. Callers that
+/// write immediately and must prevent overwrites should use
+/// [`reserve_unique_destination`] instead.
 fn unique_destination(
     dir: &std::path::Path,
     filename: &str,
@@ -1617,6 +1615,54 @@ fn unique_destination(
         let candidate = dir.join(&candidate_name);
         if !candidate.exists() {
             return Ok((candidate, candidate_name));
+        }
+    }
+
+    Err(format!(
+        "too many existing files named like {filename:?} in {}",
+        dir.display()
+    ))
+}
+
+/// Atomically reserve a unique destination for an adaptive download.
+///
+/// Unlike [`unique_destination`], this creates the selected file with
+/// `create_new(true)`. A concurrent reservation therefore fails with
+/// `AlreadyExists` and retries the next suffix instead of sharing a path.
+fn reserve_unique_destination(
+    dir: &std::path::Path,
+    filename: &str,
+) -> Result<(std::fs::File, std::path::PathBuf, String), String> {
+    let path = std::path::Path::new(filename);
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(filename);
+    let ext = path.extension().and_then(|s| s.to_str());
+
+    for n in 0..=9999 {
+        let candidate_name = if n == 0 {
+            filename.to_string()
+        } else {
+            match ext {
+                Some(e) => format!("{stem} ({n}).{e}"),
+                None => format!("{stem} ({n})"),
+            }
+        };
+        let candidate = dir.join(&candidate_name);
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        {
+            Ok(file) => return Ok((file, candidate, candidate_name)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(format!(
+                    "failed to reserve destination {}: {error}",
+                    candidate.display()
+                ));
+            }
         }
     }
 
@@ -1802,19 +1848,36 @@ fn resolve_media_stream(
                     dest_dir.display()
                 )
             })?;
-            let (dest_path, dest_filename) = unique_destination(&dest_dir, &filename)
-                .map_err(|e| format!("failed to select unique destination: {e}"))?;
+            let (mut destination, dest_path, dest_filename) =
+                reserve_unique_destination(&dest_dir, &filename)
+                    .map_err(|e| format!("failed to select unique destination: {e}"))?;
 
-            if std::fs::rename(&produced_canonical, &dest_path).is_err() {
-                std::fs::copy(&produced_canonical, &dest_path)
+            let copy_result = (|| -> Result<(), String> {
+                let mut source = std::fs::File::open(&produced_canonical)
+                    .map_err(|e| format!("failed to open merged file: {e}"))?;
+                std::io::copy(&mut source, &mut destination)
                     .map_err(|e| format!("failed to copy merged file: {e}"))?;
-                if let Err(e) = std::fs::remove_file(&produced_canonical) {
+                Ok(())
+            })();
+            drop(destination);
+
+            if let Err(error) = copy_result {
+                if let Err(cleanup_error) = std::fs::remove_file(&dest_path) {
                     tracing::warn!(
-                        path = %produced_canonical.display(),
-                        error = %e,
-                        "failed to remove temp file after copy"
+                        path = %dest_path.display(),
+                        error = %cleanup_error,
+                        "failed to remove incomplete destination file"
                     );
                 }
+                return Err(error);
+            }
+
+            if let Err(e) = std::fs::remove_file(&produced_canonical) {
+                tracing::warn!(
+                    path = %produced_canonical.display(),
+                    error = %e,
+                    "failed to remove temp file after copy"
+                );
             }
 
             Ok(StreamResolution::LocalFile {
@@ -3438,7 +3501,10 @@ mod tests {
     use crate::domain::model::views::StatsPeriod;
     use crate::domain::ports::driven::PluginLoader;
     use crate::domain::ports::driven::plugin_loader::DownloadedFileInfo;
+    use std::collections::HashSet;
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Barrier};
 
     #[derive(Clone)]
     struct MetadataPluginLoader {
@@ -3477,8 +3543,20 @@ mod tests {
         }
     }
 
-    #[derive(Clone)]
-    struct AdaptiveDownloadPluginLoader;
+    #[derive(Clone, Default)]
+    struct AdaptiveDownloadPluginLoader {
+        ready: Option<Arc<Barrier>>,
+        sequence: Arc<AtomicUsize>,
+    }
+
+    impl AdaptiveDownloadPluginLoader {
+        fn synchronized(downloads: usize) -> Self {
+            Self {
+                ready: Some(Arc::new(Barrier::new(downloads))),
+                sequence: Arc::new(AtomicUsize::new(0)),
+            }
+        }
+    }
 
     impl PluginLoader for AdaptiveDownloadPluginLoader {
         fn load(&self, _manifest: &PluginManifest) -> Result<(), DomainError> {
@@ -3522,14 +3600,18 @@ mod tests {
             let output_dir = PathBuf::from(output_dir);
             std::fs::create_dir_all(&output_dir)
                 .map_err(|e| DomainError::StorageError(e.to_string()))?;
-            let unique = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos();
-            let path = output_dir.join(format!("adaptive-{unique}.mp4"));
-            std::fs::write(&path, b"merged")
+            let sequence = self.sequence.fetch_add(1, Ordering::SeqCst);
+            let path = output_dir.join(format!("adaptive-{sequence}.mp4"));
+            let contents = format!("merged-{sequence}");
+            std::fs::write(&path, contents.as_bytes())
                 .map_err(|e| DomainError::StorageError(e.to_string()))?;
-            Ok(DownloadedFileInfo { path, size: 6 })
+            if let Some(ready) = &self.ready {
+                ready.wait();
+            }
+            Ok(DownloadedFileInfo {
+                path,
+                size: contents.len() as u64,
+            })
         }
     }
 
@@ -3913,7 +3995,7 @@ mod tests {
         let configured_dir = configured_root.path().join("custom-downloads");
 
         let resolution = resolve_media_stream(
-            &AdaptiveDownloadPluginLoader,
+            &AdaptiveDownloadPluginLoader::default(),
             "https://example.com/video",
             "720p",
             "mp4",
@@ -3931,13 +4013,62 @@ mod tests {
             } => {
                 assert!(path.starts_with(&configured_dir));
                 assert_eq!(filename, "Adaptive Title.mp4");
-                assert_eq!(size, 6);
+                assert_eq!(size, 8);
                 assert!(path.exists());
             }
             StreamResolution::CdnUrl(url) => {
                 panic!("expected local file resolution, got CDN URL: {url}")
             }
         }
+    }
+
+    #[test]
+    fn test_resolve_media_stream_reserves_distinct_destinations_concurrently() {
+        const DOWNLOADS: usize = 16;
+
+        let configured_root = tempfile::tempdir().expect("temp dir");
+        let configured_dir = configured_root.path().join("custom-downloads");
+        let loader = AdaptiveDownloadPluginLoader::synchronized(DOWNLOADS);
+
+        let workers = (0..DOWNLOADS)
+            .map(|_| {
+                let configured_dir = configured_dir.clone();
+                let loader = loader.clone();
+                std::thread::spawn(move || {
+                    resolve_media_stream(
+                        &loader,
+                        "https://example.com/video",
+                        "720p",
+                        "mp4",
+                        false,
+                        Some("Concurrent Title".to_string()),
+                        Some(configured_dir),
+                    )
+                    .expect("adaptive stream should resolve to a local file")
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let mut paths = HashSet::new();
+        let mut contents = HashSet::new();
+        for worker in workers {
+            match worker.join().expect("download worker should not panic") {
+                StreamResolution::LocalFile { path, .. } => {
+                    contents.insert(std::fs::read(&path).expect("destination should be readable"));
+                    paths.insert(path);
+                }
+                StreamResolution::CdnUrl(url) => {
+                    panic!("expected local file resolution, got CDN URL: {url}")
+                }
+            }
+        }
+
+        assert_eq!(paths.len(), DOWNLOADS, "destinations must not collide");
+        assert_eq!(
+            contents.len(),
+            DOWNLOADS,
+            "concurrent downloads must not overwrite each other's contents"
+        );
     }
 
     #[test]

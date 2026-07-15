@@ -34,7 +34,7 @@ use crate::domain::ports::driven::{
     AccountRepository, ArchiveExtractor, ClipboardObserver, ConfigStore, CredentialStore,
     DownloadEngine, DownloadReadRepository, DownloadRepository, EventBus, FileStorage,
     HistoryRepository, HttpClient, PackageReadRepository, PluginLoader, PluginReadRepository,
-    StatsRepository,
+    PluginStoreClient, StatsRepository,
 };
 
 fn host_component(url: &str) -> Option<&str> {
@@ -452,6 +452,27 @@ pub(crate) fn make_history_command_bus(history: Arc<dyn HistoryRepository>) -> C
         Arc::new(StubArchiveExtractor),
         history,
         None,
+    )
+}
+
+/// Build a [`CommandBus`] wired for Store installation handler tests.
+pub(crate) fn make_store_command_bus(
+    plugin_loader: Arc<dyn PluginLoader>,
+    plugin_store_client: Arc<dyn PluginStoreClient>,
+) -> CommandBus {
+    CommandBus::new(
+        Arc::new(StubDownloadRepo),
+        Arc::new(StubDownloadEngine),
+        Arc::new(StubEventBus),
+        Arc::new(StubFileStorage),
+        Arc::new(StubHttpClient),
+        plugin_loader,
+        Arc::new(StubConfigStore),
+        Arc::new(StubCredentialStore),
+        Arc::new(StubClipboardObserver),
+        Arc::new(StubArchiveExtractor),
+        Arc::new(NoopHistoryRepo),
+        Some(plugin_store_client),
     )
 }
 
