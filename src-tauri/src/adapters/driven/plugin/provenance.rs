@@ -20,6 +20,15 @@ enum PersistResult {
 }
 
 impl PersistResult {
+    fn warn_if_not_durable(self) {
+        if let Self::CommittedWithDurabilityError(error) = self {
+            tracing::warn!(
+                %error,
+                "plugin provenance record committed without durable directory sync"
+            );
+        }
+    }
+
     fn into_result(self) -> Result<(), DomainError> {
         match self {
             Self::Committed => Ok(()),
@@ -99,7 +108,12 @@ impl OfficialProvenanceStore {
         );
         let persist_result = self.persist(&updated_entries)?;
         *entries = updated_entries;
-        persist_result.into_result()
+        // If directory sync fails after rename, startup checksum revalidation
+        // still makes a lost record fail closed. Do not abort an install whose
+        // files and trust record are already committed. Revocation remains
+        // stricter because it runs before an untrusted local replacement.
+        persist_result.warn_if_not_durable();
+        Ok(())
     }
 
     pub(super) fn grants_for(
@@ -391,7 +405,7 @@ mod tests {
     }
 
     #[test]
-    fn test_committed_sync_errors_keep_record_and_revoke_consistent_with_disk() {
+    fn test_committed_sync_errors_allow_record_but_fail_revoke_without_divergence() {
         let temp = TempDir::new().unwrap();
         let state_path = temp.path().join("plugin-provenance.json");
         let wasm = b"official wasm";
@@ -408,7 +422,7 @@ mod tests {
 
         let record_result = store.record(&provenance);
 
-        assert!(record_result.is_err());
+        assert!(record_result.is_ok());
         assert!(
             store
                 .grants_for("vortex-mod-youtube", "1.0.0", wasm, manifest)
