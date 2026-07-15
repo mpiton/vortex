@@ -46,7 +46,28 @@ API_TOKEN="ghp_$(printf 'a%.0s' {1..36})"
 printf '%s\n' "$API_TOKEN" > "$REPO/credential.txt"
 git -C "$REPO" add .npmrc credential.txt
 assert_rejected "$REPO" "API token" "$API_TOKEN" "credential.txt:1" --all
-assert_rejected "$REPO" "staged API token" "$API_TOKEN" ""
+assert_rejected "$REPO" "staged API token" "$API_TOKEN" "credential.txt:1"
+
+BINARY_REPO=$(mktemp -d)
+git -C "$BINARY_REPO" init -q
+printf '\0prefix%s\0suffix\n' "$API_TOKEN" > "$BINARY_REPO/payload.bin"
+git -C "$BINARY_REPO" add payload.bin
+assert_rejected "$BINARY_REPO" "binary API token" "$API_TOKEN" "payload.bin:1" --all
+assert_rejected "$BINARY_REPO" "staged binary API token" "$API_TOKEN" "payload.bin:1"
+
+LOCK_REPO=$(mktemp -d)
+git -C "$LOCK_REPO" init -q
+printf '%s\n' "$API_TOKEN" > "$LOCK_REPO/dependencies.lock"
+git -C "$LOCK_REPO" add dependencies.lock
+assert_rejected "$LOCK_REPO" "lockfile API token" "$API_TOKEN" "dependencies.lock:1" --all
+assert_rejected "$LOCK_REPO" "staged lockfile API token" "$API_TOKEN" "dependencies.lock:1"
+
+PATH_REPO=$(mktemp -d)
+git -C "$PATH_REPO" init -q
+printf 'safe content\n' > "$PATH_REPO/$API_TOKEN.txt"
+git -C "$PATH_REPO" add -- "$API_TOKEN.txt"
+assert_rejected "$PATH_REPO" "filename API token" "$API_TOKEN" "[redacted-path]" --all
+assert_rejected "$PATH_REPO" "staged filename API token" "$API_TOKEN" "[redacted-path]"
 
 LARGE_REPO=$(mktemp -d)
 git -C "$LARGE_REPO" init -q

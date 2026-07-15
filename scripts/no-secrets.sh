@@ -9,6 +9,19 @@ NPMRC_PATH_PATTERN='(^|/)\.npmrc$'
 NPMRC_AUTH_PATTERNS='(^|[[:space:]])(_authToken|_password|_auth)[[:space:]]*=|//.+:(_authToken|_password|_auth)[[:space:]]*='
 API_KEY_PATTERNS='AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|sk-ant-[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9]{32,}|ghp_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{82}|glpat-[A-Za-z0-9_-]{20}|AIza[0-9A-Za-z_-]{35}'
 
+print_redacted_path() {
+    local file=$1
+    local suffix=${2:-}
+
+    shopt -s nocasematch
+    if [[ $file =~ $API_KEY_PATTERNS ]]; then
+        printf '  - [redacted-path]%s\n' "$suffix"
+    else
+        printf '  - %q%s\n' "$file" "$suffix"
+    fi
+    shopt -u nocasematch
+}
+
 FILES=()
 case "${1:-}" in
     "")
@@ -35,7 +48,7 @@ SECRET_FILES=()
 NPMRC_FILES=()
 shopt -s nocasematch
 for file in "${FILES[@]}"; do
-    if [[ $file =~ $SECRET_PATTERNS ]]; then
+    if [[ $file =~ $SECRET_PATTERNS || $file =~ $API_KEY_PATTERNS ]]; then
         SECRET_FILES+=("$file")
     fi
 done
@@ -48,7 +61,9 @@ done
 
 if [ "${#SECRET_FILES[@]}" -gt 0 ]; then
     echo "BLOCKED: files possibly containing secrets are $SCOPE:"
-    printf '  - %q\n' "${SECRET_FILES[@]}"
+    for file in "${SECRET_FILES[@]}"; do
+        print_redacted_path "$file"
+    done
     echo ""
     echo "If intentional, add the file to .gitignore and use a .example variant instead."
     exit 1
@@ -67,43 +82,38 @@ done
 
 if [ "${#NPMRC_LEAKS[@]}" -gt 0 ]; then
     echo "BLOCKED: npm authentication config detected in tracked .npmrc:"
-    printf '  - %q\n' "${NPMRC_LEAKS[@]}"
+    for file in "${NPMRC_LEAKS[@]}"; do
+        print_redacted_path "$file"
+    done
     echo "Store npm credentials in the user-level ~/.npmrc or CI secrets instead."
     exit 1
 fi
 
-# Check content: grep known API key patterns in the diff
+# Check complete indexed content so local and CI findings are identical.
 CONTENT_FOUND=false
-if [ "$SCOPE" = "tracked" ]; then
-    if git grep --cached -qEI "$API_KEY_PATTERNS" -- ':(exclude)*.lock'; then
-        CONTENT_FOUND=true
-    else
-        GREP_STATUS=$?
-        if [ "$GREP_STATUS" -ne 1 ]; then
-            echo "Secret scan failed while reading the Git index." >&2
-            exit "$GREP_STATUS"
-        fi
-    fi
+if git grep --cached -qEia "$API_KEY_PATTERNS"; then
+    CONTENT_FOUND=true
 else
-    CONTENT_LEAK=$(git diff --cached -U0 | grep -E '^\+' | grep -vE '^\+\+\+ [ab]/' | grep -iE "$API_KEY_PATTERNS" || true)
-    if [ -n "$CONTENT_LEAK" ]; then
-        CONTENT_FOUND=true
+    GREP_STATUS=$?
+    if [ "$GREP_STATUS" -ne 1 ]; then
+        echo "Secret scan failed while reading the Git index." >&2
+        exit "$GREP_STATUS"
     fi
 fi
 
 if [ "$CONTENT_FOUND" = true ]; then
     echo "BLOCKED: API key pattern detected; matched values were redacted."
-    if [ "$SCOPE" = "tracked" ]; then
-        MATCH_COUNT=0
-        while IFS= read -r -d '' file \
-            && IFS= read -r -d '' line \
-            && IFS= read -r content; do
-            if [ "$MATCH_COUNT" -lt 5 ]; then
-                printf '  - %q:%s\n' "$file" "$line"
-            fi
-            MATCH_COUNT=$((MATCH_COUNT + 1))
-        done < <(git grep --cached -z -nEI "$API_KEY_PATTERNS" -- ':(exclude)*.lock')
-    fi
+    MATCH_COUNT=0
+    # With -z -n, Git NUL-terminates the path and line number; content remains
+    # newline-terminated. Treating binary files as text keeps them in scope.
+    while IFS= read -r -d '' file \
+        && IFS= read -r -d '' line \
+        && IFS= read -r _content; do
+        if [ "$MATCH_COUNT" -lt 5 ]; then
+            print_redacted_path "$file" ":$line"
+        fi
+        MATCH_COUNT=$((MATCH_COUNT + 1))
+    done < <(git grep --cached -z -nEia "$API_KEY_PATTERNS")
     echo "Remove the key and revoke it immediately if it has been committed even locally."
     exit 1
 fi
