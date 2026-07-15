@@ -18,7 +18,7 @@ jobs:
     name: Rust — fmt + clippy + deny + tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Install Linux dependencies
         run: |
@@ -29,11 +29,11 @@ jobs:
             librsvg2-dev \
             patchelf
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
           components: rustfmt, clippy, llvm-tools-preview
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           workspaces: src-tauri
 
@@ -44,7 +44,7 @@ jobs:
         run: cargo clippy --manifest-path src-tauri/Cargo.toml --workspace -- -D warnings
 
       - name: Install cargo tooling
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@43aecc8d72668fbcfe75c31400bc4f890f1c5853 # v2
         with:
           tool: cargo-llvm-cov,cargo-deny
 
@@ -59,7 +59,7 @@ jobs:
             --lcov \
             --output-path lcov.info
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: rust-coverage
           path: lcov.info
@@ -68,15 +68,18 @@ jobs:
     name: Frontend — oxlint + oxfmt + tsc + knip + vitest
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           cache: npm
 
       - name: npm ci
         run: npm ci
+
+      - name: npm audit
+        run: npm audit
 
       - name: oxlint
         run: npx oxlint . --max-warnings=0
@@ -96,7 +99,7 @@ jobs:
       - name: vitest + coverage
         run: npx vitest run --coverage --passWithNoTests
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: frontend-coverage
           path: coverage/
@@ -105,42 +108,19 @@ jobs:
     name: Secrets scan
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - name: Check for secret files in repo
-        run: |
-          # `(^|/)\.npmrc$|(^|/)\.pypirc$` catches nested forms (e.g.
-          # `tools/.npmrc`) on top of the root-level files.
-          SECRET_FILES=$(git ls-files | grep -iE '\.(env|env\..+|pem|key|p12|pfx|secret|creds|aws|netrc)$|(^|/)(\.env|\.secrets|secrets)/|(^|/)\.npmrc$|(^|/)\.pypirc$' || true)
-          if [ -n "$SECRET_FILES" ]; then
-            echo "::error::Secret files in repo:"
-            echo "$SECRET_FILES"
-            exit 1
-          fi
+      - name: Test secrets scanner
+        run: ./scripts/test-no-secrets.sh
 
-      - name: Check for API key patterns in tracked files
-        run: |
-          # Patterns aligned with scripts/no-secrets.sh — defence in depth.
-          # All distinctive prefixes (AKIA, sk-ant, sk-, ghp_, github_pat_,
-          # glpat-, AIza), so manifests like package.json / Cargo.toml are
-          # safe to scan and are no longer excluded.
-          # `ASIA…` covers temporary STS credentials (vs long-lived `AKIA…`).
-          PATTERNS='AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|sk-ant-[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9]{32,}|ghp_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{82}|glpat-[A-Za-z0-9_-]{20}|AIza[0-9A-Za-z_-]{35}'
-          MATCHES=$(git grep -nE "$PATTERNS" -- ':(exclude)*.lock' || true)
-          if [ -n "$MATCHES" ]; then
-            echo "::error::API key pattern detected:"
-            # Strip the matched secret value from the output — `git grep -n`
-            # returns `file:line:matched_text`; emit only `file:line` so CI
-            # logs never reveal the raw credential.
-            echo "$MATCHES" | head -10 | awk -F: '{print $1 ":" $2}'
-            exit 1
-          fi
+      - name: Scan tracked files for secrets
+        run: ./scripts/no-secrets.sh --all
 
   forbidden-tools:
     name: Forbidden tools
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Reject pnpm-lock.yaml / yarn.lock
         run: |
@@ -213,15 +193,17 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           workspaces: src-tauri
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           cache: npm
@@ -240,14 +222,25 @@ jobs:
         run: npm ci
 
       - name: Tauri build
-        run: npx tauri build --config .github/tauri.ci.conf.json
+        id: tauri-build
+        shell: bash
+        run: npx tauri build --config .github/tauri.ci.conf.json 2>&1 | tee tauri-build.log
+
+      - name: Upload Tauri build diagnostics
+        if: failure() && steps.tauri-build.outcome == 'failure'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: tauri-build-diagnostics-${{ matrix.os }}
+          path: tauri-build.log
+          if-no-files-found: warn
+          retention-days: 7
 
   changelog-check:
     name: CHANGELOG updated
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0
 
