@@ -82,9 +82,12 @@ jobs:
 
           artifact_name = f"{crate_name}.wasm"
           wasm_path = f"target/wasm32-wasip1/release/{artifact_name}"
+          plugin_wasm_asset = f"{package_name.replace('-', '_')}.wasm"
+          if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*\.wasm", plugin_wasm_asset) is None:
+              raise SystemExit("plugin name cannot be mapped to a release WASM asset")
           with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env:
               env.write(f"PACKAGE_NAME={package_name}\n")
-              env.write(f"ARTIFACT_NAME={artifact_name}\n")
+              env.write(f"PLUGIN_WASM_ASSET={plugin_wasm_asset}\n")
               env.write(f"WASM_PATH={wasm_path}\n")
           PY
 
@@ -144,14 +147,29 @@ jobs:
         shell: bash
         run: |
           mkdir -p dist
-          cp "${WASM_PATH}" "dist/${ARTIFACT_NAME}"
           cp "${WASM_PATH}" dist/plugin.wasm
+          if [[ "${PLUGIN_WASM_ASSET}" != "plugin.wasm" ]]; then
+            cp "${WASM_PATH}" "dist/${PLUGIN_WASM_ASSET}"
+          fi
           cp plugin.toml dist/plugin.toml
           (
             cd dist
             sha256sum plugin.wasm plugin.toml > SHA256SUMS
             sha256sum --check SHA256SUMS
           )
+
+          expected_assets=(plugin.wasm plugin.toml SHA256SUMS)
+          if [[ "${PLUGIN_WASM_ASSET}" != "plugin.wasm" ]]; then
+            expected_assets+=("${PLUGIN_WASM_ASSET}")
+          fi
+          expected_assets="$(printf '%s\n' "${expected_assets[@]}" | LC_ALL=C sort)"
+          actual_assets="$(find dist -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort)"
+          if [[ "${actual_assets}" != "${expected_assets}" ]]; then
+            echo "verified bundle asset set is not canonical" >&2
+            diff -u <(printf '%s\n' "${expected_assets}") \
+              <(printf '%s\n' "${actual_assets}") || true
+            exit 1
+          fi
 
       - name: Upload verified release bundle
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
