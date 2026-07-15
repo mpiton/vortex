@@ -1,7 +1,7 @@
 //! Implements [`PluginLoader`] using Extism and [`PluginRegistry`].
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -82,6 +82,8 @@ impl ExtismPluginLoader {
         shared_resources: Arc<SharedHostResources>,
         provenance_path: PathBuf,
     ) -> Result<Self, DomainError> {
+        let plugins_dir = resolve_path(&plugins_dir)?;
+        let provenance_path = resolve_path(&provenance_path)?;
         if provenance_path.starts_with(&plugins_dir) {
             return Err(DomainError::ValidationError(
                 "plugin provenance must live outside the plugin directory".into(),
@@ -251,6 +253,59 @@ impl ExtismPluginLoader {
             self.provenance.revoke(&name)?;
         }
         result
+    }
+}
+
+fn resolve_path(path: &Path) -> Result<PathBuf, DomainError> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|error| {
+                DomainError::PluginError(format!("failed to resolve current directory: {error}"))
+            })?
+            .join(path)
+    };
+    resolve_existing_ancestor(&absolute)
+}
+
+fn resolve_existing_ancestor(path: &Path) -> Result<PathBuf, DomainError> {
+    match std::fs::canonicalize(path) {
+        Ok(resolved) => Ok(resolved),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            if path
+                .components()
+                .any(|component| component == Component::ParentDir)
+            {
+                return Err(DomainError::ValidationError(format!(
+                    "path '{}' contains an unresolved parent traversal",
+                    path.display()
+                )));
+            }
+            if std::fs::symlink_metadata(path).is_ok() {
+                return Err(DomainError::ValidationError(format!(
+                    "path '{}' contains an unresolved symbolic link",
+                    path.display()
+                )));
+            }
+            let parent = path.parent().ok_or_else(|| {
+                DomainError::ValidationError(format!(
+                    "path '{}' has no resolvable parent",
+                    path.display()
+                ))
+            })?;
+            let name = path.file_name().ok_or_else(|| {
+                DomainError::ValidationError(format!(
+                    "path '{}' cannot be resolved safely",
+                    path.display()
+                ))
+            })?;
+            Ok(resolve_existing_ancestor(parent)?.join(name))
+        }
+        Err(error) => Err(DomainError::PluginError(format!(
+            "failed to resolve path '{}': {error}",
+            path.display()
+        ))),
     }
 }
 
@@ -681,6 +736,65 @@ subprocess = ["yt-dlp"]
         std::fs::write(dir.join("plugin.toml"), &manifest).unwrap();
         std::fs::write(dir.join(format!("{name}.wasm")), &wasm).unwrap();
         (wasm, manifest)
+    }
+
+    #[test]
+    fn test_new_rejects_absolute_provenance_inside_relative_plugins_dir() {
+        let current_dir = std::env::current_dir().unwrap();
+        let temp = tempfile::Builder::new()
+            .prefix("vortex-provenance-containment-")
+            .tempdir_in(&current_dir)
+            .unwrap();
+        let relative_root = temp.path().strip_prefix(&current_dir).unwrap();
+        let relative_plugins_dir = relative_root.join("plugins");
+        let absolute_provenance_path = temp.path().join("plugins").join("provenance.json");
+
+        let result = ExtismPluginLoader::new_with_provenance_path(
+            relative_plugins_dir,
+            Arc::new(SharedHostResources::new()),
+            absolute_provenance_path,
+        );
+
+        assert!(matches!(result, Err(DomainError::ValidationError(_))));
+    }
+
+    #[test]
+    fn test_new_rejects_unresolved_parent_traversal_into_plugins_dir() {
+        let temp = TempDir::new().unwrap();
+        let plugins_dir = temp.path().join("plugins");
+        std::fs::create_dir(&plugins_dir).unwrap();
+        let provenance_path = temp
+            .path()
+            .join("missing")
+            .join("..")
+            .join("plugins")
+            .join("provenance.json");
+
+        let result = ExtismPluginLoader::new_with_provenance_path(
+            plugins_dir,
+            Arc::new(SharedHostResources::new()),
+            provenance_path,
+        );
+
+        assert!(matches!(result, Err(DomainError::ValidationError(_))));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_new_rejects_provenance_symlink_resolving_inside_plugins_dir() {
+        let temp = TempDir::new().unwrap();
+        let plugins_dir = temp.path().join("plugins");
+        std::fs::create_dir(&plugins_dir).unwrap();
+        let plugins_alias = temp.path().join("plugins-alias");
+        std::os::unix::fs::symlink(&plugins_dir, &plugins_alias).unwrap();
+
+        let result = ExtismPluginLoader::new_with_provenance_path(
+            plugins_dir,
+            Arc::new(SharedHostResources::new()),
+            plugins_alias.join("provenance.json"),
+        );
+
+        assert!(matches!(result, Err(DomainError::ValidationError(_))));
     }
 
     #[test]

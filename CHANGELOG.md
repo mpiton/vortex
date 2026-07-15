@@ -23,7 +23,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   still match freshly fetched registry checksums. The grant is persisted
   outside plugin directories and revalidated on every load; local installs,
   hot-reloaded modifications, unsafe executable paths, oversized process
-  output, and failed partial downloads all fail closed.
+  output, and failed partial downloads all fail closed. Provenance paths are
+  resolved before containment checks, state updates use an atomic synced
+  replacement, and failed revocations leave memory and disk consistent.
 
 ### Fixed
 

@@ -5,6 +5,7 @@ use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use uuid::Uuid;
 
 use crate::domain::error::DomainError;
 use crate::domain::ports::driven::plugin_store_client::OfficialPluginProvenance;
@@ -103,59 +104,100 @@ impl OfficialProvenanceStore {
             .entries
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if entries.remove(name).is_some() {
-            self.persist(&entries)?;
+        let mut updated_entries = entries.clone();
+        if updated_entries.remove(name).is_some() {
+            self.persist(&updated_entries)?;
+            *entries = updated_entries;
         }
         Ok(())
     }
 
     fn persist(&self, entries: &HashMap<String, PersistedProvenance>) -> Result<(), DomainError> {
-        if let Some(parent) = self.path.parent() {
-            std::fs::create_dir_all(parent).map_err(|error| {
-                DomainError::PluginError(format!(
-                    "failed to create plugin provenance directory '{}': {error}",
-                    parent.display()
-                ))
-            })?;
-        }
+        let parent = self.path.parent().ok_or_else(|| {
+            DomainError::PluginError(format!(
+                "plugin provenance path '{}' has no parent",
+                self.path.display()
+            ))
+        })?;
+        std::fs::create_dir_all(parent).map_err(|error| {
+            DomainError::PluginError(format!(
+                "failed to create plugin provenance directory '{}': {error}",
+                parent.display()
+            ))
+        })?;
         let payload = serde_json::to_vec_pretty(&ProvenanceFile {
             plugins: entries.clone(),
         })
         .map_err(|error| DomainError::PluginError(format!("provenance encode failed: {error}")))?;
+        let file_name = self.path.file_name().ok_or_else(|| {
+            DomainError::PluginError(format!(
+                "plugin provenance path '{}' has no file name",
+                self.path.display()
+            ))
+        })?;
+        let temp_path = parent.join(format!(
+            ".{}.{}.tmp",
+            file_name.to_string_lossy(),
+            Uuid::new_v4()
+        ));
+        let result = self.persist_atomically(&temp_path, parent, &payload);
+        if result.is_err() {
+            let _ = std::fs::remove_file(&temp_path);
+        }
+        result
+    }
+
+    fn persist_atomically(
+        &self,
+        temp_path: &std::path::Path,
+        parent: &std::path::Path,
+        payload: &[u8],
+    ) -> Result<(), DomainError> {
         let mut options = std::fs::OpenOptions::new();
-        options.create(true).truncate(true).write(true);
+        options.create_new(true).write(true);
         #[cfg(unix)]
         {
             use std::os::unix::fs::OpenOptionsExt;
             options.mode(0o600);
         }
-        let mut file = options.open(&self.path).map_err(|error| {
+        {
+            let mut file = options.open(temp_path).map_err(|error| {
+                DomainError::PluginError(format!(
+                    "failed to create plugin provenance temp file '{}': {error}",
+                    temp_path.display()
+                ))
+            })?;
+            file.write_all(payload).map_err(|error| {
+                DomainError::PluginError(format!(
+                    "failed to write plugin provenance temp file '{}': {error}",
+                    temp_path.display()
+                ))
+            })?;
+            file.sync_all().map_err(|error| {
+                DomainError::PluginError(format!(
+                    "failed to sync plugin provenance temp file '{}': {error}",
+                    temp_path.display()
+                ))
+            })?;
+        }
+        std::fs::rename(temp_path, &self.path).map_err(|error| {
             DomainError::PluginError(format!(
-                "failed to write plugin provenance '{}': {error}",
-                self.path.display()
-            ))
-        })?;
-        file.write_all(&payload).map_err(|error| {
-            DomainError::PluginError(format!(
-                "failed to write plugin provenance '{}': {error}",
+                "failed to replace plugin provenance '{}': {error}",
                 self.path.display()
             ))
         })?;
         #[cfg(unix)]
-        std::fs::set_permissions(&self.path, std::fs::Permissions::from_mode(0o600)).map_err(
-            |error| {
+        std::fs::File::open(parent)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|error| {
                 DomainError::PluginError(format!(
-                    "failed to secure plugin provenance '{}': {error}",
-                    self.path.display()
+                    "failed to sync plugin provenance directory '{}': {error}",
+                    parent.display()
                 ))
-            },
-        )?;
+            })?;
         Ok(())
     }
 }
-
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
 
 fn digest(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
@@ -174,6 +216,8 @@ fn validate_digest(value: &str) -> Result<(), DomainError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use std::io::Read;
     use tempfile::TempDir;
 
     #[test]
@@ -266,6 +310,83 @@ mod tests {
         assert!(
             !store
                 .grants_for("vortex-mod-youtube", "1.0.0", wasm, manifest)
+                .ytdlp
+        );
+    }
+
+    #[test]
+    fn test_failed_revoke_keeps_in_memory_and_persisted_grant_consistent() {
+        let temp = TempDir::new().unwrap();
+        let state_dir = temp.path().join("host-state");
+        std::fs::create_dir(&state_dir).unwrap();
+        let state_path = state_dir.join("plugin-provenance.json");
+        let wasm = b"official wasm";
+        let manifest = b"official manifest";
+        let provenance = OfficialPluginProvenance {
+            name: "vortex-mod-youtube".into(),
+            version: "1.0.0".into(),
+            wasm_sha256: digest(wasm),
+            manifest_sha256: digest(manifest),
+        };
+        let store = OfficialProvenanceStore::new(state_path).unwrap();
+        store.record(&provenance).unwrap();
+        let moved_state_dir = temp.path().join("moved-host-state");
+        std::fs::rename(&state_dir, &moved_state_dir).unwrap();
+        std::fs::write(&state_dir, b"file").unwrap();
+
+        let result = store.revoke("vortex-mod-youtube");
+
+        assert!(result.is_err());
+        assert!(
+            store
+                .grants_for("vortex-mod-youtube", "1.0.0", wasm, manifest)
+                .ytdlp
+        );
+        let reloaded =
+            OfficialProvenanceStore::new(moved_state_dir.join("plugin-provenance.json")).unwrap();
+        assert!(
+            reloaded
+                .grants_for("vortex-mod-youtube", "1.0.0", wasm, manifest)
+                .ytdlp
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_persist_replaces_live_state_atomically() {
+        let temp = TempDir::new().unwrap();
+        let state_path = temp.path().join("plugin-provenance.json");
+        let store = OfficialProvenanceStore::new(state_path.clone()).unwrap();
+        let first = OfficialPluginProvenance {
+            name: "vortex-mod-youtube".into(),
+            version: "1.0.0".into(),
+            wasm_sha256: digest(b"first wasm"),
+            manifest_sha256: digest(b"first manifest"),
+        };
+        store.record(&first).unwrap();
+        let mut open_snapshot = std::fs::File::open(&state_path).unwrap();
+        let second = OfficialPluginProvenance {
+            name: first.name.clone(),
+            version: "2.0.0".into(),
+            wasm_sha256: digest(b"second wasm"),
+            manifest_sha256: digest(b"second manifest"),
+        };
+
+        store.record(&second).unwrap();
+
+        let mut snapshot_json = String::new();
+        open_snapshot.read_to_string(&mut snapshot_json).unwrap();
+        let snapshot: ProvenanceFile = serde_json::from_str(&snapshot_json).unwrap();
+        assert_eq!(snapshot.plugins["vortex-mod-youtube"].version, "1.0.0");
+        let current = OfficialProvenanceStore::new(state_path).unwrap();
+        assert!(
+            current
+                .grants_for(
+                    "vortex-mod-youtube",
+                    "2.0.0",
+                    b"second wasm",
+                    b"second manifest"
+                )
                 .ytdlp
         );
     }
