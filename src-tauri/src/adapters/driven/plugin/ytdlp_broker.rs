@@ -12,7 +12,7 @@ mod validation;
 #[cfg(test)]
 mod tests;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::bail;
@@ -20,6 +20,8 @@ use serde::{Deserialize, Serialize};
 
 pub(super) const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 pub(super) const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+pub(super) const DEFAULT_OUTPUT_LIMIT: usize = 1024 * 1024;
+pub(super) const METADATA_OUTPUT_LIMIT: usize = 16 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum YtDlpProvider {
@@ -74,6 +76,31 @@ pub(super) struct PreparedCommand {
     pub(super) args: Vec<String>,
     pub(super) working_dir: PathBuf,
     pub(super) timeout: Duration,
+    pub(super) stdout_limit: usize,
+    pub(super) stderr_limit: usize,
+    pub(super) cleanup_working_dir_on_failure: bool,
+}
+
+pub(crate) struct ManagedOutputRequest {
+    path: PathBuf,
+}
+
+impl ManagedOutputRequest {
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for ManagedOutputRequest {
+    fn drop(&mut self) {
+        if let Err(error) = validation::cleanup_private_request_dir(&self.path) {
+            tracing::warn!(
+                path = %self.path.display(),
+                error = %error,
+                "failed to clean private yt-dlp request directory"
+            );
+        }
+    }
 }
 
 pub(crate) fn supports_plugin(plugin_name: &str) -> bool {
@@ -85,7 +112,7 @@ pub(crate) fn run_plugin_request(
     request: PluginYtDlpRequest,
 ) -> anyhow::Result<YtDlpResponse> {
     let provider = provider_for_plugin(plugin_name)?;
-    process::execute(request::prepare(provider, request, &std::env::temp_dir())?)
+    process::execute(request::prepare(provider, request, &managed_temp_root()?)?)
 }
 
 pub(crate) fn run_legacy_request(
@@ -95,7 +122,7 @@ pub(crate) fn run_legacy_request(
     process::execute(legacy::prepare(
         plugin_name,
         request,
-        &std::env::temp_dir(),
+        &managed_temp_root()?,
     )?)
 }
 
@@ -107,8 +134,28 @@ pub(crate) fn run_generic_metadata(url: String) -> anyhow::Result<YtDlpResponse>
     process::execute(request::prepare(
         YtDlpProvider::Generic,
         request,
-        &std::env::temp_dir(),
+        &managed_temp_root()?,
     )?)
+}
+
+pub(crate) fn managed_output_request() -> anyhow::Result<ManagedOutputRequest> {
+    let temp_root = managed_temp_root()?;
+    let output_root = temp_root.join("vortex-downloads");
+    validation::ensure_private_root(&output_root)?;
+    Ok(ManagedOutputRequest {
+        path: validation::create_private_child(&output_root, "request-")?,
+    })
+}
+
+fn managed_temp_root() -> anyhow::Result<PathBuf> {
+    let cache = dirs::cache_dir()
+        .ok_or_else(|| anyhow::anyhow!("run_ytdlp: user cache directory is unavailable"))?;
+    let cache = validation::ensure_owned_cache_directory(&cache)?;
+    let app_root = cache.join("vortex");
+    validation::ensure_private_root(&app_root)?;
+    let broker_root = app_root.join("ytdlp");
+    validation::ensure_private_root(&broker_root)?;
+    Ok(broker_root)
 }
 
 pub(super) fn provider_for_plugin(plugin_name: &str) -> anyhow::Result<YtDlpProvider> {

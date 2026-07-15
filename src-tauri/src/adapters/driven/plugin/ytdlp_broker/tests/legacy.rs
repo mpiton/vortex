@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use super::super::{LegacySubprocessRequest, legacy};
+use super::private_root;
 
 #[test]
 fn rejects_binary_replacement() {
@@ -16,7 +17,12 @@ fn rejects_binary_replacement() {
 
 #[test]
 fn rejects_exec_and_config_arguments() {
-    for dangerous in ["--exec", "--config-locations", "--plugin-dirs"] {
+    for dangerous in [
+        "--exec",
+        "--config-location",
+        "--config-locations",
+        "--plugin-dirs",
+    ] {
         let request = LegacySubprocessRequest {
             binary: "yt-dlp".to_string(),
             args: vec![dangerous.to_string(), "payload".to_string()],
@@ -26,6 +32,38 @@ fn rejects_exec_and_config_arguments() {
             .expect_err("dangerous argument must fail");
         assert!(error.to_string().contains("arguments"));
     }
+}
+
+#[test]
+fn rejects_non_audio_soundcloud_format_before_allocating_output() {
+    let temp = tempfile::tempdir().unwrap();
+    let managed = private_root(temp.path());
+    let template = format!("{}/%(id)s.%(ext)s", managed.display());
+    let request = LegacySubprocessRequest {
+        binary: "yt-dlp".to_string(),
+        args: [
+            "--extract-audio",
+            "--audio-format",
+            "webm",
+            "--output",
+            &template,
+            "--print",
+            "after_move:%(filepath)s",
+            "--no-playlist",
+            "--no-warnings",
+            "--quiet",
+            "--",
+            "https://soundcloud.com/artist/track",
+        ]
+        .map(str::to_string)
+        .to_vec(),
+        timeout_ms: Some(60_000),
+    };
+
+    let error = legacy::prepare("vortex-mod-soundcloud", request, temp.path())
+        .expect_err("non-audio format must fail");
+    assert!(error.to_string().contains("audio format"));
+    assert_eq!(std::fs::read_dir(&managed).unwrap().count(), 0);
 }
 
 #[test]

@@ -9,10 +9,14 @@ use crate::domain::error::DomainError;
 use crate::domain::model::plugin::{PluginInfo, PluginManifest};
 use crate::domain::ports::driven::PluginLoader;
 use crate::domain::ports::driven::plugin_loader::DownloadedFileInfo;
+use crate::domain::ports::driven::plugin_store_client::OfficialPluginProvenance;
 
 use super::builtin::HttpModule;
-use super::capabilities::{SharedHostResources, build_host_functions};
-use super::manifest::{find_wasm_file, parse_manifest, parse_manifest_metadata};
+use super::capabilities::{SharedHostResources, build_host_functions_with_grants};
+use super::manifest::{
+    find_wasm_file, parse_manifest, parse_manifest_metadata, parse_manifest_metadata_bytes,
+};
+use super::provenance::OfficialProvenanceStore;
 use super::registry::{LoadedPlugin, PluginRegistry};
 
 /// Per-plugin install coordination.
@@ -48,6 +52,7 @@ pub struct ExtismPluginLoader {
     /// Per-plugin install coordination. See [`InstallState`] for the
     /// two pieces of state it carries (serializer + refcount).
     installs: Arc<Mutex<HashMap<String, Arc<InstallState>>>>,
+    provenance: OfficialProvenanceStore,
 }
 
 /// RAII guard: decrements the install refcount when dropped, so the
@@ -68,12 +73,27 @@ impl ExtismPluginLoader {
         plugins_dir: PathBuf,
         shared_resources: Arc<SharedHostResources>,
     ) -> Result<Self, DomainError> {
+        let provenance_path = plugins_dir.with_extension("provenance.json");
+        Self::new_with_provenance_path(plugins_dir, shared_resources, provenance_path)
+    }
+
+    pub fn new_with_provenance_path(
+        plugins_dir: PathBuf,
+        shared_resources: Arc<SharedHostResources>,
+        provenance_path: PathBuf,
+    ) -> Result<Self, DomainError> {
+        if provenance_path.starts_with(&plugins_dir) {
+            return Err(DomainError::ValidationError(
+                "plugin provenance must live outside the plugin directory".into(),
+            ));
+        }
         Ok(Self {
             registry: Arc::new(PluginRegistry::new()),
             plugins_dir,
             shared_resources,
             builtin_http: HttpModule::new()?,
             installs: Arc::new(Mutex::new(HashMap::new())),
+            provenance: OfficialProvenanceStore::new(provenance_path)?,
         })
     }
 
@@ -161,6 +181,77 @@ impl ExtismPluginLoader {
                 DomainError::PluginError(format!("plugin '{}' {func} failed: {e}", info.name()))
             })
     }
+
+    fn install_from_dir(
+        &self,
+        dir: &Path,
+        provenance: Option<&OfficialPluginProvenance>,
+    ) -> Result<(), DomainError> {
+        let (manifest, _) = parse_manifest(dir)?;
+        let name = manifest.info().name().to_string();
+        if let Some(provenance) = provenance {
+            verify_provenance(dir, &manifest, provenance)?;
+        }
+
+        let state = self.get_or_create_install_state(&name);
+        state.count.fetch_add(1, Ordering::SeqCst);
+        let _in_flight = InstallInFlight {
+            state: state.clone(),
+        };
+        let _serializer_guard = state
+            .serializer
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        match self.unload(&name) {
+            Ok(()) | Err(DomainError::NotFound(_)) => {}
+            Err(error) => return Err(error),
+        }
+        if provenance.is_none() {
+            self.provenance.revoke(&name)?;
+        }
+
+        let dest_dir = self.plugins_dir.join(&name);
+        if dest_dir.exists() {
+            std::fs::remove_dir_all(&dest_dir).map_err(|error| {
+                DomainError::PluginError(format!(
+                    "failed to remove existing plugin dir '{}': {error}",
+                    dest_dir.display()
+                ))
+            })?;
+        }
+        std::fs::create_dir_all(&dest_dir).map_err(|error| {
+            DomainError::PluginError(format!("failed to create plugin dir: {error}"))
+        })?;
+        for entry in std::fs::read_dir(dir).map_err(|error| {
+            DomainError::PluginError(format!("failed to read staging dir: {error}"))
+        })? {
+            let entry = entry.map_err(|error| {
+                DomainError::PluginError(format!("staging dir entry error: {error}"))
+            })?;
+            let source = entry.path();
+            if source.is_file() {
+                let destination = dest_dir.join(entry.file_name());
+                std::fs::copy(&source, &destination).map_err(|error| {
+                    DomainError::PluginError(format!(
+                        "failed to copy {} → {}: {error}",
+                        source.display(),
+                        destination.display()
+                    ))
+                })?;
+            }
+        }
+
+        if let Some(provenance) = provenance {
+            verify_provenance(&dest_dir, &manifest, provenance)?;
+            self.provenance.record(provenance)?;
+        }
+        let result = self.load(&manifest);
+        if result.is_err() && provenance.is_some() {
+            self.provenance.revoke(&name)?;
+        }
+        result
+    }
 }
 
 impl PluginLoader for ExtismPluginLoader {
@@ -176,6 +267,10 @@ impl PluginLoader for ExtismPluginLoader {
 
         // Derive wasm path directly from convention: plugins_dir/<name>/<name>.wasm
         let plugin_dir = self.plugins_dir.join(&name);
+        let manifest_bytes = std::fs::read(plugin_dir.join("plugin.toml")).map_err(|error| {
+            DomainError::PluginError(format!("failed to read plugin.toml for '{name}': {error}"))
+        })?;
+        let disk_manifest = parse_manifest_metadata_bytes(&plugin_dir, &manifest_bytes)?;
         let wasm_path = find_wasm_file(&plugin_dir)?;
 
         const MAX_WASM_SIZE: u64 = 100 * 1024 * 1024; // 100 MB
@@ -193,13 +288,20 @@ impl PluginLoader for ExtismPluginLoader {
             DomainError::PluginError(format!("failed to read wasm {}: {e}", wasm_path.display()))
         })?;
 
+        let grants = self.provenance.grants_for(
+            &name,
+            disk_manifest.info().version(),
+            &wasm_bytes,
+            &manifest_bytes,
+        );
         let extism_manifest = extism::Manifest::new([extism::Wasm::data(wasm_bytes)]);
-        let host_functions = build_host_functions(manifest, &self.shared_resources);
+        let host_functions =
+            build_host_functions_with_grants(&disk_manifest, &self.shared_resources, grants);
         let plugin = extism::Plugin::new(&extism_manifest, host_functions, true)
             .map_err(|e| DomainError::PluginError(format!("failed to load plugin: {e}")))?;
 
         let loaded = LoadedPlugin {
-            manifest: manifest.clone(),
+            manifest: disk_manifest,
             plugin: std::sync::Arc::new(std::sync::Mutex::new(plugin)),
             enabled: true,
         };
@@ -455,78 +557,47 @@ impl PluginLoader for ExtismPluginLoader {
     }
 
     fn load_from_dir(&self, dir: &std::path::Path) -> Result<(), DomainError> {
-        let (manifest, _wasm_path) = parse_manifest(dir)?;
-        let name = manifest.info().name().to_string();
-
-        // Per-plugin install coordination:
-        //
-        //   1. Bump the refcount up-front so the watcher starts skipping
-        //      events *immediately*, before any filesystem mutation.
-        //   2. Take the per-plugin serializer lock so concurrent installs
-        //      of the same plugin name can't interleave on the staging
-        //      and destination directories.
-        //
-        // The `InstallInFlight` guard decrements the refcount on drop; the
-        // local `_serializer_guard` releases the lock on drop. Both run
-        // even on error or panic, so the state never leaks.
-        let state = self.get_or_create_install_state(&name);
-        state.count.fetch_add(1, Ordering::SeqCst);
-        let _in_flight = InstallInFlight {
-            state: state.clone(),
-        };
-        let _serializer_guard = state
-            .serializer
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-
-        // Ensure any prior in-memory instance is cleared before we touch
-        // the filesystem. Doing this inside the suppression window (after
-        // the refcount bump) closes the gap that would otherwise let a
-        // delayed watcher event re-insert the plugin between an external
-        // `unload()` call and the start of this function, causing the
-        // final `self.load()` below to fail with `AlreadyExists`.
-        //
-        // Only swallow `NotFound` — other errors (poisoned mutex, etc.)
-        // must abort the install to avoid leaving the in-memory state
-        // half-mutated.
-        match self.unload(&name) {
-            Ok(()) | Err(DomainError::NotFound(_)) => {}
-            Err(e) => return Err(e),
-        }
-
-        // Copy staged files to the permanent plugins directory
-        let dest_dir = self.plugins_dir.join(&name);
-        if dest_dir.exists() {
-            std::fs::remove_dir_all(&dest_dir).map_err(|e| {
-                DomainError::PluginError(format!(
-                    "failed to remove existing plugin dir '{}': {e}",
-                    dest_dir.display()
-                ))
-            })?;
-        }
-        std::fs::create_dir_all(&dest_dir)
-            .map_err(|e| DomainError::PluginError(format!("failed to create plugin dir: {e}")))?;
-
-        for entry in std::fs::read_dir(dir)
-            .map_err(|e| DomainError::PluginError(format!("failed to read staging dir: {e}")))?
-        {
-            let entry = entry
-                .map_err(|e| DomainError::PluginError(format!("staging dir entry error: {e}")))?;
-            let src = entry.path();
-            if src.is_file() {
-                let dest = dest_dir.join(entry.file_name());
-                std::fs::copy(&src, &dest).map_err(|e| {
-                    DomainError::PluginError(format!(
-                        "failed to copy {} → {}: {e}",
-                        src.display(),
-                        dest.display()
-                    ))
-                })?;
-            }
-        }
-
-        self.load(&manifest)
+        self.install_from_dir(dir, None)
     }
+
+    fn load_official_from_dir(
+        &self,
+        dir: &Path,
+        provenance: &OfficialPluginProvenance,
+    ) -> Result<(), DomainError> {
+        self.install_from_dir(dir, Some(provenance))
+    }
+}
+
+fn verify_provenance(
+    dir: &Path,
+    manifest: &PluginManifest,
+    provenance: &OfficialPluginProvenance,
+) -> Result<(), DomainError> {
+    use sha2::{Digest, Sha256};
+
+    if manifest.info().name() != provenance.name || manifest.info().version() != provenance.version
+    {
+        return Err(DomainError::ValidationError(
+            "official plugin provenance does not match manifest identity".into(),
+        ));
+    }
+    let wasm = std::fs::read(find_wasm_file(dir)?).map_err(|error| {
+        DomainError::PluginError(format!("failed to read verified plugin wasm: {error}"))
+    })?;
+    let manifest_bytes = std::fs::read(dir.join("plugin.toml")).map_err(|error| {
+        DomainError::PluginError(format!("failed to read verified plugin manifest: {error}"))
+    })?;
+    let wasm_digest = hex::encode(Sha256::digest(&wasm));
+    let manifest_digest = hex::encode(Sha256::digest(&manifest_bytes));
+    if !wasm_digest.eq_ignore_ascii_case(&provenance.wasm_sha256)
+        || !manifest_digest.eq_ignore_ascii_case(&provenance.manifest_sha256)
+    {
+        return Err(DomainError::PluginError(
+            "official plugin checksum changed before load".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// Returns `true` if the plugin error message indicates an adaptive-only stream.
@@ -586,6 +657,30 @@ description = "Test plugin"
         let wasm_bytes: &[u8] = &[0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00];
         let mut wf = std::fs::File::create(plugin_dir.join(format!("{name}.wasm"))).unwrap();
         wf.write_all(wasm_bytes).unwrap();
+    }
+
+    fn setup_ytdlp_importing_plugin(dir: &Path, name: &str) -> (Vec<u8>, Vec<u8>) {
+        std::fs::create_dir_all(dir).unwrap();
+        let manifest = format!(
+            r#"[plugin]
+name = "{name}"
+version = "1.0.0"
+category = "crawler"
+author = "tester"
+description = "Test plugin"
+
+[capabilities]
+subprocess = ["yt-dlp"]
+"#
+        )
+        .into_bytes();
+        let wasm = br#"(module
+  (import "extism:host/user" "run_ytdlp" (func (param i64) (result i64)))
+)"#
+        .to_vec();
+        std::fs::write(dir.join("plugin.toml"), &manifest).unwrap();
+        std::fs::write(dir.join(format!("{name}.wasm")), &wasm).unwrap();
+        (wasm, manifest)
     }
 
     #[test]
@@ -797,6 +892,120 @@ description = "Test plugin"
                 .join("test-plugin")
                 .join("test-plugin.wasm")
                 .exists()
+        );
+    }
+
+    #[test]
+    fn test_load_official_from_dir_grants_ytdlp_for_verified_files() {
+        use sha2::{Digest, Sha256};
+
+        let tmp = TempDir::new().unwrap();
+        let plugins_dir = tmp.path().join("plugins");
+        let staged = tmp.path().join("staging").join("vortex-mod-youtube");
+        let (wasm, manifest) = setup_ytdlp_importing_plugin(&staged, "vortex-mod-youtube");
+        let loader =
+            ExtismPluginLoader::new(plugins_dir, Arc::new(SharedHostResources::new())).unwrap();
+        let provenance =
+            crate::domain::ports::driven::plugin_store_client::OfficialPluginProvenance {
+                name: "vortex-mod-youtube".into(),
+                version: "1.0.0".into(),
+                wasm_sha256: hex::encode(Sha256::digest(&wasm)),
+                manifest_sha256: hex::encode(Sha256::digest(&manifest)),
+            };
+
+        let result = loader.load_official_from_dir(&staged, &provenance);
+
+        assert!(
+            result.is_ok(),
+            "official verified plugin should load: {result:?}"
+        );
+        assert!(loader.registry().contains("vortex-mod-youtube"));
+    }
+
+    #[test]
+    fn test_local_official_name_does_not_receive_ytdlp_grant() {
+        let tmp = TempDir::new().unwrap();
+        let plugin_dir = tmp.path().join("vortex-mod-youtube");
+        setup_ytdlp_importing_plugin(&plugin_dir, "vortex-mod-youtube");
+        let loader = ExtismPluginLoader::new(
+            tmp.path().to_path_buf(),
+            Arc::new(SharedHostResources::new()),
+        )
+        .unwrap();
+        let (manifest, _) = parse_manifest(&plugin_dir).unwrap();
+
+        let result = loader.load(&manifest);
+
+        assert!(result.is_err());
+        assert!(!loader.registry().contains("vortex-mod-youtube"));
+    }
+
+    #[test]
+    fn test_reload_revalidates_wasm_before_restoring_ytdlp_grant() {
+        use sha2::{Digest, Sha256};
+
+        let tmp = TempDir::new().unwrap();
+        let plugins_dir = tmp.path().join("plugins");
+        let staged = tmp.path().join("staging").join("vortex-mod-youtube");
+        let (wasm, manifest_bytes) = setup_ytdlp_importing_plugin(&staged, "vortex-mod-youtube");
+        let loader =
+            ExtismPluginLoader::new(plugins_dir.clone(), Arc::new(SharedHostResources::new()))
+                .unwrap();
+        let provenance =
+            crate::domain::ports::driven::plugin_store_client::OfficialPluginProvenance {
+                name: "vortex-mod-youtube".into(),
+                version: "1.0.0".into(),
+                wasm_sha256: hex::encode(Sha256::digest(&wasm)),
+                manifest_sha256: hex::encode(Sha256::digest(&manifest_bytes)),
+            };
+        loader.load_official_from_dir(&staged, &provenance).unwrap();
+
+        let installed = plugins_dir
+            .join("vortex-mod-youtube")
+            .join("vortex-mod-youtube.wasm");
+        let mut tampered = wasm;
+        tampered.push(b'\n');
+        std::fs::write(installed, tampered).unwrap();
+        loader.unload("vortex-mod-youtube").unwrap();
+        let (manifest, _) = parse_manifest(&plugins_dir.join("vortex-mod-youtube")).unwrap();
+
+        let result = loader.load(&manifest);
+
+        assert!(result.is_err());
+        assert!(!loader.registry().contains("vortex-mod-youtube"));
+    }
+
+    #[test]
+    fn test_startup_load_reuses_persisted_provenance_after_checksum_revalidation() {
+        use sha2::{Digest, Sha256};
+
+        let tmp = TempDir::new().unwrap();
+        let plugins_dir = tmp.path().join("plugins");
+        let staged = tmp.path().join("staging").join("vortex-mod-youtube");
+        let (wasm, manifest_bytes) = setup_ytdlp_importing_plugin(&staged, "vortex-mod-youtube");
+        let provenance =
+            crate::domain::ports::driven::plugin_store_client::OfficialPluginProvenance {
+                name: "vortex-mod-youtube".into(),
+                version: "1.0.0".into(),
+                wasm_sha256: hex::encode(Sha256::digest(&wasm)),
+                manifest_sha256: hex::encode(Sha256::digest(&manifest_bytes)),
+            };
+        {
+            let loader =
+                ExtismPluginLoader::new(plugins_dir.clone(), Arc::new(SharedHostResources::new()))
+                    .unwrap();
+            loader.load_official_from_dir(&staged, &provenance).unwrap();
+        }
+        let loader =
+            ExtismPluginLoader::new(plugins_dir.clone(), Arc::new(SharedHostResources::new()))
+                .unwrap();
+        let (manifest, _) = parse_manifest(&plugins_dir.join("vortex-mod-youtube")).unwrap();
+
+        let result = loader.load(&manifest);
+
+        assert!(
+            result.is_ok(),
+            "startup load should retain grant: {result:?}"
         );
     }
 }

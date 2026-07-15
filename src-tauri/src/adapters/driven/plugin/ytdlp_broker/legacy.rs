@@ -5,8 +5,8 @@ use anyhow::bail;
 use super::request::{append_url, prepare as prepare_typed, secure_prefix, strings};
 use super::validation::validate_url;
 use super::{
-    DEFAULT_TIMEOUT, LegacySubprocessRequest, PluginYtDlpRequest, PreparedCommand, YtDlpProvider,
-    legacy_download, provider_for_plugin,
+    DEFAULT_OUTPUT_LIMIT, DEFAULT_TIMEOUT, LegacySubprocessRequest, PluginYtDlpRequest,
+    PreparedCommand, YtDlpProvider, legacy_download, provider_for_plugin,
 };
 
 pub(super) fn prepare(
@@ -86,8 +86,11 @@ fn rebuild_resolve(
     append_url(&mut rebuilt, validate_url(provider, &args[6])?);
     Ok(PreparedCommand {
         args: rebuilt,
-        working_dir: temp_root.join("vortex-ytdlp"),
+        working_dir: temp_root.to_path_buf(),
         timeout: DEFAULT_TIMEOUT,
+        stdout_limit: DEFAULT_OUTPUT_LIMIT,
+        stderr_limit: DEFAULT_OUTPUT_LIMIT,
+        cleanup_working_dir_on_failure: false,
     })
 }
 

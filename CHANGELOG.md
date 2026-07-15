@@ -18,6 +18,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   keeps the exact profiles of already-published official plugins loadable
   during the migration; arbitrary subprocess capabilities are no longer
   registered. The Tauri metadata fallback uses the same broker.
+- **Official plugin provenance (MAT-131)**: yt-dlp host functions are now
+  granted only to Store-installed official plugins whose manifest and WASM
+  still match freshly fetched registry checksums. The grant is persisted
+  outside plugin directories and revalidated on every load; local installs,
+  hot-reloaded modifications, unsafe executable paths, oversized process
+  output, and failed partial downloads all fail closed.
 
 ### Fixed
 

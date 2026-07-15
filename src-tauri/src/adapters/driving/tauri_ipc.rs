@@ -1744,9 +1744,10 @@ fn resolve_media_stream(
     match plugin_loader.resolve_stream_url(url, quality, format, audio_only) {
         Ok(cdn_url) => Ok(StreamResolution::CdnUrl(cdn_url)),
         Err(crate::domain::error::DomainError::AdaptiveStreamOnly) => {
-            let temp_dir = std::env::temp_dir().join("vortex-downloads");
-            std::fs::create_dir_all(&temp_dir)
-                .map_err(|e| format!("failed to create temp dir: {e}"))?;
+            let output_request =
+                crate::adapters::driven::plugin::ytdlp_broker::managed_output_request()
+                    .map_err(|e| format!("failed to create private output request: {e}"))?;
+            let temp_dir = output_request.path();
 
             let file_info = plugin_loader
                 .download_to_file(
@@ -1773,10 +1774,6 @@ fn resolve_media_stream(
                     file_info.path.display()
                 ));
             }
-            let private_output_dir = produced_canonical
-                .parent()
-                .filter(|parent| parent.parent() == Some(temp_dir_canonical.as_path()))
-                .map(Path::to_path_buf);
 
             let filename = title
                 .as_deref()
@@ -1808,19 +1805,16 @@ fn resolve_media_stream(
             let (dest_path, dest_filename) = unique_destination(&dest_dir, &filename)
                 .map_err(|e| format!("failed to select unique destination: {e}"))?;
 
-            if std::fs::rename(&file_info.path, &dest_path).is_err() {
-                std::fs::copy(&file_info.path, &dest_path)
+            if std::fs::rename(&produced_canonical, &dest_path).is_err() {
+                std::fs::copy(&produced_canonical, &dest_path)
                     .map_err(|e| format!("failed to copy merged file: {e}"))?;
-                if let Err(e) = std::fs::remove_file(&file_info.path) {
+                if let Err(e) = std::fs::remove_file(&produced_canonical) {
                     tracing::warn!(
-                        path = %file_info.path.display(),
+                        path = %produced_canonical.display(),
                         error = %e,
                         "failed to remove temp file after copy"
                     );
                 }
-            }
-            if let Some(path) = private_output_dir {
-                cleanup_private_output_dir(&path);
             }
 
             Ok(StreamResolution::LocalFile {
@@ -1841,20 +1835,6 @@ fn resolve_media_stream(
             }
         }
         Err(e) => Err(format!("Failed to resolve stream URL: {e}")),
-    }
-}
-
-fn cleanup_private_output_dir(path: &Path) {
-    // ponytail: only delete an empty job directory; add a bounded stale-job
-    // janitor if failed partial downloads cause measurable disk growth.
-    if let Err(error) = std::fs::remove_dir(path)
-        && error.kind() != std::io::ErrorKind::NotFound
-    {
-        tracing::warn!(
-            path = %path.display(),
-            error = %error,
-            "failed to remove private yt-dlp output directory"
-        );
     }
 }
 

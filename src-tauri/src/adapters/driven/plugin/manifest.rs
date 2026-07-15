@@ -69,14 +69,28 @@ pub fn parse_manifest(dir: &Path) -> Result<(PluginManifest, PathBuf), DomainErr
 /// and `repository` even when the binary is unusable.
 pub fn parse_manifest_metadata(dir: &Path) -> Result<PluginManifest, DomainError> {
     let toml_path = dir.join("plugin.toml");
-    let content = std::fs::read_to_string(&toml_path).map_err(|e| {
+    let content = std::fs::read(&toml_path).map_err(|e| {
         DomainError::PluginError(format!(
             "failed to read plugin.toml at {}: {e}",
             toml_path.display()
         ))
     })?;
+    parse_manifest_metadata_bytes(dir, &content)
+}
 
-    let raw: RawManifest = toml::from_str(&content).map_err(|e| {
+pub(super) fn parse_manifest_metadata_bytes(
+    dir: &Path,
+    content: &[u8],
+) -> Result<PluginManifest, DomainError> {
+    let toml_path = dir.join("plugin.toml");
+    let content = std::str::from_utf8(content).map_err(|e| {
+        DomainError::PluginError(format!(
+            "plugin.toml at {} is not valid UTF-8: {e}",
+            toml_path.display()
+        ))
+    })?;
+
+    let raw: RawManifest = toml::from_str(content).map_err(|e| {
         DomainError::PluginError(format!(
             "invalid plugin.toml at {}: {e}",
             toml_path.display()

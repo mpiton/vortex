@@ -4,7 +4,6 @@ use crate::application::command_bus::CommandBus;
 use crate::application::commands::store_refresh::read_cache;
 use crate::application::error::AppError;
 use crate::application::read_models::plugin_store_view::PluginStoreEntryDto;
-use crate::domain::model::plugin_store::{PluginStoreEntry, PluginStoreStatus};
 
 pub struct StoreInstallCommand {
     pub name: String,
@@ -44,7 +43,7 @@ impl CommandBus {
 
         // Find the entry in the cache
         let raw = read_cache(cache_path)?;
-        let entry_dto: PluginStoreEntryDto = raw
+        let _entry_dto: PluginStoreEntryDto = raw
             .into_iter()
             .filter_map(|v| {
                 serde_json::from_value(v)
@@ -54,46 +53,27 @@ impl CommandBus {
             .find(|dto: &PluginStoreEntryDto| dto.name == cmd.name)
             .ok_or_else(|| AppError::Plugin(format!("plugin '{}' not found in cache", cmd.name)))?;
 
-        // Check minimum Vortex version requirement
-        if let Some(ref min_ver) = entry_dto.min_vortex_version {
+        // Refetch the authoritative registry entry. The cache above is only a
+        // UI index and must never be the source of `official` or checksum
+        // trust decisions because it is user-writable.
+        let plugin_name = cmd.name.clone();
+        let download =
+            tokio::task::spawn_blocking(move || client.download_store_plugin(&plugin_name))
+                .await
+                .map_err(|e| AppError::Plugin(format!("download task failed: {e}")))?
+                .map_err(|e| AppError::Plugin(e.to_string()))?;
+        let plugin_dir = download.directory;
+
+        if let Some(ref min_ver) = download.min_vortex_version {
             let app_ver = env!("CARGO_PKG_VERSION");
             if !is_version_compatible(app_ver, min_ver) {
+                let _ = std::fs::remove_dir_all(&plugin_dir);
                 return Err(AppError::Plugin(format!(
                     "plugin '{}' requires Vortex >= {min_ver} (running {})",
                     cmd.name, app_ver
                 )));
             }
         }
-
-        // Reconstruct domain entry for the client using REAL values from cache
-        let category = entry_dto
-            .category
-            .parse::<crate::domain::model::plugin::PluginCategory>()
-            .map_err(|e| {
-                AppError::Plugin(format!(
-                    "unknown plugin category '{}': {e}",
-                    entry_dto.category
-                ))
-            })?;
-        let domain_entry = PluginStoreEntry {
-            name: entry_dto.name.clone(),
-            description: entry_dto.description.clone(),
-            author: entry_dto.author.clone(),
-            version: entry_dto.version.clone(),
-            category,
-            repository: entry_dto.repository.clone(),
-            checksum_sha256: entry_dto.checksum_sha256.clone(),
-            checksum_sha256_toml: entry_dto.checksum_sha256_toml.clone(),
-            official: entry_dto.official,
-            min_vortex_version: entry_dto.min_vortex_version.clone(),
-            status: PluginStoreStatus::NotInstalled,
-            installed_version: None,
-        };
-
-        let plugin_dir = tokio::task::spawn_blocking(move || client.download_plugin(&domain_entry))
-            .await
-            .map_err(|e| AppError::Plugin(format!("download task failed: {e}")))?
-            .map_err(|e| AppError::Plugin(e.to_string()))?;
 
         // Parse manifest from the downloaded directory and load via the
         // plugin loader. `load_from_dir` performs its own idempotent
@@ -104,10 +84,13 @@ impl CommandBus {
         // final `load()` to fail with `AlreadyExists`.
         let loader = self.plugin_loader_arc();
         let staging_for_cleanup = plugin_dir.clone();
-        tokio::task::spawn_blocking(move || loader.load_from_dir(&plugin_dir))
-            .await
-            .map_err(|e| AppError::Plugin(format!("plugin install task failed: {e}")))?
-            .map_err(AppError::from)?;
+        tokio::task::spawn_blocking(move || match download.provenance {
+            Some(provenance) => loader.load_official_from_dir(&plugin_dir, &provenance),
+            None => loader.load_from_dir(&plugin_dir),
+        })
+        .await
+        .map_err(|e| AppError::Plugin(format!("plugin install task failed: {e}")))?
+        .map_err(AppError::from)?;
 
         // Staging is only meaningful until `load_from_dir` has copied the
         // files to the permanent plugins directory. After that the staged
@@ -147,7 +130,7 @@ mod tests {
     use super::*;
     use crate::application::commands::store_refresh::write_cache;
     use crate::domain::model::plugin::PluginCategory;
-    use crate::domain::model::plugin_store::PluginStoreEntry;
+    use crate::domain::model::plugin_store::{PluginStoreEntry, PluginStoreStatus};
     use tempfile::TempDir;
 
     fn make_entry(name: &str, version: &str) -> PluginStoreEntry {

@@ -4,8 +4,8 @@ use anyhow::bail;
 
 use super::legacy::validate_selector;
 use super::request::secure_prefix;
-use super::validation::{private_output_dir, validate_format, validate_url};
-use super::{DOWNLOAD_TIMEOUT, PreparedCommand, YtDlpProvider};
+use super::validation::{private_output_dir, validate_url};
+use super::{DEFAULT_OUTPUT_LIMIT, DOWNLOAD_TIMEOUT, PreparedCommand, YtDlpProvider};
 
 struct LegacyProfile<'a> {
     selector: Option<&'a str>,
@@ -23,8 +23,8 @@ pub(super) fn prepare(
     if let Some(selector) = profile.selector {
         validate_selector(selector)?;
     }
-    let output_dir = parse_output_dir(profile.output_template, temp_root)?;
     let url = validate_url(provider, profile.url)?;
+    let output_dir = parse_output_dir(profile.output_template, temp_root)?;
     let mut rebuilt = secure_prefix();
     let offset = rebuilt.len();
     rebuilt.extend_from_slice(args);
@@ -35,6 +35,9 @@ pub(super) fn prepare(
         args: rebuilt,
         working_dir: output_dir,
         timeout: DOWNLOAD_TIMEOUT,
+        stdout_limit: DEFAULT_OUTPUT_LIMIT,
+        stderr_limit: DEFAULT_OUTPUT_LIMIT,
+        cleanup_working_dir_on_failure: true,
     })
 }
 
@@ -59,7 +62,7 @@ fn match_profile(provider: YtDlpProvider, args: &[String]) -> anyhow::Result<Leg
             })
         }
         YtDlpProvider::Soundcloud if soundcloud_profile(args) => {
-            validate_format(Some(args[2].clone()))?;
+            validate_audio_format(&args[2])?;
             Ok(LegacyProfile {
                 selector: None,
                 output_template: &args[4],
@@ -69,6 +72,16 @@ fn match_profile(provider: YtDlpProvider, args: &[String]) -> anyhow::Result<Leg
         }
         _ => bail!("run_subprocess compatibility: arguments are not an approved yt-dlp profile"),
     }
+}
+
+fn validate_audio_format(format: &str) -> anyhow::Result<()> {
+    if !matches!(
+        format,
+        "aac" | "alac" | "best" | "flac" | "m4a" | "mp3" | "opus" | "vorbis" | "wav"
+    ) {
+        bail!("run_subprocess compatibility: audio format is not approved");
+    }
+    Ok(())
 }
 
 fn youtube_profile(args: &[String]) -> bool {

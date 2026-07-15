@@ -3,8 +3,6 @@ use std::thread::JoinHandle;
 
 use anyhow::bail;
 
-const MAX_OUTPUT_BYTES: usize = 1024 * 1024;
-
 pub(super) struct CapturedOutput {
     pub(super) bytes: Vec<u8>,
     pub(super) truncated: bool,
@@ -32,12 +30,12 @@ pub(super) fn read_stream_capped<R: Read>(
     }
 }
 
-pub(super) fn spawn_reader<T>(stream: Option<T>) -> ReaderHandle
+pub(super) fn spawn_reader<T>(stream: Option<T>, max_bytes: usize) -> ReaderHandle
 where
     T: Read + Send + 'static,
 {
     std::thread::spawn(move || match stream {
-        Some(stream) => read_stream_capped(stream, MAX_OUTPUT_BYTES),
+        Some(stream) => read_stream_capped(stream, max_bytes),
         None => Ok(CapturedOutput {
             bytes: Vec::new(),
             truncated: false,
@@ -48,6 +46,8 @@ where
 pub(super) fn collect(
     stdout: ReaderHandle,
     stderr: ReaderHandle,
+    stdout_limit: usize,
+    stderr_limit: usize,
 ) -> anyhow::Result<(String, String)> {
     let stdout = stdout.join();
     let stderr = stderr.join();
@@ -55,22 +55,31 @@ pub(super) fn collect(
         stdout.map_err(|_| anyhow::anyhow!("run_ytdlp: stdout reader thread panicked"))??;
     let stderr =
         stderr.map_err(|_| anyhow::anyhow!("run_ytdlp: stderr reader thread panicked"))??;
-    decode("stdout", stdout, "stderr", stderr)
+    decode(
+        "stdout",
+        stdout,
+        stdout_limit,
+        "stderr",
+        stderr,
+        stderr_limit,
+    )
 }
 
 fn decode(
     first_name: &str,
     first: CapturedOutput,
+    first_limit: usize,
     second_name: &str,
     second: CapturedOutput,
+    second_limit: usize,
 ) -> anyhow::Result<(String, String)> {
     if first.truncated || second.truncated {
-        let stream = if first.truncated {
-            first_name
+        let (stream, limit) = if first.truncated {
+            (first_name, first_limit)
         } else {
-            second_name
+            (second_name, second_limit)
         };
-        bail!("run_ytdlp: {stream} exceeded the {MAX_OUTPUT_BYTES}-byte limit");
+        bail!("run_ytdlp: {stream} exceeded the {limit}-byte limit");
     }
     Ok((
         String::from_utf8_lossy(&first.bytes).into_owned(),

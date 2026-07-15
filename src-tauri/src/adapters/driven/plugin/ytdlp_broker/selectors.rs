@@ -65,10 +65,9 @@ pub(super) fn build_download_args(
         args.extend(strings(["--extract-audio", "--audio-format"]));
         args.push(normalize_audio_format(format).to_string());
     } else {
-        args.extend(strings([
-            "--merge-output-format",
-            merge_format(provider, format),
-        ]));
+        let container = merge_format(provider, format);
+        args.extend(strings(["--merge-output-format", container]));
+        args.extend(strings(["--remux-video", container]));
     }
     append_output_args(&mut args, output_dir);
     append_provider_args(&mut args, provider);

@@ -5,7 +5,8 @@ use anyhow::bail;
 use super::selectors::{build_direct_selector, build_download_args};
 use super::validation::{private_output_dir, validate_format, validate_quality, validate_url};
 use super::{
-    DEFAULT_TIMEOUT, DOWNLOAD_TIMEOUT, PluginYtDlpRequest, PreparedCommand, YtDlpProvider,
+    DEFAULT_OUTPUT_LIMIT, DEFAULT_TIMEOUT, DOWNLOAD_TIMEOUT, METADATA_OUTPUT_LIMIT,
+    PluginYtDlpRequest, PreparedCommand, YtDlpProvider,
 };
 
 pub(super) fn prepare(
@@ -47,7 +48,12 @@ fn prepare_metadata(
     let mut args = secure_prefix();
     args.extend(metadata_args(provider, playlist));
     append_url(&mut args, validate_url(provider, &url)?);
-    Ok(prepared(args, temp_root, DEFAULT_TIMEOUT))
+    Ok(prepared(
+        args,
+        temp_root,
+        DEFAULT_TIMEOUT,
+        METADATA_OUTPUT_LIMIT,
+    ))
 }
 
 fn metadata_args(provider: YtDlpProvider, playlist: bool) -> Vec<String> {
@@ -80,7 +86,12 @@ fn prepare_resolve(
     args.extend(strings(["--get-url", "--no-playlist", "--no-warnings"]));
     args.extend(["--format".to_string(), selector]);
     append_url(&mut args, validate_url(provider, &url)?);
-    Ok(prepared(args, temp_root, DEFAULT_TIMEOUT))
+    Ok(prepared(
+        args,
+        temp_root,
+        DEFAULT_TIMEOUT,
+        DEFAULT_OUTPUT_LIMIT,
+    ))
 }
 
 fn prepare_download(
@@ -92,12 +103,17 @@ fn prepare_download(
     audio_only: bool,
     temp_root: &Path,
 ) -> anyhow::Result<PreparedCommand> {
+    if provider == YtDlpProvider::Generic {
+        bail!("run_ytdlp: generic provider cannot download files");
+    }
     let format = validate_format(format)?;
+    let url = validate_url(provider, &url)?;
+    let quality = validate_quality(quality)?;
     let output_dir = private_output_dir(&output_dir, temp_root)?;
     let args = build_download_args(
         provider,
-        &validate_url(provider, &url)?,
-        validate_quality(quality)?,
+        &url,
+        quality,
         format.as_deref(),
         &output_dir,
         audio_only,
@@ -106,14 +122,25 @@ fn prepare_download(
         args,
         working_dir: output_dir,
         timeout: DOWNLOAD_TIMEOUT,
+        stdout_limit: DEFAULT_OUTPUT_LIMIT,
+        stderr_limit: DEFAULT_OUTPUT_LIMIT,
+        cleanup_working_dir_on_failure: true,
     })
 }
 
-fn prepared(args: Vec<String>, temp_root: &Path, timeout: std::time::Duration) -> PreparedCommand {
+fn prepared(
+    args: Vec<String>,
+    temp_root: &Path,
+    timeout: std::time::Duration,
+    stdout_limit: usize,
+) -> PreparedCommand {
     PreparedCommand {
         args,
-        working_dir: temp_root.join("vortex-ytdlp"),
+        working_dir: temp_root.to_path_buf(),
         timeout,
+        stdout_limit,
+        stderr_limit: DEFAULT_OUTPUT_LIMIT,
+        cleanup_working_dir_on_failure: false,
     }
 }
 

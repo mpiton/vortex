@@ -2,7 +2,10 @@ use std::io::{Cursor, Seek};
 use std::time::{Duration, Instant};
 
 use super::super::output::{collect, read_stream_capped, spawn_reader};
-use super::super::process::run_process;
+use super::super::process::{execute_with_test_discovery, run_process};
+use super::super::validation;
+use super::super::{DEFAULT_OUTPUT_LIMIT, METADATA_OUTPUT_LIMIT, PreparedCommand};
+use super::private_root;
 
 #[test]
 fn output_reader_caps_but_drains_the_stream() {
@@ -15,12 +18,62 @@ fn output_reader_caps_but_drains_the_stream() {
 
 #[test]
 fn oversized_output_is_reported_instead_of_returning_truncated_data() {
-    let stdout = spawn_reader(Some(Cursor::new(vec![b'x'; 1024 * 1024 + 1])));
-    let stderr = spawn_reader(Some(Cursor::new(Vec::new())));
+    let stdout = spawn_reader(
+        Some(Cursor::new(vec![b'x'; DEFAULT_OUTPUT_LIMIT + 1])),
+        DEFAULT_OUTPUT_LIMIT,
+    );
+    let stderr = spawn_reader(Some(Cursor::new(Vec::new())), DEFAULT_OUTPUT_LIMIT);
 
-    let error = collect(stdout, stderr).expect_err("oversized output must fail");
+    let error = collect(stdout, stderr, DEFAULT_OUTPUT_LIMIT, DEFAULT_OUTPUT_LIMIT)
+        .expect_err("oversized output must fail");
 
     assert!(error.to_string().contains("stdout exceeded"));
+}
+
+#[test]
+fn metadata_output_accepts_large_playlist_below_its_bounded_cap() {
+    let stdout = spawn_reader(
+        Some(Cursor::new(vec![b'x'; DEFAULT_OUTPUT_LIMIT + 1])),
+        METADATA_OUTPUT_LIMIT,
+    );
+    let stderr = spawn_reader(Some(Cursor::new(Vec::new())), DEFAULT_OUTPUT_LIMIT);
+
+    let (stdout, _) = collect(stdout, stderr, METADATA_OUTPUT_LIMIT, DEFAULT_OUTPUT_LIMIT)
+        .expect("metadata has a larger bounded allowance");
+    assert_eq!(stdout.len(), DEFAULT_OUTPUT_LIMIT + 1);
+}
+
+#[test]
+fn metadata_output_still_rejects_data_above_its_cap() {
+    let stdout = spawn_reader(
+        Some(Cursor::new(vec![b'x'; METADATA_OUTPUT_LIMIT + 1])),
+        METADATA_OUTPUT_LIMIT,
+    );
+    let stderr = spawn_reader(Some(Cursor::new(Vec::new())), DEFAULT_OUTPUT_LIMIT);
+
+    collect(stdout, stderr, METADATA_OUTPUT_LIMIT, DEFAULT_OUTPUT_LIMIT)
+        .expect_err("metadata output must remain bounded");
+}
+
+#[test]
+fn discovery_failure_cleans_partial_download_directory() {
+    let temp = tempfile::tempdir().unwrap();
+    let request = private_root(temp.path());
+    let job = validation::create_private_child(&request, "job-").unwrap();
+    std::fs::write(job.join("partial.part"), b"partial").unwrap();
+    let prepared = PreparedCommand {
+        args: Vec::new(),
+        working_dir: job.clone(),
+        timeout: Duration::from_secs(1),
+        stdout_limit: DEFAULT_OUTPUT_LIMIT,
+        stderr_limit: DEFAULT_OUTPUT_LIMIT,
+        cleanup_working_dir_on_failure: true,
+    };
+
+    execute_with_test_discovery(prepared, || Err(anyhow::anyhow!("yt-dlp is missing")))
+        .expect_err("discovery must fail");
+
+    assert!(!job.exists());
 }
 
 #[cfg(unix)]

@@ -92,44 +92,124 @@ fn valid_binary(path: &Path, roots: &[PathBuf]) -> anyhow::Result<bool> {
         return Ok(false);
     }
     let metadata = std::fs::metadata(path)?;
-    if !metadata.is_file() || !inside_approved_root(path, roots) {
+    let Some(root) = approved_root_for(path, roots) else {
+        return Ok(false);
+    };
+    if !metadata.is_file() {
         return Ok(false);
     }
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
         let mode = metadata.permissions().mode();
-        if mode & 0o111 == 0 || mode & 0o022 != 0 {
+        if mode & 0o111 == 0
+            || mode & 0o022 != 0
+            || !trusted_owner(metadata.uid())
+            || !trusted_ancestor_chain(path, &root)?
+        {
             return Ok(false);
         }
     }
     Ok(true)
 }
 
-fn inside_approved_root(path: &Path, roots: &[PathBuf]) -> bool {
-    roots.iter().any(|root| {
-        let canonical = std::fs::canonicalize(root).unwrap_or_else(|_| root.clone());
-        path.starts_with(canonical)
-    })
+fn approved_root_for(path: &Path, roots: &[PathBuf]) -> Option<PathBuf> {
+    roots
+        .iter()
+        .filter_map(|root| std::fs::canonicalize(root).ok())
+        .filter(|root| path.starts_with(root))
+        .max_by_key(|root| root.components().count())
+}
+
+#[cfg(unix)]
+fn trusted_ancestor_chain(path: &Path, root: &Path) -> anyhow::Result<bool> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    let Some(mut current) = path.parent() else {
+        return Ok(false);
+    };
+    loop {
+        let metadata = std::fs::metadata(current)?;
+        if !metadata.is_dir()
+            || !trusted_owner(metadata.uid())
+            || metadata.permissions().mode() & 0o022 != 0
+        {
+            return Ok(false);
+        }
+        if current == root {
+            return Ok(true);
+        }
+        let Some(parent) = current.parent() else {
+            return Ok(false);
+        };
+        current = parent;
+    }
+}
+
+#[cfg(unix)]
+fn trusted_owner(uid: u32) -> bool {
+    uid == 0 || uid == unsafe { libc::geteuid() }
 }
 
 pub(super) fn controlled_path(binary: &Path) -> anyhow::Result<OsString> {
+    controlled_path_with_roots(binary, &approved_roots())
+}
+
+pub(super) fn controlled_path_with_roots(
+    binary: &Path,
+    roots: &[PathBuf],
+) -> anyhow::Result<OsString> {
     let mut paths = Vec::new();
-    if let Some(parent) = binary.parent() {
-        paths.push(parent.to_path_buf());
+    if let Some(parent) = binary.parent()
+        && let Some(parent) = trusted_directory(parent, roots)
+    {
+        paths.push(parent);
     }
+    #[cfg(unix)]
     paths.extend(
-        candidates()
-            .into_iter()
-            .filter_map(|path| path.parent().map(Path::to_path_buf)),
+        [
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+            "/usr/bin",
+            "/run/current-system/sw/bin",
+            "/nix/var/nix/profiles/default/bin",
+        ]
+        .into_iter()
+        .filter_map(|path| trusted_directory(Path::new(path), roots)),
     );
     #[cfg(windows)]
     if let Some(root) = std::env::var_os("SystemRoot").map(PathBuf::from) {
-        paths.extend([root.join("System32"), root]);
+        paths.extend(
+            [root.join("System32"), root]
+                .into_iter()
+                .filter_map(|path| trusted_directory(&path, roots)),
+        );
     }
     paths.sort();
     paths.dedup();
     std::env::join_paths(paths).context("run_ytdlp: approved PATH cannot be encoded")
+}
+
+fn trusted_directory(path: &Path, roots: &[PathBuf]) -> Option<PathBuf> {
+    let canonical = std::fs::canonicalize(path).ok()?;
+    let metadata = std::fs::metadata(&canonical).ok()?;
+    if !metadata.is_dir() {
+        return None;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let root = approved_root_for(&canonical, roots)?;
+        if !trusted_owner(metadata.uid())
+            || metadata.permissions().mode() & 0o022 != 0
+            || !trusted_ancestor_chain(&canonical.join(".vortex-helper-check"), &root).ok()?
+        {
+            return None;
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = roots;
+    Some(canonical)
 }
 
 #[cfg(windows)]
