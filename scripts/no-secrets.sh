@@ -1,60 +1,119 @@
 #!/usr/bin/env bash
-# Reject staged files likely to contain secrets.
-# Invoked at pre-commit via lefthook.yml.
+# Reject staged or tracked files likely to contain secrets.
+# Invoked at pre-commit via lefthook.yml and with --all in CI.
 set -euo pipefail
 
 # File patterns that typically contain secrets
 SECRET_PATTERNS='\.(env|env\..+|pem|key|p12|pfx|secret|creds|aws|netrc)$|(^|/)(\.env|\.secrets|secrets)/|(^|/)\.pypirc$'
+NPMRC_PATH_PATTERN='(^|/)\.npmrc$'
 NPMRC_AUTH_PATTERNS='(^|[[:space:]])(_authToken|_password|_auth)[[:space:]]*=|//.+:(_authToken|_password|_auth)[[:space:]]*='
+API_KEY_PATTERNS='AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|sk-ant-[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9]{32,}|ghp_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{82}|glpat-[A-Za-z0-9_-]{20}|AIza[0-9A-Za-z_-]{35}'
 
-# List staged files (excluding deletions)
-STAGED=$(git diff --cached --diff-filter=d --name-only)
+print_redacted_path() {
+    local file=$1
+    local suffix=${2:-}
 
-if [ -z "$STAGED" ]; then
+    shopt -s nocasematch
+    if [[ $file =~ $API_KEY_PATTERNS ]]; then
+        printf '  - [redacted-path]%s\n' "$suffix"
+    else
+        printf '  - %q%s\n' "$file" "$suffix"
+    fi
+    shopt -u nocasematch
+}
+
+FILES=()
+case "${1:-}" in
+    "")
+        SCOPE=staged
+        while IFS= read -r -d '' file; do
+            FILES+=("$file")
+        done < <(git diff --cached --diff-filter=d --name-only -z)
+        ;;
+    --all)
+        SCOPE=tracked
+        while IFS= read -r -d '' file; do
+            FILES+=("$file")
+        done < <(git ls-files -z)
+        ;;
+    *) echo "Usage: $0 [--all]" >&2; exit 2 ;;
+esac
+
+if [ "${#FILES[@]}" -eq 0 ]; then
     exit 0
 fi
 
-# Check filenames
-SECRET_FILES=$(echo "$STAGED" | grep -iE "$SECRET_PATTERNS" || true)
+# Classify paths without line-delimited parsing: Git permits newlines in names.
+SECRET_FILES=()
+NPMRC_FILES=()
+shopt -s nocasematch
+for file in "${FILES[@]}"; do
+    if [[ $file =~ $SECRET_PATTERNS || $file =~ $API_KEY_PATTERNS ]]; then
+        SECRET_FILES+=("$file")
+    fi
+done
+shopt -u nocasematch
+for file in "${FILES[@]}"; do
+    if [[ $file =~ $NPMRC_PATH_PATTERN ]]; then
+        NPMRC_FILES+=("$file")
+    fi
+done
 
-if [ -n "$SECRET_FILES" ]; then
-    echo "BLOCKED: files possibly containing secrets staged:"
-    echo "$SECRET_FILES" | sed 's/^/  - /'
+if [ "${#SECRET_FILES[@]}" -gt 0 ]; then
+    echo "BLOCKED: files possibly containing secrets are $SCOPE:"
+    for file in "${SECRET_FILES[@]}"; do
+        print_redacted_path "$file"
+    done
     echo ""
     echo "If intentional, add the file to .gitignore and use a .example variant instead."
     exit 1
 fi
 
 # .npmrc is allowed for non-secret config (registries, loglevel, hoisting).
-# Reject only when the staged diff introduces auth tokens.
-NPMRC_STAGED=$(echo "$STAGED" | grep -E '(^|/)\.npmrc$' || true)
-if [ -n "$NPMRC_STAGED" ]; then
-    NPMRC_LEAK=$(git diff --cached -U0 -- $NPMRC_STAGED | grep -E '^\+' | grep -vE '^\+\+\+ [ab]/' | grep -iE "$NPMRC_AUTH_PATTERNS" || true)
-    if [ -n "$NPMRC_LEAK" ]; then
-        echo "BLOCKED: auth token detected in staged .npmrc:"
-        echo "$NPMRC_LEAK" | head -5
-        echo ""
-        echo "Move credentials to ~/.npmrc and reference them via env vars (\${NPM_TOKEN})."
-        exit 1
+# Scan the complete indexed file so findings are identical locally and in CI.
+NPMRC_LEAKS=()
+for file in "${NPMRC_FILES[@]}"; do
+    # Do not use grep -q here: under pipefail its early exit can SIGPIPE
+    # git-show and turn a real match in a large file into a false negative.
+    if git show ":$file" | grep -iE "$NPMRC_AUTH_PATTERNS" >/dev/null; then
+        NPMRC_LEAKS+=("$file")
+    fi
+done
+
+if [ "${#NPMRC_LEAKS[@]}" -gt 0 ]; then
+    echo "BLOCKED: npm authentication config detected in tracked .npmrc:"
+    for file in "${NPMRC_LEAKS[@]}"; do
+        print_redacted_path "$file"
+    done
+    echo "Store npm credentials in the user-level ~/.npmrc or CI secrets instead."
+    exit 1
+fi
+
+# Check complete indexed content so local and CI findings are identical.
+CONTENT_FOUND=false
+if git grep --cached -qEia "$API_KEY_PATTERNS"; then
+    CONTENT_FOUND=true
+else
+    GREP_STATUS=$?
+    if [ "$GREP_STATUS" -ne 1 ]; then
+        echo "Secret scan failed while reading the Git index." >&2
+        exit "$GREP_STATUS"
     fi
 fi
 
-# Check content: grep known API key patterns in the diff
-CONTENT_LEAK=$(git diff --cached -U0 | grep -E '^\+' | grep -vE '^\+\+\+ [ab]/' | grep -iE \
-    -e 'AKIA[0-9A-Z]{16}' \
-    -e 'ASIA[0-9A-Z]{16}' \
-    -e 'sk-ant-[A-Za-z0-9_-]{20,}' \
-    -e 'sk-[A-Za-z0-9]{32,}' \
-    -e 'ghp_[A-Za-z0-9]{36}' \
-    -e 'github_pat_[A-Za-z0-9_]{82}' \
-    -e 'glpat-[A-Za-z0-9_-]{20}' \
-    -e 'AIza[0-9A-Za-z_-]{35}' \
-    || true)
-
-if [ -n "$CONTENT_LEAK" ]; then
-    echo "BLOCKED: API key pattern detected in diff:"
-    echo "$CONTENT_LEAK" | head -5
-    echo ""
+if [ "$CONTENT_FOUND" = true ]; then
+    echo "BLOCKED: API key pattern detected; matched values were redacted."
+    MATCH_COUNT=0
+    # With -z -n, Git NUL-terminates the path and line number; content remains
+    # newline-terminated. Treating binary files as text keeps them in scope.
+    while IFS= read -r -d '' file \
+        && IFS= read -r -d '' line \
+        && IFS= read -r _content; do
+        if [ "$MATCH_COUNT" -lt 5 ]; then
+            print_redacted_path "$file" ":$line"
+        fi
+        MATCH_COUNT=$((MATCH_COUNT + 1))
+    done < <(git grep --cached -z -nEia "$API_KEY_PATTERNS")
     echo "Remove the key and revoke it immediately if it has been committed even locally."
     exit 1
 fi

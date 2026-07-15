@@ -176,10 +176,8 @@ fn extract_filename_from_url(url: &str) -> Option<String> {
     // Extract the path component after the scheme + authority (e.g. after "https://host")
     let path_only = if let Some(after_scheme) = path.find("://") {
         let after = &path[after_scheme + 3..];
-        match after.find('/') {
-            Some(slash) => &after[slash + 1..],
-            None => return None,
-        }
+        let slash = after.find('/')?;
+        &after[slash + 1..]
     } else {
         path
     };
