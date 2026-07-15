@@ -14,7 +14,7 @@ jobs:
     name: Verify release bundle
     permissions:
       contents: read
-    uses: mpiton/vortex/.github/workflows/plugin-ci.yml@b70495f246944921b0781328a0139c404e775214
+    uses: mpiton/vortex/.github/workflows/plugin-ci.yml@9b3b7b3b7956150f7475ab409bb0eed424573bae
 
   release:
     name: Publish immutable GitHub release
@@ -78,8 +78,10 @@ jobs:
             "plugin.wasm"
             "plugin.toml"
             "SHA256SUMS"
-            "${PLUGIN_WASM_ASSET}"
           )
+          if [[ "${PLUGIN_WASM_ASSET}" != "plugin.wasm" ]]; then
+            release_assets+=("${PLUGIN_WASM_ASSET}")
+          fi
           release_paths=()
           download_patterns=()
           for asset in "${release_assets[@]}"; do
