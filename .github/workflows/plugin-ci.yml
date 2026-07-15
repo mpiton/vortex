@@ -24,6 +24,8 @@ jobs:
     steps:
       - name: Check out plugin repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
 
       - name: Activate repository Rust toolchain
         shell: bash
@@ -33,7 +35,6 @@ jobs:
           cargo --version
           rustup component list --installed | grep -q '^clippy-'
           rustup component list --installed | grep -q '^rustfmt-'
-          rustup component list --installed | grep -q '^llvm-tools-'
           rustup target list --installed | grep -qx 'wasm32-wasip1'
 
       - name: Cache Cargo build data
@@ -108,10 +109,6 @@ jobs:
         run: |
           test -s "${WASM_PATH}"
 
-          llvm_nm="$(find "$(rustc --print sysroot)" -type f -name llvm-nm -print -quit)"
-          test -x "${llvm_nm}"
-          symbols="$("${llvm_nm}" --defined-only "${WASM_PATH}" | awk '{print $3}')"
-
           case "${PACKAGE_NAME}" in
             vortex-mod-containers)
               required="can_decrypt detect decrypt"
@@ -133,37 +130,58 @@ jobs:
               ;;
           esac
 
-          for export in ${required}; do
-            grep -qx "${export}" <<<"${symbols}" || {
-              echo "missing required WASM export: ${export}" >&2
-              exit 1
+          REQUIRED_EXPORTS="${required}" node <<'JS'
+          const fs = require("node:fs");
+
+          let compiled;
+          try {
+            compiled = new WebAssembly.Module(fs.readFileSync(process.env.WASM_PATH));
+          } catch (error) {
+            console.error(`invalid WASM artifact: ${error.message}`);
+            process.exit(1);
+          }
+          const functionExports = new Set(
+            WebAssembly.Module.exports(compiled)
+              .filter(({ kind }) => kind === "function")
+              .map(({ name }) => name),
+          );
+          for (const required of process.env.REQUIRED_EXPORTS.split(/\s+/)) {
+            if (!functionExports.has(required)) {
+              console.error(`missing required WASM export: ${required}`);
+              process.exit(1);
             }
-          done
+          }
+          JS
 
       - name: Run native tests including ABI smoke
         run: cargo test --locked --all-targets --target x86_64-unknown-linux-gnu
 
       - name: Build verified release bundle
+        id: bundle
         shell: bash
         run: |
-          mkdir -p dist
-          cp "${WASM_PATH}" dist/plugin.wasm
+          bundle_dir="$(mktemp -d "${RUNNER_TEMP}/plugin-release.XXXXXX")"
+          printf 'bundle_dir=%s\n' "${bundle_dir}" >> "${GITHUB_OUTPUT}"
+
+          cp "${WASM_PATH}" "${bundle_dir}/plugin.wasm"
           if [[ "${PLUGIN_WASM_ASSET}" != "plugin.wasm" ]]; then
-            cp "${WASM_PATH}" "dist/${PLUGIN_WASM_ASSET}"
+            cp "${WASM_PATH}" "${bundle_dir}/${PLUGIN_WASM_ASSET}"
           fi
-          cp plugin.toml dist/plugin.toml
+          cp plugin.toml "${bundle_dir}/plugin.toml"
           (
-            cd dist
+            cd "${bundle_dir}"
             sha256sum plugin.wasm plugin.toml > SHA256SUMS
             sha256sum --check SHA256SUMS
           )
 
-          expected_assets=(plugin.wasm plugin.toml SHA256SUMS)
+          expected_asset_names=(plugin.wasm plugin.toml SHA256SUMS)
           if [[ "${PLUGIN_WASM_ASSET}" != "plugin.wasm" ]]; then
-            expected_assets+=("${PLUGIN_WASM_ASSET}")
+            expected_asset_names+=("${PLUGIN_WASM_ASSET}")
           fi
-          expected_assets="$(printf '%s\n' "${expected_assets[@]}" | LC_ALL=C sort)"
-          actual_assets="$(find dist -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort)"
+          expected_assets="$(printf '%s\n' "${expected_asset_names[@]}" | LC_ALL=C sort)"
+          actual_assets="$(
+            find "${bundle_dir}" -mindepth 1 -printf '%P\n' | LC_ALL=C sort
+          )"
           if [[ "${actual_assets}" != "${expected_assets}" ]]; then
             echo "verified bundle asset set is not canonical" >&2
             diff -u <(printf '%s\n' "${expected_assets}") \
@@ -175,6 +193,6 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: plugin-release-${{ github.sha }}
-          path: dist/
+          path: ${{ steps.bundle.outputs.bundle_dir }}/
           if-no-files-found: error
           retention-days: 14
