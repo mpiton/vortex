@@ -3,12 +3,13 @@
 use std::collections::HashMap;
 use std::io::Read;
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
-use std::process::Child;
-use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
 use super::capabilities::PluginHostContext;
+use super::ytdlp_broker::{
+    LegacySubprocessRequest, PluginYtDlpRequest, run_legacy_request, run_plugin_request,
+};
 
 // ── JSON types ────────────────────────────────────────────────────────────────
 
@@ -35,21 +36,6 @@ struct LogRequest {
 }
 
 #[derive(Deserialize)]
-struct SubprocessRequest {
-    binary: String,
-    #[serde(default)]
-    args: Vec<String>,
-    timeout_ms: Option<u64>,
-}
-
-#[derive(Serialize)]
-struct SubprocessResponse {
-    exit_code: i32,
-    stdout: String,
-    stderr: String,
-}
-
-#[derive(Deserialize)]
 struct ConfigEntry {
     key: String,
     value: String,
@@ -61,14 +47,7 @@ struct CredentialResponse {
     password: String,
 }
 
-struct CapturedOutput {
-    bytes: Vec<u8>,
-    truncated: bool,
-}
-
 const MAX_HTTP_BODY_BYTES: u64 = 100 * 1024 * 1024;
-const MAX_SUBPROCESS_OUTPUT_BYTES: usize = 1024 * 1024;
-const SUBPROCESS_POLL_INTERVAL: Duration = Duration::from_millis(25);
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -191,21 +170,6 @@ fn is_link_local(ip: &IpAddr) -> bool {
     }
 }
 
-/// Validate subprocess binary name has no path components.
-fn validate_binary_name(binary: &str) -> Result<(), extism::Error> {
-    if binary.is_empty()
-        || binary.contains('/')
-        || binary.contains('\\')
-        || binary.contains("..")
-        || binary.contains('\0')
-    {
-        return Err(anyhow::anyhow!(
-            "run_subprocess: invalid binary name '{binary}'"
-        ));
-    }
-    Ok(())
-}
-
 fn read_http_body_capped(
     response: &mut reqwest::blocking::Response,
 ) -> Result<Vec<u8>, extism::Error> {
@@ -222,101 +186,6 @@ fn read_http_body_capped(
     }
 
     Ok(body_bytes)
-}
-
-fn read_stream_capped<R: Read>(mut reader: R, max_bytes: usize) -> std::io::Result<CapturedOutput> {
-    let mut bytes = Vec::new();
-    let mut truncated = false;
-    let mut chunk = [0_u8; 8192];
-
-    loop {
-        let read = reader.read(&mut chunk)?;
-        if read == 0 {
-            break;
-        }
-
-        let remaining = max_bytes.saturating_sub(bytes.len());
-        let to_copy = remaining.min(read);
-        if to_copy > 0 {
-            bytes.extend_from_slice(&chunk[..to_copy]);
-        }
-        if to_copy < read {
-            truncated = true;
-            break;
-        }
-    }
-
-    Ok(CapturedOutput { bytes, truncated })
-}
-
-fn spawn_output_reader<T>(
-    stream: Option<T>,
-) -> std::thread::JoinHandle<std::io::Result<CapturedOutput>>
-where
-    T: Read + Send + 'static,
-{
-    std::thread::spawn(move || match stream {
-        Some(stream) => read_stream_capped(stream, MAX_SUBPROCESS_OUTPUT_BYTES),
-        None => Ok(CapturedOutput {
-            bytes: Vec::new(),
-            truncated: false,
-        }),
-    })
-}
-
-fn decode_captured_output(output: CapturedOutput) -> String {
-    let mut text = String::from_utf8_lossy(&output.bytes).into_owned();
-    if output.truncated {
-        text.push_str("\n[truncated]");
-    }
-    text
-}
-
-fn collect_subprocess_output(
-    stdout_handle: std::thread::JoinHandle<std::io::Result<CapturedOutput>>,
-    stderr_handle: std::thread::JoinHandle<std::io::Result<CapturedOutput>>,
-) -> Result<(String, String), extism::Error> {
-    let stdout = stdout_handle
-        .join()
-        .map_err(|_| anyhow::anyhow!("run_subprocess: stdout reader thread panicked"))?
-        .map_err(|e| anyhow::anyhow!("run_subprocess: failed to read stdout: {e}"))?;
-    let stderr = stderr_handle
-        .join()
-        .map_err(|_| anyhow::anyhow!("run_subprocess: stderr reader thread panicked"))?
-        .map_err(|e| anyhow::anyhow!("run_subprocess: failed to read stderr: {e}"))?;
-
-    Ok((
-        decode_captured_output(stdout),
-        decode_captured_output(stderr),
-    ))
-}
-
-fn wait_for_child_with_timeout(
-    child: &mut Child,
-    timeout: Duration,
-) -> Result<(std::process::ExitStatus, bool), extism::Error> {
-    let started_at = Instant::now();
-
-    loop {
-        if let Some(status) = child
-            .try_wait()
-            .map_err(|e| anyhow::anyhow!("run_subprocess: failed to poll child status: {e}"))?
-        {
-            return Ok((status, false));
-        }
-
-        if started_at.elapsed() >= timeout {
-            child.kill().map_err(|e| {
-                anyhow::anyhow!("run_subprocess: failed to kill timed out process: {e}")
-            })?;
-            let status = child.wait().map_err(|e| {
-                anyhow::anyhow!("run_subprocess: failed to reap timed out process: {e}")
-            })?;
-            return Ok((status, true));
-        }
-
-        std::thread::sleep(SUBPROCESS_POLL_INTERVAL);
-    }
 }
 
 // ── Host functions ────────────────────────────────────────────────────────────
@@ -595,8 +464,44 @@ pub fn make_get_credential_function(
     )
 }
 
-/// Run a subprocess binary declared in the plugin's `subprocess:` capabilities.
-pub fn make_run_subprocess_function(
+/// Run an approved yt-dlp operation built entirely by the host.
+pub fn make_run_ytdlp_function(user_data: extism::UserData<PluginHostContext>) -> extism::Function {
+    extism::Function::new(
+        "run_ytdlp",
+        [extism::ValType::I64],
+        [extism::ValType::I64],
+        user_data,
+        |plugin, inputs, outputs, ud| {
+            let input = read_input_string(plugin, inputs)?;
+            let request: PluginYtDlpRequest = serde_json::from_str(&input)
+                .map_err(|e| anyhow::anyhow!("run_ytdlp: invalid JSON: {e}"))?;
+            let plugin_name = {
+                let guard = ud.get()?;
+                let ctx = guard
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("run_ytdlp: mutex poisoned"))?;
+                if !ctx
+                    .capabilities
+                    .iter()
+                    .any(|cap| cap == "subprocess:yt-dlp")
+                {
+                    return Err(anyhow::anyhow!("run_ytdlp: capability is not declared"));
+                }
+                ctx.plugin_name.clone()
+            };
+            let response = run_plugin_request(&plugin_name, request)?;
+            let json = serde_json::to_string(&response)
+                .map_err(|e| anyhow::anyhow!("run_ytdlp: failed to serialize response: {e}"))?;
+            write_output_string(plugin, outputs, &json)
+        },
+    )
+}
+
+/// Compatibility shim for already-published plugins using the former ABI.
+///
+/// The broker accepts only the exact historical yt-dlp profiles of official
+/// plugins and rebuilds them with the same host-side controls as `run_ytdlp`.
+pub fn make_legacy_run_subprocess_function(
     user_data: extism::UserData<PluginHostContext>,
 ) -> extism::Function {
     extism::Function::new(
@@ -606,63 +511,28 @@ pub fn make_run_subprocess_function(
         user_data,
         |plugin, inputs, outputs, ud| {
             let input = read_input_string(plugin, inputs)?;
-            let req: SubprocessRequest = serde_json::from_str(&input)
-                .map_err(|e| anyhow::anyhow!("run_subprocess: invalid JSON: {e}"))?;
-
-            // F4: Validate binary name has no path components
-            validate_binary_name(&req.binary)?;
-
-            // F6: Minimize mutex scope — check capability then release
-            {
+            let request: LegacySubprocessRequest = serde_json::from_str(&input)
+                .map_err(|e| anyhow::anyhow!("run_subprocess compatibility: invalid JSON: {e}"))?;
+            let plugin_name = {
                 let guard = ud.get()?;
                 let ctx = guard
                     .lock()
-                    .map_err(|_| anyhow::anyhow!("run_subprocess: mutex poisoned"))?;
-
-                let required_cap = format!("subprocess:{}", req.binary);
-                if !ctx.capabilities.iter().any(|c| c == &required_cap) {
+                    .map_err(|_| anyhow::anyhow!("run_subprocess compatibility: mutex poisoned"))?;
+                if !ctx
+                    .capabilities
+                    .iter()
+                    .any(|cap| cap == "subprocess:yt-dlp")
+                {
                     return Err(anyhow::anyhow!(
-                        "run_subprocess: binary '{}' not listed in plugin capabilities",
-                        req.binary
+                        "run_subprocess compatibility: capability is not declared"
                     ));
                 }
-            } // Mutex released here — subprocess runs without holding the lock
-
-            let timeout = std::time::Duration::from_millis(req.timeout_ms.unwrap_or(60_000));
-            let binary = req.binary.clone();
-
-            let mut child = std::process::Command::new(&req.binary)
-                .args(&req.args)
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped())
-                .spawn()
-                .map_err(|e| {
-                    anyhow::anyhow!("run_subprocess: failed to spawn '{}': {e}", req.binary)
-                })?;
-
-            let stdout_handle = spawn_output_reader(child.stdout.take());
-            let stderr_handle = spawn_output_reader(child.stderr.take());
-
-            let (status, timed_out) = wait_for_child_with_timeout(&mut child, timeout)?;
-            if timed_out {
-                return Err(anyhow::anyhow!(
-                    "run_subprocess: '{}' timed out after {}ms",
-                    binary,
-                    timeout.as_millis()
-                ));
-            }
-
-            let (stdout, stderr) = collect_subprocess_output(stdout_handle, stderr_handle)?;
-
-            let resp = SubprocessResponse {
-                exit_code: status.code().unwrap_or(-1),
-                stdout,
-                stderr,
+                ctx.plugin_name.clone()
             };
-            let json = serde_json::to_string(&resp).map_err(|e| {
-                anyhow::anyhow!("run_subprocess: failed to serialize response: {e}")
+            let response = run_legacy_request(&plugin_name, request)?;
+            let json = serde_json::to_string(&response).map_err(|e| {
+                anyhow::anyhow!("run_subprocess compatibility: failed to serialize response: {e}")
             })?;
-
             write_output_string(plugin, outputs, &json)
         },
     )
@@ -694,15 +564,6 @@ mod tests {
             Some("text/html")
         );
         assert!(req.body.is_none());
-    }
-
-    #[test]
-    fn test_subprocess_request_deserialization() {
-        let json = r#"{"binary":"yt-dlp","args":["--no-playlist","https://example.com"],"timeout_ms":5000}"#;
-        let req: SubprocessRequest = serde_json::from_str(json).unwrap();
-        assert_eq!(req.binary, "yt-dlp");
-        assert_eq!(req.args, vec!["--no-playlist", "https://example.com"]);
-        assert_eq!(req.timeout_ms, Some(5000));
     }
 
     #[test]
@@ -746,20 +607,6 @@ mod tests {
     }
 
     #[test]
-    fn test_subprocess_binary_validation() {
-        let ctx_caps: Vec<String> = vec!["subprocess:ffmpeg".to_string()];
-        let required = "yt-dlp";
-        let cap_key = format!("subprocess:{required}");
-        assert!(!ctx_caps.iter().any(|c| c == &cap_key));
-
-        let ctx_caps2: Vec<String> = vec![
-            "subprocess:ffmpeg".to_string(),
-            "subprocess:yt-dlp".to_string(),
-        ];
-        assert!(ctx_caps2.iter().any(|c| c == &cap_key));
-    }
-
-    #[test]
     fn test_ipv4_mapped_ipv6_is_forbidden() {
         let loopback = "::ffff:127.0.0.1".parse::<IpAddr>().unwrap();
         let private = "::ffff:10.0.0.1".parse::<IpAddr>().unwrap();
@@ -768,21 +615,5 @@ mod tests {
         assert!(is_forbidden_ip(&loopback));
         assert!(is_forbidden_ip(&private));
         assert!(is_forbidden_ip(&link_local));
-    }
-
-    #[test]
-    fn test_read_stream_capped_only_marks_truncated_when_extra_bytes_exist() {
-        let exact = vec![b'a'; MAX_SUBPROCESS_OUTPUT_BYTES];
-        let exact_output =
-            read_stream_capped(std::io::Cursor::new(exact), MAX_SUBPROCESS_OUTPUT_BYTES).unwrap();
-        assert!(!exact_output.truncated);
-        assert_eq!(exact_output.bytes.len(), MAX_SUBPROCESS_OUTPUT_BYTES);
-
-        let too_long = vec![b'a'; MAX_SUBPROCESS_OUTPUT_BYTES + 1];
-        let too_long_output =
-            read_stream_capped(std::io::Cursor::new(too_long), MAX_SUBPROCESS_OUTPUT_BYTES)
-                .unwrap();
-        assert!(too_long_output.truncated);
-        assert_eq!(too_long_output.bytes.len(), MAX_SUBPROCESS_OUTPUT_BYTES);
     }
 }

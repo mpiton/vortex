@@ -97,7 +97,7 @@ pub struct PluginHostContext {
 /// Build host functions based on manifest capabilities.
 ///
 /// Always registers the six base functions (log, get/set config, get/set state, get credential).
-/// Conditionally registers http_request and run_subprocess based on declared capabilities.
+/// Conditionally registers HTTP and the constrained yt-dlp broker based on capabilities.
 pub fn build_host_functions(
     manifest: &PluginManifest,
     shared: &Arc<SharedHostResources>,
@@ -131,6 +131,15 @@ pub fn build_host_functions(
     }
     shared.plugin_states.entry(name.clone()).or_default();
 
+    let declares_ytdlp = manifest.has_capability("subprocess:yt-dlp");
+    let supports_ytdlp = super::ytdlp_broker::supports_plugin(&name);
+    if declares_ytdlp && !supports_ytdlp {
+        tracing::warn!(
+            plugin = %name,
+            "ignoring yt-dlp capability for an unapproved plugin"
+        );
+    }
+
     let ctx = PluginHostContext {
         plugin_name: name,
         capabilities: manifest.capabilities().to_vec(),
@@ -153,12 +162,11 @@ pub fn build_host_functions(
         ));
     }
 
-    if manifest
-        .capabilities()
-        .iter()
-        .any(|c| c.starts_with("subprocess:"))
-    {
-        functions.push(super::host_functions::make_run_subprocess_function(
+    if declares_ytdlp && supports_ytdlp {
+        functions.push(super::host_functions::make_run_ytdlp_function(
+            user_data.clone(),
+        ));
+        functions.push(super::host_functions::make_legacy_run_subprocess_function(
             user_data.clone(),
         ));
     }
@@ -172,8 +180,12 @@ mod tests {
     use crate::domain::model::plugin::{PluginCategory, PluginInfo, PluginManifest};
 
     fn make_manifest_with_caps(caps: Vec<&str>) -> PluginManifest {
+        make_named_manifest_with_caps("test-plugin", caps)
+    }
+
+    fn make_named_manifest_with_caps(name: &str, caps: Vec<&str>) -> PluginManifest {
         let info = PluginInfo::new(
-            "test-plugin".to_string(),
+            name.to_string(),
             "1.0.0".to_string(),
             "Test plugin".to_string(),
             "tester".to_string(),
@@ -185,13 +197,17 @@ mod tests {
     #[test]
     fn test_build_host_functions_all_capabilities() {
         let shared = Arc::new(SharedHostResources::new());
-        let manifest =
-            make_manifest_with_caps(vec!["http", "subprocess:ffmpeg", "subprocess:yt-dlp"]);
+        let manifest = make_named_manifest_with_caps(
+            "vortex-mod-youtube",
+            vec!["http", "subprocess:ffmpeg", "subprocess:yt-dlp"],
+        );
 
         let functions = build_host_functions(&manifest, &shared);
 
-        // 6 base + http + subprocess = 8
-        assert_eq!(functions.len(), 8);
+        // 6 base + http + typed yt-dlp + legacy compatibility = 9
+        assert_eq!(functions.len(), 9);
+        assert!(functions.iter().any(|f| f.name() == "run_ytdlp"));
+        assert!(functions.iter().any(|f| f.name() == "run_subprocess"));
     }
 
     #[test]
@@ -286,15 +302,39 @@ mod tests {
     }
 
     #[test]
-    fn test_build_host_functions_subprocess_only() {
+    fn test_build_host_functions_rejects_generic_subprocess_capability() {
         let shared = Arc::new(SharedHostResources::new());
         let manifest = make_manifest_with_caps(vec!["subprocess:ffmpeg"]);
 
         let functions = build_host_functions(&manifest, &shared);
 
-        // 6 base + run_subprocess = 7
-        assert_eq!(functions.len(), 7);
+        assert_eq!(functions.len(), 6);
+        assert!(!functions.iter().any(|f| f.name() == "run_ytdlp"));
+        assert!(!functions.iter().any(|f| f.name() == "run_subprocess"));
+    }
+
+    #[test]
+    fn test_build_host_functions_ytdlp_only() {
+        let shared = Arc::new(SharedHostResources::new());
+        let manifest =
+            make_named_manifest_with_caps("vortex-mod-youtube", vec!["subprocess:yt-dlp"]);
+
+        let functions = build_host_functions(&manifest, &shared);
+
+        assert_eq!(functions.len(), 8);
+        assert!(functions.iter().any(|f| f.name() == "run_ytdlp"));
         assert!(functions.iter().any(|f| f.name() == "run_subprocess"));
+    }
+
+    #[test]
+    fn test_unapproved_plugin_cannot_register_ytdlp() {
+        let shared = Arc::new(SharedHostResources::new());
+        let manifest = make_manifest_with_caps(vec!["subprocess:yt-dlp"]);
+
+        let functions = build_host_functions(&manifest, &shared);
+
+        assert_eq!(functions.len(), 6);
+        assert!(!functions.iter().any(|f| f.name() == "run_ytdlp"));
     }
 
     #[test]

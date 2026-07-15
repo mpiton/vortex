@@ -6,6 +6,7 @@ pub mod host_functions;
 pub mod manifest;
 pub mod registry;
 pub mod watcher;
+pub(crate) mod ytdlp_broker;
 
 pub use extism_loader::ExtismPluginLoader;
 pub use github_store_client::GithubStoreClient;

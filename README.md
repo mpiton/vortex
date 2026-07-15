@@ -106,7 +106,7 @@ A Nix flake is provided for a reproducible toolchain (`nix develop`).
 
 Plugins are independent crates compiled to `wasm32-wasip1`. The four official plugins live in sibling repos:
 
-- [`vortex-mod-youtube`](https://github.com/mpiton/vortex-mod-youtube) — YouTube + yt-dlp subprocess integration
+- [`vortex-mod-youtube`](https://github.com/mpiton/vortex-mod-youtube) — YouTube via the host's typed yt-dlp broker
 - [`vortex-mod-vimeo`](https://github.com/mpiton/vortex-mod-vimeo) — Vimeo crawler
 - [`vortex-mod-soundcloud`](https://github.com/mpiton/vortex-mod-soundcloud) — SoundCloud crawler
 - [`vortex-mod-gallery`](https://github.com/mpiton/vortex-mod-gallery) — generic image gallery extractor

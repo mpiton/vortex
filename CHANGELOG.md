@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Typed yt-dlp broker (MAT-131)**: replaced the plugin-facing generic
+  `run_subprocess(binary, args, timeout)` capability with a closed
+  `run_ytdlp` contract. Vortex now selects an approved executable, builds all
+  arguments, ignores external yt-dlp configuration/plugins/remote components,
+  uses fixed timeouts and a cleared environment, confines download output to
+  the Vortex temporary directory, and caps stdout/stderr. A strict legacy shim
+  keeps the exact profiles of already-published official plugins loadable
+  during the migration; arbitrary subprocess capabilities are no longer
+  registered. The Tauri metadata fallback uses the same broker.
+
 ### Fixed
 
 - **Lot 0 maintenance baseline (MAT-126–MAT-128)**: restored CI by allowing non-secret `.npmrc` configuration through the shared redacted scanner, updated compatible npm and Rust dependencies to clear security audits, pinned CI actions on their Node 24 releases, kept the codebase clean under the current Rust stable Clippy, and added multi-OS Tauri build diagnostics.

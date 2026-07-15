@@ -1773,6 +1773,10 @@ fn resolve_media_stream(
                     file_info.path.display()
                 ));
             }
+            let private_output_dir = produced_canonical
+                .parent()
+                .filter(|parent| parent.parent() == Some(temp_dir_canonical.as_path()))
+                .map(Path::to_path_buf);
 
             let filename = title
                 .as_deref()
@@ -1815,6 +1819,9 @@ fn resolve_media_stream(
                     );
                 }
             }
+            if let Some(path) = private_output_dir {
+                cleanup_private_output_dir(&path);
+            }
 
             Ok(StreamResolution::LocalFile {
                 path: dest_path,
@@ -1834,6 +1841,20 @@ fn resolve_media_stream(
             }
         }
         Err(e) => Err(format!("Failed to resolve stream URL: {e}")),
+    }
+}
+
+fn cleanup_private_output_dir(path: &Path) {
+    // ponytail: only delete an empty job directory; add a bounded stale-job
+    // janitor if failed partial downloads cause measurable disk growth.
+    if let Err(error) = std::fs::remove_dir(path)
+        && error.kind() != std::io::ErrorKind::NotFound
+    {
+        tracing::warn!(
+            path = %path.display(),
+            error = %error,
+            "failed to remove private yt-dlp output directory"
+        );
     }
 }
 
@@ -1911,27 +1932,18 @@ pub async fn command_get_media_metadata(
         }
     }
 
-    let output = tokio::task::spawn_blocking(move || -> Result<std::process::Output, String> {
-        let binary = find_ytdlp()?;
-        std::process::Command::new(&binary)
-            .args([
-                "--dump-single-json",
-                "--flat-playlist",
-                "--no-warnings",
-                &url,
-            ])
-            .output()
-            .map_err(|e| format!("Failed to run yt-dlp: {e}"))
+    let output = tokio::task::spawn_blocking(move || {
+        crate::adapters::driven::plugin::ytdlp_broker::run_generic_metadata(url)
+            .map_err(|error| format!("Failed to run yt-dlp: {error}"))
     })
     .await
     .map_err(|e| format!("Task join error: {e}"))??;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("yt-dlp error: {stderr}"));
+    if output.exit_code != 0 {
+        return Err(format!("yt-dlp error: {}", output.stderr));
     }
 
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout)
+    let json: serde_json::Value = serde_json::from_str(&output.stdout)
         .map_err(|e| format!("Failed to parse yt-dlp output: {e}"))?;
 
     parse_ytdlp_json(&json)
@@ -1975,9 +1987,13 @@ struct PluginMediaVariant {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum PluginVariantKind {
+    #[serde(alias = "muxed", alias = "video_only")]
     Video,
+    #[serde(alias = "audio_only")]
     Audio,
     Adaptive,
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -2090,7 +2106,10 @@ fn parse_plugin_video_metadata(
                     });
                 }
 
-                if !variant.ext.is_empty() && seen_video_exts.insert(variant.ext.clone()) {
+                if matches!(kind, PluginVariantKind::Video)
+                    && !variant.ext.is_empty()
+                    && seen_video_exts.insert(variant.ext.clone())
+                {
                     available_formats.push(variant.ext);
                 }
             }
@@ -2099,6 +2118,7 @@ fn parse_plugin_video_metadata(
                     available_audio_formats.push(variant.ext);
                 }
             }
+            PluginVariantKind::Unknown => {}
         }
     }
 
@@ -2264,35 +2284,6 @@ fn soundcloud_track_download_title(track: &SoundcloudTrackLink) -> String {
 
 fn millis_to_seconds(duration_ms: Option<u64>) -> u64 {
     duration_ms.unwrap_or_default() / 1000
-}
-
-fn find_ytdlp() -> Result<std::path::PathBuf, String> {
-    // Try PATH via `which` equivalent — just attempt running `yt-dlp --version`
-    if std::process::Command::new("yt-dlp")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-    {
-        return Ok(std::path::PathBuf::from("yt-dlp"));
-    }
-
-    // Known fallback locations
-    let mut candidates = vec![
-        std::path::PathBuf::from("/usr/local/bin/yt-dlp"),
-        std::path::PathBuf::from("/usr/bin/yt-dlp"),
-    ];
-    if let Some(home) = dirs::home_dir() {
-        candidates.insert(0, home.join(".local/bin/yt-dlp"));
-    }
-
-    for path in &candidates {
-        if path.exists() {
-            return Ok(path.clone());
-        }
-    }
-
-    Err("yt-dlp not found — install it with: pip install yt-dlp".to_string())
 }
 
 /// Canonical YouTube vertical-resolution ladder supported by
@@ -3880,7 +3871,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_plugin_video_metadata_keeps_adaptive_variants_available() {
+    fn test_parse_plugin_video_metadata_keeps_adaptive_quality_not_transport_format() {
         let extract_links = serde_json::json!({
             "kind": "video",
             "videos": [{
@@ -3893,7 +3884,7 @@ mod tests {
             "variants": [
                 {
                     "kind": "adaptive",
-                    "ext": "mp4",
+                    "ext": "m3u8",
                     "width": 1280,
                     "height": 720,
                     "fps": 30.0,
@@ -3909,7 +3900,31 @@ mod tests {
         assert_eq!(metadata.default_quality.as_deref(), Some("720p"));
         assert_eq!(metadata.available_qualities.len(), 1);
         assert_eq!(metadata.available_qualities[0].quality, "720p");
-        assert_eq!(metadata.available_formats, vec!["mp4"]);
+        assert!(metadata.available_formats.is_empty());
+    }
+
+    #[test]
+    fn test_parse_plugin_video_metadata_accepts_youtube_variant_kinds() {
+        let extract_links = serde_json::json!({
+            "kind": "video",
+            "videos": [{"title": "YouTube", "duration": 1, "thumbnail": null}]
+        });
+        let variants = serde_json::json!({
+            "variants": [
+                {"kind": "muxed", "ext": "mp4", "height": 720},
+                {"kind": "video_only", "ext": "webm", "height": 1080},
+                {"kind": "audio_only", "ext": "m4a", "abr": 128.0},
+                {"kind": "unknown", "ext": "bin"}
+            ]
+        });
+
+        let metadata =
+            parse_plugin_video_metadata(&extract_links.to_string(), &variants.to_string())
+                .expect("YouTube variants should parse");
+
+        assert_eq!(metadata.available_formats, vec!["mp4", "webm"]);
+        assert_eq!(metadata.available_audio_formats, vec!["m4a"]);
+        assert_eq!(metadata.default_quality.as_deref(), Some("1080p"));
     }
 
     #[test]
