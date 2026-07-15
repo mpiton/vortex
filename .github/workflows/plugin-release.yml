@@ -1,0 +1,156 @@
+name: Reusable Plugin Release
+
+on:
+  workflow_call:
+
+permissions: {}
+
+concurrency:
+  group: plugin-release-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Verify release bundle
+    permissions:
+      contents: read
+    uses: mpiton/vortex/.github/workflows/plugin-ci.yml@b70495f246944921b0781328a0139c404e775214
+
+  release:
+    name: Publish immutable GitHub release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download verified bundle
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: plugin-release-${{ github.sha }}
+          path: dist
+
+      - name: Verify release metadata
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          (
+            cd dist
+            sha256sum --check SHA256SUMS
+          )
+          python3 - <<'PY'
+          import os
+          import tomllib
+
+          with open("dist/plugin.toml", "rb") as file:
+              manifest = tomllib.load(file)["plugin"]
+
+          tag = os.environ["RELEASE_TAG"]
+          if tag != f"v{manifest['version']}":
+              raise SystemExit(
+                  f"tag {tag!r} does not match plugin version {manifest['version']!r}"
+              )
+          PY
+
+      - name: Create or verify immutable release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          if ! gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
+            gh release create "${RELEASE_TAG}" dist/* \
+              --verify-tag \
+              --generate-notes \
+              --title "${RELEASE_TAG}"
+          fi
+
+          expected_assets="$(find dist -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort)"
+          actual_assets="$(gh release view "${RELEASE_TAG}" \
+            --json assets --jq '.assets[].name' | LC_ALL=C sort)"
+          if [[ "${actual_assets}" != "${expected_assets}" ]]; then
+            echo "release asset set differs from the verified bundle" >&2
+            diff -u <(printf '%s\n' "${expected_assets}") \
+              <(printf '%s\n' "${actual_assets}") || true
+            exit 1
+          fi
+
+          published="$(mktemp -d)"
+          gh release download "${RELEASE_TAG}" --dir "${published}"
+          while IFS= read -r asset; do
+            if ! cmp --silent "dist/${asset}" "${published}/${asset}"; then
+              echo "release asset content differs: ${asset}" >&2
+              exit 1
+            fi
+          done <<<"${expected_assets}"
+
+  registry-consistency:
+    name: Check central registry after release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+
+    steps:
+      - name: Download released bundle
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: plugin-release-${{ github.sha }}
+          path: dist
+
+      - name: Compare release with central registry
+        id: registry-check
+        continue-on-error: true
+        shell: bash
+        run: |
+          registry="${RUNNER_TEMP}/registry.toml"
+          curl --fail --silent --show-error --location \
+            --proto '=https' --tlsv1.2 \
+            https://raw.githubusercontent.com/mpiton/vortex/main/registry/registry.toml \
+            --output "${registry}"
+          REGISTRY_PATH="${registry}" python3 - <<'PY'
+          import hashlib
+          import os
+          import pathlib
+          import tomllib
+
+          dist = pathlib.Path("dist")
+          with (dist / "plugin.toml").open("rb") as file:
+              manifest = tomllib.load(file)["plugin"]
+          with open(os.environ["REGISTRY_PATH"], "rb") as file:
+              entries = tomllib.load(file)["plugin"]
+
+          entry = next(
+              (item for item in entries if item["name"] == manifest["name"]),
+              None,
+          )
+          if entry is None:
+              raise SystemExit("plugin is missing from the central registry")
+          for key in ("version", "min_vortex_version"):
+              if entry[key] != manifest[key]:
+                  raise SystemExit(f"registry {key} differs from plugin.toml")
+
+          wasm_sha = hashlib.sha256((dist / "plugin.wasm").read_bytes()).hexdigest()
+          manifest_sha = hashlib.sha256((dist / "plugin.toml").read_bytes()).hexdigest()
+          if entry["checksum_sha256"] != wasm_sha:
+              raise SystemExit("registry WASM checksum differs from release artifact")
+          if entry["checksum_sha256_toml"] != manifest_sha:
+              raise SystemExit("registry manifest checksum differs from plugin.toml")
+          PY
+
+      - name: Report registry update requirement
+        if: steps.registry-check.outcome == 'failure'
+        shell: bash
+        run: |
+          echo "::warning title=Registry update required::The release is published, but vortex/registry/registry.toml does not match its assets."
+          {
+            echo "### Registry update required"
+            echo
+            echo "The release is published and immutable. Update \`vortex/registry/registry.toml\` with its version and checksums."
+          } >> "${GITHUB_STEP_SUMMARY}"
