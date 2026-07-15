@@ -43,6 +43,7 @@ jobs:
           )
           python3 - <<'PY'
           import os
+          import re
           import tomllib
 
           with open("dist/plugin.toml", "rb") as file:
@@ -53,6 +54,15 @@ jobs:
               raise SystemExit(
                   f"tag {tag!r} does not match plugin version {manifest['version']!r}"
               )
+
+          plugin_name = manifest.get("name")
+          if not isinstance(plugin_name, str):
+              raise SystemExit("plugin name is missing from plugin.toml")
+          release_wasm_asset = f"{plugin_name.replace('-', '_')}.wasm"
+          if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*\.wasm", release_wasm_asset) is None:
+              raise SystemExit("plugin name cannot be mapped to a release WASM asset")
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env:
+              env.write(f"PLUGIN_WASM_ASSET={release_wasm_asset}\n")
           PY
 
       - name: Create or verify immutable release
@@ -62,14 +72,32 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
         shell: bash
         run: |
+          release_assets=(
+            "plugin.wasm"
+            "plugin.toml"
+            "SHA256SUMS"
+            "${PLUGIN_WASM_ASSET}"
+          )
+          release_paths=()
+          download_patterns=()
+          for asset in "${release_assets[@]}"; do
+            test -s "dist/${asset}"
+            release_paths+=("dist/${asset}")
+            download_patterns+=(--pattern "${asset}")
+          done
+          if ! cmp --silent dist/plugin.wasm "dist/${PLUGIN_WASM_ASSET}"; then
+            echo "release WASM asset differs from verified plugin.wasm" >&2
+            exit 1
+          fi
+
           if ! gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
-            gh release create "${RELEASE_TAG}" dist/* \
+            gh release create "${RELEASE_TAG}" "${release_paths[@]}" \
               --verify-tag \
               --generate-notes \
               --title "${RELEASE_TAG}"
           fi
 
-          expected_assets="$(find dist -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort)"
+          expected_assets="$(printf '%s\n' "${release_assets[@]}" | LC_ALL=C sort)"
           actual_assets="$(gh release view "${RELEASE_TAG}" \
             --json assets --jq '.assets[].name' | LC_ALL=C sort)"
           if [[ "${actual_assets}" != "${expected_assets}" ]]; then
@@ -80,7 +108,8 @@ jobs:
           fi
 
           published="$(mktemp -d)"
-          gh release download "${RELEASE_TAG}" --dir "${published}"
+          gh release download "${RELEASE_TAG}" --dir "${published}" \
+            "${download_patterns[@]}"
           while IFS= read -r asset; do
             if ! cmp --silent "dist/${asset}" "${published}/${asset}"; then
               echo "release asset content differs: ${asset}" >&2
