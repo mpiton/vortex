@@ -14,7 +14,7 @@ jobs:
     name: Verify release bundle
     permissions:
       contents: read
-    uses: mpiton/vortex/.github/workflows/plugin-ci.yml@9b3b7b3b7956150f7475ab409bb0eed424573bae
+    uses: mpiton/vortex/.github/workflows/plugin-ci.yml@f63e53f866bbdf5e5e3e8f62a37f78e13cec5298
 
   release:
     name: Publish immutable GitHub release
@@ -159,12 +159,14 @@ jobs:
           with open(os.environ["REGISTRY_PATH"], "rb") as file:
               entries = tomllib.load(file)["plugin"]
 
-          entry = next(
-              (item for item in entries if item["name"] == manifest["name"]),
-              None,
-          )
-          if entry is None:
+          matches = [item for item in entries if item["name"] == manifest["name"]]
+          if not matches:
               raise SystemExit("plugin is missing from the central registry")
+          if len(matches) != 1:
+              raise SystemExit(
+                  f"expected exactly one registry entry, found {len(matches)}"
+              )
+          entry = matches[0]
           for key in ("version", "min_vortex_version"):
               if entry[key] != manifest[key]:
                   raise SystemExit(f"registry {key} differs from plugin.toml")
