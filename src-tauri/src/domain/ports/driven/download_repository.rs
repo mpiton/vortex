@@ -39,6 +39,22 @@ pub trait DownloadRepository: Send + Sync {
     /// Delete a download by its identifier.
     fn delete(&self, id: DownloadId) -> Result<(), DomainError>;
 
+    /// Change only the account association of an existing download.
+    ///
+    /// Implementations must not insert a missing row or overwrite any other
+    /// aggregate field. The boolean reports whether the expected reference
+    /// matched and was replaced atomically.
+    fn compare_and_set_account_reference(
+        &self,
+        _id: DownloadId,
+        _expected: &AccountId,
+        _replacement: &AccountId,
+    ) -> Result<bool, DomainError> {
+        Err(DomainError::StorageError(
+            "atomic account reference updates are unavailable".into(),
+        ))
+    }
+
     /// Find all downloads in a given state.
     fn find_by_state(&self, state: DownloadState) -> Result<Vec<Download>, DomainError>;
 

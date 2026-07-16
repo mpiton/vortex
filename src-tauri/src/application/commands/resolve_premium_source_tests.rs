@@ -62,6 +62,11 @@ async fn rotates_jit_failures_and_persists_the_selected_backup() {
             AccountStatus::Expired,
             vec!["expired-key", "working-key"],
         ),
+        (
+            Some("zero-traffic-key"),
+            AccountStatus::QuotaExhausted,
+            vec!["zero-traffic-key", "working-key"],
+        ),
         (None, AccountStatus::MissingCredential, vec!["working-key"]),
     ] {
         assert_jit_rotation(password, expected_status, &expected_calls).await;
@@ -121,6 +126,108 @@ async fn assert_jit_rotation(
             .account_id(),
         Some(backup.id())
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_jit_rotation_does_not_recreate_a_deleted_download() {
+    let repo = Arc::new(InMemoryAccountRepo::new());
+    let credentials = Arc::new(FakeAccountCredentialStore::new());
+    let plugin = Arc::new(DirectUrlPlugin::new());
+    let primary = valid_account("primary");
+    let backup = valid_account("backup");
+    repo.save(&primary).unwrap();
+    repo.save(&backup).unwrap();
+    credentials
+        .store_password(primary.id(), "quota-key")
+        .unwrap();
+    credentials
+        .store_password(backup.id(), "working-key")
+        .unwrap();
+    let downloads = Arc::new(InMemoryDownloadRepo::new());
+    let stale_snapshot = download(primary.id().clone());
+    let download_id = stale_snapshot.id();
+    let resolver = handler_with_downloads(
+        repo,
+        credentials,
+        plugin,
+        Arc::new(CapturingEventBus::new()),
+        downloads.clone(),
+    );
+
+    let result = tokio::task::spawn_blocking(move || resolver.resolve(&stale_snapshot))
+        .await
+        .unwrap();
+
+    assert!(matches!(result, Err(DomainError::NotFound(_))));
+    assert!(downloads.find_by_id(download_id).unwrap().is_none());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_jit_rotation_updates_only_the_account_reference() {
+    let repo = Arc::new(InMemoryAccountRepo::new());
+    let credentials = Arc::new(FakeAccountCredentialStore::new());
+    let plugin = Arc::new(DirectUrlPlugin::new());
+    let primary = valid_account("primary");
+    let backup = valid_account("backup");
+    repo.save(&primary).unwrap();
+    repo.save(&backup).unwrap();
+    credentials
+        .store_password(primary.id(), "quota-key")
+        .unwrap();
+    credentials
+        .store_password(backup.id(), "working-key")
+        .unwrap();
+    let downloads = Arc::new(InMemoryDownloadRepo::new());
+    let mut stale_snapshot = download(primary.id().clone());
+    stale_snapshot.start().unwrap();
+    let mut paused = stale_snapshot.clone();
+    paused.pause().unwrap();
+    downloads.seed(paused);
+    let download_id = stale_snapshot.id();
+    let resolver = handler_with_downloads(
+        repo,
+        credentials,
+        plugin,
+        Arc::new(CapturingEventBus::new()),
+        downloads.clone(),
+    );
+
+    tokio::task::spawn_blocking(move || resolver.resolve(&stale_snapshot))
+        .await
+        .unwrap()
+        .expect("backup account resolves the source");
+
+    let persisted = downloads.find_by_id(download_id).unwrap().unwrap();
+    assert_eq!(
+        persisted.state(),
+        crate::domain::model::download::DownloadState::Paused
+    );
+    assert_eq!(persisted.account_id(), Some(backup.id()));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_jit_resolution_preserves_cooldown_when_no_backup_exists() {
+    let repo = Arc::new(InMemoryAccountRepo::new());
+    let credentials = Arc::new(FakeAccountCredentialStore::new());
+    let account = valid_account("primary");
+    repo.save(&account).unwrap();
+    credentials
+        .store_password(account.id(), "cooldown-key")
+        .unwrap();
+    let resolver = handler(
+        repo,
+        credentials,
+        Arc::new(DirectUrlPlugin::new()),
+        Arc::new(CapturingEventBus::new()),
+    );
+    let download = download(account.id().clone());
+
+    let error = tokio::task::spawn_blocking(move || resolver.resolve(&download))
+        .await
+        .unwrap()
+        .expect_err("the typed cooldown must reach the engine");
+
+    assert!(matches!(error, DomainError::AccountCooldown));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

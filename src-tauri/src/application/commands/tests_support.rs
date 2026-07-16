@@ -703,6 +703,23 @@ impl DownloadRepository for InMemoryDownloadRepo {
         Ok(())
     }
 
+    fn compare_and_set_account_reference(
+        &self,
+        id: DownloadId,
+        expected: &AccountId,
+        replacement: &AccountId,
+    ) -> Result<bool, DomainError> {
+        let mut store = self.store.lock().unwrap();
+        let Some(download) = store.get_mut(&id) else {
+            return Ok(false);
+        };
+        if download.account_id() != Some(expected) {
+            return Ok(false);
+        }
+        *download = download.clone().with_account_id(replacement.clone());
+        Ok(true)
+    }
+
     fn find_by_state(&self, state: DownloadState) -> Result<Vec<Download>, DomainError> {
         Ok(self
             .store

@@ -20,6 +20,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::application::error::AppError;
 use crate::application::services::AccountSelector;
+use crate::domain::error::DomainError;
 use crate::domain::event::DomainEvent;
 use crate::domain::model::account::{Account, AccountId, AccountSelectionStrategy, AccountStatus};
 use crate::domain::ports::driven::clock::Clock;
@@ -43,7 +44,32 @@ pub enum NextAccountOutcome {
     /// `Waiting` until `next_eligible_at_ms` (Unix epoch ms — the
     /// earliest cooldown deadline among the exhausted set) so the
     /// scheduler can retry without busy-looping.
-    AllExhausted { next_eligible_at_ms: u64 },
+    AllExhausted {
+        next_eligible_at_ms: u64,
+        reason: AccountExhaustionReason,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccountExhaustionReason {
+    Quota,
+    Cooldown,
+}
+
+impl AccountExhaustionReason {
+    pub fn into_domain_error(self) -> DomainError {
+        match self {
+            Self::Quota => DomainError::AccountQuotaExceeded,
+            Self::Cooldown => DomainError::AccountCooldown,
+        }
+    }
+
+    fn from_status(status: AccountStatus) -> Self {
+        match status {
+            AccountStatus::Cooldown => Self::Cooldown,
+            _ => Self::Quota,
+        }
+    }
 }
 
 impl NextAccountOutcome {
@@ -174,9 +200,10 @@ impl AccountRotator {
         if live.is_empty() {
             return Ok(NextAccountOutcome::NoneAvailable);
         }
-        let next_eligible_at_ms = self.earliest_deadline_for_service(&live, now_ms)?;
+        let (next_eligible_at_ms, reason) = self.earliest_exhaustion_for_service(&live, now_ms)?;
         Ok(NextAccountOutcome::AllExhausted {
             next_eligible_at_ms,
+            reason,
         })
     }
 
@@ -254,11 +281,11 @@ impl AccountRotator {
         Ok(guard.keys().cloned().collect())
     }
 
-    fn earliest_deadline_for_service(
+    fn earliest_exhaustion_for_service(
         &self,
         live_candidates: &[&Account],
         now_ms: u64,
-    ) -> Result<u64, AppError> {
+    ) -> Result<(u64, AccountExhaustionReason), AppError> {
         // Restrict the deadline scan to accounts that actually belong
         // to the queried service so a parallel-service entry cannot
         // leak its cooldown into an unrelated `AllExhausted` answer.
@@ -266,17 +293,20 @@ impl AccountRotator {
         let next = live_candidates
             .iter()
             .filter_map(|account| {
-                guard
+                let deadline = guard
                     .get(account.id())
                     .copied()
                     .into_iter()
                     .chain(account.exhausted_until())
                     .filter(|deadline| now_ms < *deadline)
-                    .max()
+                    .max()?;
+                Some((
+                    deadline,
+                    AccountExhaustionReason::from_status(account.status()),
+                ))
             })
-            .filter(|deadline| now_ms < *deadline)
-            .min()
-            .unwrap_or(now_ms);
+            .min_by_key(|(deadline, _)| *deadline)
+            .unwrap_or((now_ms, AccountExhaustionReason::Quota));
         Ok(next)
     }
 
@@ -571,6 +601,26 @@ mod tests {
             outcome,
             NextAccountOutcome::AllExhausted {
                 next_eligible_at_ms: 1_700_000_600_000,
+                reason: AccountExhaustionReason::Quota,
+            }
+        );
+    }
+
+    #[test]
+    fn test_all_exhausted_preserves_the_temporary_failure_reason() {
+        let mut cooling_down = account("a", "Uploaded", Some(50), true);
+        cooling_down.mark_cooldown(1_700_000_600_000);
+        let (rotator, _bus, _clock) = build_rotator(vec![cooling_down], 1_700_000_000);
+
+        let outcome = rotator
+            .next_account("Uploaded", AccountSelectionStrategy::BestTraffic)
+            .expect("rotation succeeds");
+
+        assert_eq!(
+            outcome,
+            NextAccountOutcome::AllExhausted {
+                next_eligible_at_ms: 1_700_000_600_000,
+                reason: AccountExhaustionReason::Cooldown,
             }
         );
     }
@@ -608,6 +658,7 @@ mod tests {
         match outcome {
             NextAccountOutcome::AllExhausted {
                 next_eligible_at_ms,
+                ..
             } => {
                 let now_ms = 1_700_000_000_u64.saturating_mul(1_000);
                 let earliest = now_ms.saturating_add(600 * 1_000);
@@ -861,6 +912,7 @@ mod tests {
     fn test_outcome_error_message_uses_prd_wording() {
         let outcome = NextAccountOutcome::AllExhausted {
             next_eligible_at_ms: 1_700_000_000_000,
+            reason: AccountExhaustionReason::Quota,
         };
         assert_eq!(
             outcome.error_message("Uploaded"),
@@ -902,6 +954,7 @@ mod tests {
         match outcome {
             NextAccountOutcome::AllExhausted {
                 next_eligible_at_ms,
+                ..
             } => {
                 let now_ms = 1_700_000_000_u64 * 1_000;
                 assert_eq!(

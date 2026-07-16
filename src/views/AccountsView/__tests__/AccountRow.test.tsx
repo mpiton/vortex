@@ -47,4 +47,27 @@ describe("AccountRow", () => {
     act(() => vi.advanceTimersByTime(1_000));
     expect(screen.getByText("Active")).toBeInTheDocument();
   });
+
+  it("should wake when a valid account reaches its entitlement expiry", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_700_000_000_000);
+    renderRow({
+      id: "account-1",
+      serviceName: "vortex-mod-1fichier",
+      username: "alice",
+      accountType: "premium",
+      enabled: true,
+      trafficLeft: null,
+      trafficTotal: null,
+      validUntil: 1_700_000_001_000,
+      lastValidated: 1_700_000_000_000,
+      createdAt: 1_699_999_000_000,
+      status: "valid",
+      exhaustedUntil: null,
+    });
+
+    expect(screen.getByText("Active")).toBeInTheDocument();
+    act(() => vi.advanceTimersByTime(1_001));
+    expect(screen.getByText("Expired")).toBeInTheDocument();
+  });
 });

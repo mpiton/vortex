@@ -29,8 +29,8 @@ impl ResolvePremiumSourceHandler {
             }
             account_id = match self.next_account(service)? {
                 NextAccountOutcome::Picked(account) => account.id().clone(),
-                NextAccountOutcome::AllExhausted { .. } => {
-                    return Err(DomainError::AccountQuotaExceeded);
+                NextAccountOutcome::AllExhausted { reason, .. } => {
+                    return Err(last_error.unwrap_or_else(|| reason.into_domain_error()));
                 }
                 NextAccountOutcome::NoneAvailable => break,
             };
@@ -55,9 +55,32 @@ impl ResolvePremiumSourceHandler {
             download.url().as_str().to_string(),
         );
         let link = self.resolve_locked(command)?;
-        if download.account_id() != Some(account_id) {
-            self.downloads
-                .save(&download.clone().with_account_id(account_id.clone()))?;
+        if let Some(expected) = download
+            .account_id()
+            .filter(|expected| *expected != account_id)
+        {
+            let updated = self.downloads.compare_and_set_account_reference(
+                download.id(),
+                expected,
+                account_id,
+            )?;
+            if !updated {
+                let current = self.downloads.find_by_id(download.id())?;
+                match current {
+                    None => {
+                        return Err(DomainError::NotFound(format!(
+                            "download {}",
+                            download.id().0
+                        )));
+                    }
+                    Some(current) if current.account_id() == Some(account_id) => {}
+                    Some(_) => {
+                        return Err(DomainError::ValidationError(
+                            "download account association changed during resolution".into(),
+                        ));
+                    }
+                }
+            }
         }
         self.publish_success(account_id);
         Ok(link)

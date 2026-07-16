@@ -88,7 +88,21 @@ impl ResolvePremiumSourceHandler {
         if let Some(total) = link.traffic_total_bytes {
             account.set_traffic_total(total);
             if let Some(used) = link.traffic_used_bytes {
-                account.set_traffic_left(total.saturating_sub(used));
+                let remaining = total.saturating_sub(used);
+                account.set_traffic_left(remaining);
+                if total > 0 && remaining == 0 {
+                    apply_status(
+                        account,
+                        AccountStatus::QuotaExhausted,
+                        self.clock.now_unix_ms(),
+                    );
+                    self.repo.save(account)?;
+                    if let Some(deadline) = account.exhausted_until() {
+                        self.rotator.cache_exhausted(account.id(), deadline);
+                    }
+                    self.publish_typed_failure(account, AccountStatus::QuotaExhausted);
+                    return Err(DomainError::AccountQuotaExceeded);
+                }
             }
         }
         account.set_status(AccountStatus::Valid);

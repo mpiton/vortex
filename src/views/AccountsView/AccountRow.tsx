@@ -44,7 +44,7 @@ const STATUS_VARIANT: Record<AccountStatus, "default" | "secondary" | "destructi
 export function AccountRow({ account, actions, validating }: AccountRowProps) {
   const { t } = useTranslation();
   const { current: language } = useLanguage();
-  const nowMs = useAccountStatusNow(account.status, account.exhaustedUntil);
+  const nowMs = useAccountStatusNow(account.status, account.exhaustedUntil, account.validUntil);
   const status = deriveAccountStatus(account, nowMs);
   const trafficPercent = computeTrafficPercent(account.trafficLeft, account.trafficTotal);
 

@@ -220,8 +220,8 @@ impl CommandBus {
                         account_id: Some(account.id().as_str().to_string()),
                     });
                 }
-                NextAccountOutcome::AllExhausted { .. } => {
-                    return Err(DomainError::AccountQuotaExceeded.into());
+                NextAccountOutcome::AllExhausted { reason, .. } => {
+                    return Err(reason.into_domain_error().into());
                 }
                 NextAccountOutcome::NoneAvailable => {}
             }
@@ -478,7 +478,7 @@ mod tests {
     async fn resolve_with_primary_credential(
         primary_password: Option<&str>,
         include_backup: bool,
-        primary_exhausted: bool,
+        temporary_status: Option<AccountStatus>,
     ) -> (
         Vec<ResolvedLinkDto>,
         Arc<InMemoryAccountRepo>,
@@ -491,8 +491,10 @@ mod tests {
         let plugin = Arc::new(PremiumPluginLoader::new());
         let mut primary = premium_account("primary", 100);
         let backup = premium_account("backup", 50);
-        if primary_exhausted {
-            primary.mark_exhausted(1_700_000_060_000);
+        match temporary_status {
+            Some(AccountStatus::QuotaExhausted) => primary.mark_exhausted(1_700_000_060_000),
+            Some(AccountStatus::Cooldown) => primary.mark_cooldown(1_700_000_060_000),
+            _ => {}
         }
         repo.save(&primary).unwrap();
         if include_backup {
@@ -532,7 +534,7 @@ mod tests {
     #[tokio::test]
     async fn resolve_hoster_selects_account_without_reading_secret_or_issuing_token() {
         let (result, repo, plugin, primary) =
-            resolve_with_primary_credential(Some("working-key"), true, false).await;
+            resolve_with_primary_credential(Some("working-key"), true, None).await;
 
         assert_eq!(
             result[0].resolved_url.as_deref(),
@@ -556,13 +558,35 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_hoster_surfaces_persisted_exhaustion_without_free_fallback() {
-        let (result, _, plugin, _) =
-            resolve_with_primary_credential(Some("quota-key"), false, true).await;
+        let (result, _, plugin, _) = resolve_with_primary_credential(
+            Some("quota-key"),
+            false,
+            Some(AccountStatus::QuotaExhausted),
+        )
+        .await;
 
         assert_eq!(result[0].status, "error");
         assert_eq!(
             result[0].error_message.as_deref(),
             Some("Account quota is exhausted")
+        );
+        assert!(plugin.credentials.lock().unwrap().is_empty());
+        assert!(plugin.services.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn resolve_hoster_preserves_persisted_cooldown_without_free_fallback() {
+        let (result, _, plugin, _) = resolve_with_primary_credential(
+            Some("cooldown-key"),
+            false,
+            Some(AccountStatus::Cooldown),
+        )
+        .await;
+
+        assert_eq!(result[0].status, "error");
+        assert_eq!(
+            result[0].error_message.as_deref(),
+            Some("Account is temporarily rate-limited")
         );
         assert!(plugin.credentials.lock().unwrap().is_empty());
         assert!(plugin.services.lock().unwrap().is_empty());

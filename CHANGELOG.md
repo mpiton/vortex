@@ -53,6 +53,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **MAT-132 final concurrency and quota fixes**: JIT rotation now updates only
+  the existing download's account reference, preserving concurrent state and
+  never recreating a removed row. Cooldown and quota exhaustion remain distinct
+  when no backup exists, zero remaining traffic triggers typed rotation, and
+  account badges wake at subscription expiry without a backend event.
 - **MAT-132 final acceptance coverage**: added contracts for strict
   JIT-only credential use, runtime account rotation with association updates,
   referenced-account deletion safety, observable missing credentials, cooldown

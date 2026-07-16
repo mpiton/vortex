@@ -72,12 +72,20 @@ impl PluginLoader for DirectUrlPlugin {
         if credential.password() == "expired-key" {
             return Err(DomainError::AccountExpired);
         }
+        if credential.password() == "cooldown-key" {
+            return Err(DomainError::AccountCooldown);
+        }
+        let traffic_used_bytes = if credential.password() == "zero-traffic-key" {
+            Some(100)
+        } else {
+            Some(10)
+        };
         Ok(ExtractedHosterLink {
             source_url: url.to_string(),
             filename: Some("file.zip".into()),
             size_bytes: Some(42),
             direct_url: Some("https://1.1.1.1/short-lived-token".into()),
-            traffic_used_bytes: Some(10),
+            traffic_used_bytes,
             traffic_total_bytes: Some(100),
         })
     }
