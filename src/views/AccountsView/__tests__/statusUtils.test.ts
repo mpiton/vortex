@@ -16,7 +16,6 @@ function base(overrides: Partial<AccountView> = {}): AccountView {
     createdAt: 0,
     status: "unverified",
     exhaustedUntil: null,
-    credentialRef: "keyring://real-debrid/alice",
     ...overrides,
   };
 }
@@ -50,6 +49,20 @@ describe("deriveAccountStatus", () => {
   it("returns 'active' when validUntil is null but lastValidated set", () => {
     const account = base({ status: "valid", lastValidated: 1, validUntil: null });
     expect(deriveAccountStatus(account, 1)).toBe("active");
+  });
+
+  it.each(["quota_exhausted", "cooldown"] as const)(
+    "returns 'active' when temporary status '%s' has elapsed",
+    (status) => {
+      expect(deriveAccountStatus(base({ status, exhaustedUntil: 100 }), 100)).toBe("active");
+    },
+  );
+
+  it.each([
+    ["quota_exhausted", "quotaExhausted"],
+    ["cooldown", "cooldown"],
+  ] as const)("keeps temporary status '%s' until its deadline", (status, expected) => {
+    expect(deriveAccountStatus(base({ status, exhaustedUntil: 101 }), 100)).toBe(expected);
   });
 
   it.each([

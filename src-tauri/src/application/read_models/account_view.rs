@@ -119,7 +119,6 @@ mod tests {
         assert_eq!(dto.valid_until, Some(2_500_000_000_000));
         assert_eq!(dto.last_validated, Some(1_900_000_000_000));
         assert_eq!(dto.created_at, 1_700_000_000_000);
-        assert_eq!(dto.credential_ref, "keyring://real-debrid/alice");
         let value = serde_json::to_value(&dto).unwrap();
         assert_eq!(value["status"], "valid");
         assert!(value["exhaustedUntil"].is_null());
@@ -139,6 +138,10 @@ mod tests {
         assert!(
             !object.contains_key("credential"),
             "AccountViewDto must never expose a raw credential field"
+        );
+        assert!(
+            !object.contains_key("credentialRef"),
+            "AccountViewDto must keep keyring references inside the backend"
         );
     }
 
@@ -160,7 +163,6 @@ mod tests {
             "createdAt",
             "status",
             "exhaustedUntil",
-            "credentialRef",
         ] {
             assert!(
                 object.contains_key(camel_field),

@@ -38,7 +38,6 @@ function sampleAccounts(): AccountView[] {
       createdAt: Date.now() - 86_400_000,
       status: "valid",
       exhaustedUntil: null,
-      credentialRef: "keyring://real-debrid/alice",
     },
     {
       id: "ad-1",
@@ -53,7 +52,6 @@ function sampleAccounts(): AccountView[] {
       createdAt: Date.now() - 172_800_000,
       status: "unverified",
       exhaustedUntil: null,
-      credentialRef: "keyring://alldebrid/bob",
     },
   ];
 }
