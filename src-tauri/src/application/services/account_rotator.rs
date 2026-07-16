@@ -7,14 +7,9 @@
 //! candidate, and emits a `DomainEvent::AccountExhausted` so the UI
 //! can warn the user.
 //!
-//! The exhaustion state is held entirely in memory: the SQLite-backed
-//! [`Account`] aggregate intentionally does not persist
-//! `exhausted_until` (a fresh `Account::reconstruct` always returns
-//! `exhausted_until == None`). Storing it in a process-local map means
-//! a restart wipes the cooldown — that is the desired behaviour for a
-//! 5-to-15 minute window. Persisting it would need a new SQLite column
-//! plus a purge job, neither of which buys correctness when the
-//! upstream hoster will simply re-send the same 429.
+//! Cooldown status and deadline are persisted on the [`Account`] so the UI
+//! and a restarted process observe the same availability. The in-memory map
+//! remains a concurrency guard for selection probes racing with mark/clear.
 //!
 //! Concurrency: the map sits behind a `std::sync::Mutex`. Every public
 //! method that takes the lock surfaces a poisoned mutex as
@@ -28,7 +23,7 @@ use std::sync::{Arc, Mutex};
 use crate::application::error::AppError;
 use crate::application::services::AccountSelector;
 use crate::domain::event::DomainEvent;
-use crate::domain::model::account::{Account, AccountId, AccountSelectionStrategy};
+use crate::domain::model::account::{Account, AccountId, AccountSelectionStrategy, AccountStatus};
 use crate::domain::ports::driven::AccountRepository;
 use crate::domain::ports::driven::clock::Clock;
 use crate::domain::ports::driven::event_bus::EventBus;
@@ -160,14 +155,24 @@ impl AccountRotator {
             }
             exhausted_ids = fresh;
         }
-        // No pick after stable re-snapshot. Decide between NoneAvailable
-        // and AllExhausted by looking at the repo directly: if there's
-        // at least one enabled, non-expired account for this service,
-        // the rotation is the blocker, not the absence of credentials.
+        // No pick after stable re-snapshot. Only validated accounts with a
+        // temporary quota/cooldown state count as exhausted. Invalid,
+        // missing, expired, and unverified accounts are unavailable.
         let candidates = self.repo.list_by_service(service_name)?;
         let live: Vec<&Account> = candidates
             .iter()
-            .filter(|a| a.is_enabled() && !a.is_expired(now_ms))
+            .filter(|account| account.is_enabled() && !account.is_expired(now_ms))
+            .filter(|account| match account.status() {
+                AccountStatus::Valid => true,
+                AccountStatus::QuotaExhausted | AccountStatus::Cooldown => {
+                    account.is_exhausted(now_ms)
+                }
+                AccountStatus::Unverified
+                | AccountStatus::InvalidCredentials
+                | AccountStatus::MissingCredential
+                | AccountStatus::Expired
+                | AccountStatus::Error => false,
+            })
             .collect();
         if live.is_empty() {
             return Ok(NextAccountOutcome::NoneAvailable);
@@ -198,10 +203,25 @@ impl AccountRotator {
         let proposed = now_ms.saturating_add(ttl_secs.saturating_mul(1_000));
         let committed = {
             let mut guard = self.lock_exhausted()?;
-            let final_deadline = match guard.get(account_id) {
-                Some(existing) if *existing > proposed => *existing,
-                _ => proposed,
-            };
+            let mut account = self.repo.find_by_id(account_id)?.ok_or_else(|| {
+                AppError::NotFound(format!("account {} not found", account_id.as_str()))
+            })?;
+            if account.service_name() != service_name {
+                return Err(AppError::Validation(format!(
+                    "account {} does not belong to service {service_name}",
+                    account_id.as_str()
+                )));
+            }
+            let final_deadline = guard
+                .get(account_id)
+                .copied()
+                .into_iter()
+                .chain(account.exhausted_until())
+                .chain(std::iter::once(proposed))
+                .max()
+                .unwrap_or(proposed);
+            account.mark_unavailable(AccountStatus::QuotaExhausted, final_deadline);
+            self.repo.save(&account)?;
             guard.insert(account_id.clone(), final_deadline);
             final_deadline
         };
@@ -218,6 +238,10 @@ impl AccountRotator {
     /// no-op.
     pub fn clear_exhausted(&self, account_id: &AccountId) -> Result<(), AppError> {
         let mut guard = self.lock_exhausted()?;
+        if let Some(mut account) = self.repo.find_by_id(account_id)? {
+            account.clear_exhausted();
+            self.repo.save(&account)?;
+        }
         guard.remove(account_id);
         Ok(())
     }
@@ -230,9 +254,14 @@ impl AccountRotator {
     pub fn is_exhausted(&self, account_id: &AccountId) -> Result<bool, AppError> {
         let now_ms = self.now_ms();
         let guard = self.lock_exhausted()?;
-        Ok(guard
+        let in_memory = guard
             .get(account_id)
-            .is_some_and(|deadline| now_ms < *deadline))
+            .is_some_and(|deadline| now_ms < *deadline);
+        let persisted = self
+            .repo
+            .find_by_id(account_id)?
+            .is_some_and(|account| account.is_exhausted(now_ms));
+        Ok(in_memory || persisted)
     }
 
     /// Hoster-agnostic quota signal. Returns `true` when an HTTP
@@ -293,7 +322,15 @@ impl AccountRotator {
         let guard = self.lock_exhausted()?;
         let next = live_candidates
             .iter()
-            .filter_map(|acc| guard.get(acc.id()).copied())
+            .filter_map(|account| {
+                guard
+                    .get(account.id())
+                    .copied()
+                    .into_iter()
+                    .chain(account.exhausted_until())
+                    .filter(|deadline| now_ms < *deadline)
+                    .max()
+            })
             .filter(|deadline| now_ms < *deadline)
             .min()
             .unwrap_or(now_ms);

@@ -342,7 +342,7 @@ impl Account {
     }
 
     /// Mark this account as quota-exhausted until `until_ms` (Unix epoch
-    /// ms). Transient — never persisted in SQLite.
+    /// ms). Adapters persist the status and deadline with the aggregate.
     pub fn mark_exhausted(&mut self, until_ms: u64) {
         self.mark_unavailable(AccountStatus::QuotaExhausted, until_ms);
     }

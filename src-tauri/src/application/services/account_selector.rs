@@ -4,7 +4,7 @@
 //! service, the engine asks the selector for the one to use *now*. The
 //! selector applies the strategy currently set in `AppConfig`:
 //!
-//! - `BestTraffic` (default): rank candidates by *enabled* → *not expired*
+//! - `BestTraffic` (default): rank validated, currently selectable candidates
 //!   → most `traffic_left` (unlimited > finite) → most recent
 //!   `last_validated`.
 //! - `RoundRobin`: alternate over enabled, non-expired candidates ordered
@@ -79,8 +79,7 @@ impl AccountSelector {
 
     /// Same contract as `select_best` but skips any account whose id is
     /// listed in `exclude`. Used by `AccountRotator` to filter out
-    /// quota-exhausted accounts without persisting transient state in
-    /// the repository.
+    /// quota-exhausted accounts that raced with a selection probe.
     ///
     /// Emits `NoAccountAvailable` only when the *post-exclude* eligible
     /// set is empty — that mirrors the caller-facing semantics: from
@@ -124,7 +123,7 @@ impl AccountSelector {
         let now_ms = self.now_ms();
         let base_eligible: Vec<&Account> = candidates
             .iter()
-            .filter(|a| a.is_enabled() && !a.is_expired(now_ms))
+            .filter(|account| account.is_selectable(now_ms))
             .collect();
         let eligible: Vec<&Account> = base_eligible
             .iter()
@@ -137,9 +136,21 @@ impl AccountSelector {
             // is reported as AllExhausted upstream and must not be
             // collapsed into "no account configured".
             if base_eligible.is_empty() {
-                self.event_bus.publish(DomainEvent::NoAccountAvailable {
-                    service_name: service_name.to_string(),
+                let temporarily_unavailable = candidates.iter().any(|account| {
+                    account.is_enabled()
+                        && !account.is_expired(now_ms)
+                        && matches!(
+                            account.status(),
+                            crate::domain::model::account::AccountStatus::QuotaExhausted
+                                | crate::domain::model::account::AccountStatus::Cooldown
+                        )
+                        && account.is_exhausted(now_ms)
                 });
+                if !temporarily_unavailable {
+                    self.event_bus.publish(DomainEvent::NoAccountAvailable {
+                        service_name: service_name.to_string(),
+                    });
+                }
             }
             return Ok(None);
         }
