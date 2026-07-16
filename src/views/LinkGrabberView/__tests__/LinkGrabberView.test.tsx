@@ -182,15 +182,16 @@ describe("LinkGrabberView", () => {
     });
   });
 
-  it("passes the selected premium account association to download_start", async () => {
+  it("passes the source URL and premium account association to download_start", async () => {
+    const sourceUrl = "https://1fichier.com/?abc123";
     const directUrl = "https://download.1fichier.com/token/file.zip";
     mockInvoke.mockImplementation((command) => {
       if (command === "link_resolve") {
         return Promise.resolve([
           {
             id: "premium-link",
-            originalUrl: "ftp://1fichier.com/file.zip",
-            resolvedUrl: directUrl,
+            originalUrl: sourceUrl,
+            resolvedUrl: sourceUrl,
             filename: "file.zip",
             sizeBytes: 42,
             status: "online",
@@ -203,7 +204,7 @@ describe("LinkGrabberView", () => {
       if (command === "link_detect_duplicates") {
         return Promise.resolve([
           {
-            url: directUrl,
+            url: sourceUrl,
             isDuplicate: false,
             source: null,
             existingId: null,
@@ -216,11 +217,11 @@ describe("LinkGrabberView", () => {
 
     const user = userEvent.setup();
     renderWithProviders();
-    await user.type(screen.getByRole("textbox"), "ftp://1fichier.com/file.zip");
+    await user.type(screen.getByRole("textbox"), sourceUrl);
     await user.click(screen.getByRole("button", { name: "Analyze Links" }));
     await waitFor(() => {
       expect(mockInvoke).toHaveBeenCalledWith("link_detect_duplicates", {
-        urls: [directUrl],
+        urls: [sourceUrl],
       });
     });
 
@@ -228,11 +229,12 @@ describe("LinkGrabberView", () => {
 
     await waitFor(() => {
       expect(mockInvoke).toHaveBeenCalledWith("download_start", {
-        url: directUrl,
+        url: sourceUrl,
         moduleName: "vortex-mod-1fichier",
         accountId: "account-uuid",
       });
     });
+    expect(JSON.stringify(mockInvoke.mock.calls)).not.toContain(directUrl);
   });
 
   it("should surface error toast on failure and success toast on retry", async () => {

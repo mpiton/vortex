@@ -603,7 +603,13 @@ mod tests {
 
         assert_eq!(
             result[0].resolved_url.as_deref(),
-            Some("https://download.1fichier.com/token/file.zip")
+            Some("https://1fichier.com/?abc123")
+        );
+        assert!(
+            !serde_json::to_string(&result)
+                .expect("serialize resolved links")
+                .contains("download.1fichier.com/token"),
+            "short-lived direct capabilities must not cross IPC"
         );
         assert_eq!(result[0].account_id.as_deref(), Some("backup"));
         assert_eq!(result[0].module_name, "vortex-mod-1fichier");
