@@ -3,12 +3,12 @@ use std::sync::atomic::Ordering;
 
 use super::*;
 use crate::application::commands::tests_support::{
-    CapturingEventBus, FakeAccountCredentialStore, InMemoryAccountRepo,
+    CapturingEventBus, FakeAccountCredentialStore, InMemoryAccountRepo, InMemoryDownloadRepo,
 };
 use crate::domain::event::DomainEvent;
 use crate::domain::model::account::AccountStatus;
 use crate::domain::ports::driven::{
-    AccountCredentialStore, AccountRepository, DownloadSourceResolver,
+    AccountCredentialStore, AccountRepository, DownloadRepository, DownloadSourceResolver,
 };
 
 #[path = "resolve_premium_source_test_support.rs"]
@@ -46,6 +46,64 @@ async fn resolves_the_direct_url_only_when_the_engine_requests_it() {
             .snapshot()
             .iter()
             .any(|event| matches!(event, DomainEvent::AccountUpdated { id } if id == account.id()))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rotates_at_jit_resolution_and_persists_the_selected_backup() {
+    let repo = Arc::new(InMemoryAccountRepo::new());
+    let credentials = Arc::new(FakeAccountCredentialStore::new());
+    let plugin = Arc::new(DirectUrlPlugin::new());
+    let events = Arc::new(CapturingEventBus::new());
+    let primary = valid_account("primary");
+    let backup = valid_account("backup");
+    repo.save(&primary).unwrap();
+    repo.save(&backup).unwrap();
+    credentials
+        .store_password(primary.id(), "quota-key")
+        .unwrap();
+    credentials
+        .store_password(backup.id(), "working-key")
+        .unwrap();
+    let downloads = Arc::new(InMemoryDownloadRepo::new());
+    let queued = download(primary.id().clone());
+    let queued_id = queued.id();
+    downloads.seed(queued.clone());
+    let resolver = handler_with_downloads(
+        repo.clone(),
+        credentials,
+        plugin.clone(),
+        events,
+        downloads.clone(),
+    );
+
+    let source = tokio::task::spawn_blocking(move || resolver.resolve(&queued))
+        .await
+        .unwrap()
+        .expect("backup account resolves the source");
+
+    assert_eq!(source.request_url(), "https://1.1.1.1/short-lived-token");
+    assert_eq!(
+        plugin
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|call| call.2.as_str())
+            .collect::<Vec<_>>(),
+        ["quota-key", "working-key"]
+    );
+    assert_eq!(
+        repo.find_by_id(primary.id()).unwrap().unwrap().status(),
+        AccountStatus::QuotaExhausted
+    );
+    assert_eq!(
+        downloads
+            .find_by_id(queued_id)
+            .unwrap()
+            .unwrap()
+            .account_id(),
+        Some(backup.id())
     );
 }
 

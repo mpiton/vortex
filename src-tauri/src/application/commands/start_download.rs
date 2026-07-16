@@ -647,12 +647,16 @@ mod tests {
 
         drop(queue_guard);
         start.await.unwrap().expect("download persisted first");
-        deletion.await.unwrap().expect("account deleted second");
+        let error = deletion
+            .await
+            .unwrap()
+            .expect_err("a referenced account cannot be deleted");
+        assert!(matches!(error, AppError::Validation(_)));
     }
 
     #[tokio::test]
     async fn test_start_download_rejects_account_with_missing_credential() {
-        let (bus, _, _) = make_command_bus(Arc::new(MockHttpClient::failing()));
+        let (bus, _, events) = make_command_bus(Arc::new(MockHttpClient::failing()));
         let account_repo = Arc::new(InMemoryAccountRepo::new());
         let credentials = Arc::new(FakeAccountCredentialStore::new());
         let account_id = AccountId::new("account-1");
@@ -682,12 +686,16 @@ mod tests {
                 filename: Some("file.zip".into()),
                 source_hostname_override: Some("1fichier.com".into()),
                 module_name: Some("vortex-mod-1fichier".into()),
-                account_id: Some(account_id),
+                account_id: Some(account_id.clone()),
             })
             .await
             .expect_err("missing credential must reject association");
 
         assert!(matches!(error, AppError::NotFound(_)));
+        assert!(events.events.lock().unwrap().iter().any(|event| matches!(
+            event,
+            DomainEvent::AccountValidationFailed { id, .. } if id == &account_id
+        )));
     }
 
     #[tokio::test]

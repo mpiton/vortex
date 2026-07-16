@@ -53,6 +53,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **MAT-132 final acceptance regressions (RED)**: added contracts for strict
+  JIT-only credential use, runtime account rotation with association updates,
+  referenced-account deletion safety, observable missing credentials, cooldown
+  badge expiry, and operator-prefix NAT64 SSRF rejection.
 - **MAT-132 final review hardening**: premium extraction now runs through one
   CQRS command handler shared by link analysis and just-in-time downloads.
   Account failures persist before typed events, cooldown recovery uses one

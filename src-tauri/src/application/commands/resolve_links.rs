@@ -563,9 +563,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resolve_hoster_rotates_expired_account_and_returns_opaque_account_id() {
+    async fn resolve_hoster_selects_account_without_reading_secret_or_issuing_token() {
         let (result, repo, plugin, primary) =
-            resolve_with_primary_credential(Some("expired-key"), true).await;
+            resolve_with_primary_credential(Some("working-key"), true).await;
 
         assert_eq!(
             result[0].resolved_url.as_deref(),
@@ -577,74 +577,14 @@ mod tests {
                 .contains("download.1fichier.com/token"),
             "short-lived direct capabilities must not cross IPC"
         );
-        assert_eq!(result[0].account_id.as_deref(), Some("backup"));
+        assert_eq!(result[0].account_id.as_deref(), Some("primary"));
         assert_eq!(result[0].module_name, "vortex-mod-1fichier");
         assert_eq!(
             repo.find_by_id(primary.id()).unwrap().unwrap().status(),
-            AccountStatus::Expired
+            AccountStatus::Valid
         );
-        assert_eq!(
-            plugin.credentials.lock().unwrap().as_slice(),
-            ["expired-key", "working-key"]
-        );
-        assert_eq!(
-            plugin.services.lock().unwrap().as_slice(),
-            ["vortex-mod-1fichier", "vortex-mod-1fichier"]
-        );
-    }
-
-    #[tokio::test]
-    async fn resolve_hoster_persists_typed_failures_before_rotating() {
-        for (password, expected_status) in [
-            ("invalid-key", AccountStatus::InvalidCredentials),
-            ("quota-key", AccountStatus::QuotaExhausted),
-            ("cooldown-key", AccountStatus::Cooldown),
-        ] {
-            let (result, repo, plugin, primary) =
-                resolve_with_primary_credential(Some(password), true).await;
-
-            assert_eq!(result[0].account_id.as_deref(), Some("backup"));
-            let stored = repo.find_by_id(primary.id()).unwrap().unwrap();
-            assert_eq!(stored.status(), expected_status);
-            if matches!(
-                expected_status,
-                AccountStatus::QuotaExhausted | AccountStatus::Cooldown
-            ) {
-                assert!(stored.exhausted_until().is_some());
-            }
-            assert_eq!(
-                plugin.credentials.lock().unwrap().as_slice(),
-                [password, "working-key"]
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn resolve_hoster_marks_missing_credential_and_rotates_without_exposing_it() {
-        let (result, repo, plugin, primary) = resolve_with_primary_credential(None, true).await;
-
-        assert_eq!(result[0].account_id.as_deref(), Some("backup"));
-        assert_eq!(
-            repo.find_by_id(primary.id()).unwrap().unwrap().status(),
-            AccountStatus::MissingCredential
-        );
-        assert_eq!(
-            plugin.credentials.lock().unwrap().as_slice(),
-            ["working-key"]
-        );
-    }
-
-    #[tokio::test]
-    async fn resolve_hoster_does_not_fall_back_to_free_when_all_accounts_are_exhausted() {
-        let (result, _, plugin, _) =
-            resolve_with_primary_credential(Some("quota-key"), false).await;
-
-        assert_eq!(result[0].status, "error");
-        assert_eq!(
-            result[0].error_message.as_deref(),
-            Some("Account quota is exhausted")
-        );
-        assert_eq!(plugin.credentials.lock().unwrap().as_slice(), ["quota-key"]);
+        assert!(plugin.credentials.lock().unwrap().is_empty());
+        assert!(plugin.services.lock().unwrap().is_empty());
     }
 
     #[test]

@@ -2,15 +2,19 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::application::commands::tests_support::{
-    CapturingEventBus, FakeAccountCredentialStore, InMemoryAccountRepo,
+    CapturingEventBus, FakeAccountCredentialStore, InMemoryAccountRepo, InMemoryDownloadRepo,
 };
 use crate::application::services::account_operation_locks::AccountOperationLocks;
+use crate::application::services::{AccountRotator, AccountSelector};
 use crate::domain::error::DomainError;
 use crate::domain::model::account::{Account, AccountId, AccountStatus, AccountType};
+use crate::domain::model::config::{AppConfig, ConfigPatch};
 use crate::domain::model::credential::Credential;
 use crate::domain::model::download::{Download, DownloadId, Url};
 use crate::domain::model::plugin::{PluginInfo, PluginManifest};
-use crate::domain::ports::driven::{AccountRepository, Clock, ExtractedHosterLink, PluginLoader};
+use crate::domain::ports::driven::{
+    AccountRepository, Clock, ConfigStore, ExtractedHosterLink, PluginLoader,
+};
 
 use super::ResolvePremiumSourceHandler;
 
@@ -62,6 +66,9 @@ impl PluginLoader for DirectUrlPlugin {
             url.to_string(),
             credential.password().to_string(),
         ));
+        if credential.password() == "quota-key" {
+            return Err(DomainError::AccountQuotaExceeded);
+        }
         Ok(ExtractedHosterLink {
             source_url: url.to_string(),
             filename: Some("file.zip".into()),
@@ -70,6 +77,18 @@ impl PluginLoader for DirectUrlPlugin {
             traffic_used_bytes: Some(10),
             traffic_total_bytes: Some(100),
         })
+    }
+}
+
+struct FixedConfigStore;
+
+impl ConfigStore for FixedConfigStore {
+    fn get_config(&self) -> Result<AppConfig, DomainError> {
+        Ok(AppConfig::default())
+    }
+
+    fn update_config(&self, _: ConfigPatch) -> Result<AppConfig, DomainError> {
+        Ok(AppConfig::default())
     }
 }
 
@@ -137,12 +156,34 @@ pub(super) fn handler(
     plugin: Arc<DirectUrlPlugin>,
     events: Arc<CapturingEventBus>,
 ) -> Arc<ResolvePremiumSourceHandler> {
+    handler_with_downloads(
+        repo,
+        credentials,
+        plugin,
+        events,
+        Arc::new(InMemoryDownloadRepo::new()),
+    )
+}
+
+pub(super) fn handler_with_downloads(
+    repo: Arc<dyn AccountRepository>,
+    credentials: Arc<FakeAccountCredentialStore>,
+    plugin: Arc<DirectUrlPlugin>,
+    events: Arc<CapturingEventBus>,
+    downloads: Arc<InMemoryDownloadRepo>,
+) -> Arc<ResolvePremiumSourceHandler> {
+    let clock: Arc<dyn Clock> = Arc::new(FixedClock);
+    let selector = AccountSelector::new(repo.clone(), events.clone(), clock.clone());
+    let rotator = AccountRotator::new(selector, repo.clone(), events.clone(), clock.clone());
     Arc::new(ResolvePremiumSourceHandler::new(
         repo,
         credentials,
         plugin,
         events,
-        Arc::new(FixedClock),
+        clock,
         Arc::new(AccountOperationLocks::default()),
+        downloads,
+        Arc::new(FixedConfigStore),
+        rotator,
     ))
 }
