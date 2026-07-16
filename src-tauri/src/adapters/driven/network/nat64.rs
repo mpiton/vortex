@@ -13,7 +13,7 @@ pub(super) struct Nat64Prefix {
 
 impl Nat64Prefix {
     pub(super) fn new(address: Ipv6Addr, length: u8) -> Option<Self> {
-        if !PREFIX_LENGTHS.contains(&length) || (length == 96 && address.octets()[8] != 0) {
+        if !PREFIX_LENGTHS.contains(&length) {
             return None;
         }
         Some(Self {
@@ -100,5 +100,16 @@ mod tests {
                 Some(Ipv4Addr::new(192, 0, 2, 33))
             );
         }
+    }
+
+    #[test]
+    fn accepts_96_prefixes_with_nonzero_fifth_segment() {
+        let address: Ipv6Addr = "2606:4700:64:1:ab00:cd00:c0a8:1".parse().unwrap();
+        let prefix = Nat64Prefix::new(address, 96).expect("valid /96 prefix");
+
+        assert_eq!(
+            prefix.embedded_ipv4(address),
+            Some(Ipv4Addr::new(192, 168, 0, 1))
+        );
     }
 }

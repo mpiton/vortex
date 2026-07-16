@@ -16,7 +16,7 @@ use crate::domain::model::account::Account;
 use crate::domain::ports::driven::ValidationOutcome;
 
 use super::validate_account::{
-    apply_validation, publish_validation, sync_validation_availability, validate_credentials,
+    apply_validation, publish_validation, validate_credentials_blocking, validation_error_to_app,
 };
 
 impl CommandBus {
@@ -82,13 +82,15 @@ impl CommandBus {
             None
         };
 
-        let validation = if let Some(validator) = self.account_validator() {
+        let validation = if let Some(validator) = self.account_validator_arc() {
             let password = match cmd.patch.password.as_deref() {
                 Some(password) => Some(password.to_string()),
                 None => store.get_password(&cmd.id)?,
             };
             let attempt = match password {
-                Some(password) => validate_credentials(validator, &next, &password),
+                Some(password) => {
+                    validate_credentials_blocking(validator, next.clone(), password).await?
+                }
                 None => super::validate_account::AccountValidationAttempt {
                     outcome: ValidationOutcome::rejected(
                         crate::domain::model::account::AccountStatus::MissingCredential,
@@ -110,11 +112,11 @@ impl CommandBus {
             return Err(error.into());
         }
 
-        if let Err(error) = repo.save(&next) {
+        if let Err(error) = self.save_account_availability(repo, &next) {
             if cmd.patch.password.is_some() {
                 restore_password(store, &cmd.id, previous_password.as_deref(), &error);
             }
-            if let Err(rollback_error) = repo.save(&account) {
+            if let Err(rollback_error) = self.save_account_availability(repo, &account) {
                 tracing::warn!(
                     account_id = %cmd.id.as_str(),
                     save_error = %error,
@@ -124,14 +126,13 @@ impl CommandBus {
             }
             return Err(error.into());
         }
-        if let Some(attempt) = &validation {
-            sync_validation_availability(self, &cmd.id, &attempt.outcome);
-        }
-
         self.event_bus()
             .publish(DomainEvent::AccountUpdated { id: cmd.id.clone() });
         if let Some(attempt) = validation {
             publish_validation(self, cmd.id, &attempt.outcome);
+            if let Some(error) = attempt.error {
+                return Err(validation_error_to_app(error));
+            }
         }
         Ok(())
     }
@@ -271,6 +272,48 @@ mod tests {
         let stored = repo.find_by_id(&id).unwrap().expect("account persisted");
         assert_eq!(stored.status(), AccountStatus::Valid);
         assert_eq!(stored.last_validated(), Some(1_800_000_000_000));
+    }
+
+    #[tokio::test]
+    async fn test_update_account_returns_validator_infrastructure_error_after_persisting_outcome() {
+        let repo = Arc::new(InMemoryAccountRepo::new());
+        let creds = Arc::new(FakeAccountCredentialStore::new());
+        let validator = Arc::new(FakeAccountValidator::new());
+        validator.set(
+            "vortex-mod-1fichier",
+            ValidatorBehavior::Storage("upstream unavailable".into()),
+        );
+        let events = Arc::new(CapturingEventBus::new());
+        let bus = build_account_bus(repo.clone(), creds, events.clone(), Some(validator), None);
+        let id = bus
+            .handle_add_account(add_command("vortex-mod-1fichier", "alice", "old-key"))
+            .await
+            .expect("account remains configured");
+
+        let error = bus
+            .handle_update_account(UpdateAccountCommand {
+                id: id.clone(),
+                now_ms: 1_800_000_000_000,
+                patch: AccountPatch {
+                    password: Some("new-key".into()),
+                    ..AccountPatch::default()
+                },
+            })
+            .await
+            .expect_err("validator infrastructure failure must surface");
+
+        assert!(matches!(
+            error,
+            AppError::Domain(DomainError::StorageError(_))
+        ));
+        assert_eq!(
+            repo.find_by_id(&id).unwrap().unwrap().status(),
+            AccountStatus::Error
+        );
+        assert!(events.snapshot().iter().any(|event| matches!(
+            event,
+            DomainEvent::AccountValidationFailed { id: event_id, .. } if event_id == &id
+        )));
     }
 
     #[tokio::test]

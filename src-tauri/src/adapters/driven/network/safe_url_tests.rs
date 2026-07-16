@@ -37,3 +37,10 @@ fn restricted_client_requires_https_and_public_destination() {
     assert!(restricted_download_client(&http).is_err());
     assert!(restricted_download_client(&local).is_err());
 }
+
+#[test]
+fn plugin_http_validator_rejects_cleartext_urls() {
+    let url = reqwest::Url::parse("http://1.1.1.1/account").unwrap();
+
+    assert!(validate_public_url(&url).is_err());
+}

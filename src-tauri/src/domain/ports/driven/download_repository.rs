@@ -59,6 +59,14 @@ pub trait DownloadRepository: Send + Sync {
     fn find_by_state(&self, state: DownloadState) -> Result<Vec<Download>, DomainError>;
 
     /// Whether any persisted download still depends on an account.
+    /// Implementations must query independently of mutable download state so
+    /// a concurrent state transition cannot create a false negative.
+    #[cfg(not(test))]
+    fn has_account_reference(&self, account_id: &AccountId) -> Result<bool, DomainError>;
+
+    /// Unit-test fakes are allowed a compatibility scan so every focused
+    /// command test does not need an unrelated persistence primitive.
+    #[cfg(test)]
     fn has_account_reference(&self, account_id: &AccountId) -> Result<bool, DomainError> {
         const STATES: [DownloadState; 9] = [
             DownloadState::Queued,

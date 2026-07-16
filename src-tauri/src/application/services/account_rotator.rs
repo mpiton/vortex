@@ -94,6 +94,10 @@ pub struct AccountRotator {
     repo: Arc<dyn AccountRepository>,
     event_bus: Arc<dyn EventBus>,
     clock: Arc<dyn Clock>,
+    /// Serializes persisted availability changes with account selection.
+    /// The cache and repository remain separate stores, but every transition
+    /// that can affect selection crosses this single boundary.
+    availability_transition: Mutex<()>,
     /// `account_id → cooldown deadline (Unix epoch ms)`. An entry whose
     /// deadline is `<= now_ms` is considered expired and pruned on the
     /// next read. This avoids needing a background sweeper.
@@ -112,6 +116,7 @@ impl AccountRotator {
             repo,
             event_bus,
             clock,
+            availability_transition: Mutex::new(()),
             exhausted: Mutex::new(HashMap::new()),
         })
     }
@@ -128,6 +133,7 @@ impl AccountRotator {
         service_name: &str,
         strategy: AccountSelectionStrategy,
     ) -> Result<NextAccountOutcome, AppError> {
+        let transition = self.lock_availability_transition()?;
         let now_ms = self.now_ms();
         let mut exhausted_ids = self.snapshot_exhausted(now_ms)?;
         // Linearise with command-handler cache updates:
@@ -147,23 +153,30 @@ impl AccountRotator {
                 &exhausted_ids,
             )?;
             if let Some(account) = picked {
-                let still_available = {
+                let cache_available = {
                     let guard = self.lock_exhausted()?;
                     guard
                         .get(account.id())
                         .is_none_or(|deadline| now_ms >= *deadline)
                 };
-                if still_available {
+                let persisted = self.repo.find_by_id(account.id())?;
+                if cache_available
+                    && let Some(persisted) = persisted
+                    && persisted.service_name() == service_name
+                    && persisted.is_selectable(now_ms)
+                {
                     // Emit AccountSelected only on the committed pick, not
                     // on probes that lose the race to a parallel
                     // a committed cooldown. Otherwise UI/telemetry would see
                     // "selected" for an account never returned to the caller.
+                    let selected_id = persisted.id().clone();
+                    drop(transition);
                     self.event_bus.publish(DomainEvent::AccountSelected {
-                        id: account.id().clone(),
+                        id: selected_id,
                         service_name: service_name.to_string(),
                         strategy: strategy.to_string(),
                     });
-                    return Ok(NextAccountOutcome::Picked(account));
+                    return Ok(NextAccountOutcome::Picked(persisted));
                 }
                 exhausted_ids.push(account.id().clone());
                 continue;
@@ -184,7 +197,9 @@ impl AccountRotator {
         let candidates = self.repo.list_by_service(service_name)?;
         let live: Vec<&Account> = candidates
             .iter()
-            .filter(|account| account.is_enabled() && !account.is_expired(now_ms))
+            .filter(|account| {
+                account.is_enabled() && account.is_premium() && !account.is_expired(now_ms)
+            })
             .filter(|account| match account.status() {
                 AccountStatus::Valid => true,
                 AccountStatus::QuotaExhausted | AccountStatus::Cooldown => {
@@ -207,33 +222,30 @@ impl AccountRotator {
         })
     }
 
-    /// Cache a cooldown only after a command handler committed it.
-    pub(crate) fn cache_exhausted(&self, account_id: &AccountId, deadline_ms: u64) {
-        let mut guard = match self.exhausted.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => {
-                tracing::warn!("recovering poisoned non-canonical account cooldown cache");
-                poisoned.into_inner()
+    /// Persist an account and synchronize the selection cache atomically with
+    /// respect to `next_account`. On repository failure the cache is left
+    /// untouched, so the two stores never advertise an uncommitted state.
+    pub(crate) fn save_account(&self, account: &Account) -> Result<(), DomainError> {
+        let _transition = self.availability_transition.lock().map_err(|_| {
+            DomainError::StorageError("account availability transition mutex poisoned".into())
+        })?;
+        let mut exhausted = self
+            .exhausted
+            .lock()
+            .map_err(|_| DomainError::StorageError("exhausted accounts mutex poisoned".into()))?;
+        self.repo.save(account)?;
+        match account
+            .exhausted_until()
+            .filter(|deadline| self.now_ms() < *deadline)
+        {
+            Some(deadline) => {
+                exhausted.insert(account.id().clone(), deadline);
             }
-        };
-        guard.insert(account_id.clone(), deadline_ms);
-    }
-
-    /// Clear only the non-canonical in-memory cooldown cache.
-    ///
-    /// Command handlers use this after atomically saving an aggregate whose
-    /// validated status already cleared the persisted deadline. Keeping this
-    /// operation repository-free avoids a second save that could fail after
-    /// the validated state was committed.
-    pub(crate) fn clear_cached_exhausted(&self, account_id: &AccountId) {
-        let mut guard = match self.exhausted.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => {
-                tracing::warn!("recovering poisoned non-canonical account cooldown cache");
-                poisoned.into_inner()
+            None => {
+                exhausted.remove(account.id());
             }
-        };
-        guard.remove(account_id);
+        }
+        Ok(())
     }
 
     /// `true` when `account_id` has an active cooldown at the current
@@ -242,6 +254,7 @@ impl AccountRotator {
     /// `snapshot_exhausted`. The check is read-only by design so it can
     /// be called from log paths without surprising state changes.
     pub fn is_exhausted(&self, account_id: &AccountId) -> Result<bool, AppError> {
+        let _transition = self.lock_availability_transition()?;
         let now_ms = self.now_ms();
         let guard = self.lock_exhausted()?;
         let in_memory = guard
@@ -318,6 +331,12 @@ impl AccountRotator {
             .map_err(|_| AppError::Validation("exhausted accounts mutex poisoned".to_string()))
     }
 
+    fn lock_availability_transition(&self) -> Result<std::sync::MutexGuard<'_, ()>, AppError> {
+        self.availability_transition.lock().map_err(|_| {
+            AppError::Validation("account availability transition mutex poisoned".to_string())
+        })
+    }
+
     fn now_ms(&self) -> u64 {
         self.clock.now_unix_secs().saturating_mul(1_000)
     }
@@ -331,17 +350,20 @@ mod tests {
     use crate::domain::model::account::{Account, AccountStatus, AccountType};
     use crate::domain::ports::driven::AccountRepository;
     use std::sync::Mutex as StdMutex;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     // --- Inline mocks (mirroring account_selector tests) ---
 
     struct InMemoryRepo {
         accounts: StdMutex<Vec<Account>>,
+        fail_saves: AtomicBool,
     }
 
     impl InMemoryRepo {
         fn new(accounts: Vec<Account>) -> Self {
             Self {
                 accounts: StdMutex::new(accounts),
+                fail_saves: AtomicBool::new(false),
             }
         }
     }
@@ -358,6 +380,9 @@ mod tests {
         }
 
         fn save(&self, account: &Account) -> Result<(), DomainError> {
+            if self.fail_saves.load(Ordering::SeqCst) {
+                return Err(DomainError::StorageError("save failed".into()));
+            }
             let mut guard = self.accounts.lock().unwrap();
             if let Some(existing) = guard.iter_mut().find(|a| a.id() == account.id()) {
                 *existing = account.clone();
@@ -497,17 +522,15 @@ mod tests {
             let proposed = self.now_ms().saturating_add(ttl_secs.saturating_mul(1_000));
             let deadline = account.exhausted_until().unwrap_or_default().max(proposed);
             account.mark_exhausted(deadline);
-            self.repo.save(&account)?;
-            self.cache_exhausted(account_id, deadline);
+            self.save_account(&account)?;
             Ok(())
         }
 
         fn clear_exhausted(&self, account_id: &AccountId) -> Result<(), AppError> {
             if let Some(mut account) = self.repo.find_by_id(account_id)? {
                 account.clear_exhausted();
-                self.repo.save(&account)?;
+                self.save_account(&account)?;
             }
-            self.clear_cached_exhausted(account_id);
             Ok(())
         }
 
@@ -534,6 +557,120 @@ mod tests {
         let selector = AccountSelector::new(repo.clone(), bus.clone(), clock.clone());
         let rotator = AccountRotator::new(selector, repo, bus.clone(), clock.clone());
         (rotator, bus, clock)
+    }
+
+    struct PersistThenBlockRepo {
+        account: StdMutex<Account>,
+        entered: StdMutex<Option<std::sync::mpsc::Sender<()>>>,
+        release: Arc<(StdMutex<bool>, std::sync::Condvar)>,
+    }
+
+    impl AccountRepository for PersistThenBlockRepo {
+        fn find_by_id(&self, id: &AccountId) -> Result<Option<Account>, DomainError> {
+            let account = self.account.lock().unwrap();
+            Ok((account.id() == id).then(|| account.clone()))
+        }
+
+        fn save(&self, account: &Account) -> Result<(), DomainError> {
+            *self.account.lock().unwrap() = account.clone();
+            if let Some(entered) = self.entered.lock().unwrap().take() {
+                entered.send(()).unwrap();
+            }
+            let (released, condition) = &*self.release;
+            let mut released = released.lock().unwrap();
+            while !*released {
+                released = condition.wait(released).unwrap();
+            }
+            Ok(())
+        }
+
+        fn list(&self) -> Result<Vec<Account>, DomainError> {
+            Ok(vec![self.account.lock().unwrap().clone()])
+        }
+
+        fn list_by_service(&self, service_name: &str) -> Result<Vec<Account>, DomainError> {
+            Ok(self
+                .list()?
+                .into_iter()
+                .filter(|account| account.service_name() == service_name)
+                .collect())
+        }
+
+        fn delete(&self, _: &AccountId) -> Result<(), DomainError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn selection_waits_until_persisted_exhaustion_and_cache_commit_together() {
+        let initial = account("a", "Uploaded", Some(50), true);
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let release = Arc::new((StdMutex::new(false), std::sync::Condvar::new()));
+        let repo = Arc::new(PersistThenBlockRepo {
+            account: StdMutex::new(initial.clone()),
+            entered: StdMutex::new(Some(entered_tx)),
+            release: release.clone(),
+        });
+        let bus = Arc::new(CollectingBus::new());
+        let clock = TestClock::new(1_700_000_000);
+        let selector = AccountSelector::new(repo.clone(), bus.clone(), clock.clone());
+        let rotator = AccountRotator::new(selector, repo, bus, clock);
+        let mut exhausted = initial;
+        exhausted.mark_exhausted(1_700_000_600_000);
+
+        let saving_rotator = rotator.clone();
+        let saving = std::thread::spawn(move || saving_rotator.save_account(&exhausted));
+        entered_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("persisted row reached pre-cache gap");
+        let (selected_tx, selected_rx) = std::sync::mpsc::channel();
+        let selecting_rotator = rotator.clone();
+        let selecting = std::thread::spawn(move || {
+            selected_tx
+                .send(
+                    selecting_rotator
+                        .next_account("Uploaded", AccountSelectionStrategy::BestTraffic),
+                )
+                .unwrap();
+        });
+        assert!(
+            selected_rx
+                .recv_timeout(std::time::Duration::from_millis(50))
+                .is_err(),
+            "selection must wait for the coordinated cache update"
+        );
+
+        let (released, condition) = &*release;
+        *released.lock().unwrap() = true;
+        condition.notify_all();
+        saving.join().unwrap().unwrap();
+        let outcome = selected_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("selection completes")
+            .unwrap();
+        selecting.join().unwrap();
+        assert!(matches!(outcome, NextAccountOutcome::AllExhausted { .. }));
+    }
+
+    #[test]
+    fn failed_exhaustion_persistence_leaves_the_selection_cache_unchanged() {
+        let initial = account("a", "Uploaded", Some(50), true);
+        let repo = Arc::new(InMemoryRepo::new(vec![initial.clone()]));
+        let bus = Arc::new(CollectingBus::new());
+        let clock = TestClock::new(1_700_000_000);
+        let selector = AccountSelector::new(repo.clone(), bus.clone(), clock.clone());
+        let rotator = AccountRotator::new(selector, repo.clone(), bus, clock);
+        let mut exhausted = initial;
+        exhausted.mark_exhausted(1_700_000_600_000);
+        repo.fail_saves.store(true, Ordering::SeqCst);
+
+        assert!(rotator.save_account(&exhausted).is_err());
+        repo.fail_saves.store(false, Ordering::SeqCst);
+
+        let outcome = rotator
+            .next_account("Uploaded", AccountSelectionStrategy::BestTraffic)
+            .unwrap();
+        assert!(matches!(outcome, NextAccountOutcome::Picked(_)));
     }
 
     // --- AC #1: 429 → rotation vers 2ème account visible ---

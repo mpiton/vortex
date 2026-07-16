@@ -1,3 +1,4 @@
+use sea_orm::{ConnectionTrait, Statement};
 use sea_orm_migration::prelude::*;
 
 #[derive(DeriveMigrationName)]
@@ -34,10 +35,37 @@ impl MigrationTrait for Migration {
                     .add_column(ColumnDef::new(Downloads::AccountRef).text().null())
                     .to_owned(),
             )
+            .await?;
+
+        manager
+            .get_connection()
+            .execute(Statement::from_string(
+                sea_orm::DatabaseBackend::Sqlite,
+                "UPDATE downloads SET account_ref = CAST(account_id AS TEXT) WHERE account_id IS NOT NULL"
+                    .to_string(),
+            ))
+            .await?;
+
+        manager
+            .create_index(
+                Index::create()
+                    .name("idx_downloads_account_ref")
+                    .table(Downloads::Table)
+                    .col(Downloads::AccountRef)
+                    .to_owned(),
+            )
             .await
     }
 
     async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        manager
+            .drop_index(
+                Index::drop()
+                    .name("idx_downloads_account_ref")
+                    .table(Downloads::Table)
+                    .to_owned(),
+            )
+            .await?;
         manager
             .alter_table(
                 Table::alter()

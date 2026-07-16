@@ -27,6 +27,7 @@ impl CredentialScope {
                 ));
             }
             *current = Some(credential);
+            slot.mark_exposed();
         }
         Ok(Self { slot })
     }
@@ -164,24 +165,25 @@ impl PluginRegistry {
     where
         I: extism::convert::ToBytes<'a>,
     {
-        // Clone the Arc<Mutex<Plugin>> and drop the DashMap shard guard
-        // before locking — holding the shard across a slow WASM call would
-        // block every other plugin lookup behind the same shard.
-        let (plugin_handle, credential_slot) = {
-            let entry = self
-                .plugins
-                .get(name)
-                .ok_or_else(|| DomainError::NotFound(name.to_string()))?;
-            (
-                Arc::clone(&entry.plugin),
-                Arc::clone(&entry.credential_slot),
-            )
-        };
-        let mut plugin = plugin_handle
+        // Keep the registry guard through the call so `set_enabled` and
+        // credential injection share one linearization point. A disable that
+        // wins the guard is observed before any credential enters the slot;
+        // a call that wins completes before the disable is committed.
+        let entry = self
+            .plugins
+            .get(name)
+            .ok_or_else(|| DomainError::NotFound(name.to_string()))?;
+        if !entry.enabled {
+            return Err(DomainError::NotFound(format!(
+                "plugin '{name}' is disabled"
+            )));
+        }
+        let mut plugin = entry
+            .plugin
             .lock()
             .map_err(|_| DomainError::PluginError(format!("plugin '{name}' mutex poisoned")))?;
         let _credential_scope = scoped_credential
-            .map(|credential| CredentialScope::new(credential_slot, credential))
+            .map(|credential| CredentialScope::new(Arc::clone(&entry.credential_slot), credential))
             .transpose()?;
         let fn_exists = plugin.function_exists(func);
         tracing::debug!(plugin = name, func, fn_exists, "plugin call pre-call");
@@ -234,7 +236,7 @@ mod tests {
         LoadedPlugin {
             manifest: make_manifest(name),
             plugin: Arc::new(Mutex::new(make_extism_plugin())),
-            credential_slot: Arc::new(Mutex::new(None)),
+            credential_slot: Arc::new(super::super::capabilities::CredentialSlotState::default()),
             enabled: true,
         }
     }
@@ -295,6 +297,33 @@ mod tests {
             .expect_err("missing export");
         assert!(matches!(error, DomainError::PluginError(_)));
         assert!(slot.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn disabled_plugin_is_rejected_before_credential_injection() {
+        let registry = PluginRegistry::new();
+        registry.insert("plug-a".to_string(), make_loaded("plug-a"));
+        let slot = Arc::clone(
+            &registry
+                .plugins
+                .get("plug-a")
+                .expect("loaded plugin")
+                .credential_slot,
+        );
+        registry.set_enabled("plug-a", false).unwrap();
+
+        let error = registry
+            .call_plugin_with_credential(
+                "plug-a",
+                "missing",
+                "",
+                Credential::new("alice", "secret"),
+            )
+            .expect_err("disabled plugin");
+
+        assert!(matches!(error, DomainError::NotFound(message) if message.contains("disabled")));
+        assert!(slot.lock().unwrap().is_none());
+        assert!(!slot.has_been_exposed());
     }
 
     #[test]

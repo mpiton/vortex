@@ -321,7 +321,7 @@ impl Account {
     }
 
     pub fn is_selectable(&self, now_ms: u64) -> bool {
-        if !self.enabled || self.is_expired(now_ms) {
+        if !self.enabled || !self.is_premium() || self.is_expired(now_ms) {
             return false;
         }
         match self.status {
@@ -583,7 +583,13 @@ mod tests {
 
     #[test]
     fn test_only_valid_or_elapsed_cooldown_accounts_are_selectable() {
-        let mut account = make_account();
+        let mut account = Account::new(
+            AccountId::new("premium-1"),
+            "ExampleHost".to_string(),
+            "user@example.com".to_string(),
+            AccountType::Premium,
+            1_700_000_000_000,
+        );
         assert!(!account.is_selectable(1_000));
 
         account.set_status(AccountStatus::Valid);
@@ -599,6 +605,14 @@ mod tests {
         account.mark_exhausted(3_000);
         assert!(!account.is_selectable(2_999));
         assert!(account.is_selectable(3_000));
+    }
+
+    #[test]
+    fn test_free_account_is_never_selectable_for_premium_resolution() {
+        let mut account = make_account();
+        account.set_status(AccountStatus::Valid);
+
+        assert!(!account.is_selectable(1_000));
     }
 
     #[test]

@@ -1,5 +1,6 @@
-use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::Duration;
 
 use super::*;
 use crate::application::commands::tests_support::{
@@ -24,8 +25,16 @@ async fn resolves_the_direct_url_only_when_the_engine_requests_it() {
     let account = valid_account("account-1");
     repo.save(&account).unwrap();
     credentials.store_password(account.id(), "api-key").unwrap();
-    let resolver = handler(repo.clone(), credentials, plugin.clone(), events.clone());
     let download = download(account.id().clone());
+    let downloads = Arc::new(InMemoryDownloadRepo::new());
+    downloads.seed(download.clone());
+    let resolver = handler_with_downloads(
+        repo.clone(),
+        credentials,
+        plugin.clone(),
+        events.clone(),
+        downloads,
+    );
 
     let source = tokio::task::spawn_blocking(move || resolver.resolve(&download))
         .await
@@ -129,7 +138,113 @@ async fn assert_jit_rotation(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_jit_rotation_does_not_recreate_a_deleted_download() {
+async fn rotates_across_two_failed_accounts_before_committing_the_third() {
+    let repo = Arc::new(InMemoryAccountRepo::new());
+    let credentials = Arc::new(FakeAccountCredentialStore::new());
+    let plugin = Arc::new(DirectUrlPlugin::new());
+    let primary = valid_account("a-primary");
+    let secondary = valid_account("b-secondary");
+    let tertiary = valid_account("c-tertiary");
+    for account in [&primary, &secondary, &tertiary] {
+        repo.save(account).unwrap();
+    }
+    credentials
+        .store_password(primary.id(), "quota-key")
+        .unwrap();
+    credentials
+        .store_password(secondary.id(), "quota-key")
+        .unwrap();
+    credentials
+        .store_password(tertiary.id(), "working-key")
+        .unwrap();
+    let downloads = Arc::new(InMemoryDownloadRepo::new());
+    let queued = download(primary.id().clone());
+    let download_id = queued.id();
+    downloads.seed(queued.clone());
+    let resolver = handler_with_downloads(
+        repo,
+        credentials,
+        plugin.clone(),
+        Arc::new(CapturingEventBus::new()),
+        downloads.clone(),
+    );
+
+    let source = tokio::task::spawn_blocking(move || resolver.resolve(&queued))
+        .await
+        .unwrap()
+        .expect("third account resolves the source");
+
+    assert_eq!(source.request_url(), "https://1.1.1.1/short-lived-token");
+    assert_eq!(
+        plugin
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|call| call.2.as_str())
+            .collect::<Vec<_>>(),
+        ["quota-key", "quota-key", "working-key"]
+    );
+    assert_eq!(
+        downloads
+            .find_by_id(download_id)
+            .unwrap()
+            .unwrap()
+            .account_id(),
+        Some(tertiary.id())
+    );
+}
+
+struct CasBarrierDownloadRepo {
+    inner: InMemoryDownloadRepo,
+    entered: Mutex<Option<std::sync::mpsc::Sender<()>>>,
+    release: Arc<(Mutex<bool>, Condvar)>,
+}
+
+impl DownloadRepository for CasBarrierDownloadRepo {
+    fn find_by_id(
+        &self,
+        id: crate::domain::model::download::DownloadId,
+    ) -> Result<Option<crate::domain::model::download::Download>, DomainError> {
+        self.inner.find_by_id(id)
+    }
+
+    fn save(&self, download: &crate::domain::model::download::Download) -> Result<(), DomainError> {
+        self.inner.save(download)
+    }
+
+    fn delete(&self, id: crate::domain::model::download::DownloadId) -> Result<(), DomainError> {
+        self.inner.delete(id)
+    }
+
+    fn compare_and_set_account_reference(
+        &self,
+        id: crate::domain::model::download::DownloadId,
+        expected: &crate::domain::model::account::AccountId,
+        replacement: &crate::domain::model::account::AccountId,
+    ) -> Result<bool, DomainError> {
+        if let Some(entered) = self.entered.lock().unwrap().take() {
+            entered.send(()).unwrap();
+        }
+        let (released, condition) = &*self.release;
+        let mut released = released.lock().unwrap();
+        while !*released {
+            released = condition.wait(released).unwrap();
+        }
+        self.inner
+            .compare_and_set_account_reference(id, expected, replacement)
+    }
+
+    fn find_by_state(
+        &self,
+        state: crate::domain::model::download::DownloadState,
+    ) -> Result<Vec<crate::domain::model::download::Download>, DomainError> {
+        self.inner.find_by_state(state)
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_jit_rotation_does_not_recreate_a_concurrently_deleted_download() {
     let repo = Arc::new(InMemoryAccountRepo::new());
     let credentials = Arc::new(FakeAccountCredentialStore::new());
     let plugin = Arc::new(DirectUrlPlugin::new());
@@ -143,23 +258,99 @@ async fn test_jit_rotation_does_not_recreate_a_deleted_download() {
     credentials
         .store_password(backup.id(), "working-key")
         .unwrap();
-    let downloads = Arc::new(InMemoryDownloadRepo::new());
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+    let release = Arc::new((Mutex::new(false), Condvar::new()));
+    let downloads = Arc::new(CasBarrierDownloadRepo {
+        inner: InMemoryDownloadRepo::new(),
+        entered: Mutex::new(Some(entered_tx)),
+        release: release.clone(),
+    });
     let stale_snapshot = download(primary.id().clone());
     let download_id = stale_snapshot.id();
+    downloads.save(&stale_snapshot).unwrap();
     let resolver = handler_with_downloads(
         repo,
         credentials,
-        plugin,
+        plugin.clone(),
         Arc::new(CapturingEventBus::new()),
         downloads.clone(),
     );
 
-    let result = tokio::task::spawn_blocking(move || resolver.resolve(&stale_snapshot))
+    let resolving = tokio::task::spawn_blocking(move || resolver.resolve(&stale_snapshot));
+    tokio::task::spawn_blocking(move || entered_rx.recv_timeout(Duration::from_secs(1)))
         .await
-        .unwrap();
+        .unwrap()
+        .expect("rotation reached account CAS");
+    downloads.delete(download_id).unwrap();
+    let (released, condition) = &*release;
+    *released.lock().unwrap() = true;
+    condition.notify_all();
+    let result = resolving.await.unwrap();
 
     assert!(matches!(result, Err(DomainError::NotFound(_))));
     assert!(downloads.find_by_id(download_id).unwrap().is_none());
+    assert_eq!(plugin.calls.lock().unwrap().len(), 2);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn initial_success_rejects_a_concurrent_account_reassociation_without_rotating() {
+    let repo = Arc::new(InMemoryAccountRepo::new());
+    let credentials = Arc::new(FakeAccountCredentialStore::new());
+    let plugin = Arc::new(DirectUrlPlugin::new());
+    let primary = valid_account("primary");
+    let replacement = valid_account("replacement");
+    repo.save(&primary).unwrap();
+    repo.save(&replacement).unwrap();
+    credentials
+        .store_password(primary.id(), "working-key")
+        .unwrap();
+    credentials
+        .store_password(replacement.id(), "working-key")
+        .unwrap();
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+    let release = Arc::new((Mutex::new(false), Condvar::new()));
+    let downloads = Arc::new(CasBarrierDownloadRepo {
+        inner: InMemoryDownloadRepo::new(),
+        entered: Mutex::new(Some(entered_tx)),
+        release: release.clone(),
+    });
+    let snapshot = download(primary.id().clone());
+    let download_id = snapshot.id();
+    downloads.save(&snapshot).unwrap();
+    let resolver = handler_with_downloads(
+        repo,
+        credentials,
+        plugin.clone(),
+        Arc::new(CapturingEventBus::new()),
+        downloads.clone(),
+    );
+
+    let resolving = tokio::task::spawn_blocking(move || resolver.resolve(&snapshot));
+    tokio::task::spawn_blocking(move || entered_rx.recv_timeout(Duration::from_secs(1)))
+        .await
+        .unwrap()
+        .expect("resolution reached account CAS");
+    assert!(
+        downloads
+            .inner
+            .compare_and_set_account_reference(download_id, primary.id(), replacement.id())
+            .unwrap()
+    );
+    let (released, condition) = &*release;
+    *released.lock().unwrap() = true;
+    condition.notify_all();
+
+    let error = resolving.await.unwrap().expect_err("association conflict");
+    assert!(matches!(error, DomainError::ValidationError(_)));
+    assert_eq!(plugin.calls.lock().unwrap().len(), 1);
+    assert_eq!(
+        downloads
+            .find_by_id(download_id)
+            .unwrap()
+            .unwrap()
+            .account_id(),
+        Some(replacement.id())
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

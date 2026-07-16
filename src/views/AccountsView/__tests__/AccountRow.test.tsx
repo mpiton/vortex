@@ -21,6 +21,7 @@ function renderRow(account: AccountView) {
 }
 
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.useRealTimers();
 });
 
@@ -69,5 +70,28 @@ describe("AccountRow", () => {
     expect(screen.getByText("Active")).toBeInTheDocument();
     act(() => vi.advanceTimersByTime(1_001));
     expect(screen.getByText("Expired")).toBeInTheDocument();
+  });
+
+  it("updates immediately when the deadline elapses before the effect is installed", () => {
+    const beforeDeadline = 1_700_000_000_999;
+    const deadline = beforeDeadline + 1;
+    vi.spyOn(Date, "now").mockReturnValueOnce(beforeDeadline).mockReturnValue(deadline);
+
+    renderRow({
+      id: "account-1",
+      serviceName: "vortex-mod-1fichier",
+      username: "alice",
+      accountType: "premium",
+      enabled: true,
+      trafficLeft: null,
+      trafficTotal: null,
+      validUntil: null,
+      lastValidated: null,
+      createdAt: 1_699_999_000_000,
+      status: "cooldown",
+      exhaustedUntil: deadline,
+    });
+
+    expect(screen.getByText("Active")).toBeInTheDocument();
   });
 });

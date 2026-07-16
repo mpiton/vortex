@@ -191,7 +191,7 @@ describe("LinkGrabberView", () => {
           {
             id: "premium-link",
             originalUrl: sourceUrl,
-            resolvedUrl: sourceUrl,
+            resolvedUrl: directUrl,
             filename: "file.zip",
             sizeBytes: 42,
             status: "online",
@@ -204,7 +204,7 @@ describe("LinkGrabberView", () => {
       if (command === "link_detect_duplicates") {
         return Promise.resolve([
           {
-            url: sourceUrl,
+            url: directUrl,
             isDuplicate: false,
             source: null,
             existingId: null,
@@ -221,7 +221,7 @@ describe("LinkGrabberView", () => {
     await user.click(screen.getByRole("button", { name: "Analyze Links" }));
     await waitFor(() => {
       expect(mockInvoke).toHaveBeenCalledWith("link_detect_duplicates", {
-        urls: [sourceUrl],
+        urls: [directUrl],
       });
     });
 
@@ -234,7 +234,10 @@ describe("LinkGrabberView", () => {
         accountId: "account-uuid",
       });
     });
-    expect(JSON.stringify(mockInvoke.mock.calls)).not.toContain(directUrl);
+    const downloadStartCalls = mockInvoke.mock.calls.filter(
+      ([command]) => command === "download_start",
+    );
+    expect(JSON.stringify(downloadStartCalls)).not.toContain(directUrl);
   });
 
   it("should surface error toast on failure and success toast on retry", async () => {

@@ -10,7 +10,8 @@ use tokio::sync::Semaphore;
 
 use crate::application::services::account_operation_locks::AccountOperationLocks;
 use crate::application::services::{AccountRotator, AccountSelector};
-use crate::domain::model::account::AccountId;
+use crate::domain::error::DomainError;
+use crate::domain::model::account::{Account, AccountId};
 use crate::domain::model::config::{
     DEFAULT_LINK_CHECK_PARALLELISM, normalize_link_check_parallelism,
 };
@@ -260,12 +261,27 @@ impl CommandBus {
         self.account_validator.as_deref()
     }
 
+    pub(crate) fn account_validator_arc(&self) -> Option<Arc<dyn AccountValidator>> {
+        self.account_validator.clone()
+    }
+
     pub fn account_selector(&self) -> Option<&AccountSelector> {
         self.account_selector.as_deref()
     }
 
     pub fn account_rotator(&self) -> Option<&AccountRotator> {
         self.account_rotator.as_deref()
+    }
+
+    pub(crate) fn save_account_availability(
+        &self,
+        repo: &dyn AccountRepository,
+        account: &Account,
+    ) -> Result<(), DomainError> {
+        match self.account_rotator() {
+            Some(rotator) => rotator.save_account(account),
+            None => repo.save(account),
+        }
     }
 
     pub(crate) fn account_operation_lock(

@@ -151,7 +151,7 @@ fn is_unique_violation(msg: &str) -> bool {
 mod tests {
     use super::*;
     use crate::adapters::driven::sqlite::connection::setup_test_db;
-    use crate::domain::model::account::{Account, AccountId, AccountType};
+    use crate::domain::model::account::{Account, AccountId, AccountStatus, AccountType};
 
     fn make_account(id: &str, service: &str, user: &str) -> Account {
         Account::new(
@@ -212,6 +212,24 @@ mod tests {
             .expect("present");
         assert!(!found.is_enabled());
         assert_eq!(found.traffic_left(), Some(999));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_save_upsert_persists_status_and_cooldown_deadline() {
+        let db = setup_test_db().await.expect("test db");
+        let repo = SqliteAccountRepo::new(db);
+        let mut account = make_account("acc-1", "real-debrid", "alice");
+        repo.save(&account).expect("first save");
+
+        account.mark_cooldown(1_700_000_060_000);
+        repo.save(&account).expect("upsert cooldown");
+
+        let found = repo
+            .find_by_id(account.id())
+            .expect("find_by_id")
+            .expect("present");
+        assert_eq!(found.status(), AccountStatus::Cooldown);
+        assert_eq!(found.exhausted_until(), Some(1_700_000_060_000));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

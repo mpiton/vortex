@@ -53,6 +53,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **MAT-132 PR review hardening**: premium selection now excludes free
+  accounts, serializes persisted cooldowns with rotation, revalidates download
+  associations on every JIT resolution, and lets cancellation win without late
+  writes. Plugin calls enforce enablement at credential injection, retained
+  credential logs and bearer URL diagnostics stay redacted, plugin HTTP is
+  HTTPS-only, legacy account references are backfilled and indexed, and account
+  validation runs outside Tokio workers while preserving typed failures.
 - **MAT-132 final concurrency and quota fixes**: JIT rotation now updates only
   the existing download's account reference, preserving concurrent state and
   never recreating a removed row. Cooldown and quota exhaustion remain distinct

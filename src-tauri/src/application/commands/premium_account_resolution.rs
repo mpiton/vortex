@@ -3,7 +3,7 @@ use crate::domain::error::DomainError;
 use crate::domain::event::DomainEvent;
 use crate::domain::model::account::{Account, AccountStatus};
 use crate::domain::model::credential::Credential;
-use crate::domain::ports::driven::ExtractedHosterLink;
+use crate::domain::ports::driven::{ExtractedHosterLink, ResolutionCancellation};
 
 use super::{ResolvePremiumSourceCommand, ResolvePremiumSourceHandler};
 
@@ -11,18 +11,22 @@ impl ResolvePremiumSourceHandler {
     pub(super) fn resolve_locked(
         &self,
         command: ResolvePremiumSourceCommand,
+        cancellation: &ResolutionCancellation,
     ) -> Result<ExtractedHosterLink, DomainError> {
+        cancellation.ensure_active()?;
         let mut account = self.load_available_account(&command)?;
-        let credential = self.load_credential(&mut account)?;
+        let credential = self.load_credential(&mut account, cancellation)?;
         let link = match self.plugins.extract_hoster_link(
             &command.service_name,
             &command.source_url,
             Some(&credential),
         ) {
             Ok(link) => link,
-            Err(error) => return self.reject_plugin_failure(&mut account, error),
+            Err(error) => {
+                return self.reject_plugin_failure(&mut account, error, cancellation);
+            }
         };
-        self.persist_success(&mut account, &link)?;
+        self.persist_success(&mut account, &link, cancellation)?;
         Ok(link)
     }
 
@@ -43,16 +47,24 @@ impl ResolvePremiumSourceHandler {
         Ok(account)
     }
 
-    fn load_credential(&self, account: &mut Account) -> Result<Credential, DomainError> {
+    fn load_credential(
+        &self,
+        account: &mut Account,
+        cancellation: &ResolutionCancellation,
+    ) -> Result<Credential, DomainError> {
         let Some(password) = self.credentials.get_password(account.id())? else {
             account.set_status(AccountStatus::MissingCredential);
-            self.repo.save(account)?;
-            self.publish_failure(account, "Account credential is unavailable");
+            cancellation.run_if_active(|| {
+                self.rotator.save_account(account)?;
+                self.publish_failure(account, "Account credential is unavailable");
+                Ok(())
+            })?;
             return Err(DomainError::NotFound(format!(
                 "credential for account {}",
                 account.id().as_str()
             )));
         };
+        cancellation.ensure_active()?;
         Ok(Credential::new(account.username(), password))
     }
 
@@ -60,6 +72,7 @@ impl ResolvePremiumSourceHandler {
         &self,
         account: &mut Account,
         error: DomainError,
+        cancellation: &ResolutionCancellation,
     ) -> Result<ExtractedHosterLink, DomainError> {
         let Some(status) = status_for_plugin_error(&error) else {
             return Err(DomainError::PluginError(
@@ -67,11 +80,11 @@ impl ResolvePremiumSourceHandler {
             ));
         };
         apply_status(account, status, self.clock.now_unix_ms());
-        self.repo.save(account)?;
-        if let Some(deadline) = account.exhausted_until() {
-            self.rotator.cache_exhausted(account.id(), deadline);
-        }
-        self.publish_typed_failure(account, status);
+        cancellation.run_if_active(|| {
+            self.rotator.save_account(account)?;
+            self.publish_typed_failure(account, status);
+            Ok(())
+        })?;
         Err(error)
     }
 
@@ -79,6 +92,7 @@ impl ResolvePremiumSourceHandler {
         &self,
         account: &mut Account,
         link: &ExtractedHosterLink,
+        cancellation: &ResolutionCancellation,
     ) -> Result<(), DomainError> {
         if link.direct_url.is_none() {
             return Err(DomainError::PluginError(
@@ -96,17 +110,17 @@ impl ResolvePremiumSourceHandler {
                         AccountStatus::QuotaExhausted,
                         self.clock.now_unix_ms(),
                     );
-                    self.repo.save(account)?;
-                    if let Some(deadline) = account.exhausted_until() {
-                        self.rotator.cache_exhausted(account.id(), deadline);
-                    }
-                    self.publish_typed_failure(account, AccountStatus::QuotaExhausted);
+                    cancellation.run_if_active(|| {
+                        self.rotator.save_account(account)?;
+                        self.publish_typed_failure(account, AccountStatus::QuotaExhausted);
+                        Ok(())
+                    })?;
                     return Err(DomainError::AccountQuotaExceeded);
                 }
             }
         }
         account.set_status(AccountStatus::Valid);
-        self.repo.save(account)?;
+        cancellation.run_if_active(|| self.rotator.save_account(account))?;
         Ok(())
     }
 

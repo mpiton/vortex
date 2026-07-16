@@ -55,12 +55,9 @@ export function LinkGrabberView() {
     "link_check_online",
   );
 
-  // Single source of truth for which URL represents a row across both
-  // duplicate detection and `download_start`. A redirected link with a
-  // `resolvedUrl` of the post-redirect canonical form must dedupe on
-  // that same canonical — otherwise the row could pass dedupe (since
-  // `originalUrl` is unique) yet `startDownload` re-queues a URL that
-  // already exists in active/history.
+  // Single source of truth for duplicate detection and in-batch
+  // de-duplication. `download_start` still receives `originalUrl` so a
+  // short-lived resolved token is never persisted or exposed over IPC.
   const getDuplicateKey = (link: ResolvedLink) => link.resolvedUrl ?? link.originalUrl;
 
   // Monotonic counter so a stale `link_detect_duplicates` response from
@@ -340,12 +337,12 @@ export function LinkGrabberView() {
     const started = new Set<string>();
     for (const link of links) {
       if (!isStartable(link)) continue;
-      const url = getDuplicateKey(link);
-      if (!url) continue;
-      if (skipDuplicates && started.has(url)) continue;
-      started.add(url);
+      const duplicateKey = getDuplicateKey(link);
+      if (!duplicateKey || !link.originalUrl) continue;
+      if (skipDuplicates && started.has(duplicateKey)) continue;
+      started.add(duplicateKey);
       startDownload({
-        url,
+        url: link.originalUrl,
         moduleName: link.moduleName,
         accountId: link.accountId,
       });

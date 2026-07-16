@@ -10,6 +10,11 @@ use super::nat64::{Nat64Prefix, discovered_prefixes};
 pub(crate) fn validate_public_url(
     url: &reqwest::Url,
 ) -> Result<Option<Vec<SocketAddr>>, DomainError> {
+    if url.scheme() != "https" {
+        return Err(DomainError::NetworkError(
+            "plugin URL must use HTTPS".into(),
+        ));
+    }
     let host = url
         .host_str()
         .ok_or_else(|| DomainError::NetworkError("URL has no host".into()))?;
@@ -39,7 +44,7 @@ pub(crate) fn validate_public_url(
 pub(crate) fn restricted_download_client(
     url: &reqwest::Url,
 ) -> Result<reqwest::Client, DomainError> {
-    if url.scheme() != "https" || !url.username().is_empty() || url.password().is_some() {
+    if !url.username().is_empty() || url.password().is_some() {
         return Err(DomainError::NetworkError(
             "plugin download URL must be credential-free HTTPS".into(),
         ));

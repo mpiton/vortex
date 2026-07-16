@@ -1,6 +1,7 @@
 //! Capability-based host function registration for WASM plugins.
 
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -10,7 +11,29 @@ use crate::domain::model::credential::Credential;
 use crate::domain::model::plugin::PluginManifest;
 use crate::domain::ports::driven::CredentialStore;
 
-pub(crate) type CredentialSlot = Arc<Mutex<Option<Credential>>>;
+#[derive(Default)]
+pub struct CredentialSlotState {
+    credential: Mutex<Option<Credential>>,
+    exposed: AtomicBool,
+}
+
+impl CredentialSlotState {
+    pub(crate) fn lock(
+        &self,
+    ) -> std::sync::LockResult<std::sync::MutexGuard<'_, Option<Credential>>> {
+        self.credential.lock()
+    }
+
+    pub(crate) fn mark_exposed(&self) {
+        self.exposed.store(true, Ordering::SeqCst);
+    }
+
+    pub(crate) fn has_been_exposed(&self) -> bool {
+        self.exposed.load(Ordering::SeqCst)
+    }
+}
+
+pub(crate) type CredentialSlot = Arc<CredentialSlotState>;
 
 /// Shared resources across all plugins (singleton).
 pub struct SharedHostResources {
@@ -135,7 +158,7 @@ pub(super) fn build_host_functions_for_instance(
     shared: &Arc<SharedHostResources>,
     grants: HostFunctionGrants,
 ) -> (Vec<extism::Function>, CredentialSlot) {
-    let credential_slot = Arc::new(Mutex::new(None));
+    let credential_slot = Arc::new(CredentialSlotState::default());
     let functions =
         build_host_functions_with_slot(manifest, shared, grants, Arc::clone(&credential_slot));
     (functions, credential_slot)

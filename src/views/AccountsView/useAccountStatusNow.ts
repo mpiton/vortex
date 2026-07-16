@@ -12,7 +12,13 @@ export function useAccountStatusNow(
 
   useEffect(() => {
     const currentTime = Date.now();
-    const nextDeadline = nextStatusDeadline(status, exhaustedUntil, validUntil, currentTime);
+    const deadlines = statusDeadlines(status, exhaustedUntil, validUntil);
+    if (deadlines.some((deadline) => nowMs < deadline && deadline <= currentTime)) {
+      setNowMs(currentTime);
+      return;
+    }
+    const nextDeadline =
+      deadlines.filter((deadline) => deadline > currentTime).sort((a, b) => a - b)[0] ?? null;
     if (nextDeadline === null) return;
     const timeout = window.setTimeout(
       () => setNowMs(Date.now()),
@@ -24,17 +30,15 @@ export function useAccountStatusNow(
   return nowMs;
 }
 
-function nextStatusDeadline(
+function statusDeadlines(
   status: PersistedAccountStatus,
   exhaustedUntil: number | null,
   validUntil: number | null,
-  nowMs: number,
-): number | null {
-  const deadlines = [
+): number[] {
+  return [
     isTemporary(status) ? exhaustedUntil : null,
     validUntil === null ? null : validUntil + 1,
-  ].filter((deadline): deadline is number => deadline !== null && deadline > nowMs);
-  return deadlines.length === 0 ? null : Math.min(...deadlines);
+  ].filter((deadline): deadline is number => deadline !== null);
 }
 
 function isTemporary(status: PersistedAccountStatus): boolean {

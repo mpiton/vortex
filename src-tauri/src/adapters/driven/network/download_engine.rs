@@ -11,13 +11,16 @@ use crate::domain::error::DomainError;
 use crate::domain::event::DomainEvent;
 use crate::domain::model::download::{Download, DownloadId};
 use crate::domain::model::meta::{DownloadMeta, SegmentMeta};
-use crate::domain::ports::driven::{DownloadEngine, DownloadSourceResolver, EventBus, FileStorage};
+use crate::domain::ports::driven::{
+    DownloadEngine, DownloadSourceResolver, EventBus, FileStorage, ResolutionCancellation,
+};
 
 use super::segment_worker::{SegmentError, SegmentParams, download_segment};
 use super::{format_error_chain, restricted_download_client};
 
 struct ActiveDownload {
     cancel_token: CancellationToken,
+    resolution_cancellation: ResolutionCancellation,
     pause_sender: watch::Sender<bool>,
 }
 
@@ -295,24 +298,49 @@ async fn prepare_sources(
     download: Download,
     resolver: Option<Arc<dyn DownloadSourceResolver>>,
     client: reqwest::Client,
+    cancel_token: CancellationToken,
+    resolution_cancellation: ResolutionCancellation,
 ) -> Result<PreparedSources, DomainError> {
+    if cancel_token.is_cancelled() {
+        return Err(DomainError::PluginError(
+            "premium source resolution cancelled".into(),
+        ));
+    }
     let resume_url = download.url().as_str().to_string();
     if download.account_id().is_some() {
         let resolver = resolver.ok_or_else(|| {
             DomainError::PluginError("premium source resolver is not configured".into())
         })?;
-        let source = tokio::task::spawn_blocking(move || resolver.resolve(&download))
-            .await
-            .map_err(|_| DomainError::PluginError("premium source resolver stopped".into()))??;
+        let mut resolve_task = tokio::task::spawn_blocking(move || {
+            resolver.resolve_cancellable(&download, &resolution_cancellation)
+        });
+        let source = tokio::select! {
+            biased;
+            _ = cancel_token.cancelled() => {
+                return Err(DomainError::PluginError("premium source resolution cancelled".into()));
+            }
+            result = &mut resolve_task => {
+                result
+                    .map_err(|_| DomainError::PluginError("premium source resolver stopped".into()))??
+            }
+        };
         let request_url = source.request_url().to_string();
-        let (request_url, client) = tokio::task::spawn_blocking(move || {
+        let mut safety_task = tokio::task::spawn_blocking(move || {
             let parsed = reqwest::Url::parse(&request_url)
                 .map_err(|_| DomainError::NetworkError("plugin returned an invalid URL".into()))?;
             let client = restricted_download_client(&parsed)?;
             Ok::<_, DomainError>((request_url, client))
-        })
-        .await
-        .map_err(|_| DomainError::NetworkError("URL safety check stopped".into()))??;
+        });
+        let (request_url, client) = tokio::select! {
+            biased;
+            _ = cancel_token.cancelled() => {
+                return Err(DomainError::PluginError("premium source resolution cancelled".into()));
+            }
+            result = &mut safety_task => {
+                result
+                    .map_err(|_| DomainError::NetworkError("URL safety check stopped".into()))??
+            }
+        };
         return Ok(PreparedSources {
             urls: vec![request_url],
             initial_index: 0,
@@ -365,6 +393,7 @@ impl DownloadEngine for SegmentedDownloadEngine {
         };
 
         let cancel_token = CancellationToken::new();
+        let resolution_cancellation = ResolutionCancellation::default();
         let (pause_tx, pause_rx) = watch::channel(false);
 
         {
@@ -382,6 +411,7 @@ impl DownloadEngine for SegmentedDownloadEngine {
                 download_id,
                 ActiveDownload {
                     cancel_token: cancel_token.clone(),
+                    resolution_cancellation: resolution_cancellation.clone(),
                     pause_sender: pause_tx,
                 },
             );
@@ -398,7 +428,15 @@ impl DownloadEngine for SegmentedDownloadEngine {
         let download = download.clone();
 
         tokio::spawn(async move {
-            let prepared = match prepare_sources(download, source_resolver, client).await {
+            let prepared = match prepare_sources(
+                download,
+                source_resolver,
+                client,
+                cancel_token.clone(),
+                resolution_cancellation,
+            )
+            .await
+            {
                 Ok(prepared) => prepared,
                 Err(error) => {
                     let event = if cancel_token.is_cancelled() {
@@ -611,6 +649,7 @@ impl DownloadEngine for SegmentedDownloadEngine {
         let active = map
             .get(&id)
             .ok_or_else(|| DomainError::NotFound(format!("download {}", id.0)))?;
+        active.resolution_cancellation.cancel();
         active.cancel_token.cancel();
         Ok(())
     }
@@ -919,8 +958,8 @@ mod tests {
     use super::*;
 
     use std::path::Path;
-    use std::sync::Mutex;
-    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
+    use std::sync::{Condvar, Mutex};
     use std::time::Duration;
 
     use wiremock::matchers::{method, path};
@@ -1039,6 +1078,44 @@ mod tests {
         calls: AtomicUsize,
     }
 
+    struct BlockingSourceResolver {
+        entered: Mutex<Option<std::sync::mpsc::Sender<()>>>,
+        release: Arc<(Mutex<bool>, Condvar)>,
+        committed: AtomicBool,
+        finished: AtomicBool,
+    }
+
+    impl DownloadSourceResolver for BlockingSourceResolver {
+        fn resolve(&self, _: &Download) -> Result<ResolvedDownloadSource, DomainError> {
+            Err(DomainError::PluginError(
+                "cancellable path was not used".into(),
+            ))
+        }
+
+        fn resolve_cancellable(
+            &self,
+            _: &Download,
+            cancellation: &ResolutionCancellation,
+        ) -> Result<ResolvedDownloadSource, DomainError> {
+            if let Some(entered) = self.entered.lock().unwrap().take() {
+                entered.send(()).unwrap();
+            }
+            let (released, condition) = &*self.release;
+            let mut released = released.lock().unwrap();
+            while !*released {
+                released = condition.wait(released).unwrap();
+            }
+            let result = cancellation.run_if_active(|| {
+                self.committed.store(true, AtomicOrdering::SeqCst);
+                Ok(ResolvedDownloadSource::sensitive(
+                    "https://1.1.1.1/late-token".into(),
+                ))
+            });
+            self.finished.store(true, AtomicOrdering::SeqCst);
+            result
+        }
+    }
+
     impl DownloadSourceResolver for LoopbackSourceResolver {
         fn resolve(&self, _: &Download) -> Result<ResolvedDownloadSource, DomainError> {
             self.calls.fetch_add(1, AtomicOrdering::SeqCst);
@@ -1073,6 +1150,53 @@ mod tests {
         let serialized = format!("{:?}", bus.collected());
         assert!(!serialized.contains("secret-token"));
         assert_eq!(download.url().as_str(), "https://1fichier.com/?abc123");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancellation_wins_against_blocked_jit_resolution_without_late_commit() {
+        let storage = Arc::new(MockFileStorage::new());
+        let bus = Arc::new(CollectingEventBus::new());
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let release = Arc::new((Mutex::new(false), Condvar::new()));
+        let resolver = Arc::new(BlockingSourceResolver {
+            entered: Mutex::new(Some(entered_tx)),
+            release: release.clone(),
+            committed: AtomicBool::new(false),
+            finished: AtomicBool::new(false),
+        });
+        let engine = make_engine(storage, bus.clone()).with_source_resolver(resolver.clone());
+        let download = make_download(98, "https://1fichier.com/?abc123")
+            .with_module_name("vortex-mod-1fichier".into())
+            .with_account_id(AccountId::new("account-1"));
+        engine.start(&download).expect("spawn download");
+        tokio::task::spawn_blocking(move || entered_rx.recv_timeout(Duration::from_secs(1)))
+            .await
+            .unwrap()
+            .expect("resolver entered");
+
+        engine
+            .cancel(download.id())
+            .expect("cancel active download");
+        assert!(
+            bus.wait_for_event_async(
+                |event| matches!(event, DomainEvent::DownloadCancelled { id } if id.0 == 98),
+                Duration::from_millis(300),
+            )
+            .await,
+            "cancellation must not wait for the blocking resolver"
+        );
+
+        let (released, condition) = &*release;
+        *released.lock().unwrap() = true;
+        condition.notify_all();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+        while !resolver.finished.load(AtomicOrdering::SeqCst)
+            && tokio::time::Instant::now() < deadline
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(resolver.finished.load(AtomicOrdering::SeqCst));
+        assert!(!resolver.committed.load(AtomicOrdering::SeqCst));
     }
 
     // --- Tests ---

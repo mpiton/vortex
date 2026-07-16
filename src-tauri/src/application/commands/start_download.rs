@@ -133,7 +133,7 @@ impl CommandBus {
         }
         if store.get_password(account_id)?.is_none() {
             account.set_status(AccountStatus::MissingCredential);
-            repo.save(&account)?;
+            self.save_account_availability(repo, &account)?;
             self.event_bus()
                 .publish(DomainEvent::AccountValidationFailed {
                     id: account_id.clone(),

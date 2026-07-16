@@ -9,7 +9,8 @@ use crate::domain::model::account::AccountId;
 use crate::domain::model::download::Download;
 use crate::domain::ports::driven::{
     AccountCredentialStore, AccountRepository, Clock, ConfigStore, DownloadRepository,
-    DownloadSourceResolver, EventBus, ExtractedHosterLink, PluginLoader, ResolvedDownloadSource,
+    DownloadSourceResolver, EventBus, ExtractedHosterLink, PluginLoader, ResolutionCancellation,
+    ResolvedDownloadSource,
 };
 use crate::domain::ports::driving::Command;
 
@@ -37,6 +38,7 @@ impl ResolvePremiumSourceCommand {
 
 impl Command for ResolvePremiumSourceCommand {}
 
+#[derive(Clone)]
 pub struct ResolvePremiumSourceHandler {
     repo: Arc<dyn AccountRepository>,
     credentials: Arc<dyn AccountCredentialStore>,
@@ -80,9 +82,15 @@ impl ResolvePremiumSourceHandler {
         command: ResolvePremiumSourceCommand,
     ) -> Result<ExtractedHosterLink, DomainError> {
         let account_id = command.account_id.clone();
-        let lock = self.account_lock(&command.account_id)?;
-        let _guard = lock.lock().await;
-        let link = self.resolve_locked(command)?;
+        let handler = self.clone();
+        let cancellation = ResolutionCancellation::default();
+        let link = tokio::task::spawn_blocking(move || {
+            let lock = handler.account_lock(&command.account_id)?;
+            let _guard = lock.blocking_lock();
+            handler.resolve_locked(command, &cancellation)
+        })
+        .await
+        .map_err(|_| DomainError::PluginError("premium source resolver stopped".into()))??;
         self.publish_success(&account_id);
         Ok(link)
     }
@@ -96,7 +104,15 @@ impl ResolvePremiumSourceHandler {
 
 impl DownloadSourceResolver for ResolvePremiumSourceHandler {
     fn resolve(&self, download: &Download) -> Result<ResolvedDownloadSource, DomainError> {
-        self.resolve_download(download)
+        self.resolve_download(download, &ResolutionCancellation::default())
+    }
+
+    fn resolve_cancellable(
+        &self,
+        download: &Download,
+        cancellation: &ResolutionCancellation,
+    ) -> Result<ResolvedDownloadSource, DomainError> {
+        self.resolve_download(download, cancellation)
     }
 }
 

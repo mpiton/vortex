@@ -463,7 +463,9 @@ mod tests {
         let history: Arc<dyn HistoryRepository> = Arc::new(InMemoryHistoryRepo::new());
         let original = completed_download(10).with_account_id(AccountId::new("missing"));
         repo.save(&original).unwrap();
-        let bus = make_bus(repo, events, history);
+        let bus = make_bus(repo, events, history)
+            .with_account_repo(Arc::new(InMemoryAccountRepo::new()))
+            .with_account_credential_store(Arc::new(FakeAccountCredentialStore::new()));
 
         let error = bus
             .handle_redownload(RedownloadCommand {
@@ -473,7 +475,7 @@ mod tests {
             .await
             .expect_err("orphaned account must not be copied");
 
-        assert!(matches!(error, AppError::Validation(_)));
+        assert!(matches!(error, AppError::NotFound(_)));
     }
 
     #[tokio::test]

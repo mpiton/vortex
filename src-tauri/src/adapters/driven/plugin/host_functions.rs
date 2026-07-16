@@ -72,12 +72,8 @@ fn safe_plugin_log_message(
     message: &str,
     credential_slot: &CredentialSlot,
 ) -> Result<String, extism::Error> {
-    let carries_credential = credential_slot
-        .lock()
-        .map_err(|_| anyhow::anyhow!("log: credential slot poisoned"))?
-        .is_some();
-    Ok(if carries_credential {
-        "plugin log redacted during credential operation".into()
+    Ok(if credential_slot.has_been_exposed() {
+        "plugin log redacted after credential access".into()
     } else {
         message.to_string()
     })
@@ -376,6 +372,7 @@ pub fn make_get_credential_function(
                     .map_err(|e| anyhow::anyhow!("get_credential: store error: {e}"))?
                     .ok_or_else(|| anyhow::anyhow!("get_credential: no credential found"))?,
             };
+            slot.mark_exposed();
 
             let resp = CredentialResponse {
                 username: cred.username().to_string(),
@@ -535,10 +532,9 @@ mod tests {
 
     #[test]
     fn plugin_logs_are_fully_redacted_while_a_credential_is_scoped() {
-        let slot = Arc::new(std::sync::Mutex::new(Some(Credential::new(
-            "alice",
-            "super-secret",
-        ))));
+        let slot = Arc::new(super::super::capabilities::CredentialSlotState::default());
+        *slot.lock().unwrap() = Some(Credential::new("alice", "super-secret"));
+        slot.mark_exposed();
 
         let message = safe_plugin_log_message(
             "Authorization: Bearer super-secret; direct=https://cdn/token",
@@ -546,8 +542,20 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(message, "plugin log redacted during credential operation");
+        assert_eq!(message, "plugin log redacted after credential access");
         assert!(!message.contains("super-secret"));
         assert!(!message.contains("cdn/token"));
+    }
+
+    #[test]
+    fn plugin_logs_remain_redacted_after_the_credential_scope_is_cleared() {
+        let slot = Arc::new(super::super::capabilities::CredentialSlotState::default());
+        slot.mark_exposed();
+        assert!(slot.lock().unwrap().is_none());
+
+        let message = safe_plugin_log_message("retained secret", &slot).unwrap();
+
+        assert_eq!(message, "plugin log redacted after credential access");
+        assert!(!message.contains("retained secret"));
     }
 }

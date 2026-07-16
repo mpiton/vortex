@@ -15,7 +15,9 @@ use crate::application::error::AppError;
 use crate::domain::event::DomainEvent;
 use crate::domain::model::account::{Account, AccountId};
 
-use super::validate_account::{apply_validation, publish_validation, validate_credentials};
+use super::validate_account::{
+    apply_validation, publish_validation, validate_credentials_blocking,
+};
 
 impl CommandBus {
     pub async fn handle_add_account(
@@ -78,12 +80,15 @@ impl CommandBus {
             return Err(e.into());
         }
 
-        let validation = self
-            .account_validator()
-            .map(|validator| validate_credentials(validator, &account, &cmd.password));
+        let validation = match self.account_validator_arc() {
+            Some(validator) => {
+                Some(validate_credentials_blocking(validator, account.clone(), cmd.password).await?)
+            }
+            None => None,
+        };
         if let Some(attempt) = &validation {
             let validated = apply_validation(&account, &attempt.outcome, cmd.created_at_ms);
-            if let Err(error) = repo.save(&validated) {
+            if let Err(error) = self.save_account_availability(repo, &validated) {
                 if let Err(rollback_error) = repo.delete(&id) {
                     tracing::warn!(
                         account_id = %id.as_str(),

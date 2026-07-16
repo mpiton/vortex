@@ -42,7 +42,9 @@ pub use credential_store::CredentialStore;
 pub use download_engine::DownloadEngine;
 pub use download_read_repository::DownloadReadRepository;
 pub use download_repository::DownloadRepository;
-pub use download_source_resolver::{DownloadSourceResolver, ResolvedDownloadSource};
+pub use download_source_resolver::{
+    DownloadSourceResolver, ResolutionCancellation, ResolvedDownloadSource,
+};
 pub use event_bus::EventBus;
 pub use file_opener::FileOpener;
 pub use file_storage::FileStorage;

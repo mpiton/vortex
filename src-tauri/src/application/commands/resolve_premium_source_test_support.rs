@@ -13,7 +13,7 @@ use crate::domain::model::credential::Credential;
 use crate::domain::model::download::{Download, DownloadId, Url};
 use crate::domain::model::plugin::{PluginInfo, PluginManifest};
 use crate::domain::ports::driven::{
-    AccountRepository, Clock, ConfigStore, ExtractedHosterLink, PluginLoader,
+    AccountRepository, Clock, ConfigStore, DownloadRepository, ExtractedHosterLink, PluginLoader,
 };
 
 use super::ResolvePremiumSourceHandler;
@@ -181,7 +181,7 @@ pub(super) fn handler_with_downloads(
     credentials: Arc<FakeAccountCredentialStore>,
     plugin: Arc<DirectUrlPlugin>,
     events: Arc<CapturingEventBus>,
-    downloads: Arc<InMemoryDownloadRepo>,
+    downloads: Arc<dyn DownloadRepository>,
 ) -> Arc<ResolvePremiumSourceHandler> {
     let clock: Arc<dyn Clock> = Arc::new(FixedClock);
     let selector = AccountSelector::new(repo.clone(), events.clone(), clock.clone());
