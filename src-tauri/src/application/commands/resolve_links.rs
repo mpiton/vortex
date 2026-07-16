@@ -458,7 +458,7 @@ mod tests {
         CapturingEventBus, FakeAccountCredentialStore, InMemoryAccountRepo,
         build_account_bus_with_plugin_loader,
     };
-    use crate::application::services::AccountSelector;
+    use crate::application::services::{AccountRotator, AccountSelector};
     use crate::domain::error::DomainError;
     use crate::domain::model::account::{Account, AccountId, AccountStatus, AccountType};
     use crate::domain::model::credential::Credential;
@@ -527,8 +527,12 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push(credential.password().to_string());
-            if credential.password() == "expired-key" {
-                return Err(DomainError::AccountExpired);
+            match credential.password() {
+                "expired-key" => return Err(DomainError::AccountExpired),
+                "invalid-key" => return Err(DomainError::AccountInvalidCredentials),
+                "quota-key" => return Err(DomainError::AccountQuotaExceeded),
+                "cooldown-key" => return Err(DomainError::AccountCooldown),
+                _ => {}
             }
             Ok(r#"{"kind":"file","mode":"premium","files":[{"id":"abc","url":"https://1fichier.com/?abc123","filename":"file.zip","size_bytes":42,"direct_url":"https://download.1fichier.com/token/file.zip","resumable":true,"wait_seconds":null,"requires_captcha":false,"traffic_used_bytes":1,"traffic_total_bytes":100}]}"#.into())
         }
@@ -551,8 +555,14 @@ mod tests {
         )
     }
 
-    #[tokio::test]
-    async fn resolve_hoster_rotates_expired_account_and_returns_opaque_account_id() {
+    async fn resolve_with_primary_credential(
+        primary_password: Option<&str>,
+    ) -> (
+        Vec<ResolvedLinkDto>,
+        Arc<InMemoryAccountRepo>,
+        Arc<PremiumPluginLoader>,
+        Account,
+    ) {
         let repo = Arc::new(InMemoryAccountRepo::new());
         let credentials = Arc::new(FakeAccountCredentialStore::new());
         let events = Arc::new(CapturingEventBus::new());
@@ -561,13 +571,15 @@ mod tests {
         let backup = premium_account("backup", 50);
         repo.save(&primary).unwrap();
         repo.save(&backup).unwrap();
-        credentials
-            .store_password(primary.id(), "expired-key")
-            .unwrap();
+        if let Some(password) = primary_password {
+            credentials.store_password(primary.id(), password).unwrap();
+        }
         credentials
             .store_password(backup.id(), "working-key")
             .unwrap();
-        let selector = AccountSelector::new(repo.clone(), events.clone(), Arc::new(FixedClock));
+        let clock: Arc<dyn Clock> = Arc::new(FixedClock);
+        let selector = AccountSelector::new(repo.clone(), events.clone(), clock.clone());
+        let rotator = AccountRotator::new(selector.clone(), repo.clone(), events.clone(), clock);
         let bus = build_account_bus_with_plugin_loader(
             repo.clone(),
             credentials,
@@ -576,7 +588,8 @@ mod tests {
             None,
             plugin.clone(),
         )
-        .with_account_selector(selector);
+        .with_account_selector(selector)
+        .with_account_rotator(rotator);
 
         let result = bus
             .handle_resolve_links(ResolveLinksCommand {
@@ -584,6 +597,13 @@ mod tests {
             })
             .await
             .expect("resolve succeeds");
+        (result, repo, plugin, primary)
+    }
+
+    #[tokio::test]
+    async fn resolve_hoster_rotates_expired_account_and_returns_opaque_account_id() {
+        let (result, repo, plugin, primary) =
+            resolve_with_primary_credential(Some("expired-key")).await;
 
         assert_eq!(
             result[0].resolved_url.as_deref(),
@@ -598,6 +618,47 @@ mod tests {
         assert_eq!(
             plugin.credentials.lock().unwrap().as_slice(),
             ["expired-key", "working-key"]
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_hoster_persists_typed_failures_before_rotating() {
+        for (password, expected_status) in [
+            ("invalid-key", AccountStatus::InvalidCredentials),
+            ("quota-key", AccountStatus::QuotaExhausted),
+            ("cooldown-key", AccountStatus::Cooldown),
+        ] {
+            let (result, repo, plugin, primary) =
+                resolve_with_primary_credential(Some(password)).await;
+
+            assert_eq!(result[0].account_id.as_deref(), Some("backup"));
+            let stored = repo.find_by_id(primary.id()).unwrap().unwrap();
+            assert_eq!(stored.status(), expected_status);
+            if matches!(
+                expected_status,
+                AccountStatus::QuotaExhausted | AccountStatus::Cooldown
+            ) {
+                assert!(stored.exhausted_until().is_some());
+            }
+            assert_eq!(
+                plugin.credentials.lock().unwrap().as_slice(),
+                [password, "working-key"]
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn resolve_hoster_marks_missing_credential_and_rotates_without_exposing_it() {
+        let (result, repo, plugin, primary) = resolve_with_primary_credential(None).await;
+
+        assert_eq!(result[0].account_id.as_deref(), Some("backup"));
+        assert_eq!(
+            repo.find_by_id(primary.id()).unwrap().unwrap().status(),
+            AccountStatus::MissingCredential
+        );
+        assert_eq!(
+            plugin.credentials.lock().unwrap().as_slice(),
+            ["working-key"]
         );
     }
 
