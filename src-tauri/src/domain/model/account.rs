@@ -507,6 +507,64 @@ mod tests {
     }
 
     #[test]
+    fn test_account_status_round_trip_via_string() {
+        for status in [
+            AccountStatus::Unverified,
+            AccountStatus::Valid,
+            AccountStatus::InvalidCredentials,
+            AccountStatus::MissingCredential,
+            AccountStatus::Expired,
+            AccountStatus::QuotaExhausted,
+            AccountStatus::Cooldown,
+            AccountStatus::Error,
+        ] {
+            let rendered = status.to_string();
+            let parsed: AccountStatus = rendered.parse().expect("round trip");
+            assert_eq!(parsed, status);
+        }
+    }
+
+    #[test]
+    fn test_only_valid_or_elapsed_cooldown_accounts_are_selectable() {
+        let mut account = make_account();
+        assert!(!account.is_selectable(1_000));
+
+        account.set_status(AccountStatus::Valid);
+        assert!(account.is_selectable(1_000));
+
+        account.set_status(AccountStatus::InvalidCredentials);
+        assert!(!account.is_selectable(1_000));
+
+        account.mark_unavailable(AccountStatus::Cooldown, 2_000);
+        assert!(!account.is_selectable(1_999));
+        assert!(account.is_selectable(2_000));
+
+        account.mark_unavailable(AccountStatus::QuotaExhausted, 3_000);
+        assert!(!account.is_selectable(2_999));
+        assert!(account.is_selectable(3_000));
+    }
+
+    #[test]
+    fn test_reconstruct_with_status_preserves_operational_state() {
+        let account = Account::reconstruct_with_status(
+            AccountId::new("account-1"),
+            "vortex-mod-1fichier".into(),
+            "alice".into(),
+            AccountType::Premium,
+            true,
+            None,
+            None,
+            None,
+            Some(500),
+            100,
+            AccountStatus::Cooldown,
+            Some(2_000),
+        );
+        assert_eq!(account.status(), AccountStatus::Cooldown);
+        assert_eq!(account.exhausted_until(), Some(2_000));
+    }
+
+    #[test]
     fn test_account_reconstruct_preserves_all_fields() {
         let acc = Account::reconstruct(
             AccountId::new("k"),

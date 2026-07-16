@@ -65,6 +65,7 @@ mod tests {
     fn test_validation_outcome_ok_marks_valid_with_no_error() {
         let out = ValidationOutcome::ok();
         assert!(out.valid);
+        assert_eq!(out.status, AccountStatus::Valid);
         assert!(out.error_message.is_none());
         assert!(out.latency_ms.is_none());
         assert!(out.traffic_left.is_none());
@@ -72,8 +73,9 @@ mod tests {
 
     #[test]
     fn test_validation_outcome_rejected_records_message_and_invalid_flag() {
-        let out = ValidationOutcome::rejected("wrong password");
+        let out = ValidationOutcome::rejected(AccountStatus::InvalidCredentials, "wrong password");
         assert!(!out.valid);
+        assert_eq!(out.status, AccountStatus::InvalidCredentials);
         assert_eq!(out.error_message.as_deref(), Some("wrong password"));
     }
 

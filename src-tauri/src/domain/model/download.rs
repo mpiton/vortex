@@ -1152,8 +1152,8 @@ mod tests {
     fn test_with_account_id_stores_account_link() {
         let d = make_download();
         assert_eq!(d.account_id(), None);
-        let d = d.with_account_id(42);
-        assert_eq!(d.account_id(), Some(42));
+        let d = d.with_account_id(crate::domain::model::account::AccountId::new("account-42"));
+        assert_eq!(d.account_id().map(|id| id.as_str()), Some("account-42"));
     }
 
     fn mk_mirror(host: &str, priority: u8) -> Mirror {
