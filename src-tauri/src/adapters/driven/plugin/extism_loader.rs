@@ -704,6 +704,33 @@ mod tests {
         PluginManifest::new(info)
     }
 
+    #[test]
+    fn account_plugin_errors_map_to_typed_domain_errors() {
+        assert_eq!(
+            classify_account_plugin_error(
+                "ACCOUNT_INVALID_CREDENTIALS: configured key was rejected"
+            ),
+            DomainError::AccountInvalidCredentials
+        );
+        assert_eq!(
+            classify_account_plugin_error("ACCOUNT_EXPIRED: subscription ended"),
+            DomainError::AccountExpired
+        );
+        assert_eq!(
+            classify_account_plugin_error("ACCOUNT_COOLDOWN: flood detected"),
+            DomainError::AccountCooldown
+        );
+    }
+
+    #[test]
+    fn unknown_account_plugin_error_stays_a_plugin_error() {
+        let error = classify_account_plugin_error("PLUGIN_ERROR: malformed response");
+        assert!(matches!(
+            error,
+            DomainError::PluginError(message) if message.contains("malformed response")
+        ));
+    }
+
     fn setup_plugin_dir(plugins_dir: &Path, name: &str) {
         let plugin_dir = plugins_dir.join(name);
         std::fs::create_dir_all(&plugin_dir).unwrap();

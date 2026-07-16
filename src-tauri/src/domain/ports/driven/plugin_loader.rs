@@ -4,7 +4,9 @@
 //! to determine which plugin can handle a given URL.
 
 use crate::domain::error::DomainError;
+use crate::domain::model::credential::Credential;
 use crate::domain::model::plugin::{PluginInfo, PluginManifest};
+use crate::domain::ports::driven::account_validator::ValidationOutcome;
 use crate::domain::ports::driven::plugin_store_client::OfficialPluginProvenance;
 
 /// Result of a `download_to_file` plugin call.
@@ -80,6 +82,26 @@ pub trait PluginLoader: Send + Sync {
         Err(DomainError::NotFound(
             "extract_links not supported by this loader".into(),
         ))
+    }
+
+    /// Extract links while exposing one account credential only for this call.
+    fn extract_links_with_credential(
+        &self,
+        url: &str,
+        _credential: &Credential,
+    ) -> Result<String, DomainError> {
+        self.extract_links(url)
+    }
+
+    /// Validate an account through the plugin matching `service_name`.
+    fn validate_account(
+        &self,
+        service_name: &str,
+        _credential: &Credential,
+    ) -> Result<ValidationOutcome, DomainError> {
+        Err(DomainError::NotFound(format!(
+            "account validation not supported for service '{service_name}'"
+        )))
     }
 
     /// Fetch selectable media variants from the plugin that claims the URL.
@@ -211,6 +233,28 @@ mod tests {
         let loader = MinimalLoader;
         let result = loader.extract_links("https://vimeo.com/123");
         assert!(matches!(result, Err(DomainError::NotFound(_))));
+    }
+
+    #[test]
+    fn test_extract_links_with_credential_default_delegates_without_support() {
+        let loader = MinimalLoader;
+        let credential = Credential::new("alice", "secret");
+        let result =
+            loader.extract_links_with_credential("https://1fichier.com/?abc123", &credential);
+        assert!(matches!(result, Err(DomainError::NotFound(_))));
+    }
+
+    #[test]
+    fn test_validate_account_default_names_unsupported_service() {
+        let loader = MinimalLoader;
+        let credential = Credential::new("alice", "secret");
+        let error = loader
+            .validate_account("vortex-mod-1fichier", &credential)
+            .expect_err("minimal loader must reject account validation");
+        assert!(matches!(
+            error,
+            DomainError::NotFound(message) if message.contains("vortex-mod-1fichier")
+        ));
     }
 
     #[test]

@@ -1,3 +1,4 @@
+pub mod account_validator;
 pub mod builtin;
 pub mod capabilities;
 pub mod extism_loader;
