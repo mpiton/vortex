@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Updated compatible Rust and frontend dependencies, including the patched
+  `quinn-proto` release. Disabled unused SeaORM migration defaults so the
+  MySQL/PostgreSQL drivers and vulnerable `rsa` crate are no longer included.
+  Restored strict wildcard dependency checks after returning Extism to crates.io.
+  `cargo audit` still reports RUSTSEC-2026-0194 and RUSTSEC-2026-0195 through
+  `wayland-scanner 0.31.10`; retain the documented exception only until the
+  upstream fix is released.
 - **Typed yt-dlp broker (MAT-131)**: replaced the plugin-facing generic
   `run_subprocess(binary, args, timeout)` capability with a closed
   `run_ytdlp` contract. Vortex now selects an approved executable, builds all

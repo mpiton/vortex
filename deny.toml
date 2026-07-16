@@ -31,12 +31,9 @@ ignore = [
   "RUSTSEC-2024-0420",
   # proc-macro-error unmaintained — transitive via tauri macros stack
   "RUSTSEC-2024-0370",
-  # bincode 1.x unmaintained — vortex uses bincode 2.x but transitive
-  # 1.x still pulled by some adapters; upstream chain to migrate.
+  # bincode is unmaintained in all versions; evaluate a maintained alternative
+  # in a dedicated migration batch.
   "RUSTSEC-2025-0141",
-  # fxhash unmaintained — transitive via sea-orm / sqlx; replacement
-  # rustc-hash requires sea-orm upgrade.
-  "RUSTSEC-2025-0057",
   # rust-unic family unmaintained — transitive via urlpattern → tauri-utils
   "RUSTSEC-2025-0075",
   "RUSTSEC-2025-0080",
@@ -48,9 +45,9 @@ ignore = [
   # input surface. Mitigation: follow SeaORM 1.x updates and remove this entry
   # when its macros migrate. Review by 2026-10-15.
   "RUSTSEC-2026-0173",
-  # quick-xml <0.41 is pulled by tauri-winrt-notification 0.7.2 only for XML
-  # escaping, and by wayland-scanner 0.31.10 for trusted build-time protocol
-  # XML. Neither vulnerable parser path processes remote XML in Vortex.
+  # quick-xml <0.41 is pulled by wayland-scanner 0.31.10 for trusted build-time
+  # protocol XML. The vulnerable parser paths do not process remote XML in
+  # Vortex.
   # Mitigation: keep parent crates current and remove when they adopt 0.41+.
   # Review by 2026-10-15.
   "RUSTSEC-2026-0194",
@@ -84,17 +81,10 @@ allow = [
   "GPL-3.0-or-later",
 ]
 
-[[licenses.exceptions]]
-allow = ["OpenSSL"]
-crate = "ring"
-
 # === Bans / duplicates ===
 [bans]
 multiple-versions = "allow"
-# Wildcards triggered by the temporary extism git pin in src-tauri/Cargo.toml
-# (rev-locked, see allow-git below). Downgrade to warn until upstream extism
-# ships wasmtime >=43 and we can pin a regular crates.io version.
-wildcards = "warn"
+wildcards = "deny"
 highlight = "all"
 workspace-default-features = "allow"
 external-default-features = "allow"
