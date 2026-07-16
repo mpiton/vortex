@@ -237,7 +237,10 @@ impl AccountValidator for FakeAccountValidator {
             .unwrap_or(ValidatorBehavior::Missing);
         match behavior {
             ValidatorBehavior::Ok(outcome) => Ok(outcome),
-            ValidatorBehavior::Reject(msg) => Ok(ValidationOutcome::rejected(msg)),
+            ValidatorBehavior::Reject(msg) => Ok(ValidationOutcome::rejected(
+                crate::domain::model::account::AccountStatus::InvalidCredentials,
+                msg,
+            )),
             ValidatorBehavior::Missing => Err(DomainError::NotFound(format!(
                 "no plugin for service {service_name}"
             ))),

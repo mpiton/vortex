@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::adapters::driven::sqlite::util::safe_u32;
 use crate::domain::error::DomainError;
+use crate::domain::model::account::AccountId;
 use crate::domain::model::checksum::ChecksumAlgorithm;
 use crate::domain::model::download::{Download, DownloadId, DownloadState, FileSize, Url};
 use crate::domain::model::mirror::Mirror;
@@ -79,7 +80,8 @@ pub struct Model {
     pub protocol: String,
     pub resume_supported: i32,
     pub module_name: Option<String>,
-    pub account_id: Option<i64>,
+    #[sea_orm(column_name = "account_ref")]
+    pub account_id: Option<String>,
     pub destination_path: String,
     pub error_message: Option<String>,
     /// `None` keeps storage compact for the common single-source path —
@@ -154,7 +156,7 @@ impl Model {
             self.protocol,
             self.resume_supported != 0,
             self.module_name,
-            self.account_id.map(|id| id as u64),
+            self.account_id.map(AccountId::new),
             self.destination_path,
             deserialize_mirrors(self.mirrors_json.as_deref())?,
             safe_u32(self.current_mirror_index as i64),
@@ -188,7 +190,7 @@ impl ActiveModel {
             protocol: Set(download.protocol().to_string()),
             resume_supported: Set(if download.resume_supported() { 1 } else { 0 }),
             module_name: Set(download.module_name().map(|s| s.to_string())),
-            account_id: Set(download.account_id().map(|id| id as i64)),
+            account_id: Set(download.account_id().map(|id| id.as_str().to_string())),
             destination_path: Set(download.destination_path().to_string()),
             error_message: Set(None),
             mirrors_json: Set(serialize_mirrors(download.mirrors())),

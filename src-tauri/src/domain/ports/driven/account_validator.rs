@@ -8,6 +8,7 @@
 //! error to the user.
 
 use crate::domain::error::DomainError;
+use crate::domain::model::account::AccountStatus;
 
 /// Result of an account validation attempt.
 ///
@@ -17,6 +18,7 @@ use crate::domain::error::DomainError;
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ValidationOutcome {
     pub valid: bool,
+    pub status: AccountStatus,
     pub latency_ms: Option<u64>,
     pub traffic_left: Option<u64>,
     pub traffic_total: Option<u64>,
@@ -28,13 +30,15 @@ impl ValidationOutcome {
     pub fn ok() -> Self {
         Self {
             valid: true,
+            status: AccountStatus::Valid,
             ..Self::default()
         }
     }
 
-    pub fn rejected(error_message: impl Into<String>) -> Self {
+    pub fn rejected(status: AccountStatus, error_message: impl Into<String>) -> Self {
         Self {
             valid: false,
+            status,
             error_message: Some(error_message.into()),
             ..Self::default()
         }

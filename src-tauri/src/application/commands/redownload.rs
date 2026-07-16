@@ -10,6 +10,7 @@ use crate::application::command_bus::CommandBus;
 use crate::application::commands::RedownloadSource;
 use crate::application::error::AppError;
 use crate::domain::event::DomainEvent;
+use crate::domain::model::account::AccountId;
 use crate::domain::model::download::{Download, DownloadId, DownloadState, Url};
 
 impl CommandBus {
@@ -77,7 +78,7 @@ impl CommandBus {
                     priority: Some(*download.priority()),
                     segments_count: Some(download.segments_count()),
                     module_name: download.module_name().map(str::to_string),
-                    account_id: download.account_id(),
+                    account_id: download.account_id().cloned(),
                 })
             }
             RedownloadSource::History(history_id) => {
@@ -110,7 +111,7 @@ struct RedownloadTemplate {
     priority: Option<crate::domain::model::Priority>,
     segments_count: Option<u32>,
     module_name: Option<String>,
-    account_id: Option<u64>,
+    account_id: Option<AccountId>,
 }
 
 #[cfg(test)]
@@ -126,6 +127,7 @@ mod tests {
     use crate::domain::error::DomainError;
     use crate::domain::event::DomainEvent;
     use crate::domain::model::Priority;
+    use crate::domain::model::account::AccountId;
     use crate::domain::model::config::{AppConfig, ConfigPatch};
     use crate::domain::model::credential::Credential;
     use crate::domain::model::download::{Download, DownloadId, DownloadState, Url};
@@ -370,7 +372,7 @@ mod tests {
         .with_segments_count(4)
         .with_priority(Priority::new(9).unwrap())
         .with_module_name("vortex-mod-example".to_string())
-        .with_account_id(7);
+        .with_account_id(AccountId::new("account-7"));
         d.start().unwrap();
         d.complete().unwrap();
         d
@@ -404,7 +406,10 @@ mod tests {
         assert_eq!(created.segments_count(), 4);
         assert_eq!(*created.priority(), Priority::new(9).unwrap());
         assert_eq!(created.module_name(), Some("vortex-mod-example"));
-        assert_eq!(created.account_id(), Some(7));
+        assert_eq!(
+            created.account_id().map(AccountId::as_str),
+            Some("account-7")
+        );
         assert_eq!(
             created.state(),
             DownloadState::Queued,

@@ -55,6 +55,55 @@ impl FromStr for AccountType {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum AccountStatus {
+    #[default]
+    Unverified,
+    Valid,
+    InvalidCredentials,
+    MissingCredential,
+    Expired,
+    QuotaExhausted,
+    Cooldown,
+    Error,
+}
+
+impl fmt::Display for AccountStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let value = match self {
+            Self::Unverified => "unverified",
+            Self::Valid => "valid",
+            Self::InvalidCredentials => "invalid_credentials",
+            Self::MissingCredential => "missing_credential",
+            Self::Expired => "expired",
+            Self::QuotaExhausted => "quota_exhausted",
+            Self::Cooldown => "cooldown",
+            Self::Error => "error",
+        };
+        f.write_str(value)
+    }
+}
+
+impl FromStr for AccountStatus {
+    type Err = DomainError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "unverified" => Ok(Self::Unverified),
+            "valid" => Ok(Self::Valid),
+            "invalid_credentials" => Ok(Self::InvalidCredentials),
+            "missing_credential" => Ok(Self::MissingCredential),
+            "expired" => Ok(Self::Expired),
+            "quota_exhausted" => Ok(Self::QuotaExhausted),
+            "cooldown" => Ok(Self::Cooldown),
+            "error" => Ok(Self::Error),
+            other => Err(DomainError::ValidationError(format!(
+                "invalid account status: {other}"
+            ))),
+        }
+    }
+}
+
 /// Strategy used by `AccountSelector` to pick the next account when several
 /// exist for the same service. `BestTraffic` is the default.
 ///
@@ -115,11 +164,9 @@ pub struct Account {
     valid_until: Option<u64>,
     last_validated: Option<u64>,
     created_at: u64,
-    /// Transient quota-exhaustion deadline (Unix epoch ms). Set by the
-    /// `AccountRotator` when the upstream signals quota exhaustion
-    /// (HTTP 429, traffic below threshold, …) and cleared when a
-    /// fresh traffic refresh confirms the account is usable again.
-    /// NOT persisted in SQLite — always `None` after `reconstruct`.
+    status: AccountStatus,
+    /// Quota/rate-limit deadline (Unix epoch ms), persisted so the Accounts
+    /// view and a restarted selector observe the same availability state.
     exhausted_until: Option<u64>,
 }
 
@@ -142,6 +189,7 @@ impl Account {
             valid_until: None,
             last_validated: None,
             created_at,
+            status: AccountStatus::Unverified,
             exhausted_until: None,
         }
     }
@@ -159,6 +207,42 @@ impl Account {
         last_validated: Option<u64>,
         created_at: u64,
     ) -> Self {
+        let status = if last_validated.is_some() {
+            AccountStatus::Valid
+        } else {
+            AccountStatus::Unverified
+        };
+        Self::reconstruct_with_status(
+            id,
+            service_name,
+            username,
+            account_type,
+            enabled,
+            traffic_left,
+            traffic_total,
+            valid_until,
+            last_validated,
+            created_at,
+            status,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn reconstruct_with_status(
+        id: AccountId,
+        service_name: String,
+        username: String,
+        account_type: AccountType,
+        enabled: bool,
+        traffic_left: Option<u64>,
+        traffic_total: Option<u64>,
+        valid_until: Option<u64>,
+        last_validated: Option<u64>,
+        created_at: u64,
+        status: AccountStatus,
+        exhausted_until: Option<u64>,
+    ) -> Self {
         Self {
             id,
             service_name,
@@ -170,7 +254,8 @@ impl Account {
             valid_until,
             last_validated,
             created_at,
-            exhausted_until: None,
+            status,
+            exhausted_until,
         }
     }
 
@@ -209,6 +294,46 @@ impl Account {
         self.last_validated = Some(timestamp);
     }
 
+    pub fn set_status(&mut self, status: AccountStatus) {
+        self.status = status;
+        if !matches!(
+            status,
+            AccountStatus::QuotaExhausted | AccountStatus::Cooldown
+        ) {
+            self.exhausted_until = None;
+        }
+    }
+
+    pub fn status(&self) -> AccountStatus {
+        self.status
+    }
+
+    pub fn mark_unavailable(&mut self, status: AccountStatus, until_ms: u64) {
+        debug_assert!(matches!(
+            status,
+            AccountStatus::QuotaExhausted | AccountStatus::Cooldown
+        ));
+        self.status = status;
+        self.exhausted_until = Some(until_ms);
+    }
+
+    pub fn is_selectable(&self, now_ms: u64) -> bool {
+        if !self.enabled || self.is_expired(now_ms) {
+            return false;
+        }
+        match self.status {
+            AccountStatus::Valid => true,
+            AccountStatus::QuotaExhausted | AccountStatus::Cooldown => {
+                self.exhausted_until.is_some_and(|until| now_ms >= until)
+            }
+            AccountStatus::Unverified
+            | AccountStatus::InvalidCredentials
+            | AccountStatus::MissingCredential
+            | AccountStatus::Expired
+            | AccountStatus::Error => false,
+        }
+    }
+
     pub fn is_expired(&self, now: u64) -> bool {
         match self.valid_until {
             Some(expiry) => now > expiry,
@@ -219,13 +344,19 @@ impl Account {
     /// Mark this account as quota-exhausted until `until_ms` (Unix epoch
     /// ms). Transient — never persisted in SQLite.
     pub fn mark_exhausted(&mut self, until_ms: u64) {
-        self.exhausted_until = Some(until_ms);
+        self.mark_unavailable(AccountStatus::QuotaExhausted, until_ms);
     }
 
     /// Drop any pending quota-exhaustion marker, regardless of the
     /// remaining cooldown.
     pub fn clear_exhausted(&mut self) {
         self.exhausted_until = None;
+        if matches!(
+            self.status,
+            AccountStatus::QuotaExhausted | AccountStatus::Cooldown
+        ) {
+            self.status = AccountStatus::Valid;
+        }
     }
 
     /// Active quota-exhaustion deadline (Unix epoch ms) when set, else

@@ -186,6 +186,7 @@ mod tests {
             "real-debrid",
             ValidatorBehavior::Ok(ValidationOutcome {
                 valid: true,
+                status: crate::domain::model::account::AccountStatus::Valid,
                 latency_ms: Some(120),
                 traffic_left: Some(50_000),
                 traffic_total: Some(100_000),

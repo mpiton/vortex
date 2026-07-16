@@ -58,6 +58,8 @@ impl AccountRepository for SqliteAccountRepo {
                             account::Column::TrafficTotal,
                             account::Column::ValidUntil,
                             account::Column::LastValidated,
+                            account::Column::Status,
+                            account::Column::CooldownUntil,
                         ])
                         .to_owned(),
                 )
