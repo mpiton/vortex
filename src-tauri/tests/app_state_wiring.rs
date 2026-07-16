@@ -94,6 +94,9 @@ fn test_appstate_wiring_with_in_memory_db() {
         event_bus.clone(),
         account_clock.clone(),
         account_operation_locks.clone(),
+        download_repo.clone(),
+        config_store.clone(),
+        account_rotator.clone(),
     ));
     let premium_source_resolver: Arc<dyn DownloadSourceResolver> = premium_source_handler.clone();
 
@@ -128,8 +131,7 @@ fn test_appstate_wiring_with_in_memory_db() {
         .with_account_selector(account_selector)
         .with_account_rotator(account_rotator)
         .with_account_clock(account_clock)
-        .with_account_operation_locks(account_operation_locks)
-        .with_premium_source_handler(premium_source_handler),
+        .with_account_operation_locks(account_operation_locks),
     );
 
     let query_bus = Arc::new(
@@ -153,7 +155,6 @@ fn test_appstate_wiring_with_in_memory_db() {
     assert!(command_bus.account_validator().is_some());
     assert!(command_bus.account_selector().is_some());
     assert!(command_bus.account_rotator().is_some());
-    assert!(command_bus.premium_source_handler().is_some());
     assert!(query_bus.account_repo().is_some());
 
     // Verify query bus can execute a read query (empty DB → empty results)

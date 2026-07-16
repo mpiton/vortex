@@ -2,14 +2,12 @@
 //!
 //! PRD §6.4 ("Rotation si quota atteint") — when a hoster signals
 //! quota exhaustion (HTTP 429, `traffic_left` below threshold, …) the
-//! rotator pulls the offending account out of the rotation for a
-//! cooldown window, asks the [`AccountSelector`] for the next best
-//! candidate, and emits a `DomainEvent::AccountExhausted` so the UI
-//! can warn the user.
+//! rotator pulls the offending account out of the rotation and asks the
+//! [`AccountSelector`] for the next best candidate.
 //!
 //! Cooldown status and deadline are persisted on the [`Account`] so the UI
-//! and a restarted process observe the same availability. The in-memory map
-//! remains a concurrency guard for selection probes racing with mark/clear.
+//! and a restarted process observe the same availability. Command handlers
+//! own aggregate writes; the in-memory map is only a selection cache.
 //!
 //! Concurrency: the map sits behind a `std::sync::Mutex`. Every public
 //! method that takes the lock surfaces a poisoned mutex as
@@ -24,9 +22,8 @@ use crate::application::error::AppError;
 use crate::application::services::AccountSelector;
 use crate::domain::event::DomainEvent;
 use crate::domain::model::account::{Account, AccountId, AccountSelectionStrategy, AccountStatus};
-use crate::domain::ports::driven::AccountRepository;
 use crate::domain::ports::driven::clock::Clock;
-use crate::domain::ports::driven::event_bus::EventBus;
+use crate::domain::ports::driven::{AccountRepository, EventBus};
 
 /// Outcome of [`AccountRotator::next_account`].
 ///
@@ -107,15 +104,15 @@ impl AccountRotator {
     ) -> Result<NextAccountOutcome, AppError> {
         let now_ms = self.now_ms();
         let mut exhausted_ids = self.snapshot_exhausted(now_ms)?;
-        // Linearise with concurrent `mark_exhausted` / `clear_exhausted`:
+        // Linearise with command-handler cache updates:
         // - On every pick, re-check the chosen id under the lock and
         //   retry with that id added to the exclude list when a
-        //   parallel `mark_exhausted` landed in the gap.
+        //   parallel committed cooldown landed in the gap.
         // - When the selector exhausts options, re-snapshot the
         //   cooldown map and retry once more if any id from the full
         //   current exclude list (initial snapshot ∪ race-pushed ids)
-        //   has since been cleared via `clear_exhausted` or
-        //   `record_traffic_refresh`. Otherwise we'd return
+        //   has since been cleared after successful validation. Otherwise
+        //   we'd return
         //   `AllExhausted` while a live account is in fact selectable.
         loop {
             let picked = self.selector.select_best_excluding_quiet(
@@ -133,7 +130,7 @@ impl AccountRotator {
                 if still_available {
                     // Emit AccountSelected only on the committed pick, not
                     // on probes that lose the race to a parallel
-                    // `mark_exhausted`. Otherwise UI/telemetry would see
+                    // a committed cooldown. Otherwise UI/telemetry would see
                     // "selected" for an account never returned to the caller.
                     self.event_bus.publish(DomainEvent::AccountSelected {
                         id: account.id().clone(),
@@ -183,67 +180,16 @@ impl AccountRotator {
         })
     }
 
-    /// Mark `account_id` as quota-exhausted for `ttl_secs` seconds.
-    /// Callers pass a hoster-specific cooldown (typical range: a few
-    /// hundred seconds for free plans, longer for daily caps). Emits
-    /// [`DomainEvent::AccountExhausted`] carrying the committed deadline.
-    ///
-    /// If a cooldown entry already exists and its deadline is further
-    /// in the future than the proposed one, the existing deadline
-    /// wins. This prevents a short retry-driven TTL from accidentally
-    /// shortening a longer daily-cap cooldown set by a previous
-    /// signal.
-    pub fn mark_exhausted(
-        &self,
-        account_id: &AccountId,
-        service_name: &str,
-        ttl_secs: u64,
-    ) -> Result<(), AppError> {
-        let now_ms = self.now_ms();
-        let proposed = now_ms.saturating_add(ttl_secs.saturating_mul(1_000));
-        let committed = {
-            let mut guard = self.lock_exhausted()?;
-            let mut account = self.repo.find_by_id(account_id)?.ok_or_else(|| {
-                AppError::NotFound(format!("account {} not found", account_id.as_str()))
-            })?;
-            if account.service_name() != service_name {
-                return Err(AppError::Validation(format!(
-                    "account {} does not belong to service {service_name}",
-                    account_id.as_str()
-                )));
+    /// Cache a cooldown only after a command handler committed it.
+    pub(crate) fn cache_exhausted(&self, account_id: &AccountId, deadline_ms: u64) {
+        let mut guard = match self.exhausted.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                tracing::warn!("recovering poisoned non-canonical account cooldown cache");
+                poisoned.into_inner()
             }
-            let final_deadline = guard
-                .get(account_id)
-                .copied()
-                .into_iter()
-                .chain(account.exhausted_until())
-                .chain(std::iter::once(proposed))
-                .max()
-                .unwrap_or(proposed);
-            account.mark_exhausted(final_deadline);
-            self.repo.save(&account)?;
-            guard.insert(account_id.clone(), final_deadline);
-            final_deadline
         };
-        self.event_bus.publish(DomainEvent::AccountExhausted {
-            id: account_id.clone(),
-            service_name: service_name.to_string(),
-            exhausted_until_ms: committed,
-        });
-        Ok(())
-    }
-
-    /// Drop any cooldown entry for `account_id` regardless of its
-    /// remaining TTL. Idempotent — calling on an unknown id is a
-    /// no-op.
-    pub fn clear_exhausted(&self, account_id: &AccountId) -> Result<(), AppError> {
-        let mut guard = self.lock_exhausted()?;
-        if let Some(mut account) = self.repo.find_by_id(account_id)? {
-            account.clear_exhausted();
-            self.repo.save(&account)?;
-        }
-        guard.remove(account_id);
-        Ok(())
+        guard.insert(account_id.clone(), deadline_ms);
     }
 
     /// Clear only the non-canonical in-memory cooldown cache.
@@ -300,26 +246,6 @@ impl AccountRotator {
             return true;
         }
         matches!(traffic_left, Some(left) if left < threshold_bytes)
-    }
-
-    /// Reconcile a freshly observed `traffic_left` against the
-    /// exhaustion map. When the upstream confirms `traffic_left` is at
-    /// or above `threshold_bytes`, drop the cooldown so the next
-    /// `next_account` call can pick the account again. When the
-    /// observation is below the threshold OR `None` (unknown), the
-    /// cooldown is left untouched — `mark_exhausted` is the canonical
-    /// way to extend it.
-    pub fn record_traffic_refresh(
-        &self,
-        account_id: &AccountId,
-        traffic_left: Option<u64>,
-        threshold_bytes: u64,
-    ) -> Result<(), AppError> {
-        let confirms_available = matches!(traffic_left, Some(left) if left >= threshold_bytes);
-        if !confirms_available {
-            return Ok(());
-        }
-        self.clear_exhausted(account_id)
     }
 
     fn snapshot_exhausted(&self, now_ms: u64) -> Result<Vec<AccountId>, AppError> {
@@ -509,6 +435,65 @@ mod tests {
         )
     }
 
+    trait PersistCooldownForTest {
+        fn mark_exhausted(
+            &self,
+            account_id: &AccountId,
+            service_name: &str,
+            ttl_secs: u64,
+        ) -> Result<(), AppError>;
+        fn clear_exhausted(&self, account_id: &AccountId) -> Result<(), AppError>;
+        fn record_traffic_refresh(
+            &self,
+            account_id: &AccountId,
+            traffic_left: Option<u64>,
+            threshold_bytes: u64,
+        ) -> Result<(), AppError>;
+    }
+
+    impl PersistCooldownForTest for AccountRotator {
+        fn mark_exhausted(
+            &self,
+            account_id: &AccountId,
+            service_name: &str,
+            ttl_secs: u64,
+        ) -> Result<(), AppError> {
+            let mut account = self.repo.find_by_id(account_id)?.ok_or_else(|| {
+                AppError::NotFound(format!("account {} not found", account_id.as_str()))
+            })?;
+            if account.service_name() != service_name {
+                return Err(AppError::Validation("account service mismatch".into()));
+            }
+            let proposed = self.now_ms().saturating_add(ttl_secs.saturating_mul(1_000));
+            let deadline = account.exhausted_until().unwrap_or_default().max(proposed);
+            account.mark_exhausted(deadline);
+            self.repo.save(&account)?;
+            self.cache_exhausted(account_id, deadline);
+            Ok(())
+        }
+
+        fn clear_exhausted(&self, account_id: &AccountId) -> Result<(), AppError> {
+            if let Some(mut account) = self.repo.find_by_id(account_id)? {
+                account.clear_exhausted();
+                self.repo.save(&account)?;
+            }
+            self.clear_cached_exhausted(account_id);
+            Ok(())
+        }
+
+        fn record_traffic_refresh(
+            &self,
+            account_id: &AccountId,
+            traffic_left: Option<u64>,
+            threshold_bytes: u64,
+        ) -> Result<(), AppError> {
+            if matches!(traffic_left, Some(left) if left >= threshold_bytes) {
+                self.clear_exhausted(account_id)?;
+            }
+            Ok(())
+        }
+    }
+
     fn build_rotator(
         accounts: Vec<Account>,
         clock_secs: u64,
@@ -526,7 +511,7 @@ mod tests {
     fn test_mark_exhausted_routes_next_account_to_remaining_candidate() {
         let a = account("a", "Uploaded", Some(50_000_000_000), true);
         let b = account("b", "Uploaded", Some(40_000_000_000), true);
-        let (rotator, bus, _clock) = build_rotator(vec![a, b], 1_700_000_000);
+        let (rotator, _bus, _clock) = build_rotator(vec![a, b], 1_700_000_000);
 
         let first = rotator
             .next_account("Uploaded", AccountSelectionStrategy::BestTraffic)
@@ -548,13 +533,6 @@ mod tests {
             NextAccountOutcome::Picked(acc) => assert_eq!(acc.id().as_str(), "b"),
             other => panic!("expected Picked(b), got {other:?}"),
         }
-
-        let events = bus.events();
-        assert!(events.iter().any(|e| matches!(
-            e,
-            DomainEvent::AccountExhausted { id, service_name, exhausted_until_ms: _ }
-                if id.as_str() == "a" && service_name == "Uploaded"
-        )));
     }
 
     #[test]
@@ -798,7 +776,7 @@ mod tests {
     fn test_quota_detection_to_rotation_full_flow() {
         let a = account("primary", "Uploaded", Some(50_000_000), true);
         let b = account("backup", "Uploaded", Some(500), true);
-        let (rotator, bus, _clock) = build_rotator(vec![a, b], 1_700_000_000);
+        let (rotator, _bus, _clock) = build_rotator(vec![a, b], 1_700_000_000);
 
         // Step 1: caller picks the primary (more traffic wins).
         let first = rotator
@@ -830,16 +808,6 @@ mod tests {
             NextAccountOutcome::Picked(acc) => assert_eq!(acc.id().as_str(), "backup"),
             other => panic!("expected Picked(backup), got {other:?}"),
         }
-
-        let event_count = bus
-            .events()
-            .iter()
-            .filter(|e| matches!(e, DomainEvent::AccountExhausted { .. }))
-            .count();
-        assert_eq!(
-            event_count, 1,
-            "exactly one AccountExhausted should have been emitted"
-        );
     }
 
     #[test]
@@ -866,14 +834,10 @@ mod tests {
         // wins, and the AccountExhausted event publishes it verbatim
         // so subscribers don't see a phantom shorter window.
         let a = account("a", "S", Some(50), true);
-        let (rotator, bus, clock) = build_rotator(vec![a], 1_700_000_000);
-        let now_ms = 1_700_000_000_u64 * 1_000;
-
+        let (rotator, _bus, clock) = build_rotator(vec![a], 1_700_000_000);
         rotator
             .mark_exhausted(&AccountId::new("a"), "S", 600)
             .unwrap();
-        let long_deadline = now_ms + 600 * 1_000;
-
         rotator
             .mark_exhausted(&AccountId::new("a"), "S", 60)
             .unwrap();
@@ -887,22 +851,6 @@ mod tests {
         // Advance past the long deadline; cooldown finally clears.
         clock.advance_secs(600);
         assert!(!rotator.is_exhausted(&AccountId::new("a")).unwrap());
-
-        let payloads: Vec<u64> = bus
-            .events()
-            .iter()
-            .filter_map(|e| match e {
-                DomainEvent::AccountExhausted {
-                    exhausted_until_ms, ..
-                } => Some(*exhausted_until_ms),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(
-            payloads,
-            vec![long_deadline, long_deadline],
-            "second AccountExhausted must republish the still-active longer deadline, not the shorter proposed one"
-        );
     }
 
     /// PRD §6.4 freezes the human-facing message format. Callers that

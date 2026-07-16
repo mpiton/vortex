@@ -19,6 +19,19 @@ impl CommandBus {
         cmd: super::RedownloadCommand,
     ) -> Result<DownloadId, AppError> {
         let template = self.load_template(&cmd.source)?;
+        let account_lock = template
+            .account_id
+            .as_ref()
+            .map(|id| self.account_operation_lock(id))
+            .transpose()?;
+        let _account_guard = match account_lock {
+            Some(lock) => Some(lock.lock_owned().await),
+            None => None,
+        };
+        self.validate_download_account(
+            template.module_name.as_deref(),
+            template.account_id.as_ref(),
+        )?;
 
         let url = Url::new(&template.url)?;
         let dest = cmd
@@ -121,13 +134,16 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use crate::application::command_bus::CommandBus;
+    use crate::application::commands::tests_support::{
+        FakeAccountCredentialStore, InMemoryAccountRepo,
+    };
     use crate::application::commands::{RedownloadCommand, RedownloadSource};
     use crate::application::error::AppError;
     use crate::application::test_support::InMemoryHistoryRepo;
     use crate::domain::error::DomainError;
     use crate::domain::event::DomainEvent;
     use crate::domain::model::Priority;
-    use crate::domain::model::account::AccountId;
+    use crate::domain::model::account::{Account, AccountId, AccountStatus, AccountType};
     use crate::domain::model::config::{AppConfig, ConfigPatch};
     use crate::domain::model::credential::Credential;
     use crate::domain::model::download::{Download, DownloadId, DownloadState, Url};
@@ -136,8 +152,9 @@ mod tests {
     use crate::domain::model::plugin::{PluginInfo, PluginManifest};
     use crate::domain::model::views::HistoryEntry;
     use crate::domain::ports::driven::{
-        ArchiveExtractor, ClipboardObserver, ConfigStore, CredentialStore, DownloadEngine,
-        DownloadRepository, EventBus, FileStorage, HistoryRepository, HttpClient, PluginLoader,
+        AccountCredentialStore, AccountRepository, ArchiveExtractor, ClipboardObserver, Clock,
+        ConfigStore, CredentialStore, DownloadEngine, DownloadRepository, EventBus, FileStorage,
+        HistoryRepository, HttpClient, PluginLoader,
     };
 
     struct MockDownloadRepo {
@@ -341,6 +358,14 @@ mod tests {
         }
     }
 
+    struct FixedClock;
+
+    impl Clock for FixedClock {
+        fn now_unix_secs(&self) -> u64 {
+            1_700_000_000
+        }
+    }
+
     fn make_bus(
         repo: Arc<MockDownloadRepo>,
         events: Arc<MockEventBus>,
@@ -371,8 +396,7 @@ mod tests {
         )
         .with_segments_count(4)
         .with_priority(Priority::new(9).unwrap())
-        .with_module_name("vortex-mod-example".to_string())
-        .with_account_id(AccountId::new("account-7"));
+        .with_module_name("vortex-mod-example".to_string());
         d.start().unwrap();
         d.complete().unwrap();
         d
@@ -383,9 +407,24 @@ mod tests {
         let repo = Arc::new(MockDownloadRepo::new());
         let events = Arc::new(MockEventBus::new());
         let history: Arc<dyn HistoryRepository> = Arc::new(InMemoryHistoryRepo::new());
-        let original = completed_download(1);
+        let original = completed_download(1).with_account_id(AccountId::new("account-7"));
         repo.save(&original).unwrap();
-        let bus = make_bus(repo.clone(), events.clone(), history);
+        let account_repo = Arc::new(InMemoryAccountRepo::new());
+        let credentials = Arc::new(FakeAccountCredentialStore::new());
+        let mut account = Account::new(
+            AccountId::new("account-7"),
+            "vortex-mod-example".into(),
+            "alice".into(),
+            AccountType::Premium,
+            1,
+        );
+        account.set_status(AccountStatus::Valid);
+        account_repo.save(&account).unwrap();
+        credentials.store_password(account.id(), "api-key").unwrap();
+        let bus = make_bus(repo.clone(), events.clone(), history)
+            .with_account_repo(account_repo)
+            .with_account_credential_store(credentials)
+            .with_account_clock(Arc::new(FixedClock));
 
         let new_id = bus
             .handle_redownload(RedownloadCommand {
@@ -415,6 +454,26 @@ mod tests {
             DownloadState::Queued,
             "re-downloaded entries must start fresh in Queued",
         );
+    }
+
+    #[tokio::test]
+    async fn redownload_rejects_an_orphaned_account_reference() {
+        let repo = Arc::new(MockDownloadRepo::new());
+        let events = Arc::new(MockEventBus::new());
+        let history: Arc<dyn HistoryRepository> = Arc::new(InMemoryHistoryRepo::new());
+        let original = completed_download(10).with_account_id(AccountId::new("missing"));
+        repo.save(&original).unwrap();
+        let bus = make_bus(repo, events, history);
+
+        let error = bus
+            .handle_redownload(RedownloadCommand {
+                source: RedownloadSource::Download(DownloadId(10)),
+                destination_override: None,
+            })
+            .await
+            .expect_err("orphaned account must not be copied");
+
+        assert!(matches!(error, AppError::Validation(_)));
     }
 
     #[tokio::test]

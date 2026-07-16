@@ -268,6 +268,9 @@ pub fn run() {
                 event_bus.clone(),
                 account_clock.clone(),
                 account_operation_locks.clone(),
+                download_repo.clone(),
+                config_store.clone(),
+                account_rotator.clone(),
             ));
             let premium_source_resolver: Arc<dyn DownloadSourceResolver> =
                 premium_source_handler.clone();
@@ -419,7 +422,6 @@ pub fn run() {
                 .with_account_rotator(account_rotator)
                 .with_account_clock(account_clock)
                 .with_account_operation_locks(account_operation_locks)
-                .with_premium_source_handler(premium_source_handler)
                 .with_package_repo(package_repo.clone())
                 .with_passphrase_codec(passphrase_codec),
             );

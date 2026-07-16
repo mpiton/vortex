@@ -5,6 +5,8 @@ use std::time::Duration;
 
 use crate::domain::error::DomainError;
 
+use super::nat64::{Nat64Prefix, discovered_prefixes};
+
 pub(crate) fn validate_public_url(
     url: &reqwest::Url,
 ) -> Result<Option<Vec<SocketAddr>>, DomainError> {
@@ -87,65 +89,38 @@ pub(crate) fn is_forbidden_ip(ip: &IpAddr) -> bool {
                 || a >= 224
                 || (a == 255 && b == 255 && c == 255 && d == 255)
         }
-        IpAddr::V6(ip) => {
-            let segments = ip.segments();
-            let first = segments[0];
-            ip.is_loopback()
-                || ip.is_unspecified()
-                || ip.is_multicast()
-                || (first & 0xfe00) == 0xfc00
-                || (first & 0xffc0) == 0xfe80
-                || (first & 0xffc0) == 0xfec0
-                || matches!(segments, [0x0064, 0xff9b, 0x0001, ..])
-                || matches!(segments, [0x0100, 0, 0, 0, ..])
-                || matches!(segments, [0x2001, 0x0002, 0, ..])
-                || matches!(segments, [0x2001, 0x0db8, ..])
-                || matches!(segments, [0x2002, ..])
-                || matches!(segments, [0x3ff0..=0x3fff, ..])
-                || matches!(segments, [0x5f00, ..])
-        }
+        IpAddr::V6(ip) => is_forbidden_ipv6(&ip, discovered_prefixes()),
     }
+}
+
+fn is_forbidden_ipv6(ip: &std::net::Ipv6Addr, nat64: &[Nat64Prefix]) -> bool {
+    let segments = ip.segments();
+    let first = segments[0];
+    ip.is_loopback()
+        || ip.is_unspecified()
+        || ip.is_multicast()
+        || (first & 0xfe00) == 0xfc00
+        || (first & 0xffc0) == 0xfe80
+        || (first & 0xffc0) == 0xfec0
+        || matches!(segments, [0x0064, 0xff9b, 0x0001, ..])
+        || matches!(segments, [0x0100, 0, 0, 0, ..])
+        || is_orchid(&segments)
+        || matches!(segments, [0x2001, 0x0002, 0, ..])
+        || matches!(segments, [0x2001, 0x0db8, ..])
+        || matches!(segments, [0x2002, ..])
+        || matches!(segments, [0x3ff0..=0x3fff, ..])
+        || matches!(segments, [0x5f00, ..])
+        || nat64.iter().any(|prefix| {
+            prefix
+                .embedded_ipv4(*ip)
+                .is_some_and(|ipv4| is_forbidden_ip(&IpAddr::V4(ipv4)))
+        })
+}
+
+fn is_orchid(segments: &[u16; 8]) -> bool {
+    segments[0] == 0x2001 && matches!(segments[1] & 0xfff0, 0x0010 | 0x0020 | 0x0030)
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn rejects_loopback_private_link_local_and_mapped_addresses() {
-        for raw in [
-            "127.0.0.1",
-            "10.0.0.1",
-            "169.254.169.254",
-            "::ffff:127.0.0.1",
-            "fec0::1",
-            "64:ff9b::c0a8:1",
-            "64:ff9b:1::c0a8:1",
-            "2001:10::1",
-            "2001:20::1",
-        ] {
-            assert!(is_forbidden_ip(&raw.parse().unwrap()), "{raw}");
-        }
-    }
-
-    #[test]
-    fn rejects_private_ipv4_embedded_in_discovered_operator_nat64_prefix() {
-        let prefix = Nat64Prefix::new("2606:4700:64::".parse().unwrap(), 96).unwrap();
-        let target = "2606:4700:64::c0a8:1".parse().unwrap();
-
-        assert!(is_forbidden_ipv6(&target, &[prefix]));
-    }
-
-    #[test]
-    fn accepts_globally_routable_ipv6_address() {
-        assert!(!is_forbidden_ip(&"2606:4700:4700::1111".parse().unwrap()));
-    }
-
-    #[test]
-    fn restricted_client_requires_https_and_public_destination() {
-        let http = reqwest::Url::parse("http://1.1.1.1/file").unwrap();
-        let local = reqwest::Url::parse("https://127.0.0.1/file").unwrap();
-        assert!(restricted_download_client(&http).is_err());
-        assert!(restricted_download_client(&local).is_err());
-    }
-}
+#[path = "safe_url_tests.rs"]
+mod tests;

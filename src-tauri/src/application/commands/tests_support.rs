@@ -10,7 +10,6 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::application::command_bus::CommandBus;
-use crate::application::commands::resolve_premium_source::ResolvePremiumSourceHandler;
 use crate::application::services::account_operation_locks::AccountOperationLocks;
 use crate::application::test_support::NoopHistoryRepo;
 use crate::domain::error::DomainError;
@@ -807,14 +806,6 @@ pub(crate) fn build_account_bus_with_plugin_loader(
 ) -> CommandBus {
     let clock: Arc<dyn Clock> = Arc::new(FixedAccountClock);
     let locks = Arc::new(AccountOperationLocks::default());
-    let premium_handler = Arc::new(ResolvePremiumSourceHandler::new(
-        account_repo.clone(),
-        credential_store.clone(),
-        plugin_loader.clone(),
-        event_bus.clone(),
-        clock.clone(),
-        locks.clone(),
-    ));
     let mut bus = CommandBus::new(
         Arc::new(StubDownloadRepo),
         Arc::new(StubDownloadEngine),
@@ -832,8 +823,7 @@ pub(crate) fn build_account_bus_with_plugin_loader(
     .with_account_repo(account_repo)
     .with_account_credential_store(credential_store)
     .with_account_clock(clock)
-    .with_account_operation_locks(locks)
-    .with_premium_source_handler(premium_handler);
+    .with_account_operation_locks(locks);
 
     if let Some(v) = validator {
         bus = bus.with_account_validator(v);

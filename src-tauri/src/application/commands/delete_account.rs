@@ -29,6 +29,11 @@ impl CommandBus {
         })?;
         let operation_lock = self.account_operation_lock(&cmd.id)?;
         let _operation_guard = operation_lock.lock().await;
+        if self.download_repo().has_account_reference(&cmd.id)? {
+            return Err(AppError::Validation(
+                "account is still referenced by a download".into(),
+            ));
+        }
 
         repo.delete(&cmd.id)?;
         if let Err(e) = store.delete_password(&cmd.id) {

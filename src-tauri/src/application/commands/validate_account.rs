@@ -335,7 +335,7 @@ mod tests {
             "vortex-mod-1fichier",
             ValidatorBehavior::Ok(ValidationOutcome::ok()),
         );
-        let account = Account::reconstruct_with_status(
+        let mut account = Account::reconstruct_with_status(
             AccountId::new("account-1"),
             "vortex-mod-1fichier".into(),
             "alice".into(),
@@ -349,6 +349,7 @@ mod tests {
             AccountStatus::Valid,
             None,
         );
+        account.mark_exhausted(1_700_000_060_000);
         repo.save(&account).expect("seed account");
         credentials
             .store_password(account.id(), "api-key")
@@ -356,9 +357,6 @@ mod tests {
         let clock: Arc<dyn Clock> = Arc::new(ValidationClock);
         let selector = AccountSelector::new(repo.clone(), events.clone(), clock.clone());
         let rotator = AccountRotator::new(selector, repo.clone(), events.clone(), clock);
-        rotator
-            .mark_exhausted(account.id(), account.service_name(), 60)
-            .expect("mark exhausted");
         let saves_before_validation = repo.save_count();
         let bus = build_account_bus(repo.clone(), credentials, events, Some(validator), None)
             .with_account_rotator(rotator.clone());

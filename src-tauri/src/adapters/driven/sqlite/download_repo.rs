@@ -8,6 +8,7 @@ use sea_orm::{
 };
 
 use crate::domain::error::DomainError;
+use crate::domain::model::account::AccountId;
 use crate::domain::model::download::{Download, DownloadId, DownloadState};
 use crate::domain::ports::driven::download_repository::DownloadRepository;
 
@@ -196,6 +197,17 @@ impl DownloadRepository for SqliteDownloadRepo {
                 .map_err(map_db_err)?;
 
             models.into_iter().map(|m| m.into_domain()).collect()
+        })
+    }
+
+    fn has_account_reference(&self, account_id: &AccountId) -> Result<bool, DomainError> {
+        block_on(async {
+            download::Entity::find()
+                .filter(download::Column::AccountId.eq(account_id.as_str()))
+                .one(&self.db)
+                .await
+                .map(|row| row.is_some())
+                .map_err(map_db_err)
         })
     }
 }
@@ -497,6 +509,24 @@ mod tests {
 
         let found = repo.find_by_id(DownloadId(1)).expect("find_by_id");
         assert!(found.is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn account_reference_query_tracks_persisted_downloads() {
+        let db = setup_test_db().await.expect("test db");
+        let repo = SqliteDownloadRepo::new(db);
+        let account_id = AccountId::new("account-1");
+        let download = make_download(1).with_account_id(account_id.clone());
+        repo.save(&download).expect("save");
+
+        assert!(repo.has_account_reference(&account_id).unwrap());
+        assert!(
+            !repo
+                .has_account_reference(&AccountId::new("other"))
+                .unwrap()
+        );
+        repo.delete(download.id()).expect("delete");
+        assert!(!repo.has_account_reference(&account_id).unwrap());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -50,18 +50,39 @@ async fn resolves_the_direct_url_only_when_the_engine_requests_it() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn rotates_at_jit_resolution_and_persists_the_selected_backup() {
+async fn rotates_jit_failures_and_persists_the_selected_backup() {
+    for (password, expected_status, expected_calls) in [
+        (
+            Some("quota-key"),
+            AccountStatus::QuotaExhausted,
+            vec!["quota-key", "working-key"],
+        ),
+        (
+            Some("expired-key"),
+            AccountStatus::Expired,
+            vec!["expired-key", "working-key"],
+        ),
+        (None, AccountStatus::MissingCredential, vec!["working-key"]),
+    ] {
+        assert_jit_rotation(password, expected_status, &expected_calls).await;
+    }
+}
+
+async fn assert_jit_rotation(
+    primary_password: Option<&str>,
+    expected_status: AccountStatus,
+    expected_calls: &[&str],
+) {
     let repo = Arc::new(InMemoryAccountRepo::new());
     let credentials = Arc::new(FakeAccountCredentialStore::new());
     let plugin = Arc::new(DirectUrlPlugin::new());
-    let events = Arc::new(CapturingEventBus::new());
     let primary = valid_account("primary");
     let backup = valid_account("backup");
     repo.save(&primary).unwrap();
     repo.save(&backup).unwrap();
-    credentials
-        .store_password(primary.id(), "quota-key")
-        .unwrap();
+    if let Some(password) = primary_password {
+        credentials.store_password(primary.id(), password).unwrap();
+    }
     credentials
         .store_password(backup.id(), "working-key")
         .unwrap();
@@ -73,7 +94,7 @@ async fn rotates_at_jit_resolution_and_persists_the_selected_backup() {
         repo.clone(),
         credentials,
         plugin.clone(),
-        events,
+        Arc::new(CapturingEventBus::new()),
         downloads.clone(),
     );
 
@@ -83,19 +104,14 @@ async fn rotates_at_jit_resolution_and_persists_the_selected_backup() {
         .expect("backup account resolves the source");
 
     assert_eq!(source.request_url(), "https://1.1.1.1/short-lived-token");
+    let calls = plugin.calls.lock().unwrap();
     assert_eq!(
-        plugin
-            .calls
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|call| call.2.as_str())
-            .collect::<Vec<_>>(),
-        ["quota-key", "working-key"]
+        calls.iter().map(|call| call.2.as_str()).collect::<Vec<_>>(),
+        expected_calls
     );
     assert_eq!(
         repo.find_by_id(primary.id()).unwrap().unwrap().status(),
-        AccountStatus::QuotaExhausted
+        expected_status
     );
     assert_eq!(
         downloads

@@ -2,18 +2,21 @@
 
 use std::sync::Arc;
 
+use crate::application::services::AccountRotator;
 use crate::application::services::account_operation_locks::AccountOperationLocks;
 use crate::domain::error::DomainError;
 use crate::domain::model::account::AccountId;
 use crate::domain::model::download::Download;
 use crate::domain::ports::driven::{
-    AccountCredentialStore, AccountRepository, Clock, DownloadSourceResolver, EventBus,
-    ExtractedHosterLink, PluginLoader, ResolvedDownloadSource,
+    AccountCredentialStore, AccountRepository, Clock, ConfigStore, DownloadRepository,
+    DownloadSourceResolver, EventBus, ExtractedHosterLink, PluginLoader, ResolvedDownloadSource,
 };
 use crate::domain::ports::driving::Command;
 
 #[path = "premium_account_resolution.rs"]
 mod resolution;
+#[path = "premium_account_rotation.rs"]
+mod rotation;
 
 #[derive(Debug)]
 pub struct ResolvePremiumSourceCommand {
@@ -41,9 +44,13 @@ pub struct ResolvePremiumSourceHandler {
     events: Arc<dyn EventBus>,
     clock: Arc<dyn Clock>,
     locks: Arc<AccountOperationLocks>,
+    downloads: Arc<dyn DownloadRepository>,
+    config: Arc<dyn ConfigStore>,
+    rotator: Arc<AccountRotator>,
 }
 
 impl ResolvePremiumSourceHandler {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         repo: Arc<dyn AccountRepository>,
         credentials: Arc<dyn AccountCredentialStore>,
@@ -51,6 +58,9 @@ impl ResolvePremiumSourceHandler {
         events: Arc<dyn EventBus>,
         clock: Arc<dyn Clock>,
         locks: Arc<AccountOperationLocks>,
+        downloads: Arc<dyn DownloadRepository>,
+        config: Arc<dyn ConfigStore>,
+        rotator: Arc<AccountRotator>,
     ) -> Self {
         Self {
             repo,
@@ -59,6 +69,9 @@ impl ResolvePremiumSourceHandler {
             events,
             clock,
             locks,
+            downloads,
+            config,
+            rotator,
         }
     }
 
@@ -66,18 +79,12 @@ impl ResolvePremiumSourceHandler {
         &self,
         command: ResolvePremiumSourceCommand,
     ) -> Result<ExtractedHosterLink, DomainError> {
+        let account_id = command.account_id.clone();
         let lock = self.account_lock(&command.account_id)?;
         let _guard = lock.lock().await;
-        self.resolve_locked(command)
-    }
-
-    fn handle_blocking(
-        &self,
-        command: ResolvePremiumSourceCommand,
-    ) -> Result<ExtractedHosterLink, DomainError> {
-        let lock = self.account_lock(&command.account_id)?;
-        let _guard = lock.blocking_lock();
-        self.resolve_locked(command)
+        let link = self.resolve_locked(command)?;
+        self.publish_success(&account_id);
+        Ok(link)
     }
 
     fn account_lock(&self, id: &AccountId) -> Result<Arc<tokio::sync::Mutex<()>>, DomainError> {
@@ -89,22 +96,7 @@ impl ResolvePremiumSourceHandler {
 
 impl DownloadSourceResolver for ResolvePremiumSourceHandler {
     fn resolve(&self, download: &Download) -> Result<ResolvedDownloadSource, DomainError> {
-        let account_id = download.account_id().cloned().ok_or_else(|| {
-            DomainError::ValidationError("premium download has no account association".into())
-        })?;
-        let service_name = download.module_name().map(str::to_string).ok_or_else(|| {
-            DomainError::ValidationError("premium download has no plugin association".into())
-        })?;
-        let command = ResolvePremiumSourceCommand::new(
-            account_id,
-            service_name,
-            download.url().as_str().to_string(),
-        );
-        let link = self.handle_blocking(command)?;
-        let direct_url = link.direct_url.ok_or_else(|| {
-            DomainError::PluginError("premium plugin returned no direct URL".into())
-        })?;
-        Ok(ResolvedDownloadSource::sensitive(direct_url))
+        self.resolve_download(download)
     }
 }
 

@@ -7,7 +7,6 @@ use serde::Serialize;
 use uuid::Uuid;
 
 use crate::application::command_bus::CommandBus;
-use crate::application::commands::resolve_premium_source::ResolvePremiumSourceCommand;
 use crate::application::error::AppError;
 use crate::application::services::account_rotator::NextAccountOutcome;
 use crate::domain::error::DomainError;
@@ -211,58 +210,27 @@ impl CommandBus {
         url: &str,
         service_name: &str,
     ) -> Result<HosterResolution, AppError> {
-        if let Some(repo) = self.account_repo() {
-            let max_attempts = repo.list_by_service(service_name)?.len();
-            let mut last_temporary_error = None;
-            for _ in 0..max_attempts {
-                let selected = match self.next_hoster_account(service_name)? {
-                    NextAccountOutcome::Picked(account) => account,
-                    NextAccountOutcome::NoneAvailable => break,
-                    NextAccountOutcome::AllExhausted { .. } => {
-                        return Err(last_temporary_error
-                            .unwrap_or(DomainError::AccountQuotaExceeded)
-                            .into());
-                    }
-                };
-                let handler = self.premium_source_handler().ok_or_else(|| {
-                    AppError::Validation("premium source handler not configured".into())
-                })?;
-                let command = ResolvePremiumSourceCommand::new(
-                    selected.id().clone(),
-                    service_name.to_string(),
-                    url.to_string(),
-                );
-                match handler.handle(command).await {
-                    Ok(link) => {
-                        return Ok(into_hoster_resolution(
-                            link,
-                            Some(selected.id().as_str()),
-                            url,
-                        ));
-                    }
-                    Err(
-                        error @ (DomainError::AccountCooldown | DomainError::AccountQuotaExceeded),
-                    ) => {
-                        last_temporary_error = Some(error);
-                    }
-                    Err(
-                        DomainError::AccountInvalidCredentials
-                        | DomainError::AccountExpired
-                        | DomainError::NotFound(_)
-                        | DomainError::ValidationError(_),
-                    ) => {}
-                    Err(error) => return Err(error.into()),
+        if self.account_repo().is_some() {
+            match self.next_hoster_account(service_name)? {
+                NextAccountOutcome::Picked(account) => {
+                    return Ok(HosterResolution {
+                        resolved_url: url.to_string(),
+                        filename: extract_filename_from_url(url),
+                        size_bytes: None,
+                        account_id: Some(account.id().as_str().to_string()),
+                    });
                 }
-            }
-            if let Some(error) = last_temporary_error {
-                return Err(error.into());
+                NextAccountOutcome::AllExhausted { .. } => {
+                    return Err(DomainError::AccountQuotaExceeded.into());
+                }
+                NextAccountOutcome::NoneAvailable => {}
             }
         }
 
         let link = self
             .plugin_loader()
             .extract_hoster_link(service_name, url, None)?;
-        Ok(into_hoster_resolution(link, None, url))
+        Ok(into_hoster_resolution(link, url))
     }
 
     fn next_hoster_account(&self, service_name: &str) -> Result<NextAccountOutcome, AppError> {
@@ -277,17 +245,12 @@ impl CommandBus {
     }
 }
 
-fn into_hoster_resolution(
-    link: ExtractedHosterLink,
-    account_id: Option<&str>,
-    stable_url: &str,
-) -> HosterResolution {
-    let selected_account = link.direct_url.as_ref().and(account_id).map(str::to_string);
+fn into_hoster_resolution(link: ExtractedHosterLink, stable_url: &str) -> HosterResolution {
     HosterResolution {
         resolved_url: stable_url.to_string(),
         filename: link.filename,
         size_bytes: link.size_bytes,
-        account_id: selected_account,
+        account_id: None,
     }
 }
 
@@ -515,6 +478,7 @@ mod tests {
     async fn resolve_with_primary_credential(
         primary_password: Option<&str>,
         include_backup: bool,
+        primary_exhausted: bool,
     ) -> (
         Vec<ResolvedLinkDto>,
         Arc<InMemoryAccountRepo>,
@@ -525,8 +489,11 @@ mod tests {
         let credentials = Arc::new(FakeAccountCredentialStore::new());
         let events = Arc::new(CapturingEventBus::new());
         let plugin = Arc::new(PremiumPluginLoader::new());
-        let primary = premium_account("primary", 100);
+        let mut primary = premium_account("primary", 100);
         let backup = premium_account("backup", 50);
+        if primary_exhausted {
+            primary.mark_exhausted(1_700_000_060_000);
+        }
         repo.save(&primary).unwrap();
         if include_backup {
             repo.save(&backup).unwrap();
@@ -565,7 +532,7 @@ mod tests {
     #[tokio::test]
     async fn resolve_hoster_selects_account_without_reading_secret_or_issuing_token() {
         let (result, repo, plugin, primary) =
-            resolve_with_primary_credential(Some("working-key"), true).await;
+            resolve_with_primary_credential(Some("working-key"), true, false).await;
 
         assert_eq!(
             result[0].resolved_url.as_deref(),
@@ -582,6 +549,20 @@ mod tests {
         assert_eq!(
             repo.find_by_id(primary.id()).unwrap().unwrap().status(),
             AccountStatus::Valid
+        );
+        assert!(plugin.credentials.lock().unwrap().is_empty());
+        assert!(plugin.services.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn resolve_hoster_surfaces_persisted_exhaustion_without_free_fallback() {
+        let (result, _, plugin, _) =
+            resolve_with_primary_credential(Some("quota-key"), false, true).await;
+
+        assert_eq!(result[0].status, "error");
+        assert_eq!(
+            result[0].error_message.as_deref(),
+            Some("Account quota is exhausted")
         );
         assert!(plugin.credentials.lock().unwrap().is_empty());
         assert!(plugin.services.lock().unwrap().is_empty());

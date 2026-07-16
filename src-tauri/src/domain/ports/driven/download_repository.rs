@@ -4,6 +4,7 @@
 //! to load, persist, and delete downloads.
 
 use crate::domain::error::DomainError;
+use crate::domain::model::account::AccountId;
 use crate::domain::model::download::{Download, DownloadId, DownloadState};
 
 /// Persists and retrieves `Download` aggregates.
@@ -40,4 +41,29 @@ pub trait DownloadRepository: Send + Sync {
 
     /// Find all downloads in a given state.
     fn find_by_state(&self, state: DownloadState) -> Result<Vec<Download>, DomainError>;
+
+    /// Whether any persisted download still depends on an account.
+    fn has_account_reference(&self, account_id: &AccountId) -> Result<bool, DomainError> {
+        const STATES: [DownloadState; 9] = [
+            DownloadState::Queued,
+            DownloadState::Downloading,
+            DownloadState::Paused,
+            DownloadState::Waiting,
+            DownloadState::Retry,
+            DownloadState::Error,
+            DownloadState::Extracting,
+            DownloadState::Completed,
+            DownloadState::Checking,
+        ];
+        for state in STATES {
+            if self
+                .find_by_state(state)?
+                .iter()
+                .any(|download| download.account_id() == Some(account_id))
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
 }

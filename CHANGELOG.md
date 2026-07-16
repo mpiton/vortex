@@ -53,18 +53,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **MAT-132 final acceptance regressions (RED)**: added contracts for strict
+- **MAT-132 final acceptance coverage**: added contracts for strict
   JIT-only credential use, runtime account rotation with association updates,
   referenced-account deletion safety, observable missing credentials, cooldown
   badge expiry, and operator-prefix NAT64 SSRF rejection.
-- **MAT-132 final review hardening**: premium extraction now runs through one
-  CQRS command handler shared by link analysis and just-in-time downloads.
-  Account failures persist before typed events, cooldown recovery uses one
-  atomic row write, per-account locks are reclaimed and cover download
-  association persistence, account events refresh the UI immediately, and
-  restricted HTTP clients ignore system proxies while rejecting additional
-  non-public IPv6 ranges. The official 1fichier registry entry now targets the
-  credential-validation-capable v1.1.0 artifact.
+- **MAT-132 final review hardening**: link analysis now selects only an opaque
+  account id without reading credentials or creating a one-shot token; the CQRS
+  resolver rotates accounts only when the engine requests the direct source.
+  Account failures persist before typed events, referenced accounts cannot be
+  deleted, cooldown badges wake at their deadline, and restricted HTTP clients
+  ignore system proxies while rejecting special IPv6 and discovered NAT64
+  mappings to private IPv4. The registry stays on published 1fichier v1.0.0;
+  v1.1.0 registration is deliberately deferred until its release assets exist.
 - **MAT-132 review regressions**: added coverage for fail-closed account state
   persistence, premium account lifecycle races, account-event refreshes, lock
   reclamation, and IPv6/proxy SSRF boundaries.
@@ -125,9 +125,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Selector/rotator tests require persisted cooldowns to survive a restart and
   distinguish unavailable credentials from temporarily exhausted accounts;
   selection and rotation now enforce those persisted states.
-  Resolution/start contract tests carry only the selected account UUID and
-  plugin name alongside direct links, and require rotation to a second account.
-  Hoster resolution now uses the configured selector/rotator, scopes each
+  Resolution/start contract tests carry only the stable source URL, selected
+  account UUID, and plugin name, and require JIT rotation to a second account.
+  JIT hoster resolution uses the configured selector/rotator, scopes each
   keyring secret to its plugin call, persists typed account failures, retries
   an eligible fallback account, and validates the opaque association before
   persisting a download.

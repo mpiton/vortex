@@ -69,6 +69,9 @@ impl PluginLoader for DirectUrlPlugin {
         if credential.password() == "quota-key" {
             return Err(DomainError::AccountQuotaExceeded);
         }
+        if credential.password() == "expired-key" {
+            return Err(DomainError::AccountExpired);
+        }
         Ok(ExtractedHosterLink {
             source_url: url.to_string(),
             filename: Some("file.zip".into()),
@@ -131,7 +134,7 @@ pub(super) fn valid_account(id: &str) -> Account {
     let mut account = Account::new(
         AccountId::new(id),
         "vortex-mod-1fichier".into(),
-        "alice".into(),
+        format!("user-{id}"),
         AccountType::Premium,
         1,
     );

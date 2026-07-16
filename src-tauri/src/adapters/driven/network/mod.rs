@@ -1,5 +1,6 @@
 mod checksum;
 mod download_engine;
+mod nat64;
 mod reqwest_client;
 mod safe_url;
 mod segment_worker;

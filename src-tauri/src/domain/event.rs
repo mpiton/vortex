@@ -361,11 +361,9 @@ pub enum DomainEvent {
         /// One of `"best_traffic"`, `"round_robin"`, `"manual"`.
         strategy: String,
     },
-    /// Emitted by `AccountRotator::mark_exhausted` when a hoster signals
-    /// quota exhaustion (HTTP 429, low `traffic_left`, …) so the account
-    /// is taken out of the rotation until the cooldown expires or the
-    /// next traffic refresh confirms availability. Carries `service_name`
-    /// so the UI can group notifications per hoster.
+    /// Emitted after a command handler persists quota exhaustion so the
+    /// account is excluded until its cooldown expires. Carries
+    /// `service_name` so the UI can group notifications per hoster.
     AccountExhausted {
         id: AccountId,
         service_name: String,

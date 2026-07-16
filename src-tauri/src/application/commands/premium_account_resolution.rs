@@ -68,6 +68,9 @@ impl ResolvePremiumSourceHandler {
         };
         apply_status(account, status, self.clock.now_unix_ms());
         self.repo.save(account)?;
+        if let Some(deadline) = account.exhausted_until() {
+            self.rotator.cache_exhausted(account.id(), deadline);
+        }
         self.publish_typed_failure(account, status);
         Err(error)
     }
@@ -90,10 +93,12 @@ impl ResolvePremiumSourceHandler {
         }
         account.set_status(AccountStatus::Valid);
         self.repo.save(account)?;
-        self.events.publish(DomainEvent::AccountUpdated {
-            id: account.id().clone(),
-        });
         Ok(())
+    }
+
+    pub(super) fn publish_success(&self, id: &crate::domain::model::account::AccountId) {
+        self.events
+            .publish(DomainEvent::AccountUpdated { id: id.clone() });
     }
 
     fn publish_typed_failure(&self, account: &Account, status: AccountStatus) {

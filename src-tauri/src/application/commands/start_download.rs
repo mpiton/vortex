@@ -103,7 +103,7 @@ impl CommandBus {
         Ok(id)
     }
 
-    fn validate_download_account(
+    pub(super) fn validate_download_account(
         &self,
         module_name: Option<&str>,
         account_id: Option<&AccountId>,
@@ -134,6 +134,11 @@ impl CommandBus {
         if store.get_password(account_id)?.is_none() {
             account.set_status(AccountStatus::MissingCredential);
             repo.save(&account)?;
+            self.event_bus()
+                .publish(DomainEvent::AccountValidationFailed {
+                    id: account_id.clone(),
+                    error: "Account credential is unavailable".into(),
+                });
             return Err(AppError::NotFound(format!(
                 "credential for account {} not found",
                 account_id.as_str()
