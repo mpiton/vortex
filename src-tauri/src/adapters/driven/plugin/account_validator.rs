@@ -1,3 +1,39 @@
+use std::sync::Arc;
+use std::time::Instant;
+
+use crate::domain::error::DomainError;
+use crate::domain::model::credential::Credential;
+use crate::domain::ports::driven::{AccountValidator, PluginLoader, ValidationOutcome};
+
+/// Validates account credentials through the plugin that owns the service.
+pub struct PluginAccountValidator {
+    loader: Arc<dyn PluginLoader>,
+}
+
+impl PluginAccountValidator {
+    pub fn new(loader: Arc<dyn PluginLoader>) -> Self {
+        Self { loader }
+    }
+}
+
+impl AccountValidator for PluginAccountValidator {
+    fn validate(
+        &self,
+        service_name: &str,
+        username: &str,
+        password: &str,
+    ) -> Result<ValidationOutcome, DomainError> {
+        let started_at = Instant::now();
+        let credential = Credential::new(username, password);
+        let mut outcome = self.loader.validate_account(service_name, &credential)?;
+        if outcome.latency_ms.is_none() {
+            outcome.latency_ms =
+                Some(u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX));
+        }
+        Ok(outcome)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex};

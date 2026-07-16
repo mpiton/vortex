@@ -10,6 +10,7 @@ pub mod registry;
 pub mod watcher;
 pub(crate) mod ytdlp_broker;
 
+pub use account_validator::PluginAccountValidator;
 pub use extism_loader::ExtismPluginLoader;
 pub use github_store_client::GithubStoreClient;
 pub use registry::PluginRegistry;

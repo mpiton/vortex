@@ -6,10 +6,12 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::domain::error::DomainError;
+use crate::domain::model::account::AccountStatus;
+use crate::domain::model::credential::Credential;
 use crate::domain::model::plugin::{PluginInfo, PluginManifest};
-use crate::domain::ports::driven::PluginLoader;
 use crate::domain::ports::driven::plugin_loader::DownloadedFileInfo;
 use crate::domain::ports::driven::plugin_store_client::OfficialPluginProvenance;
+use crate::domain::ports::driven::{PluginLoader, ValidationOutcome};
 
 use super::builtin::HttpModule;
 use super::capabilities::{SharedHostResources, build_host_functions_with_grants};
@@ -487,6 +489,72 @@ impl PluginLoader for ExtismPluginLoader {
         self.call_url_plugin_function(url, "extract_links")
     }
 
+    fn extract_links_with_credential(
+        &self,
+        url: &str,
+        credential: &Credential,
+    ) -> Result<String, DomainError> {
+        let info = self.resolve_wasm_plugin(url)?;
+        if !self
+            .registry
+            .function_exists(info.name(), "extract_links")?
+        {
+            return Err(DomainError::NotFound(format!(
+                "plugin '{}' does not export 'extract_links'",
+                info.name()
+            )));
+        }
+        let slot = self.shared_resources.credential_slot(info.name());
+        self.registry
+            .call_plugin_with_credential(
+                info.name(),
+                "extract_links",
+                url,
+                slot,
+                credential.clone(),
+            )
+            .map_err(|error| classify_account_plugin_error(&error.to_string()))
+    }
+
+    fn validate_account(
+        &self,
+        service_name: &str,
+        credential: &Credential,
+    ) -> Result<ValidationOutcome, DomainError> {
+        let info = self
+            .registry
+            .list_info()
+            .into_iter()
+            .find(|info| info.name() == service_name)
+            .ok_or_else(|| DomainError::NotFound(service_name.to_string()))?;
+        if !info.is_enabled() {
+            return Err(DomainError::NotFound(format!(
+                "plugin '{service_name}' is disabled"
+            )));
+        }
+        if !self
+            .registry
+            .function_exists(service_name, "validate_account")?
+        {
+            return Err(DomainError::NotFound(format!(
+                "plugin '{service_name}' does not export 'validate_account'"
+            )));
+        }
+
+        let slot = self.shared_resources.credential_slot(service_name);
+        let output = self
+            .registry
+            .call_plugin_with_credential(
+                service_name,
+                "validate_account",
+                "",
+                slot,
+                credential.clone(),
+            )
+            .map_err(|error| classify_account_plugin_error(&error.to_string()))?;
+        parse_validation_outcome(&output)
+    }
+
     fn get_media_variants(&self, url: &str) -> Result<String, DomainError> {
         self.call_url_plugin_function(url, "get_media_variants")
     }
@@ -686,6 +754,65 @@ fn is_adaptive_stream_error(msg: &str) -> bool {
     msg.contains("adaptive stream (HLS/DASH)")
 }
 
+fn classify_account_plugin_error(message: &str) -> DomainError {
+    if message.contains("ACCOUNT_INVALID_CREDENTIALS") {
+        DomainError::AccountInvalidCredentials
+    } else if message.contains("ACCOUNT_EXPIRED") {
+        DomainError::AccountExpired
+    } else if message.contains("ACCOUNT_COOLDOWN") {
+        DomainError::AccountCooldown
+    } else if message.contains("ACCOUNT_QUOTA_EXCEEDED") {
+        DomainError::AccountQuotaExceeded
+    } else {
+        DomainError::PluginError(message.to_string())
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct PluginValidationOutcome {
+    valid: bool,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default, alias = "latencyMs")]
+    latency_ms: Option<u64>,
+    #[serde(default, alias = "trafficLeft")]
+    traffic_left: Option<u64>,
+    #[serde(default, alias = "trafficTotal")]
+    traffic_total: Option<u64>,
+    #[serde(default, alias = "validUntil")]
+    valid_until: Option<u64>,
+    #[serde(default, alias = "errorMessage")]
+    error_message: Option<String>,
+}
+
+fn parse_validation_outcome(output: &str) -> Result<ValidationOutcome, DomainError> {
+    use std::str::FromStr;
+
+    let parsed: PluginValidationOutcome = serde_json::from_str(output).map_err(|error| {
+        DomainError::PluginError(format!(
+            "plugin account validation returned invalid JSON: {error}"
+        ))
+    })?;
+    let status = match parsed.status {
+        Some(status) => AccountStatus::from_str(&status).map_err(|_| {
+            DomainError::PluginError(format!(
+                "plugin account validation returned unknown status '{status}'"
+            ))
+        })?,
+        None if parsed.valid => AccountStatus::Valid,
+        None => AccountStatus::Error,
+    };
+    Ok(ValidationOutcome {
+        valid: parsed.valid,
+        status,
+        latency_ms: parsed.latency_ms,
+        traffic_left: parsed.traffic_left,
+        traffic_total: parsed.traffic_total,
+        valid_until: parsed.valid_until,
+        error_message: parsed.error_message,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -729,6 +856,24 @@ mod tests {
             error,
             DomainError::PluginError(message) if message.contains("malformed response")
         ));
+    }
+
+    #[test]
+    fn validation_response_defaults_success_to_valid_status() {
+        let outcome = parse_validation_outcome(r#"{"valid":true}"#).expect("valid outcome");
+        assert!(outcome.valid);
+        assert_eq!(outcome.status, AccountStatus::Valid);
+    }
+
+    #[test]
+    fn validation_response_accepts_typed_metrics() {
+        let outcome = parse_validation_outcome(
+            r#"{"valid":false,"status":"quota_exhausted","trafficLeft":0,"trafficTotal":100,"errorMessage":"quota used"}"#,
+        )
+        .expect("typed outcome");
+        assert_eq!(outcome.status, AccountStatus::QuotaExhausted);
+        assert_eq!(outcome.traffic_left, Some(0));
+        assert_eq!(outcome.traffic_total, Some(100));
     }
 
     fn setup_plugin_dir(plugins_dir: &Path, name: &str) {
