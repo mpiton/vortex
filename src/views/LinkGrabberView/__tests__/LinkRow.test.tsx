@@ -17,6 +17,7 @@ const baseLink: ResolvedLink = {
   sizeBytes: 1024,
   status: "online",
   moduleName: "core-http",
+  accountId: null,
   isMedia: false,
 };
 

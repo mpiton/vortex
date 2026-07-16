@@ -19,6 +19,7 @@ const MOCK_LINKS: ResolvedLink[] = [
     sizeBytes: 1048576,
     status: "online",
     moduleName: "core-http",
+    accountId: null,
     isMedia: false,
   },
   {
@@ -29,6 +30,7 @@ const MOCK_LINKS: ResolvedLink[] = [
     sizeBytes: null,
     status: "online",
     moduleName: "youtube",
+    accountId: null,
     isMedia: true,
     mediaType: "video",
   },
@@ -40,6 +42,7 @@ const MOCK_LINKS: ResolvedLink[] = [
     sizeBytes: null,
     status: "offline",
     moduleName: "core-http",
+    accountId: null,
     isMedia: false,
   },
 ];
@@ -148,6 +151,7 @@ describe("ResolvedLinksSection", () => {
         sizeBytes: null,
         status: "online",
         moduleName: "core-http",
+        accountId: null,
         isMedia: false,
       },
       {
@@ -158,6 +162,7 @@ describe("ResolvedLinksSection", () => {
         sizeBytes: null,
         status: "online",
         moduleName: "core-http",
+        accountId: null,
         isMedia: false,
       },
     ];
@@ -189,6 +194,7 @@ describe("ResolvedLinksSection", () => {
         // Static state says "checking" but the live event has flipped to "offline".
         status: "checking",
         moduleName: "core-http",
+        accountId: null,
         isMedia: false,
       },
     ];
@@ -217,6 +223,7 @@ describe("applyFilter", () => {
     sizeBytes: null,
     status,
     moduleName: "core-http",
+    accountId: null,
     isMedia: false,
   });
 

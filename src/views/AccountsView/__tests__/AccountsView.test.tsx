@@ -36,6 +36,8 @@ function sampleAccounts(): AccountView[] {
       validUntil: Date.now() + 86_400_000,
       lastValidated: Date.now() - 60_000,
       createdAt: Date.now() - 86_400_000,
+      status: "valid",
+      exhaustedUntil: null,
       credentialRef: "keyring://real-debrid/alice",
     },
     {
@@ -49,6 +51,8 @@ function sampleAccounts(): AccountView[] {
       validUntil: null,
       lastValidated: null,
       createdAt: Date.now() - 172_800_000,
+      status: "unverified",
+      exhaustedUntil: null,
       credentialRef: "keyring://alldebrid/bob",
     },
   ];
@@ -90,6 +94,22 @@ describe("AccountsView", () => {
     });
     expect(screen.queryByText(/coming soon/i)).not.toBeInTheDocument();
     expect(mockInvoke).toHaveBeenCalledWith("account_list", expect.objectContaining({}));
+  });
+
+  it("renders a typed quota status returned by the account read model", async () => {
+    const exhausted = {
+      ...sampleAccounts()[0],
+      status: "quota_exhausted" as const,
+      exhaustedUntil: Date.now() + 60_000,
+    };
+    mockInvoke.mockImplementation(async (command: string) => {
+      if (command === "account_list") return [exhausted];
+      return null;
+    });
+
+    renderView();
+
+    expect(await screen.findByText("Quota exhausted")).toBeInTheDocument();
   });
 
   it("renders the empty state when no accounts exist", async () => {

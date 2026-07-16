@@ -31,6 +31,8 @@ pub struct AccountViewDto {
     pub valid_until: Option<u64>,
     pub last_validated: Option<u64>,
     pub created_at: u64,
+    pub status: String,
+    pub exhausted_until: Option<u64>,
     /// Opaque keyring URI (`keyring://service/user`) — never the
     /// password itself. Lets the frontend correlate two `AccountView`
     /// rows that share the same stored credential.
@@ -50,6 +52,8 @@ impl From<Account> for AccountViewDto {
             valid_until: account.valid_until(),
             last_validated: account.last_validated(),
             created_at: account.created_at(),
+            status: account.status().to_string(),
+            exhausted_until: account.exhausted_until(),
             credential_ref: account.credential_ref(),
         }
     }

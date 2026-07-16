@@ -198,7 +198,10 @@ export function LinkGrabberView() {
     onSuccess: applyResolvedBatch,
   });
 
-  const { mutate: startDownload } = useTauriMutation<unknown, { url: string }>("download_start");
+  const { mutate: startDownload } = useTauriMutation<
+    unknown,
+    { url: string; moduleName: string; accountId: string | null }
+  >("download_start");
 
   const { mutateAsync: startMediaDownloadAsync } = useTauriMutation<
     MediaDownloadResult,
@@ -341,7 +344,11 @@ export function LinkGrabberView() {
       if (!url) continue;
       if (skipDuplicates && started.has(url)) continue;
       started.add(url);
-      startDownload({ url });
+      startDownload({
+        url,
+        moduleName: link.moduleName,
+        accountId: link.accountId,
+      });
     }
   };
 

@@ -33,6 +33,11 @@ const STATUS_VARIANT: Record<AccountStatus, "default" | "secondary" | "destructi
   expired: "destructive",
   disabled: "secondary",
   unverified: "outline",
+  invalidCredentials: "destructive",
+  missingCredential: "destructive",
+  quotaExhausted: "secondary",
+  cooldown: "secondary",
+  error: "destructive",
 };
 
 export function AccountRow({ account, actions, validating }: AccountRowProps) {
