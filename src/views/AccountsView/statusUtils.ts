@@ -1,4 +1,4 @@
-import type { AccountView } from "@/types/account";
+import type { AccountView, PersistedAccountStatus } from "@/types/account";
 
 export type AccountStatus =
   | "active"
@@ -24,10 +24,23 @@ export function deriveAccountStatus(
   if (!account.enabled) return "disabled";
   if (account.status === "expired") return "expired";
   if (account.validUntil !== null && account.validUntil < nowMs) return "expired";
+  if (
+    (account.status === "quota_exhausted" || account.status === "cooldown") &&
+    account.exhaustedUntil !== null &&
+    nowMs >= account.exhaustedUntil
+  ) {
+    return "active";
+  }
 
-  switch (account.status) {
+  return persistedAccountStatusToUi(account.status);
+}
+
+export function persistedAccountStatusToUi(status: PersistedAccountStatus): AccountStatus {
+  switch (status) {
     case "valid":
       return "active";
+    case "expired":
+      return "expired";
     case "invalid_credentials":
       return "invalidCredentials";
     case "missing_credential":

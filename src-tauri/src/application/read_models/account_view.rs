@@ -12,12 +12,9 @@ use crate::domain::model::account::Account;
 
 /// Read model for the Accounts list and detail panels.
 ///
-/// Mirrors the persisted columns of the `accounts` table, including the
-/// non-secret [`Self::credential_ref`] (an opaque keyring URI such as
-/// `keyring://service/user`). The reference itself is never a password
-/// or token — the actual secret is fetched server-side from the OS
-/// keyring when the "test connection" surface needs it. Passwords and
-/// raw credential material never appear on this DTO.
+/// Mirrors the non-secret persisted columns of the `accounts` table.
+/// Passwords, tokens, and backend keyring identifiers never appear on
+/// this DTO.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountViewDto {
@@ -33,10 +30,6 @@ pub struct AccountViewDto {
     pub created_at: u64,
     pub status: String,
     pub exhausted_until: Option<u64>,
-    /// Opaque keyring URI (`keyring://service/user`) — never the
-    /// password itself. Lets the frontend correlate two `AccountView`
-    /// rows that share the same stored credential.
-    pub credential_ref: String,
 }
 
 impl From<Account> for AccountViewDto {
@@ -54,7 +47,6 @@ impl From<Account> for AccountViewDto {
             created_at: account.created_at(),
             status: account.status().to_string(),
             exhausted_until: account.exhausted_until(),
-            credential_ref: account.credential_ref(),
         }
     }
 }

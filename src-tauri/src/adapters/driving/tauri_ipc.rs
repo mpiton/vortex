@@ -3015,6 +3015,7 @@ impl AccountPatchDto {
 #[serde(rename_all = "camelCase")]
 pub struct ValidationOutcomeView {
     pub valid: bool,
+    pub status: String,
     pub latency_ms: Option<u64>,
     pub traffic_left: Option<u64>,
     pub traffic_total: Option<u64>,
@@ -3026,6 +3027,7 @@ impl From<ValidationOutcomeDto> for ValidationOutcomeView {
     fn from(o: ValidationOutcomeDto) -> Self {
         Self {
             valid: o.valid,
+            status: o.status.to_string(),
             latency_ms: o.latency_ms,
             traffic_left: o.traffic_left,
             traffic_total: o.traffic_total,

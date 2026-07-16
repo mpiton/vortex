@@ -59,7 +59,7 @@ mod verify_checksum;
 
 use std::path::PathBuf;
 
-use crate::domain::model::account::{AccountId, AccountType};
+use crate::domain::model::account::{AccountId, AccountStatus, AccountType};
 use crate::domain::model::config::ConfigPatch;
 use crate::domain::model::download::DownloadId;
 use crate::domain::model::package::{PackageId, PackageSourceType};
@@ -474,6 +474,7 @@ impl Command for ValidateAccountCommand {}
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ValidationOutcomeDto {
     pub valid: bool,
+    pub status: AccountStatus,
     pub latency_ms: Option<u64>,
     pub traffic_left: Option<u64>,
     pub traffic_total: Option<u64>,
@@ -485,6 +486,7 @@ impl From<crate::domain::ports::driven::ValidationOutcome> for ValidationOutcome
     fn from(o: crate::domain::ports::driven::ValidationOutcome) -> Self {
         Self {
             valid: o.is_valid(),
+            status: o.status,
             latency_ms: o.latency_ms,
             traffic_left: o.traffic_left,
             traffic_total: o.traffic_total,

@@ -22,7 +22,6 @@ export interface AccountView {
   createdAt: number;
   status: PersistedAccountStatus;
   exhaustedUntil: number | null;
-  credentialRef: string;
 }
 
 export interface AccountTraffic {
@@ -49,6 +48,7 @@ export interface AddAccountInput {
 
 export interface ValidationOutcome {
   valid: boolean;
+  status: PersistedAccountStatus;
   latencyMs: number | null;
   trafficLeft: number | null;
   trafficTotal: number | null;

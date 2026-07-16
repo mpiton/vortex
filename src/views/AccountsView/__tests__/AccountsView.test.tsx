@@ -110,6 +110,32 @@ describe("AccountsView", () => {
     expect(await screen.findByText("Quota exhausted")).toBeInTheDocument();
   });
 
+  it("surfaces the typed status returned by account validation", async () => {
+    mockInvoke.mockImplementation(async (command: string) => {
+      if (command === "account_list") return sampleAccounts();
+      if (command === "account_validate") {
+        return {
+          valid: false,
+          status: "cooldown",
+          latencyMs: null,
+          trafficLeft: null,
+          trafficTotal: null,
+          validUntil: null,
+          errorMessage: "untrusted plugin detail",
+        };
+      }
+      return null;
+    });
+
+    renderView();
+    const row = await screen.findByTestId("account-row-rd-1");
+    await userEvent.click(within(row).getByText("Validate"));
+
+    await waitFor(() =>
+      expect(mockToastError).toHaveBeenCalledWith("Validation failed: Rate limited"),
+    );
+  });
+
   it("renders the empty state when no accounts exist", async () => {
     mockInvoke.mockResolvedValue([]);
     renderView();
