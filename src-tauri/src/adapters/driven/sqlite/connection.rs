@@ -190,6 +190,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_premium_account_wiring_columns_exist() {
+        let db = setup_test_db().await.unwrap();
+
+        let account_columns = db
+            .query_all(Statement::from_string(
+                sea_orm::DatabaseBackend::Sqlite,
+                "PRAGMA table_info(accounts)".to_string(),
+            ))
+            .await
+            .unwrap();
+        let account_names: Vec<String> = account_columns
+            .iter()
+            .map(|row| row.try_get_by_index::<String>(1).unwrap())
+            .collect();
+        assert!(account_names.contains(&"status".to_string()));
+        assert!(account_names.contains(&"cooldown_until".to_string()));
+
+        let download_columns = db
+            .query_all(Statement::from_string(
+                sea_orm::DatabaseBackend::Sqlite,
+                "PRAGMA table_info(downloads)".to_string(),
+            ))
+            .await
+            .unwrap();
+        let download_names: Vec<String> = download_columns
+            .iter()
+            .map(|row| row.try_get_by_index::<String>(1).unwrap())
+            .collect();
+        assert!(download_names.contains(&"account_ref".to_string()));
+    }
+
+    #[tokio::test]
     async fn test_packages_migration_applies_cleanly_on_existing_db() {
         // Stand up a DB at the schema state immediately before the
         // packages migration (6 migrations applied), seed prior tables,
