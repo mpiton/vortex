@@ -3098,6 +3098,7 @@ pub async fn account_update(
         .handle_update_account(UpdateAccountCommand {
             id: AccountId::new(id),
             patch,
+            now_ms: now_unix_ms(),
         })
         .await
         .map_err(|e| e.to_string())

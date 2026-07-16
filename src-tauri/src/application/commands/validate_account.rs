@@ -130,8 +130,9 @@ mod tests {
         ValidatorBehavior, build_account_bus,
     };
     use crate::application::error::AppError;
+    use crate::domain::error::DomainError;
     use crate::domain::event::DomainEvent;
-    use crate::domain::model::account::{AccountId, AccountType};
+    use crate::domain::model::account::{AccountId, AccountStatus, AccountType};
     use crate::domain::ports::driven::{
         AccountCredentialStore, AccountRepository, ValidationOutcome,
     };
@@ -255,6 +256,7 @@ mod tests {
 
         let after = repo.find_by_id(&id).unwrap().unwrap();
         assert_eq!(after.last_validated(), Some(1_900_000_000_000));
+        assert_eq!(after.status(), AccountStatus::InvalidCredentials);
         assert!(after.traffic_left().is_none(), "no traffic on reject");
 
         assert!(
@@ -263,6 +265,36 @@ mod tests {
                 .iter()
                 .any(|e| matches!(e, DomainEvent::AccountValidationFailed { id: ev, error } if ev == &id && error == "wrong password"))
         );
+    }
+
+    #[tokio::test]
+    async fn test_validate_account_maps_typed_plugin_error_to_persisted_status() {
+        let repo = Arc::new(InMemoryAccountRepo::new());
+        let creds = Arc::new(FakeAccountCredentialStore::new());
+        let validator = Arc::new(FakeAccountValidator::new());
+        validator.set(
+            "vortex-mod-1fichier",
+            ValidatorBehavior::Domain(DomainError::AccountExpired),
+        );
+        let events = Arc::new(CapturingEventBus::new());
+        let bus = build_account_bus(repo.clone(), creds, events, Some(validator), None);
+        let id = bus
+            .handle_add_account(add_command("vortex-mod-1fichier"))
+            .await
+            .expect("account remains configured");
+
+        let outcome = bus
+            .handle_validate_account(ValidateAccountCommand {
+                id: id.clone(),
+                now_ms: 1_900_000_000_000,
+            })
+            .await
+            .expect("typed account failure is a validation outcome");
+
+        assert!(!outcome.valid);
+        let stored = repo.find_by_id(&id).unwrap().expect("account persisted");
+        assert_eq!(stored.status(), AccountStatus::Expired);
+        assert_eq!(stored.last_validated(), Some(1_900_000_000_000));
     }
 
     #[tokio::test]
@@ -341,5 +373,7 @@ mod tests {
             .await
             .expect_err("missing pw");
         assert!(matches!(err, AppError::NotFound(_)));
+        let stored = repo.find_by_id(&id).unwrap().expect("account persisted");
+        assert_eq!(stored.status(), AccountStatus::MissingCredential);
     }
 }

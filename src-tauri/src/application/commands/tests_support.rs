@@ -196,6 +196,7 @@ impl AccountCredentialStore for FakeAccountCredentialStore {
 
 pub(crate) struct FakeAccountValidator {
     behavior: Mutex<HashMap<String, ValidatorBehavior>>,
+    calls: Mutex<Vec<(String, String, String)>>,
 }
 
 #[derive(Clone)]
@@ -204,12 +205,14 @@ pub(crate) enum ValidatorBehavior {
     Reject(String),
     Missing,
     Storage(String),
+    Domain(DomainError),
 }
 
 impl FakeAccountValidator {
     pub(crate) fn new() -> Self {
         Self {
             behavior: Mutex::new(HashMap::new()),
+            calls: Mutex::new(Vec::new()),
         }
     }
 
@@ -219,15 +222,24 @@ impl FakeAccountValidator {
             .unwrap()
             .insert(service_name.to_string(), behavior);
     }
+
+    pub(crate) fn calls(&self) -> Vec<(String, String, String)> {
+        self.calls.lock().unwrap().clone()
+    }
 }
 
 impl AccountValidator for FakeAccountValidator {
     fn validate(
         &self,
         service_name: &str,
-        _username: &str,
-        _password: &str,
+        username: &str,
+        password: &str,
     ) -> Result<ValidationOutcome, DomainError> {
+        self.calls.lock().unwrap().push((
+            service_name.to_string(),
+            username.to_string(),
+            password.to_string(),
+        ));
         let behavior = self
             .behavior
             .lock()
@@ -245,6 +257,7 @@ impl AccountValidator for FakeAccountValidator {
                 "no plugin for service {service_name}"
             ))),
             ValidatorBehavior::Storage(msg) => Err(DomainError::StorageError(msg)),
+            ValidatorBehavior::Domain(error) => Err(error),
         }
     }
 }

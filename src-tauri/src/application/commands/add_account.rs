@@ -97,13 +97,16 @@ mod tests {
 
     use super::super::AddAccountCommand;
     use crate::application::commands::tests_support::{
-        CapturingEventBus, FakeAccountCredentialStore, InMemoryAccountRepo, build_account_bus,
+        CapturingEventBus, FakeAccountCredentialStore, FakeAccountValidator, InMemoryAccountRepo,
+        ValidatorBehavior, build_account_bus,
     };
     use crate::application::error::AppError;
     use crate::domain::error::DomainError;
     use crate::domain::event::DomainEvent;
-    use crate::domain::model::account::AccountType;
-    use crate::domain::ports::driven::{AccountCredentialStore, AccountRepository};
+    use crate::domain::model::account::{AccountStatus, AccountType};
+    use crate::domain::ports::driven::{
+        AccountCredentialStore, AccountRepository, ValidationOutcome,
+    };
 
     fn add_command(service: &str, user: &str, password: &str) -> AddAccountCommand {
         AddAccountCommand {
@@ -151,6 +154,51 @@ mod tests {
             }
             other => panic!("unexpected event: {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn test_add_account_validates_and_persists_valid_status() {
+        let repo = Arc::new(InMemoryAccountRepo::new());
+        let creds = Arc::new(FakeAccountCredentialStore::new());
+        let validator = Arc::new(FakeAccountValidator::new());
+        validator.set(
+            "vortex-mod-1fichier",
+            ValidatorBehavior::Ok(ValidationOutcome::ok()),
+        );
+        let events = Arc::new(CapturingEventBus::new());
+        let bus = build_account_bus(repo.clone(), creds, events, Some(validator.clone()), None);
+
+        let id = bus
+            .handle_add_account(add_command("vortex-mod-1fichier", "alice", "api-key"))
+            .await
+            .expect("invalid credentials do not discard account metadata");
+
+        let stored = repo.find_by_id(&id).unwrap().expect("account persisted");
+        assert_eq!(stored.status(), AccountStatus::Valid);
+        assert_eq!(stored.last_validated(), Some(1_700_000_000_000));
+        assert_eq!(validator.calls().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_add_account_keeps_rejected_account_with_typed_status() {
+        let repo = Arc::new(InMemoryAccountRepo::new());
+        let creds = Arc::new(FakeAccountCredentialStore::new());
+        let validator = Arc::new(FakeAccountValidator::new());
+        validator.set(
+            "vortex-mod-1fichier",
+            ValidatorBehavior::Reject("wrong key".into()),
+        );
+        let events = Arc::new(CapturingEventBus::new());
+        let bus = build_account_bus(repo.clone(), creds, events, Some(validator), None);
+
+        let id = bus
+            .handle_add_account(add_command("vortex-mod-1fichier", "alice", "bad-key"))
+            .await
+            .expect("rejected account remains configured");
+
+        let stored = repo.find_by_id(&id).unwrap().expect("account persisted");
+        assert_eq!(stored.status(), AccountStatus::InvalidCredentials);
+        assert_eq!(stored.last_validated(), Some(1_700_000_000_000));
     }
 
     #[tokio::test]

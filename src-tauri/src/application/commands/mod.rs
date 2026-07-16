@@ -440,6 +440,7 @@ pub struct AccountPatch {
 pub struct UpdateAccountCommand {
     pub id: AccountId,
     pub patch: AccountPatch,
+    pub now_ms: u64,
 }
 impl Command for UpdateAccountCommand {}
 

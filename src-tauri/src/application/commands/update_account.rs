@@ -120,13 +120,16 @@ mod tests {
 
     use super::super::{AccountPatch, AddAccountCommand, UpdateAccountCommand};
     use crate::application::commands::tests_support::{
-        CapturingEventBus, FakeAccountCredentialStore, InMemoryAccountRepo, build_account_bus,
+        CapturingEventBus, FakeAccountCredentialStore, FakeAccountValidator, InMemoryAccountRepo,
+        ValidatorBehavior, build_account_bus,
     };
     use crate::application::error::AppError;
     use crate::domain::error::DomainError;
     use crate::domain::event::DomainEvent;
-    use crate::domain::model::account::{AccountId, AccountType};
-    use crate::domain::ports::driven::{AccountCredentialStore, AccountRepository};
+    use crate::domain::model::account::{AccountId, AccountStatus, AccountType};
+    use crate::domain::ports::driven::{
+        AccountCredentialStore, AccountRepository, ValidationOutcome,
+    };
 
     fn add_command(service: &str, user: &str, pw: &str) -> AddAccountCommand {
         AddAccountCommand {
@@ -151,6 +154,7 @@ mod tests {
 
         bus.handle_update_account(UpdateAccountCommand {
             id: id.clone(),
+            now_ms: 1_800_000_000_000,
             patch: AccountPatch {
                 enabled: Some(false),
                 ..AccountPatch::default()
@@ -179,6 +183,7 @@ mod tests {
 
         bus.handle_update_account(UpdateAccountCommand {
             id: id.clone(),
+            now_ms: 1_800_000_000_000,
             patch: AccountPatch {
                 password: Some("new-pw".into()),
                 ..AccountPatch::default()
@@ -191,6 +196,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_update_account_validates_rotated_secret_and_persists_status() {
+        let repo = Arc::new(InMemoryAccountRepo::new());
+        let creds = Arc::new(FakeAccountCredentialStore::new());
+        let validator = Arc::new(FakeAccountValidator::new());
+        validator.set(
+            "vortex-mod-1fichier",
+            ValidatorBehavior::Ok(ValidationOutcome::ok()),
+        );
+        let events = Arc::new(CapturingEventBus::new());
+        let bus = build_account_bus(repo.clone(), creds, events, Some(validator.clone()), None);
+        let id = bus
+            .handle_add_account(add_command("vortex-mod-1fichier", "alice", "old-key"))
+            .await
+            .expect("add succeeds");
+
+        bus.handle_update_account(UpdateAccountCommand {
+            id: id.clone(),
+            now_ms: 1_800_000_000_000,
+            patch: AccountPatch {
+                password: Some("new-key".into()),
+                ..AccountPatch::default()
+            },
+        })
+        .await
+        .expect("update succeeds");
+
+        let calls = validator.calls();
+        assert_eq!(calls.len(), 2, "add and update must both validate");
+        assert_eq!(calls[1].2, "new-key");
+        let stored = repo.find_by_id(&id).unwrap().expect("account persisted");
+        assert_eq!(stored.status(), AccountStatus::Valid);
+        assert_eq!(stored.last_validated(), Some(1_800_000_000_000));
+    }
+
+    #[tokio::test]
     async fn test_update_account_unknown_id_returns_not_found() {
         let repo = Arc::new(InMemoryAccountRepo::new());
         let creds = Arc::new(FakeAccountCredentialStore::new());
@@ -200,6 +240,7 @@ mod tests {
         let err = bus
             .handle_update_account(UpdateAccountCommand {
                 id: AccountId::new("missing"),
+                now_ms: 1_800_000_000_000,
                 patch: AccountPatch::default(),
             })
             .await
@@ -225,6 +266,7 @@ mod tests {
         let err = bus
             .handle_update_account(UpdateAccountCommand {
                 id: id.clone(),
+                now_ms: 1_800_000_000_000,
                 patch: AccountPatch {
                     password: Some("new-pw".into()),
                     enabled: Some(false),
@@ -273,6 +315,7 @@ mod tests {
         let err = bus
             .handle_update_account(UpdateAccountCommand {
                 id: id.clone(),
+                now_ms: 1_800_000_000_000,
                 patch: AccountPatch {
                     username: Some("   ".into()),
                     ..AccountPatch::default()
@@ -299,6 +342,7 @@ mod tests {
         let err = bus
             .handle_update_account(UpdateAccountCommand {
                 id: id.clone(),
+                now_ms: 1_800_000_000_000,
                 patch: AccountPatch {
                     password: Some("".into()),
                     ..AccountPatch::default()
@@ -324,6 +368,7 @@ mod tests {
 
         bus.handle_update_account(UpdateAccountCommand {
             id: id.clone(),
+            now_ms: 1_800_000_000_000,
             patch: AccountPatch {
                 account_type: Some(AccountType::Debrid),
                 ..AccountPatch::default()
@@ -369,6 +414,7 @@ mod tests {
         let err = bus
             .handle_update_account(UpdateAccountCommand {
                 id: id1,
+                now_ms: 1_800_000_000_000,
                 patch: AccountPatch {
                     username: Some("bob".into()),
                     ..AccountPatch::default()
