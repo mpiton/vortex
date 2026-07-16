@@ -1,0 +1,198 @@
+name: Reusable Plugin Verification
+
+on:
+  workflow_call:
+
+permissions: {}
+
+concurrency:
+  group: plugin-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+
+jobs:
+  build-and-test:
+    name: Build, test, and package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out plugin repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Activate repository Rust toolchain
+        shell: bash
+        run: |
+          test -f rust-toolchain.toml
+          rustc --version --verbose
+          cargo --version
+          rustup component list --installed | grep -q '^clippy-'
+          rustup component list --installed | grep -q '^rustfmt-'
+          rustup target list --installed | grep -qx 'wasm32-wasip1'
+
+      - name: Cache Cargo build data
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+
+      - name: Verify plugin manifests
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+          import tomllib
+
+          numeric = r"(?:0|[1-9][0-9]*)"
+          prerelease = (
+              r"(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)"
+              r"(?:\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*"
+          )
+          build = r"[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*"
+          semver = re.compile(
+              rf"{numeric}\.{numeric}\.{numeric}"
+              rf"(?:-{prerelease})?(?:\+{build})?"
+          )
+
+          with open("Cargo.toml", "rb") as file:
+              cargo = tomllib.load(file)
+          with open("plugin.toml", "rb") as file:
+              manifest = tomllib.load(file)["plugin"]
+
+          package = cargo["package"]
+          if package["name"] != manifest["name"]:
+              raise SystemExit("Cargo.toml and plugin.toml names differ")
+          if package["version"] != manifest["version"]:
+              raise SystemExit("Cargo.toml and plugin.toml versions differ")
+          for field, version in (
+              ("version", manifest["version"]),
+              ("min_vortex_version", manifest["min_vortex_version"]),
+          ):
+              if not isinstance(version, str) or semver.fullmatch(version) is None:
+                  raise SystemExit(f"plugin.{field} is not valid SemVer 2.0.0")
+
+          package_name = package["name"]
+          crate_name = cargo.get("lib", {}).get("name", package_name.replace("-", "_"))
+          if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", crate_name) is None:
+              raise SystemExit("library name cannot be mapped to a WASM artifact")
+
+          artifact_name = f"{crate_name}.wasm"
+          wasm_path = f"target/wasm32-wasip1/release/{artifact_name}"
+          plugin_wasm_asset = f"{package_name.replace('-', '_')}.wasm"
+          if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*\.wasm", plugin_wasm_asset) is None:
+              raise SystemExit("plugin name cannot be mapped to a release WASM asset")
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env:
+              env.write(f"PACKAGE_NAME={package_name}\n")
+              env.write(f"PLUGIN_WASM_ASSET={plugin_wasm_asset}\n")
+              env.write(f"WASM_PATH={wasm_path}\n")
+          PY
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Lint native targets
+        run: cargo clippy --locked --all-targets --target x86_64-unknown-linux-gnu -- -D warnings
+
+      - name: Lint WASM library
+        run: cargo clippy --locked --lib --target wasm32-wasip1 -- -D warnings
+
+      - name: Build release WASM
+        run: cargo build --locked --lib --target wasm32-wasip1 --release
+
+      - name: Verify WASM artifact and ABI exports
+        shell: bash
+        run: |
+          test -s "${WASM_PATH}"
+
+          case "${PACKAGE_NAME}" in
+            vortex-mod-containers)
+              required="can_decrypt detect decrypt"
+              ;;
+            vortex-mod-gallery)
+              required="can_handle supports_playlist extract_links extract_generic is_http_url"
+              ;;
+            vortex-mod-soundcloud)
+              required="can_handle supports_playlist extract_links extract_playlist extract_track resolve_stream_url download_to_file"
+              ;;
+            vortex-mod-vimeo)
+              required="can_handle supports_playlist extract_links get_media_variants resolve_stream_url download_to_file extract_playlist"
+              ;;
+            vortex-mod-youtube)
+              required="can_handle supports_playlist extract_links get_media_variants extract_playlist resolve_stream_url download_to_file"
+              ;;
+            *)
+              required="can_handle supports_playlist extract_links resolve_stream_url"
+              ;;
+          esac
+
+          REQUIRED_EXPORTS="${required}" node <<'JS'
+          const fs = require("node:fs");
+
+          let compiled;
+          try {
+            compiled = new WebAssembly.Module(fs.readFileSync(process.env.WASM_PATH));
+          } catch (error) {
+            console.error(`invalid WASM artifact: ${error.message}`);
+            process.exit(1);
+          }
+          const functionExports = new Set(
+            WebAssembly.Module.exports(compiled)
+              .filter(({ kind }) => kind === "function")
+              .map(({ name }) => name),
+          );
+          for (const required of process.env.REQUIRED_EXPORTS.split(/\s+/)) {
+            if (!functionExports.has(required)) {
+              console.error(`missing required WASM export: ${required}`);
+              process.exit(1);
+            }
+          }
+          JS
+
+      - name: Run native tests including ABI smoke
+        run: cargo test --locked --all-targets --target x86_64-unknown-linux-gnu
+
+      - name: Build verified release bundle
+        id: bundle
+        shell: bash
+        run: |
+          bundle_dir="$(mktemp -d "${RUNNER_TEMP}/plugin-release.XXXXXX")"
+          printf 'bundle_dir=%s\n' "${bundle_dir}" >> "${GITHUB_OUTPUT}"
+
+          cp "${WASM_PATH}" "${bundle_dir}/plugin.wasm"
+          if [[ "${PLUGIN_WASM_ASSET}" != "plugin.wasm" ]]; then
+            cp "${WASM_PATH}" "${bundle_dir}/${PLUGIN_WASM_ASSET}"
+          fi
+          cp plugin.toml "${bundle_dir}/plugin.toml"
+          (
+            cd "${bundle_dir}"
+            sha256sum plugin.wasm plugin.toml > SHA256SUMS
+            sha256sum --check SHA256SUMS
+          )
+
+          expected_asset_names=(plugin.wasm plugin.toml SHA256SUMS)
+          if [[ "${PLUGIN_WASM_ASSET}" != "plugin.wasm" ]]; then
+            expected_asset_names+=("${PLUGIN_WASM_ASSET}")
+          fi
+          expected_assets="$(printf '%s\n' "${expected_asset_names[@]}" | LC_ALL=C sort)"
+          actual_assets="$(
+            find "${bundle_dir}" -mindepth 1 -printf '%P\n' | LC_ALL=C sort
+          )"
+          if [[ "${actual_assets}" != "${expected_assets}" ]]; then
+            echo "verified bundle asset set is not canonical" >&2
+            diff -u <(printf '%s\n' "${expected_assets}") \
+              <(printf '%s\n' "${actual_assets}") || true
+            exit 1
+          fi
+
+      - name: Upload verified release bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: plugin-release-${{ github.sha }}
+          path: ${{ steps.bundle.outputs.bundle_dir }}/
+          if-no-files-found: error
+          retention-days: 14

@@ -7,8 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Typed yt-dlp broker (MAT-131)**: replaced the plugin-facing generic
+  `run_subprocess(binary, args, timeout)` capability with a closed
+  `run_ytdlp` contract. Vortex now selects an approved executable, builds all
+  arguments, ignores external yt-dlp configuration/plugins/remote components,
+  uses fixed timeouts and a cleared environment, confines download output to
+  the Vortex temporary directory, and caps stdout/stderr. A strict legacy shim
+  keeps the exact profiles of already-published official plugins loadable
+  during the migration; arbitrary subprocess capabilities are no longer
+  registered. The Tauri metadata fallback uses the same broker.
+- **Official plugin provenance (MAT-131)**: yt-dlp host functions are now
+  granted only to Store-installed official plugins whose manifest and WASM
+  still match freshly fetched registry checksums. The grant is persisted
+  outside plugin directories and revalidated on every load; local installs,
+  hot-reloaded modifications, unsafe executable paths, oversized process
+  output, and failed partial downloads all fail closed. Provenance paths are
+  resolved before containment checks, state updates use an atomic synced
+  replacement, committed record sync errors no longer abort verified installs,
+  and revocation sync errors remain blocking before local replacement.
+- **Lot 1 review hardening (MAT-129, MAT-131)**: reusable plugin CI now drops
+  checkout credentials, verifies the real WASM export table, builds release
+  assets in a clean directory, and rejects duplicate registry entries. Plugin
+  trust paths are canonicalized against the real filesystem, yt-dlp accepts
+  HTTPS only and tolerates concurrent private-directory creation.
+
 ### Fixed
 
+- **Lot 1 install race fixes (MAT-131)**: adaptive downloads atomically reserve
+  unique destination files before copying, and failed Store installs clean
+  their staging directory before propagating loader or task errors.
 - **Lot 0 maintenance baseline (MAT-126–MAT-128)**: restored CI by allowing non-secret `.npmrc` configuration through the shared redacted scanner, updated compatible npm and Rust dependencies to clear security audits, pinned CI actions on their Node 24 releases, kept the codebase clean under the current Rust stable Clippy, and added multi-OS Tauri build diagnostics.
 - **Task 40 follow-up — PR #153 review fixes round 6** (scope `download`, sprint task 40, PR #153 review): `chatgpt-codex-connector[bot]` flagged a cancellation race in the failover loop. After `AttemptOutcome::Failed`, the loop bumped `mirror_idx`, ran the file/meta cleanup, and unconditionally published `MirrorSwitched` (which `progress_bridge` persists to `current_mirror_index`). A user-cancel that landed in the window between the failed attempt returning and the next attempt starting — including while `tokio::task::spawn_blocking` was running the cleanup — would still bump the persisted cursor through the bridge before the next iteration's `run_mirror_attempt` observed `cancel_token.is_cancelled()` and reported `AttemptOutcome::Cancelled`. The retry would then resume from a slot the user never asked for. Two `cancel_token.is_cancelled()` guards added inside the failover branch: one before bumping `mirror_idx` (catches a cancel that arrived between the attempt finishing and the loop re-entering), one after the cleanup completes (catches a cancel that arrived during the spawn_blocking). Both paths emit `DomainEvent::DownloadCancelled` and break out, so no `MirrorSwitched` ever fires for an aborted switch.
 - **Task 40 follow-up — PR #153 review fixes round 5** (scope `download`, sprint task 40, PR #153 review): `coderabbitai[bot]` flagged that the round-2 cursor-reset path mapped every `DomainEvent::DownloadFailed` to `MirrorCursorReset`, but `extract_archive::extract_archive_handler` (and the domain `Download::fail()` max-retries path) also publish `DownloadFailed` for post-download errors. A successful download from mirror N followed by an extract / verify failure would zero the cursor and lose the last-known-good slot, so a manual re-download would walk the full mirror list from the top instead of going straight back to the mirror that already produced the bytes. New domain event `DomainEvent::AllMirrorsExhausted { id }` published by the engine's failover loop right before the existing `DownloadFailed`; `progress_bridge` now keys the cursor reset on `AllMirrorsExhausted` and ignores generic `DownloadFailed`. Wired through `tauri_bridge` (`mirrors-exhausted` event name, `{ "id": <id> }` payload) and the download log bridge (silent — no log line). Three tests: `test_event_to_message_maps_all_mirrors_exhausted_to_cursor_reset`, `test_event_to_message_does_not_reset_cursor_on_generic_download_failed` (asserts `event_to_message(&DownloadFailed)` returns `None`), `test_all_mirrors_exhausted_resets_persisted_mirror_cursor_to_zero` (write-through). The previous round-2 tests were renamed in place.

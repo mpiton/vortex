@@ -1588,11 +1588,9 @@ fn sanitize_extension(ext: &str) -> Result<String, String> {
 /// Errors out after 9999 collisions rather than silently overwriting — that
 /// branch is meant to *prevent* overwrites, not fall back to them.
 ///
-/// Race condition note: TOCTOU-safe this is not — another process could create
-/// the same path between the `exists()` check and the subsequent
-/// `rename`/`copy`. That would result in an overwrite. For downloads, the
-/// window is small and the alternative (`O_EXCL`-style create + rename) is not
-/// available on `std::fs::rename`. Accepted as a practical compromise.
+/// This helper only suggests a free path and is not TOCTOU-safe. Callers that
+/// write immediately and must prevent overwrites should use
+/// [`reserve_unique_destination`] instead.
 fn unique_destination(
     dir: &std::path::Path,
     filename: &str,
@@ -1617,6 +1615,54 @@ fn unique_destination(
         let candidate = dir.join(&candidate_name);
         if !candidate.exists() {
             return Ok((candidate, candidate_name));
+        }
+    }
+
+    Err(format!(
+        "too many existing files named like {filename:?} in {}",
+        dir.display()
+    ))
+}
+
+/// Atomically reserve a unique destination for an adaptive download.
+///
+/// Unlike [`unique_destination`], this creates the selected file with
+/// `create_new(true)`. A concurrent reservation therefore fails with
+/// `AlreadyExists` and retries the next suffix instead of sharing a path.
+fn reserve_unique_destination(
+    dir: &std::path::Path,
+    filename: &str,
+) -> Result<(std::fs::File, std::path::PathBuf, String), String> {
+    let path = std::path::Path::new(filename);
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(filename);
+    let ext = path.extension().and_then(|s| s.to_str());
+
+    for n in 0..=9999 {
+        let candidate_name = if n == 0 {
+            filename.to_string()
+        } else {
+            match ext {
+                Some(e) => format!("{stem} ({n}).{e}"),
+                None => format!("{stem} ({n})"),
+            }
+        };
+        let candidate = dir.join(&candidate_name);
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        {
+            Ok(file) => return Ok((file, candidate, candidate_name)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(format!(
+                    "failed to reserve destination {}: {error}",
+                    candidate.display()
+                ));
+            }
         }
     }
 
@@ -1744,9 +1790,10 @@ fn resolve_media_stream(
     match plugin_loader.resolve_stream_url(url, quality, format, audio_only) {
         Ok(cdn_url) => Ok(StreamResolution::CdnUrl(cdn_url)),
         Err(crate::domain::error::DomainError::AdaptiveStreamOnly) => {
-            let temp_dir = std::env::temp_dir().join("vortex-downloads");
-            std::fs::create_dir_all(&temp_dir)
-                .map_err(|e| format!("failed to create temp dir: {e}"))?;
+            let output_request =
+                crate::adapters::driven::plugin::ytdlp_broker::managed_output_request()
+                    .map_err(|e| format!("failed to create private output request: {e}"))?;
+            let temp_dir = output_request.path();
 
             let file_info = plugin_loader
                 .download_to_file(
@@ -1801,19 +1848,36 @@ fn resolve_media_stream(
                     dest_dir.display()
                 )
             })?;
-            let (dest_path, dest_filename) = unique_destination(&dest_dir, &filename)
-                .map_err(|e| format!("failed to select unique destination: {e}"))?;
+            let (mut destination, dest_path, dest_filename) =
+                reserve_unique_destination(&dest_dir, &filename)
+                    .map_err(|e| format!("failed to select unique destination: {e}"))?;
 
-            if std::fs::rename(&file_info.path, &dest_path).is_err() {
-                std::fs::copy(&file_info.path, &dest_path)
+            let copy_result = (|| -> Result<(), String> {
+                let mut source = std::fs::File::open(&produced_canonical)
+                    .map_err(|e| format!("failed to open merged file: {e}"))?;
+                std::io::copy(&mut source, &mut destination)
                     .map_err(|e| format!("failed to copy merged file: {e}"))?;
-                if let Err(e) = std::fs::remove_file(&file_info.path) {
+                Ok(())
+            })();
+            drop(destination);
+
+            if let Err(error) = copy_result {
+                if let Err(cleanup_error) = std::fs::remove_file(&dest_path) {
                     tracing::warn!(
-                        path = %file_info.path.display(),
-                        error = %e,
-                        "failed to remove temp file after copy"
+                        path = %dest_path.display(),
+                        error = %cleanup_error,
+                        "failed to remove incomplete destination file"
                     );
                 }
+                return Err(error);
+            }
+
+            if let Err(e) = std::fs::remove_file(&produced_canonical) {
+                tracing::warn!(
+                    path = %produced_canonical.display(),
+                    error = %e,
+                    "failed to remove temp file after copy"
+                );
             }
 
             Ok(StreamResolution::LocalFile {
@@ -1911,27 +1975,18 @@ pub async fn command_get_media_metadata(
         }
     }
 
-    let output = tokio::task::spawn_blocking(move || -> Result<std::process::Output, String> {
-        let binary = find_ytdlp()?;
-        std::process::Command::new(&binary)
-            .args([
-                "--dump-single-json",
-                "--flat-playlist",
-                "--no-warnings",
-                &url,
-            ])
-            .output()
-            .map_err(|e| format!("Failed to run yt-dlp: {e}"))
+    let output = tokio::task::spawn_blocking(move || {
+        crate::adapters::driven::plugin::ytdlp_broker::run_generic_metadata(url)
+            .map_err(|error| format!("Failed to run yt-dlp: {error}"))
     })
     .await
     .map_err(|e| format!("Task join error: {e}"))??;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("yt-dlp error: {stderr}"));
+    if output.exit_code != 0 {
+        return Err(format!("yt-dlp error: {}", output.stderr));
     }
 
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout)
+    let json: serde_json::Value = serde_json::from_str(&output.stdout)
         .map_err(|e| format!("Failed to parse yt-dlp output: {e}"))?;
 
     parse_ytdlp_json(&json)
@@ -1975,9 +2030,13 @@ struct PluginMediaVariant {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum PluginVariantKind {
+    #[serde(alias = "muxed", alias = "video_only")]
     Video,
+    #[serde(alias = "audio_only")]
     Audio,
     Adaptive,
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -2090,7 +2149,10 @@ fn parse_plugin_video_metadata(
                     });
                 }
 
-                if !variant.ext.is_empty() && seen_video_exts.insert(variant.ext.clone()) {
+                if matches!(kind, PluginVariantKind::Video)
+                    && !variant.ext.is_empty()
+                    && seen_video_exts.insert(variant.ext.clone())
+                {
                     available_formats.push(variant.ext);
                 }
             }
@@ -2099,6 +2161,7 @@ fn parse_plugin_video_metadata(
                     available_audio_formats.push(variant.ext);
                 }
             }
+            PluginVariantKind::Unknown => {}
         }
     }
 
@@ -2264,35 +2327,6 @@ fn soundcloud_track_download_title(track: &SoundcloudTrackLink) -> String {
 
 fn millis_to_seconds(duration_ms: Option<u64>) -> u64 {
     duration_ms.unwrap_or_default() / 1000
-}
-
-fn find_ytdlp() -> Result<std::path::PathBuf, String> {
-    // Try PATH via `which` equivalent — just attempt running `yt-dlp --version`
-    if std::process::Command::new("yt-dlp")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-    {
-        return Ok(std::path::PathBuf::from("yt-dlp"));
-    }
-
-    // Known fallback locations
-    let mut candidates = vec![
-        std::path::PathBuf::from("/usr/local/bin/yt-dlp"),
-        std::path::PathBuf::from("/usr/bin/yt-dlp"),
-    ];
-    if let Some(home) = dirs::home_dir() {
-        candidates.insert(0, home.join(".local/bin/yt-dlp"));
-    }
-
-    for path in &candidates {
-        if path.exists() {
-            return Ok(path.clone());
-        }
-    }
-
-    Err("yt-dlp not found — install it with: pip install yt-dlp".to_string())
 }
 
 /// Canonical YouTube vertical-resolution ladder supported by
@@ -3467,7 +3501,10 @@ mod tests {
     use crate::domain::model::views::StatsPeriod;
     use crate::domain::ports::driven::PluginLoader;
     use crate::domain::ports::driven::plugin_loader::DownloadedFileInfo;
+    use std::collections::HashSet;
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Barrier};
 
     #[derive(Clone)]
     struct MetadataPluginLoader {
@@ -3506,8 +3543,20 @@ mod tests {
         }
     }
 
-    #[derive(Clone)]
-    struct AdaptiveDownloadPluginLoader;
+    #[derive(Clone, Default)]
+    struct AdaptiveDownloadPluginLoader {
+        ready: Option<Arc<Barrier>>,
+        sequence: Arc<AtomicUsize>,
+    }
+
+    impl AdaptiveDownloadPluginLoader {
+        fn synchronized(downloads: usize) -> Self {
+            Self {
+                ready: Some(Arc::new(Barrier::new(downloads))),
+                sequence: Arc::new(AtomicUsize::new(0)),
+            }
+        }
+    }
 
     impl PluginLoader for AdaptiveDownloadPluginLoader {
         fn load(&self, _manifest: &PluginManifest) -> Result<(), DomainError> {
@@ -3551,14 +3600,18 @@ mod tests {
             let output_dir = PathBuf::from(output_dir);
             std::fs::create_dir_all(&output_dir)
                 .map_err(|e| DomainError::StorageError(e.to_string()))?;
-            let unique = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos();
-            let path = output_dir.join(format!("adaptive-{unique}.mp4"));
-            std::fs::write(&path, b"merged")
+            let sequence = self.sequence.fetch_add(1, Ordering::SeqCst);
+            let path = output_dir.join(format!("adaptive-{sequence}.mp4"));
+            let contents = format!("merged-{sequence}");
+            std::fs::write(&path, contents.as_bytes())
                 .map_err(|e| DomainError::StorageError(e.to_string()))?;
-            Ok(DownloadedFileInfo { path, size: 6 })
+            if let Some(ready) = &self.ready {
+                ready.wait();
+            }
+            Ok(DownloadedFileInfo {
+                path,
+                size: contents.len() as u64,
+            })
         }
     }
 
@@ -3880,7 +3933,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_plugin_video_metadata_keeps_adaptive_variants_available() {
+    fn test_parse_plugin_video_metadata_keeps_adaptive_quality_not_transport_format() {
         let extract_links = serde_json::json!({
             "kind": "video",
             "videos": [{
@@ -3893,7 +3946,7 @@ mod tests {
             "variants": [
                 {
                     "kind": "adaptive",
-                    "ext": "mp4",
+                    "ext": "m3u8",
                     "width": 1280,
                     "height": 720,
                     "fps": 30.0,
@@ -3909,7 +3962,31 @@ mod tests {
         assert_eq!(metadata.default_quality.as_deref(), Some("720p"));
         assert_eq!(metadata.available_qualities.len(), 1);
         assert_eq!(metadata.available_qualities[0].quality, "720p");
-        assert_eq!(metadata.available_formats, vec!["mp4"]);
+        assert!(metadata.available_formats.is_empty());
+    }
+
+    #[test]
+    fn test_parse_plugin_video_metadata_accepts_youtube_variant_kinds() {
+        let extract_links = serde_json::json!({
+            "kind": "video",
+            "videos": [{"title": "YouTube", "duration": 1, "thumbnail": null}]
+        });
+        let variants = serde_json::json!({
+            "variants": [
+                {"kind": "muxed", "ext": "mp4", "height": 720},
+                {"kind": "video_only", "ext": "webm", "height": 1080},
+                {"kind": "audio_only", "ext": "m4a", "abr": 128.0},
+                {"kind": "unknown", "ext": "bin"}
+            ]
+        });
+
+        let metadata =
+            parse_plugin_video_metadata(&extract_links.to_string(), &variants.to_string())
+                .expect("YouTube variants should parse");
+
+        assert_eq!(metadata.available_formats, vec!["mp4", "webm"]);
+        assert_eq!(metadata.available_audio_formats, vec!["m4a"]);
+        assert_eq!(metadata.default_quality.as_deref(), Some("1080p"));
     }
 
     #[test]
@@ -3918,7 +3995,7 @@ mod tests {
         let configured_dir = configured_root.path().join("custom-downloads");
 
         let resolution = resolve_media_stream(
-            &AdaptiveDownloadPluginLoader,
+            &AdaptiveDownloadPluginLoader::default(),
             "https://example.com/video",
             "720p",
             "mp4",
@@ -3936,13 +4013,62 @@ mod tests {
             } => {
                 assert!(path.starts_with(&configured_dir));
                 assert_eq!(filename, "Adaptive Title.mp4");
-                assert_eq!(size, 6);
+                assert_eq!(size, 8);
                 assert!(path.exists());
             }
             StreamResolution::CdnUrl(url) => {
                 panic!("expected local file resolution, got CDN URL: {url}")
             }
         }
+    }
+
+    #[test]
+    fn test_resolve_media_stream_reserves_distinct_destinations_concurrently() {
+        const DOWNLOADS: usize = 16;
+
+        let configured_root = tempfile::tempdir().expect("temp dir");
+        let configured_dir = configured_root.path().join("custom-downloads");
+        let loader = AdaptiveDownloadPluginLoader::synchronized(DOWNLOADS);
+
+        let workers = (0..DOWNLOADS)
+            .map(|_| {
+                let configured_dir = configured_dir.clone();
+                let loader = loader.clone();
+                std::thread::spawn(move || {
+                    resolve_media_stream(
+                        &loader,
+                        "https://example.com/video",
+                        "720p",
+                        "mp4",
+                        false,
+                        Some("Concurrent Title".to_string()),
+                        Some(configured_dir),
+                    )
+                    .expect("adaptive stream should resolve to a local file")
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let mut paths = HashSet::new();
+        let mut contents = HashSet::new();
+        for worker in workers {
+            match worker.join().expect("download worker should not panic") {
+                StreamResolution::LocalFile { path, .. } => {
+                    contents.insert(std::fs::read(&path).expect("destination should be readable"));
+                    paths.insert(path);
+                }
+                StreamResolution::CdnUrl(url) => {
+                    panic!("expected local file resolution, got CDN URL: {url}")
+                }
+            }
+        }
+
+        assert_eq!(paths.len(), DOWNLOADS, "destinations must not collide");
+        assert_eq!(
+            contents.len(),
+            DOWNLOADS,
+            "concurrent downloads must not overwrite each other's contents"
+        );
     }
 
     #[test]

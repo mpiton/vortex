@@ -5,6 +5,7 @@
 
 use crate::domain::error::DomainError;
 use crate::domain::model::plugin::{PluginInfo, PluginManifest};
+use crate::domain::ports::driven::plugin_store_client::OfficialPluginProvenance;
 
 /// Result of a `download_to_file` plugin call.
 pub struct DownloadedFileInfo {
@@ -30,6 +31,21 @@ pub trait PluginLoader: Send + Sync {
     fn load_from_dir(&self, _dir: &std::path::Path) -> Result<(), DomainError> {
         Err(DomainError::PluginError(
             "load_from_dir not supported by this loader".into(),
+        ))
+    }
+
+    /// Install assets authenticated by the official Store and persist their
+    /// host-owned provenance before loading them.
+    ///
+    /// The default is deliberately fail-closed. Existing trait implementors
+    /// remain source-compatible but cannot silently discard the trust data.
+    fn load_official_from_dir(
+        &self,
+        _dir: &std::path::Path,
+        _provenance: &OfficialPluginProvenance,
+    ) -> Result<(), DomainError> {
+        Err(DomainError::PluginError(
+            "official Store installs not supported by this loader".into(),
         ))
     }
 
@@ -209,5 +225,20 @@ mod tests {
         let loader = MinimalLoader;
         let result = loader.decrypt_container(b"DLC\x00random");
         assert!(matches!(result, Err(DomainError::NotFound(_))));
+    }
+
+    #[test]
+    fn test_load_official_from_dir_default_is_fail_closed() {
+        let loader = MinimalLoader;
+        let provenance = OfficialPluginProvenance {
+            name: "vortex-mod-youtube".into(),
+            version: "1.0.0".into(),
+            wasm_sha256: "a".repeat(64),
+            manifest_sha256: "b".repeat(64),
+        };
+
+        let result = loader.load_official_from_dir(std::path::Path::new("/tmp"), &provenance);
+
+        assert!(matches!(result, Err(DomainError::PluginError(_))));
     }
 }
