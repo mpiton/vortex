@@ -224,7 +224,7 @@ enum TrafficRank {
 mod tests {
     use super::*;
     use crate::domain::error::DomainError;
-    use crate::domain::model::account::{AccountId, AccountType};
+    use crate::domain::model::account::{AccountId, AccountStatus, AccountType};
     use std::sync::Mutex as StdMutex;
 
     // --- Inline mocks ---
@@ -332,7 +332,7 @@ mod tests {
         last_validated_ms: Option<u64>,
         enabled: bool,
     ) -> Account {
-        Account::reconstruct(
+        Account::reconstruct_with_status(
             AccountId::new(id),
             service.to_string(),
             format!("user-{id}"),
@@ -343,6 +343,8 @@ mod tests {
             valid_until_ms,
             last_validated_ms,
             0,
+            AccountStatus::Valid,
+            None,
         )
     }
 
@@ -530,6 +532,56 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(chosen.id().as_str(), "enabled");
+    }
+
+    #[test]
+    fn test_select_best_skips_unverified_and_invalid_accounts() {
+        let now_ms = 2_000_000_000_000;
+        let now_secs = now_ms / 1_000;
+        let mut unverified = account(
+            "unverified",
+            "S",
+            Some(u64::MAX),
+            Some(now_ms + 1),
+            None,
+            true,
+        );
+        unverified.set_status(AccountStatus::Unverified);
+        let mut invalid = account("invalid", "S", Some(u64::MAX), Some(now_ms + 1), None, true);
+        invalid.set_status(AccountStatus::InvalidCredentials);
+        let valid = account("valid", "S", Some(1), Some(now_ms + 1), None, true);
+
+        let (selector, _bus) = build_selector(vec![unverified, invalid, valid], now_secs);
+
+        let chosen = selector
+            .select_best("S", AccountSelectionStrategy::BestTraffic)
+            .unwrap()
+            .expect("one valid account remains");
+        assert_eq!(chosen.id().as_str(), "valid");
+    }
+
+    #[test]
+    fn test_select_best_skips_active_persisted_cooldown() {
+        let now_ms = 2_000_000_000_000;
+        let now_secs = now_ms / 1_000;
+        let mut cooling = account(
+            "cooling",
+            "S",
+            Some(u64::MAX),
+            Some(now_ms + 60_000),
+            Some(now_ms),
+            true,
+        );
+        cooling.mark_unavailable(AccountStatus::Cooldown, now_ms + 30_000);
+
+        let (selector, _bus) = build_selector(vec![cooling], now_secs);
+
+        assert!(
+            selector
+                .select_best("S", AccountSelectionStrategy::BestTraffic)
+                .unwrap()
+                .is_none()
+        );
     }
 
     // --- Acceptance criterion 4: RoundRobin alternance ---

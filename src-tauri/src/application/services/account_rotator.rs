@@ -318,7 +318,7 @@ mod tests {
     use super::*;
     use crate::application::services::AccountSelector;
     use crate::domain::error::DomainError;
-    use crate::domain::model::account::{Account, AccountType};
+    use crate::domain::model::account::{Account, AccountStatus, AccountType};
     use crate::domain::ports::driven::AccountRepository;
     use std::sync::Mutex as StdMutex;
 
@@ -437,7 +437,7 @@ mod tests {
     }
 
     fn account(id: &str, service: &str, traffic_left: Option<u64>, enabled: bool) -> Account {
-        Account::reconstruct(
+        Account::reconstruct_with_status(
             AccountId::new(id),
             service.to_string(),
             format!("user-{id}"),
@@ -450,6 +450,8 @@ mod tests {
             Some(u64::MAX),
             Some(0),
             0,
+            AccountStatus::Valid,
+            None,
         )
     }
 
@@ -499,6 +501,59 @@ mod tests {
             DomainEvent::AccountExhausted { id, service_name, exhausted_until_ms: _ }
                 if id.as_str() == "a" && service_name == "Uploaded"
         )));
+    }
+
+    #[test]
+    fn test_mark_exhausted_persists_status_and_deadline() {
+        let a = account("a", "Uploaded", Some(50), true);
+        let (rotator, _bus, _clock) = build_rotator(vec![a], 1_700_000_000);
+
+        rotator
+            .mark_exhausted(&AccountId::new("a"), "Uploaded", 600)
+            .expect("mark succeeds");
+
+        let stored = rotator
+            .repo
+            .find_by_id(&AccountId::new("a"))
+            .unwrap()
+            .expect("account remains persisted");
+        assert_eq!(stored.status(), AccountStatus::QuotaExhausted);
+        assert_eq!(stored.exhausted_until(), Some(1_700_000_600_000));
+    }
+
+    #[test]
+    fn test_persisted_cooldown_survives_rotator_recreation() {
+        let a = account("a", "Uploaded", Some(50), true);
+        let (rotator, bus, clock) = build_rotator(vec![a], 1_700_000_000);
+        rotator
+            .mark_exhausted(&AccountId::new("a"), "Uploaded", 600)
+            .expect("mark succeeds");
+
+        let selector = AccountSelector::new(rotator.repo.clone(), bus.clone(), clock.clone());
+        let restarted = AccountRotator::new(selector, rotator.repo.clone(), bus, clock);
+        let outcome = restarted
+            .next_account("Uploaded", AccountSelectionStrategy::BestTraffic)
+            .expect("rotation succeeds");
+
+        assert_eq!(
+            outcome,
+            NextAccountOutcome::AllExhausted {
+                next_eligible_at_ms: 1_700_000_600_000,
+            }
+        );
+    }
+
+    #[test]
+    fn test_invalid_account_is_none_available_not_exhausted() {
+        let mut invalid = account("a", "Uploaded", Some(50), true);
+        invalid.set_status(AccountStatus::InvalidCredentials);
+        let (rotator, _bus, _clock) = build_rotator(vec![invalid], 1_700_000_000);
+
+        let outcome = rotator
+            .next_account("Uploaded", AccountSelectionStrategy::BestTraffic)
+            .expect("rotation succeeds");
+
+        assert_eq!(outcome, NextAccountOutcome::NoneAvailable);
     }
 
     // --- AC #2: tous accounts 429 → AllExhausted ---
@@ -613,6 +668,13 @@ mod tests {
             .unwrap();
         rotator.clear_exhausted(&AccountId::new("a")).unwrap();
         assert!(!rotator.is_exhausted(&AccountId::new("a")).unwrap());
+        let stored = rotator
+            .repo
+            .find_by_id(&AccountId::new("a"))
+            .unwrap()
+            .expect("account exists");
+        assert_eq!(stored.status(), AccountStatus::Valid);
+        assert!(stored.exhausted_until().is_none());
     }
 
     #[test]
