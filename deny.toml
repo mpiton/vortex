@@ -31,8 +31,8 @@ ignore = [
   "RUSTSEC-2024-0420",
   # proc-macro-error unmaintained — transitive via tauri macros stack
   "RUSTSEC-2024-0370",
-  # bincode 2.x is used directly but is now unmaintained. Migrating to 3.x is
-  # a breaking change and must be handled in its own upgrade batch.
+  # bincode is unmaintained in all versions; evaluate a maintained alternative
+  # in a dedicated migration batch.
   "RUSTSEC-2025-0141",
   # rust-unic family unmaintained — transitive via urlpattern → tauri-utils
   "RUSTSEC-2025-0075",
