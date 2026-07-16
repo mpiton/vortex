@@ -109,9 +109,16 @@ mod tests {
             "10.0.0.1",
             "169.254.169.254",
             "::ffff:127.0.0.1",
+            "fec0::1",
+            "64:ff9b:1::c0a8:1",
         ] {
             assert!(is_forbidden_ip(&raw.parse().unwrap()), "{raw}");
         }
+    }
+
+    #[test]
+    fn accepts_globally_routable_ipv6_address() {
+        assert!(!is_forbidden_ip(&"2606:4700:4700::1111".parse().unwrap()));
     }
 
     #[test]

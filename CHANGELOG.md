@@ -53,6 +53,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **MAT-132 review regressions**: added coverage for fail-closed account state
+  persistence, premium account lifecycle races, account-event refreshes, lock
+  reclamation, and IPv6/proxy SSRF boundaries.
 - **MAT-132 account-state hardening**: validation now derives validity from its
   typed status, clears stale subscription expiries, bounds temporary failures,
   and invalidates the rotator cache on recovery. Per-account async locks prevent

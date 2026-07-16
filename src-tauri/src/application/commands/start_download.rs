@@ -200,7 +200,7 @@ mod tests {
     use std::sync::Mutex;
 
     use crate::application::command_bus::CommandBus;
-    use crate::application::commands::StartDownloadCommand;
+    use crate::application::commands::{DeleteAccountCommand, StartDownloadCommand};
     use crate::application::error::AppError;
     use crate::domain::error::DomainError;
     use crate::domain::event::DomainEvent;
@@ -227,6 +227,27 @@ mod tests {
     impl Clock for FixedAccountClock {
         fn now_unix_secs(&self) -> u64 {
             1
+        }
+    }
+
+    struct SignallingCredentialStore {
+        password_read: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    }
+
+    impl AccountCredentialStore for SignallingCredentialStore {
+        fn store_password(&self, _: &AccountId, _: &str) -> Result<(), DomainError> {
+            Ok(())
+        }
+
+        fn get_password(&self, _: &AccountId) -> Result<Option<String>, DomainError> {
+            if let Some(sender) = self.password_read.lock().unwrap().take() {
+                let _ = sender.send(());
+            }
+            Ok(Some("api-key".into()))
+        }
+
+        fn delete_password(&self, _: &AccountId) -> Result<(), DomainError> {
+            Ok(())
         }
     }
 
@@ -563,6 +584,64 @@ mod tests {
         let stored = repo.store.lock().unwrap().get(&id.0).cloned().unwrap();
         assert_eq!(stored.module_name(), Some("vortex-mod-1fichier"));
         assert_eq!(stored.account_id(), Some(&account_id));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn account_delete_waits_until_validated_download_is_persisted() {
+        let (bus, _, _) = make_command_bus(Arc::new(MockHttpClient::failing()));
+        let account_repo = Arc::new(InMemoryAccountRepo::new());
+        let account_id = AccountId::new("account-1");
+        let mut account = Account::new(
+            account_id.clone(),
+            "vortex-mod-1fichier".into(),
+            "alice".into(),
+            AccountType::Premium,
+            0,
+        );
+        account.set_status(AccountStatus::Valid);
+        account_repo.save(&account).unwrap();
+        let (password_read_tx, password_read_rx) = tokio::sync::oneshot::channel();
+        let credentials = Arc::new(SignallingCredentialStore {
+            password_read: Mutex::new(Some(password_read_tx)),
+        });
+        let bus = Arc::new(
+            bus.with_account_repo(account_repo)
+                .with_account_credential_store(credentials)
+                .with_account_clock(Arc::new(FixedAccountClock)),
+        );
+        let queue_guard = bus.lock_queue_positions().await;
+        let start_bus = Arc::clone(&bus);
+        let start_account = account_id.clone();
+        let start = tokio::spawn(async move {
+            start_bus
+                .handle_start_download(StartDownloadCommand {
+                    url: "https://1fichier.com/?abc123".into(),
+                    destination: Some(PathBuf::from("/tmp")),
+                    filename: Some("file.zip".into()),
+                    source_hostname_override: None,
+                    module_name: Some("vortex-mod-1fichier".into()),
+                    account_id: Some(start_account),
+                })
+                .await
+        });
+        password_read_rx.await.expect("account validation reached");
+
+        let delete_bus = Arc::clone(&bus);
+        let mut deletion = tokio::spawn(async move {
+            delete_bus
+                .handle_delete_account(DeleteAccountCommand { id: account_id })
+                .await
+        });
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), &mut deletion)
+                .await
+                .is_err(),
+            "deletion must serialize with validation and persistence"
+        );
+
+        drop(queue_guard);
+        start.await.unwrap().expect("download persisted first");
+        deletion.await.unwrap().expect("account deleted second");
     }
 
     #[tokio::test]

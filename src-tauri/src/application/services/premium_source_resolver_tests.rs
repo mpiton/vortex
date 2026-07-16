@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use super::*;
@@ -16,6 +17,45 @@ struct FixedClock;
 impl Clock for FixedClock {
     fn now_unix_secs(&self) -> u64 {
         1_700_000_000
+    }
+}
+
+struct SaveFailingRepo {
+    inner: InMemoryAccountRepo,
+    fail_saves: AtomicBool,
+}
+
+impl SaveFailingRepo {
+    fn new() -> Self {
+        Self {
+            inner: InMemoryAccountRepo::new(),
+            fail_saves: AtomicBool::new(false),
+        }
+    }
+}
+
+impl AccountRepository for SaveFailingRepo {
+    fn find_by_id(&self, id: &AccountId) -> Result<Option<Account>, DomainError> {
+        self.inner.find_by_id(id)
+    }
+
+    fn save(&self, account: &Account) -> Result<(), DomainError> {
+        if self.fail_saves.load(Ordering::SeqCst) {
+            return Err(DomainError::StorageError("database unavailable".into()));
+        }
+        self.inner.save(account)
+    }
+
+    fn list(&self) -> Result<Vec<Account>, DomainError> {
+        self.inner.list()
+    }
+
+    fn list_by_service(&self, service_name: &str) -> Result<Vec<Account>, DomainError> {
+        self.inner.list_by_service(service_name)
+    }
+
+    fn delete(&self, id: &AccountId) -> Result<(), DomainError> {
+        self.inner.delete(id)
     }
 }
 
@@ -117,4 +157,44 @@ async fn resolves_the_direct_url_only_when_the_engine_requests_it() {
     );
     let stored = repo.find_by_id(&account_id).unwrap().unwrap();
     assert_eq!(stored.traffic_left(), Some(90));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn missing_credential_persistence_failure_is_not_suppressed() {
+    let repo = Arc::new(SaveFailingRepo::new());
+    let account_id = AccountId::new("account-1");
+    let mut account = Account::new(
+        account_id.clone(),
+        "vortex-mod-1fichier".into(),
+        "alice".into(),
+        AccountType::Premium,
+        1,
+    );
+    account.set_status(AccountStatus::Valid);
+    repo.save(&account).unwrap();
+    repo.fail_saves.store(true, Ordering::SeqCst);
+    let resolver = Arc::new(PremiumSourceResolver::new(
+        repo,
+        Arc::new(FakeAccountCredentialStore::new()),
+        Arc::new(DirectUrlPlugin {
+            calls: Mutex::new(Vec::new()),
+        }),
+        Arc::new(FixedClock),
+        Arc::new(AccountOperationLocks::default()),
+    ));
+    let download = Download::new(
+        DownloadId(1),
+        Url::new("https://1fichier.com/?abc123").unwrap(),
+        "file.zip".into(),
+        "/tmp/file.zip".into(),
+    )
+    .with_module_name("vortex-mod-1fichier".into())
+    .with_account_id(account_id);
+
+    let error = tokio::task::spawn_blocking(move || resolver.resolve(&download))
+        .await
+        .unwrap()
+        .expect_err("storage failure must win over missing credential");
+
+    assert!(matches!(error, DomainError::StorageError(_)));
 }

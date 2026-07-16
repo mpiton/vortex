@@ -39,4 +39,17 @@ mod tests {
         assert!(Arc::ptr_eq(&first, &same));
         assert!(!Arc::ptr_eq(&first, &other));
     }
+
+    #[test]
+    fn abandoned_account_locks_are_pruned() {
+        let locks = AccountOperationLocks::default();
+        let abandoned = locks.lock_for(&AccountId::new("abandoned")).unwrap();
+        drop(abandoned);
+
+        let live = locks.lock_for(&AccountId::new("live")).unwrap();
+        let _new = locks.lock_for(&AccountId::new("new")).unwrap();
+
+        assert_eq!(locks.entries.lock().unwrap().len(), 2);
+        assert!(Arc::strong_count(&live) >= 1);
+    }
 }
