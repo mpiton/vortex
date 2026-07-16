@@ -5,8 +5,41 @@ use std::sync::{Arc, Mutex};
 use dashmap::DashMap;
 
 use crate::domain::error::DomainError;
+use crate::domain::model::credential::Credential;
 use crate::domain::model::plugin::{PluginInfo, PluginManifest};
 use crate::domain::ports::driven::PluginReadRepository;
+
+use super::capabilities::CredentialSlot;
+
+struct CredentialScope {
+    slot: CredentialSlot,
+}
+
+impl CredentialScope {
+    fn new(slot: CredentialSlot, credential: Credential) -> Result<Self, DomainError> {
+        {
+            let mut current = slot.lock().map_err(|_| {
+                DomainError::PluginError("plugin credential slot mutex poisoned".into())
+            })?;
+            if current.is_some() {
+                return Err(DomainError::PluginError(
+                    "plugin credential slot already active".into(),
+                ));
+            }
+            *current = Some(credential);
+        }
+        Ok(Self { slot })
+    }
+}
+
+impl Drop for CredentialScope {
+    fn drop(&mut self) {
+        match self.slot.lock() {
+            Ok(mut current) => *current = None,
+            Err(poisoned) => *poisoned.into_inner() = None,
+        }
+    }
+}
 
 pub struct LoadedPlugin {
     pub manifest: PluginManifest,
@@ -96,7 +129,18 @@ impl PluginRegistry {
     }
 
     pub fn call_plugin(&self, name: &str, func: &str, input: &str) -> Result<String, DomainError> {
-        self.call_plugin_inner(name, func, input)
+        self.call_plugin_inner(name, func, input, None)
+    }
+
+    pub fn call_plugin_with_credential(
+        &self,
+        name: &str,
+        func: &str,
+        input: &str,
+        slot: CredentialSlot,
+        credential: Credential,
+    ) -> Result<String, DomainError> {
+        self.call_plugin_inner(name, func, input, Some((slot, credential)))
     }
 
     /// Container plugins decode binary blobs (DLC / CCF / RSDF / Metalink);
@@ -107,7 +151,7 @@ impl PluginRegistry {
         func: &str,
         input: &[u8],
     ) -> Result<String, DomainError> {
-        self.call_plugin_inner(name, func, input)
+        self.call_plugin_inner(name, func, input, None)
     }
 
     fn call_plugin_inner<'a, I>(
@@ -115,6 +159,7 @@ impl PluginRegistry {
         name: &str,
         func: &str,
         input: I,
+        scoped_credential: Option<(CredentialSlot, Credential)>,
     ) -> Result<String, DomainError>
     where
         I: extism::convert::ToBytes<'a>,
@@ -132,6 +177,9 @@ impl PluginRegistry {
         let mut plugin = plugin_handle
             .lock()
             .map_err(|_| DomainError::PluginError(format!("plugin '{name}' mutex poisoned")))?;
+        let _credential_scope = scoped_credential
+            .map(|(slot, credential)| CredentialScope::new(slot, credential))
+            .transpose()?;
         let fn_exists = plugin.function_exists(func);
         tracing::debug!(plugin = name, func, fn_exists, "plugin call pre-call");
         let result = plugin.call::<I, &str>(func, input).map_err(|e| {

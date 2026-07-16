@@ -1,19 +1,23 @@
 //! Capability-based host function registration for WASM plugins.
 
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use dashmap::DashMap;
 
+use crate::domain::model::credential::Credential;
 use crate::domain::model::plugin::PluginManifest;
 use crate::domain::ports::driven::CredentialStore;
+
+pub(crate) type CredentialSlot = Arc<Mutex<Option<Credential>>>;
 
 /// Shared resources across all plugins (singleton).
 pub struct SharedHostResources {
     pub(crate) http_client: reqwest::blocking::Client,
     http_timeout: Duration,
     pub(crate) credential_store: Option<Arc<dyn CredentialStore>>,
+    credential_slots: DashMap<String, CredentialSlot>,
     pub(crate) plugin_configs: DashMap<String, DashMap<String, String>>,
     pub(crate) plugin_states: DashMap<String, DashMap<String, String>>,
 }
@@ -43,6 +47,7 @@ impl SharedHostResources {
             http_client,
             http_timeout,
             credential_store: None,
+            credential_slots: DashMap::new(),
             plugin_configs: DashMap::new(),
             plugin_states: DashMap::new(),
         }
@@ -72,6 +77,13 @@ impl SharedHostResources {
         self.credential_store.as_ref()
     }
 
+    pub(crate) fn credential_slot(&self, plugin_name: &str) -> CredentialSlot {
+        self.credential_slots
+            .entry(plugin_name.to_string())
+            .or_insert_with(|| Arc::new(Mutex::new(None)))
+            .clone()
+    }
+
     pub fn plugin_configs(&self) -> &DashMap<String, DashMap<String, String>> {
         &self.plugin_configs
     }
@@ -92,6 +104,7 @@ pub struct PluginHostContext {
     pub(crate) plugin_name: String,
     pub(crate) capabilities: Vec<String>,
     pub(crate) shared: Arc<SharedHostResources>,
+    pub(crate) credential_slot: CredentialSlot,
 }
 
 /// Host-owned privileges established outside the plugin manifest.
@@ -163,6 +176,7 @@ pub(super) fn build_host_functions_with_grants(
         plugin_name: name,
         capabilities: manifest.capabilities().to_vec(),
         shared: Arc::clone(shared),
+        credential_slot: shared.credential_slot(manifest.info().name()),
     };
     let user_data = extism::UserData::new(ctx);
 

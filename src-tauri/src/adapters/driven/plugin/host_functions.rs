@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::io::Read;
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
@@ -427,7 +428,7 @@ pub fn make_get_credential_function(
             let service = read_input_string(plugin, inputs)?;
             // F3: Scope credential access — plugins can only read credentials
             // matching their own name to prevent cross-plugin credential theft.
-            let (store, plugin_name) = {
+            let (slot, store, plugin_name) = {
                 let guard = ud.get()?;
                 let ctx = guard
                     .lock()
@@ -440,16 +441,27 @@ pub fn make_get_credential_function(
                     ));
                 }
 
-                let store = ctx.shared.credential_store().cloned().ok_or_else(|| {
-                    anyhow::anyhow!("get_credential: no credential store configured")
-                })?;
-                (store, ctx.plugin_name.clone())
+                (
+                    Arc::clone(&ctx.credential_slot),
+                    ctx.shared.credential_store().cloned(),
+                    ctx.plugin_name.clone(),
+                )
             };
 
-            let cred = store
-                .get(&plugin_name)
-                .map_err(|e| anyhow::anyhow!("get_credential: store error: {e}"))?
-                .ok_or_else(|| anyhow::anyhow!("get_credential: no credential found"))?;
+            let scoped = slot
+                .lock()
+                .map_err(|_| anyhow::anyhow!("get_credential: credential slot poisoned"))?
+                .clone();
+            let cred = match scoped {
+                Some(credential) => credential,
+                None => store
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("get_credential: no credential store configured")
+                    })?
+                    .get(&plugin_name)
+                    .map_err(|e| anyhow::anyhow!("get_credential: store error: {e}"))?
+                    .ok_or_else(|| anyhow::anyhow!("get_credential: no credential found"))?,
+            };
 
             let resp = CredentialResponse {
                 username: cred.username().to_string(),
