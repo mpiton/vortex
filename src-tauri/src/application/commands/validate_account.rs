@@ -180,7 +180,7 @@ mod tests {
     use crate::application::error::AppError;
     use crate::domain::error::DomainError;
     use crate::domain::event::DomainEvent;
-    use crate::domain::model::account::{AccountId, AccountStatus, AccountType};
+    use crate::domain::model::account::{Account, AccountId, AccountStatus, AccountType};
     use crate::domain::ports::driven::{
         AccountCredentialStore, AccountRepository, ValidationOutcome,
     };
@@ -193,6 +193,43 @@ mod tests {
             account_type: AccountType::Premium,
             created_at_ms: 1_700_000_000_000,
         }
+    }
+
+    #[test]
+    fn successful_validation_clears_a_stale_expiry() {
+        let mut account = Account::new(
+            AccountId::new("account-1"),
+            "vortex-mod-1fichier".into(),
+            "alice".into(),
+            AccountType::Premium,
+            1,
+        );
+        account.set_status(AccountStatus::Valid);
+        account.set_valid_until(100);
+
+        let validated = super::apply_validation(&account, &ValidationOutcome::ok(), 200);
+
+        assert_eq!(validated.valid_until(), None);
+    }
+
+    #[test]
+    fn temporary_validation_failure_records_a_retry_deadline() {
+        let account = Account::new(
+            AccountId::new("account-1"),
+            "vortex-mod-1fichier".into(),
+            "alice".into(),
+            AccountType::Premium,
+            1,
+        );
+        let outcome = ValidationOutcome::rejected(
+            AccountStatus::Cooldown,
+            DomainError::AccountCooldown.to_string(),
+        );
+
+        let validated = super::apply_validation(&account, &outcome, 200);
+
+        assert_eq!(validated.status(), AccountStatus::Cooldown);
+        assert_eq!(validated.exhausted_until(), Some(60_200));
     }
 
     #[tokio::test]

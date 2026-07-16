@@ -528,6 +528,7 @@ mod tests {
 
     async fn resolve_with_primary_credential(
         primary_password: Option<&str>,
+        include_backup: bool,
     ) -> (
         Vec<ResolvedLinkDto>,
         Arc<InMemoryAccountRepo>,
@@ -541,13 +542,17 @@ mod tests {
         let primary = premium_account("primary", 100);
         let backup = premium_account("backup", 50);
         repo.save(&primary).unwrap();
-        repo.save(&backup).unwrap();
+        if include_backup {
+            repo.save(&backup).unwrap();
+        }
         if let Some(password) = primary_password {
             credentials.store_password(primary.id(), password).unwrap();
         }
-        credentials
-            .store_password(backup.id(), "working-key")
-            .unwrap();
+        if include_backup {
+            credentials
+                .store_password(backup.id(), "working-key")
+                .unwrap();
+        }
         let clock: Arc<dyn Clock> = Arc::new(FixedClock);
         let selector = AccountSelector::new(repo.clone(), events.clone(), clock.clone());
         let rotator = AccountRotator::new(selector.clone(), repo.clone(), events.clone(), clock);
@@ -574,7 +579,7 @@ mod tests {
     #[tokio::test]
     async fn resolve_hoster_rotates_expired_account_and_returns_opaque_account_id() {
         let (result, repo, plugin, primary) =
-            resolve_with_primary_credential(Some("expired-key")).await;
+            resolve_with_primary_credential(Some("expired-key"), true).await;
 
         assert_eq!(
             result[0].resolved_url.as_deref(),
@@ -604,7 +609,7 @@ mod tests {
             ("cooldown-key", AccountStatus::Cooldown),
         ] {
             let (result, repo, plugin, primary) =
-                resolve_with_primary_credential(Some(password)).await;
+                resolve_with_primary_credential(Some(password), true).await;
 
             assert_eq!(result[0].account_id.as_deref(), Some("backup"));
             let stored = repo.find_by_id(primary.id()).unwrap().unwrap();
@@ -624,7 +629,7 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_hoster_marks_missing_credential_and_rotates_without_exposing_it() {
-        let (result, repo, plugin, primary) = resolve_with_primary_credential(None).await;
+        let (result, repo, plugin, primary) = resolve_with_primary_credential(None, true).await;
 
         assert_eq!(result[0].account_id.as_deref(), Some("backup"));
         assert_eq!(
@@ -635,6 +640,19 @@ mod tests {
             plugin.credentials.lock().unwrap().as_slice(),
             ["working-key"]
         );
+    }
+
+    #[tokio::test]
+    async fn resolve_hoster_does_not_fall_back_to_free_when_all_accounts_are_exhausted() {
+        let (result, _, plugin, _) =
+            resolve_with_primary_credential(Some("quota-key"), false).await;
+
+        assert_eq!(result[0].status, "error");
+        assert_eq!(
+            result[0].error_message.as_deref(),
+            Some("Account quota is exhausted")
+        );
+        assert_eq!(plugin.credentials.lock().unwrap().as_slice(), ["quota-key"]);
     }
 
     #[test]
