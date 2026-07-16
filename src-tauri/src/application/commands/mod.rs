@@ -76,6 +76,10 @@ pub struct StartDownloadCommand {
     /// `url`. Used when `url` is a CDN URL but we want to display the origin
     /// host (e.g. "youtube.com" instead of "rr1---sn-n4g-cvq6.googlevideo.com").
     pub source_hostname_override: Option<String>,
+    /// Plugin that resolved the direct URL, when applicable.
+    pub module_name: Option<String>,
+    /// Opaque account UUID selected during resolution. Never a credential.
+    pub account_id: Option<AccountId>,
 }
 impl Command for StartDownloadCommand {}
 

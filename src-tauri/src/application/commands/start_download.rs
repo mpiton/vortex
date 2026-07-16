@@ -145,6 +145,7 @@ mod tests {
 
     use crate::application::command_bus::CommandBus;
     use crate::application::commands::StartDownloadCommand;
+    use crate::application::error::AppError;
     use crate::domain::error::DomainError;
     use crate::domain::event::DomainEvent;
     use crate::domain::model::config::{AppConfig, ConfigPatch};
@@ -158,6 +159,12 @@ mod tests {
         EventBus, FileStorage, HttpClient, PluginLoader,
     };
     use std::sync::Arc;
+
+    use crate::application::commands::tests_support::{
+        FakeAccountCredentialStore, InMemoryAccountRepo,
+    };
+    use crate::domain::model::account::{Account, AccountId, AccountStatus, AccountType};
+    use crate::domain::ports::driven::{AccountCredentialStore, AccountRepository};
 
     struct MockDownloadRepo {
         store: Mutex<HashMap<u64, Download>>,
@@ -433,6 +440,8 @@ mod tests {
             destination: Some(PathBuf::from("/tmp/downloads")),
             filename: None,
             source_hostname_override: None,
+            module_name: None,
+            account_id: None,
         };
 
         let id = bus.handle_start_download(cmd).await.unwrap();
@@ -449,6 +458,89 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_start_download_persists_validated_account_association() {
+        let (bus, repo, _) = make_command_bus(Arc::new(MockHttpClient::failing()));
+        let account_repo = Arc::new(InMemoryAccountRepo::new());
+        let credentials = Arc::new(FakeAccountCredentialStore::new());
+        let account_id = AccountId::new("account-1");
+        let account = Account::reconstruct_with_status(
+            account_id.clone(),
+            "vortex-mod-1fichier".into(),
+            "alice".into(),
+            AccountType::Premium,
+            true,
+            None,
+            None,
+            Some(u64::MAX),
+            Some(1),
+            0,
+            AccountStatus::Valid,
+            None,
+        );
+        account_repo.save(&account).unwrap();
+        credentials.store_password(&account_id, "api-key").unwrap();
+        let bus = bus
+            .with_account_repo(account_repo)
+            .with_account_credential_store(credentials);
+
+        let id = bus
+            .handle_start_download(StartDownloadCommand {
+                url: "https://download.1fichier.com/token/file.zip".into(),
+                destination: Some(PathBuf::from("/tmp")),
+                filename: Some("file.zip".into()),
+                source_hostname_override: Some("1fichier.com".into()),
+                module_name: Some("vortex-mod-1fichier".into()),
+                account_id: Some(account_id.clone()),
+            })
+            .await
+            .expect("valid account association");
+
+        let stored = repo.store.lock().unwrap().get(&id.0).cloned().unwrap();
+        assert_eq!(stored.module_name(), Some("vortex-mod-1fichier"));
+        assert_eq!(stored.account_id(), Some(&account_id));
+    }
+
+    #[tokio::test]
+    async fn test_start_download_rejects_account_with_missing_credential() {
+        let (bus, _, _) = make_command_bus(Arc::new(MockHttpClient::failing()));
+        let account_repo = Arc::new(InMemoryAccountRepo::new());
+        let credentials = Arc::new(FakeAccountCredentialStore::new());
+        let account_id = AccountId::new("account-1");
+        let account = Account::reconstruct_with_status(
+            account_id.clone(),
+            "vortex-mod-1fichier".into(),
+            "alice".into(),
+            AccountType::Premium,
+            true,
+            None,
+            None,
+            Some(u64::MAX),
+            Some(1),
+            0,
+            AccountStatus::Valid,
+            None,
+        );
+        account_repo.save(&account).unwrap();
+        let bus = bus
+            .with_account_repo(account_repo)
+            .with_account_credential_store(credentials);
+
+        let error = bus
+            .handle_start_download(StartDownloadCommand {
+                url: "https://download.1fichier.com/token/file.zip".into(),
+                destination: Some(PathBuf::from("/tmp")),
+                filename: Some("file.zip".into()),
+                source_hostname_override: Some("1fichier.com".into()),
+                module_name: Some("vortex-mod-1fichier".into()),
+                account_id: Some(account_id),
+            })
+            .await
+            .expect_err("missing credential must reject association");
+
+        assert!(matches!(error, AppError::NotFound(_)));
+    }
+
+    #[tokio::test]
     async fn test_start_download_invalid_url_returns_error() {
         let (bus, _, _) = make_command_bus(Arc::new(MockHttpClient::failing()));
 
@@ -457,6 +549,8 @@ mod tests {
             destination: None,
             filename: None,
             source_hostname_override: None,
+            module_name: None,
+            account_id: None,
         };
 
         let result = bus.handle_start_download(cmd).await;
@@ -472,6 +566,8 @@ mod tests {
             destination: Some(PathBuf::from("/tmp")),
             filename: None,
             source_hostname_override: None,
+            module_name: None,
+            account_id: None,
         };
 
         let id = bus.handle_start_download(cmd).await.unwrap();
@@ -521,6 +617,8 @@ mod tests {
             destination: Some(PathBuf::from("/tmp")),
             filename: Some("Rick Astley - Never Gonna Give You Up.mp4".to_string()),
             source_hostname_override: None,
+            module_name: None,
+            account_id: None,
         };
 
         let id = bus.handle_start_download(cmd).await.unwrap();
@@ -554,6 +652,8 @@ mod tests {
             destination: Some(PathBuf::from("/tmp")),
             filename: Some("b.zip".to_string()),
             source_hostname_override: None,
+            module_name: None,
+            account_id: None,
         };
 
         let id = bus.handle_start_download(cmd).await.unwrap();
@@ -576,6 +676,8 @@ mod tests {
             destination: Some(PathBuf::from("/tmp")),
             filename: Some("video.mp4".to_string()),
             source_hostname_override: Some("www.youtube.com".to_string()),
+            module_name: None,
+            account_id: None,
         };
 
         let id = bus.handle_start_download(cmd).await.unwrap();

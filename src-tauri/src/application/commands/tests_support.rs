@@ -769,13 +769,31 @@ pub(crate) fn build_account_bus(
     validator: Option<Arc<dyn AccountValidator>>,
     codec: Option<Arc<dyn PassphraseCodec>>,
 ) -> CommandBus {
+    build_account_bus_with_plugin_loader(
+        account_repo,
+        credential_store,
+        event_bus,
+        validator,
+        codec,
+        Arc::new(StubPluginLoader),
+    )
+}
+
+pub(crate) fn build_account_bus_with_plugin_loader(
+    account_repo: Arc<dyn AccountRepository>,
+    credential_store: Arc<dyn AccountCredentialStore>,
+    event_bus: Arc<CapturingEventBus>,
+    validator: Option<Arc<dyn AccountValidator>>,
+    codec: Option<Arc<dyn PassphraseCodec>>,
+    plugin_loader: Arc<dyn PluginLoader>,
+) -> CommandBus {
     let mut bus = CommandBus::new(
         Arc::new(StubDownloadRepo),
         Arc::new(StubDownloadEngine),
         event_bus,
         Arc::new(StubFileStorage),
         Arc::new(StubHttpClient),
-        Arc::new(StubPluginLoader),
+        plugin_loader,
         Arc::new(StubConfigStore),
         Arc::new(StubCredentialStore),
         Arc::new(StubClipboardObserver),

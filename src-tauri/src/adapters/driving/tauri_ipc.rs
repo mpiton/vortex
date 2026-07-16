@@ -94,12 +94,16 @@ pub async fn download_start(
     state: State<'_, AppState>,
     url: String,
     destination: Option<String>,
+    module_name: Option<String>,
+    account_id: Option<String>,
 ) -> Result<u64, String> {
     let cmd = StartDownloadCommand {
         url,
         destination: destination.map(PathBuf::from),
         filename: None,
         source_hostname_override: None,
+        module_name,
+        account_id: account_id.map(AccountId::new),
     };
     state
         .command_bus
@@ -1750,6 +1754,8 @@ async fn start_media_download_for_url(
                 destination: None,
                 filename,
                 source_hostname_override,
+                module_name: None,
+                account_id: None,
             };
             command_bus
                 .handle_start_download(cmd)

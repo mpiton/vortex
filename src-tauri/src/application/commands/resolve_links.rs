@@ -25,6 +25,7 @@ pub struct ResolvedLinkDto {
     pub status: String,
     pub error_message: Option<String>,
     pub module_name: String,
+    pub account_id: Option<String>,
     pub is_media: bool,
     pub media_type: Option<String>,
 }
@@ -61,6 +62,7 @@ impl CommandBus {
                     status: "error".to_string(),
                     error_message: Some("URL scheme not allowed".to_string()),
                     module_name: "core-http".to_string(),
+                    account_id: None,
                     is_media: false,
                     media_type: None,
                 });
@@ -77,6 +79,7 @@ impl CommandBus {
                     status: "online".to_string(),
                     error_message: None,
                     module_name: "magnet".to_string(),
+                    account_id: None,
                     is_media: false,
                     media_type: None,
                 });
@@ -115,6 +118,7 @@ impl CommandBus {
                         status: "online".to_string(),
                         error_message: None,
                         module_name,
+                        account_id: None,
                         is_media,
                         media_type,
                     });
@@ -129,6 +133,7 @@ impl CommandBus {
                         status: "offline".to_string(),
                         error_message: None,
                         module_name,
+                        account_id: None,
                         is_media,
                         media_type,
                     });
@@ -144,6 +149,7 @@ impl CommandBus {
                         status: "error".to_string(),
                         error_message: Some(sanitize_resolve_error(&e)),
                         module_name,
+                        account_id: None,
                         is_media,
                         media_type,
                     });
@@ -242,8 +248,155 @@ fn detect_media_type(url: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
 
     use super::*;
+    use crate::application::commands::tests_support::{
+        CapturingEventBus, FakeAccountCredentialStore, InMemoryAccountRepo,
+        build_account_bus_with_plugin_loader,
+    };
+    use crate::application::services::AccountSelector;
+    use crate::domain::error::DomainError;
+    use crate::domain::model::account::{Account, AccountId, AccountStatus, AccountType};
+    use crate::domain::model::credential::Credential;
+    use crate::domain::model::plugin::{PluginCategory, PluginInfo, PluginManifest};
+    use crate::domain::ports::driven::{
+        AccountCredentialStore, AccountRepository, Clock, PluginLoader,
+    };
+
+    struct FixedClock;
+
+    impl Clock for FixedClock {
+        fn now_unix_secs(&self) -> u64 {
+            1_700_000_000
+        }
+    }
+
+    struct PremiumPluginLoader {
+        credentials: Mutex<Vec<String>>,
+    }
+
+    impl PremiumPluginLoader {
+        fn new() -> Self {
+            Self {
+                credentials: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn plugin_info() -> PluginInfo {
+            PluginInfo::new(
+                "vortex-mod-1fichier".into(),
+                "1.1.0".into(),
+                "1fichier".into(),
+                "vortex".into(),
+                PluginCategory::Hoster,
+            )
+        }
+    }
+
+    impl PluginLoader for PremiumPluginLoader {
+        fn load(&self, _: &PluginManifest) -> Result<(), DomainError> {
+            Ok(())
+        }
+
+        fn unload(&self, _: &str) -> Result<(), DomainError> {
+            Ok(())
+        }
+
+        fn resolve_url(&self, _: &str) -> Result<Option<PluginInfo>, DomainError> {
+            Ok(Some(Self::plugin_info()))
+        }
+
+        fn list_loaded(&self) -> Result<Vec<PluginInfo>, DomainError> {
+            Ok(vec![Self::plugin_info()])
+        }
+
+        fn set_enabled(&self, _: &str, _: bool) -> Result<(), DomainError> {
+            Ok(())
+        }
+
+        fn extract_links_with_credential(
+            &self,
+            _: &str,
+            credential: &Credential,
+        ) -> Result<String, DomainError> {
+            self.credentials
+                .lock()
+                .unwrap()
+                .push(credential.password().to_string());
+            if credential.password() == "expired-key" {
+                return Err(DomainError::AccountExpired);
+            }
+            Ok(r#"{"kind":"file","mode":"premium","files":[{"id":"abc","url":"https://1fichier.com/?abc123","filename":"file.zip","size_bytes":42,"direct_url":"https://download.1fichier.com/token/file.zip","resumable":true,"wait_seconds":null,"requires_captcha":false,"traffic_used_bytes":1,"traffic_total_bytes":100}]}"#.into())
+        }
+    }
+
+    fn premium_account(id: &str, traffic_left: u64) -> Account {
+        Account::reconstruct_with_status(
+            AccountId::new(id),
+            "vortex-mod-1fichier".into(),
+            format!("user-{id}"),
+            AccountType::Premium,
+            true,
+            Some(traffic_left),
+            Some(100),
+            Some(u64::MAX),
+            Some(1),
+            0,
+            AccountStatus::Valid,
+            None,
+        )
+    }
+
+    #[tokio::test]
+    async fn resolve_hoster_rotates_expired_account_and_returns_opaque_account_id() {
+        let repo = Arc::new(InMemoryAccountRepo::new());
+        let credentials = Arc::new(FakeAccountCredentialStore::new());
+        let events = Arc::new(CapturingEventBus::new());
+        let plugin = Arc::new(PremiumPluginLoader::new());
+        let primary = premium_account("primary", 100);
+        let backup = premium_account("backup", 50);
+        repo.save(&primary).unwrap();
+        repo.save(&backup).unwrap();
+        credentials
+            .store_password(primary.id(), "expired-key")
+            .unwrap();
+        credentials
+            .store_password(backup.id(), "working-key")
+            .unwrap();
+        let selector = AccountSelector::new(repo.clone(), events.clone(), Arc::new(FixedClock));
+        let bus = build_account_bus_with_plugin_loader(
+            repo.clone(),
+            credentials,
+            events,
+            None,
+            None,
+            plugin.clone(),
+        )
+        .with_account_selector(selector);
+
+        let result = bus
+            .handle_resolve_links(ResolveLinksCommand {
+                urls: vec!["https://1fichier.com/?abc123".into()],
+            })
+            .await
+            .expect("resolve succeeds");
+
+        assert_eq!(
+            result[0].resolved_url.as_deref(),
+            Some("https://download.1fichier.com/token/file.zip")
+        );
+        assert_eq!(result[0].account_id.as_deref(), Some("backup"));
+        assert_eq!(result[0].module_name, "vortex-mod-1fichier");
+        assert_eq!(
+            repo.find_by_id(primary.id()).unwrap().unwrap().status(),
+            AccountStatus::Expired
+        );
+        assert_eq!(
+            plugin.credentials.lock().unwrap().as_slice(),
+            ["expired-key", "working-key"]
+        );
+    }
 
     #[test]
     fn test_extract_filename_from_url_returns_last_path_segment() {
