@@ -72,7 +72,7 @@ impl AccountRepository for InMemoryAccountRepo {
             }
         }
         let stored = match guard.get(account.id()) {
-            Some(existing) => Account::reconstruct(
+            Some(existing) => Account::reconstruct_with_status(
                 account.id().clone(),
                 account.service_name().to_string(),
                 account.username().to_string(),
@@ -83,6 +83,8 @@ impl AccountRepository for InMemoryAccountRepo {
                 account.valid_until(),
                 account.last_validated(),
                 existing.created_at(),
+                account.status(),
+                account.exhausted_until(),
             ),
             None => account.clone(),
         };

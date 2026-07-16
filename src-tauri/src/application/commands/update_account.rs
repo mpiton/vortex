@@ -13,6 +13,9 @@ use crate::application::command_bus::CommandBus;
 use crate::application::error::AppError;
 use crate::domain::event::DomainEvent;
 use crate::domain::model::account::Account;
+use crate::domain::ports::driven::ValidationOutcome;
+
+use super::validate_account::{apply_validation, publish_validation, validate_credentials};
 
 impl CommandBus {
     pub async fn handle_update_account(
@@ -49,7 +52,7 @@ impl CommandBus {
             return Err(AppError::Validation("password must not be empty".into()));
         }
 
-        let next = Account::reconstruct(
+        let mut next = Account::reconstruct_with_status(
             account.id().clone(),
             account.service_name().to_string(),
             username,
@@ -60,6 +63,8 @@ impl CommandBus {
             account.valid_until(),
             account.last_validated(),
             account.created_at(),
+            account.status(),
+            account.exhausted_until(),
         );
         // Capture the previous password BEFORE persisting the new row
         // so a keyring-rotation failure can restore it. The
@@ -69,6 +74,27 @@ impl CommandBus {
         // with the row we just restored.
         let previous_password = if cmd.patch.password.is_some() {
             store.get_password(&cmd.id)?
+        } else {
+            None
+        };
+
+        let validation = if let Some(validator) = self.account_validator() {
+            let password = match cmd.patch.password.as_deref() {
+                Some(password) => Some(password.to_string()),
+                None => store.get_password(&cmd.id)?,
+            };
+            let attempt = match password {
+                Some(password) => validate_credentials(validator, &next, &password),
+                None => super::validate_account::AccountValidationAttempt {
+                    outcome: ValidationOutcome::rejected(
+                        crate::domain::model::account::AccountStatus::MissingCredential,
+                        format!("no stored password for account {}", cmd.id.as_str()),
+                    ),
+                    error: None,
+                },
+            };
+            next = apply_validation(&next, &attempt.outcome, cmd.now_ms);
+            Some(attempt)
         } else {
             None
         };
@@ -109,7 +135,10 @@ impl CommandBus {
         }
 
         self.event_bus()
-            .publish(DomainEvent::AccountUpdated { id: cmd.id });
+            .publish(DomainEvent::AccountUpdated { id: cmd.id.clone() });
+        if let Some(attempt) = validation {
+            publish_validation(self, cmd.id, &attempt.outcome);
+        }
         Ok(())
     }
 }

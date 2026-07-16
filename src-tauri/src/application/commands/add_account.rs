@@ -15,6 +15,8 @@ use crate::application::error::AppError;
 use crate::domain::event::DomainEvent;
 use crate::domain::model::account::{Account, AccountId};
 
+use super::validate_account::{apply_validation, publish_validation, validate_credentials};
+
 impl CommandBus {
     pub async fn handle_add_account(
         &self,
@@ -74,10 +76,39 @@ impl CommandBus {
             return Err(e.into());
         }
 
+        let validation = self
+            .account_validator()
+            .map(|validator| validate_credentials(validator, &account, &cmd.password));
+        if let Some(attempt) = &validation {
+            let validated = apply_validation(&account, &attempt.outcome, cmd.created_at_ms);
+            if let Err(error) = repo.save(&validated) {
+                if let Err(rollback_error) = repo.delete(&id) {
+                    tracing::warn!(
+                        account_id = %id.as_str(),
+                        validation_error = %error,
+                        rollback_error = %rollback_error,
+                        "account validation state failed to persist and row rollback also failed"
+                    );
+                }
+                if let Err(cleanup_error) = store.delete_password(&id) {
+                    tracing::warn!(
+                        account_id = %id.as_str(),
+                        validation_error = %error,
+                        cleanup_error = %cleanup_error,
+                        "account validation state failed to persist and credential cleanup also failed"
+                    );
+                }
+                return Err(error.into());
+            }
+        }
+
         self.event_bus().publish(DomainEvent::AccountAdded {
             id: id.clone(),
             service_name: account.service_name().to_string(),
         });
+        if let Some(attempt) = validation {
+            publish_validation(self, id.clone(), &attempt.outcome);
+        }
 
         Ok(id)
     }

@@ -12,7 +12,98 @@ use crate::application::command_bus::CommandBus;
 use crate::application::error::AppError;
 use crate::domain::error::DomainError;
 use crate::domain::event::DomainEvent;
-use crate::domain::model::account::Account;
+use crate::domain::model::account::{Account, AccountStatus};
+use crate::domain::ports::driven::{AccountValidator, ValidationOutcome};
+
+pub(super) struct AccountValidationAttempt {
+    pub outcome: ValidationOutcome,
+    pub error: Option<DomainError>,
+}
+
+pub(super) fn validate_credentials(
+    validator: &dyn AccountValidator,
+    account: &Account,
+    password: &str,
+) -> AccountValidationAttempt {
+    match validator.validate(account.service_name(), account.username(), password) {
+        Ok(outcome) => AccountValidationAttempt {
+            outcome,
+            error: None,
+        },
+        Err(DomainError::AccountInvalidCredentials) => typed_rejection(
+            AccountStatus::InvalidCredentials,
+            DomainError::AccountInvalidCredentials,
+        ),
+        Err(DomainError::AccountExpired) => {
+            typed_rejection(AccountStatus::Expired, DomainError::AccountExpired)
+        }
+        Err(DomainError::AccountCooldown) => {
+            typed_rejection(AccountStatus::Cooldown, DomainError::AccountCooldown)
+        }
+        Err(DomainError::AccountQuotaExceeded) => typed_rejection(
+            AccountStatus::QuotaExhausted,
+            DomainError::AccountQuotaExceeded,
+        ),
+        Err(error) => AccountValidationAttempt {
+            outcome: ValidationOutcome::rejected(AccountStatus::Error, error.to_string()),
+            error: Some(error),
+        },
+    }
+}
+
+fn typed_rejection(status: AccountStatus, error: DomainError) -> AccountValidationAttempt {
+    AccountValidationAttempt {
+        outcome: ValidationOutcome::rejected(status, error.to_string()),
+        error: None,
+    }
+}
+
+pub(super) fn apply_validation(
+    account: &Account,
+    outcome: &ValidationOutcome,
+    now_ms: u64,
+) -> Account {
+    let mut next = clone_account(account);
+    next.set_last_validated(now_ms);
+    next.set_status(outcome.status);
+    if outcome.valid {
+        if let Some(traffic_left) = outcome.traffic_left {
+            next.set_traffic_left(traffic_left);
+        }
+        if let Some(traffic_total) = outcome.traffic_total {
+            next.set_traffic_total(traffic_total);
+        }
+        if let Some(valid_until) = outcome.valid_until {
+            next.set_valid_until(valid_until);
+        }
+    }
+    next
+}
+
+pub(super) fn publish_validation(
+    bus: &CommandBus,
+    id: crate::domain::model::account::AccountId,
+    outcome: &ValidationOutcome,
+) {
+    if outcome.valid {
+        bus.event_bus().publish(DomainEvent::AccountValidated {
+            id,
+            latency_ms: outcome.latency_ms,
+            traffic_left: outcome.traffic_left,
+            traffic_total: outcome.traffic_total,
+            valid_until: outcome.valid_until,
+        });
+    } else {
+        bus.event_bus()
+            .publish(DomainEvent::AccountValidationFailed {
+                id,
+                error: outcome
+                    .error_message
+                    .clone()
+                    .unwrap_or_else(|| "validation rejected".into()),
+            });
+    }
+}
 
 impl CommandBus {
     pub async fn handle_validate_account(
@@ -33,80 +124,35 @@ impl CommandBus {
             .find_by_id(&cmd.id)?
             .ok_or_else(|| AppError::NotFound(format!("account {} not found", cmd.id.as_str())))?;
 
-        let password = store.get_password(&cmd.id)?.ok_or_else(|| {
-            AppError::NotFound(format!(
-                "no stored password for account {}",
-                cmd.id.as_str()
-            ))
-        })?;
+        let password = match store.get_password(&cmd.id)? {
+            Some(password) => password,
+            None => {
+                let outcome = ValidationOutcome::rejected(
+                    AccountStatus::MissingCredential,
+                    format!("no stored password for account {}", cmd.id.as_str()),
+                );
+                repo.save(&apply_validation(&account, &outcome, cmd.now_ms))?;
+                publish_validation(self, cmd.id.clone(), &outcome);
+                return Err(AppError::NotFound(
+                    outcome.error_message.unwrap_or_default(),
+                ));
+            }
+        };
 
-        let outcome =
-            match validator.validate(account.service_name(), account.username(), &password) {
-                Ok(o) => o,
-                Err(DomainError::NotFound(msg)) => {
-                    self.event_bus()
-                        .publish(DomainEvent::AccountValidationFailed {
-                            id: cmd.id.clone(),
-                            error: msg.clone(),
-                        });
-                    return Err(AppError::NotFound(msg));
-                }
-                Err(other) => {
-                    // Network failures, keyring read errors, and any
-                    // other domain error coming back from the validator
-                    // are surfaced as `AccountValidationFailed` so the
-                    // UI can react identically whether the upstream
-                    // service rejected the credentials or was simply
-                    // unreachable.
-                    self.event_bus()
-                        .publish(DomainEvent::AccountValidationFailed {
-                            id: cmd.id.clone(),
-                            error: other.to_string(),
-                        });
-                    return Err(other.into());
-                }
-            };
+        let attempt = validate_credentials(validator, &account, &password);
+        repo.save(&apply_validation(&account, &attempt.outcome, cmd.now_ms))?;
+        publish_validation(self, cmd.id, &attempt.outcome);
 
-        let mut next = clone_account(&account);
-        next.set_last_validated(cmd.now_ms);
-        if outcome.valid {
-            if let Some(t) = outcome.traffic_left {
-                next.set_traffic_left(t);
-            }
-            if let Some(t) = outcome.traffic_total {
-                next.set_traffic_total(t);
-            }
-            if let Some(v) = outcome.valid_until {
-                next.set_valid_until(v);
-            }
+        match attempt.error {
+            Some(DomainError::NotFound(message)) => Err(AppError::NotFound(message)),
+            Some(error) => Err(error.into()),
+            None => Ok(attempt.outcome.into()),
         }
-        repo.save(&next)?;
-
-        if outcome.valid {
-            self.event_bus().publish(DomainEvent::AccountValidated {
-                id: cmd.id,
-                latency_ms: outcome.latency_ms,
-                traffic_left: outcome.traffic_left,
-                traffic_total: outcome.traffic_total,
-                valid_until: outcome.valid_until,
-            });
-        } else {
-            self.event_bus()
-                .publish(DomainEvent::AccountValidationFailed {
-                    id: cmd.id,
-                    error: outcome
-                        .error_message
-                        .clone()
-                        .unwrap_or_else(|| "validation rejected".into()),
-                });
-        }
-
-        Ok(outcome.into())
     }
 }
 
 fn clone_account(account: &Account) -> Account {
-    Account::reconstruct(
+    Account::reconstruct_with_status(
         account.id().clone(),
         account.service_name().to_string(),
         account.username().to_string(),
@@ -117,6 +163,8 @@ fn clone_account(account: &Account) -> Account {
         account.valid_until(),
         account.last_validated(),
         account.created_at(),
+        account.status(),
+        account.exhausted_until(),
     )
 }
 
