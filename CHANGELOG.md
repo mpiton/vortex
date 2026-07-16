@@ -68,8 +68,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Account failures persist before typed events, referenced accounts cannot be
   deleted, cooldown badges wake at their deadline, and restricted HTTP clients
   ignore system proxies while rejecting special IPv6 and discovered NAT64
-  mappings to private IPv4. The registry stays on published 1fichier v1.0.0;
-  v1.1.0 registration is deliberately deferred until its release assets exist.
+  mappings to private IPv4. The registry now pins the published 1fichier
+  v1.1.0 release assets.
 - **MAT-132 review regressions**: added coverage for fail-closed account state
   persistence, premium account lifecycle races, account-event refreshes, lock
   reclamation, and IPv6/proxy SSRF boundaries.
