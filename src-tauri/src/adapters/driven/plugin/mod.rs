@@ -4,6 +4,9 @@ pub mod capabilities;
 pub mod extism_loader;
 pub mod github_store_client;
 pub mod host_functions;
+mod hoster_contract;
+#[cfg(test)]
+mod hoster_contract_tests;
 pub mod manifest;
 mod provenance;
 pub mod registry;

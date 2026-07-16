@@ -17,7 +17,6 @@ pub struct SharedHostResources {
     pub(crate) http_client: reqwest::blocking::Client,
     http_timeout: Duration,
     pub(crate) credential_store: Option<Arc<dyn CredentialStore>>,
-    credential_slots: DashMap<String, CredentialSlot>,
     pub(crate) plugin_configs: DashMap<String, DashMap<String, String>>,
     pub(crate) plugin_states: DashMap<String, DashMap<String, String>>,
 }
@@ -47,7 +46,6 @@ impl SharedHostResources {
             http_client,
             http_timeout,
             credential_store: None,
-            credential_slots: DashMap::new(),
             plugin_configs: DashMap::new(),
             plugin_states: DashMap::new(),
         }
@@ -75,13 +73,6 @@ impl SharedHostResources {
 
     pub fn credential_store(&self) -> Option<&Arc<dyn CredentialStore>> {
         self.credential_store.as_ref()
-    }
-
-    pub(crate) fn credential_slot(&self, plugin_name: &str) -> CredentialSlot {
-        self.credential_slots
-            .entry(plugin_name.to_string())
-            .or_insert_with(|| Arc::new(Mutex::new(None)))
-            .clone()
     }
 
     pub fn plugin_configs(&self) -> &DashMap<String, DashMap<String, String>> {
@@ -129,10 +120,31 @@ pub fn build_host_functions(
     build_host_functions_with_grants(manifest, shared, HostFunctionGrants::default())
 }
 
+#[cfg(test)]
 pub(super) fn build_host_functions_with_grants(
     manifest: &PluginManifest,
     shared: &Arc<SharedHostResources>,
     grants: HostFunctionGrants,
+) -> Vec<extism::Function> {
+    build_host_functions_for_instance(manifest, shared, grants).0
+}
+
+pub(super) fn build_host_functions_for_instance(
+    manifest: &PluginManifest,
+    shared: &Arc<SharedHostResources>,
+    grants: HostFunctionGrants,
+) -> (Vec<extism::Function>, CredentialSlot) {
+    let credential_slot = Arc::new(Mutex::new(None));
+    let functions =
+        build_host_functions_with_slot(manifest, shared, grants, Arc::clone(&credential_slot));
+    (functions, credential_slot)
+}
+
+fn build_host_functions_with_slot(
+    manifest: &PluginManifest,
+    shared: &Arc<SharedHostResources>,
+    grants: HostFunctionGrants,
+    credential_slot: CredentialSlot,
 ) -> Vec<extism::Function> {
     let name = manifest.info().name().to_string();
 
@@ -176,7 +188,7 @@ pub(super) fn build_host_functions_with_grants(
         plugin_name: name,
         capabilities: manifest.capabilities().to_vec(),
         shared: Arc::clone(shared),
-        credential_slot: shared.credential_slot(manifest.info().name()),
+        credential_slot,
     };
     let user_data = extism::UserData::new(ctx);
 
@@ -442,18 +454,17 @@ mod tests {
     }
 
     #[test]
-    fn test_scoped_credential_slots_are_isolated_by_plugin() {
-        let shared = SharedHostResources::new();
-        let first = shared.credential_slot("vortex-mod-1fichier");
-        let second = shared.credential_slot("vortex-mod-other");
+    fn test_scoped_credential_slots_are_isolated_by_plugin_instance() {
+        let shared = Arc::new(SharedHostResources::new());
+        let manifest = make_named_manifest_with_caps("vortex-mod-1fichier", vec![]);
+        let (_, first) =
+            build_host_functions_for_instance(&manifest, &shared, HostFunctionGrants::default());
+        let (_, second) =
+            build_host_functions_for_instance(&manifest, &shared, HostFunctionGrants::default());
 
         assert!(first.lock().unwrap().is_none());
         assert!(second.lock().unwrap().is_none());
         assert!(!Arc::ptr_eq(&first, &second));
-        assert!(Arc::ptr_eq(
-            &first,
-            &shared.credential_slot("vortex-mod-1fichier")
-        ));
     }
 
     #[test]

@@ -3,7 +3,7 @@
 //! Checks each URL via plugin loader and HTTP HEAD, returning
 //! resolution metadata for the frontend link grabber view.
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use uuid::Uuid;
 
 use crate::application::command_bus::CommandBus;
@@ -14,6 +14,7 @@ use crate::domain::model::account::{Account, AccountStatus};
 use crate::domain::model::credential::Credential;
 use crate::domain::model::http::HttpResponse;
 use crate::domain::model::plugin::PluginCategory;
+use crate::domain::ports::driven::ExtractedHosterLink;
 
 use super::ResolveLinksCommand;
 
@@ -33,21 +34,6 @@ pub struct ResolvedLinkDto {
     pub account_id: Option<String>,
     pub is_media: bool,
     pub media_type: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct HosterExtractResponse {
-    files: Vec<HosterFile>,
-}
-
-#[derive(Debug, Deserialize)]
-struct HosterFile {
-    url: String,
-    filename: Option<String>,
-    size_bytes: Option<u64>,
-    direct_url: Option<String>,
-    traffic_used_bytes: Option<u64>,
-    traffic_total_bytes: Option<u64>,
 }
 
 struct HosterResolution {
@@ -241,20 +227,18 @@ impl CommandBus {
 
                 match self
                     .plugin_loader()
-                    .extract_links_with_credential(url, &credential)
+                    .extract_hoster_link(service_name, url, Some(&credential))
                 {
-                    Ok(payload) => {
-                        let resolved =
-                            parse_hoster_response(&payload, Some(account.id().as_str()))?;
-                        if let Some(total) = resolved.traffic_total_bytes {
+                    Ok(link) => {
+                        if let Some(total) = link.traffic_total_bytes {
                             account.set_traffic_total(total);
-                            if let Some(used) = resolved.traffic_used_bytes {
+                            if let Some(used) = link.traffic_used_bytes {
                                 account.set_traffic_left(total.saturating_sub(used));
                             }
                         }
                         account.set_status(AccountStatus::Valid);
                         repo.save(&account)?;
-                        return Ok(resolved.into_resolution());
+                        return Ok(into_hoster_resolution(link, Some(account.id().as_str())));
                     }
                     Err(error) => {
                         let status = match error {
@@ -286,8 +270,10 @@ impl CommandBus {
             }
         }
 
-        let payload = self.plugin_loader().extract_links(url)?;
-        Ok(parse_hoster_response(&payload, None)?.into_resolution())
+        let link = self
+            .plugin_loader()
+            .extract_hoster_link(service_name, url, None)?;
+        Ok(into_hoster_resolution(link, None))
     }
 
     fn next_hoster_account(&self, service_name: &str) -> Result<Option<Account>, AppError> {
@@ -302,43 +288,14 @@ impl CommandBus {
     }
 }
 
-struct ParsedHosterResponse {
-    file: HosterFile,
-    account_id: Option<String>,
-    traffic_used_bytes: Option<u64>,
-    traffic_total_bytes: Option<u64>,
-}
-
-impl ParsedHosterResponse {
-    fn into_resolution(self) -> HosterResolution {
-        let direct_url = self.file.direct_url;
-        HosterResolution {
-            resolved_url: direct_url.unwrap_or(self.file.url),
-            filename: self.file.filename,
-            size_bytes: self.file.size_bytes,
-            account_id: self.account_id,
-        }
-    }
-}
-
-fn parse_hoster_response(
-    payload: &str,
-    account_id: Option<&str>,
-) -> Result<ParsedHosterResponse, AppError> {
-    let response: HosterExtractResponse = serde_json::from_str(payload)
-        .map_err(|_| AppError::Plugin("hoster returned an invalid response".into()))?;
-    let file = response
-        .files
-        .into_iter()
-        .next()
-        .ok_or_else(|| AppError::Plugin("hoster returned no file".into()))?;
-    let selected_account = file.direct_url.as_ref().and(account_id).map(str::to_string);
-    Ok(ParsedHosterResponse {
-        traffic_used_bytes: file.traffic_used_bytes,
-        traffic_total_bytes: file.traffic_total_bytes,
-        file,
+fn into_hoster_resolution(link: ExtractedHosterLink, account_id: Option<&str>) -> HosterResolution {
+    let selected_account = link.direct_url.as_ref().and(account_id).map(str::to_string);
+    HosterResolution {
+        resolved_url: link.direct_url.unwrap_or(link.source_url),
+        filename: link.filename,
+        size_bytes: link.size_bytes,
         account_id: selected_account,
-    })
+    }
 }
 
 fn current_time_ms() -> u64 {
@@ -477,12 +434,14 @@ mod tests {
 
     struct PremiumPluginLoader {
         credentials: Mutex<Vec<String>>,
+        services: Mutex<Vec<String>>,
     }
 
     impl PremiumPluginLoader {
         fn new() -> Self {
             Self {
                 credentials: Mutex::new(Vec::new()),
+                services: Mutex::new(Vec::new()),
             }
         }
 
@@ -518,11 +477,16 @@ mod tests {
             Ok(())
         }
 
-        fn extract_links_with_credential(
+        fn extract_hoster_link(
             &self,
+            service_name: &str,
             _: &str,
-            credential: &Credential,
-        ) -> Result<String, DomainError> {
+            credential: Option<&Credential>,
+        ) -> Result<ExtractedHosterLink, DomainError> {
+            self.services.lock().unwrap().push(service_name.to_string());
+            let credential = credential.ok_or_else(|| {
+                DomainError::NotFound("free hoster extraction is not configured".into())
+            })?;
             self.credentials
                 .lock()
                 .unwrap()
@@ -534,7 +498,14 @@ mod tests {
                 "cooldown-key" => return Err(DomainError::AccountCooldown),
                 _ => {}
             }
-            Ok(r#"{"kind":"file","mode":"premium","files":[{"id":"abc","url":"https://1fichier.com/?abc123","filename":"file.zip","size_bytes":42,"direct_url":"https://download.1fichier.com/token/file.zip","resumable":true,"wait_seconds":null,"requires_captcha":false,"traffic_used_bytes":1,"traffic_total_bytes":100}]}"#.into())
+            Ok(ExtractedHosterLink {
+                source_url: "https://1fichier.com/?abc123".into(),
+                filename: Some("file.zip".into()),
+                size_bytes: Some(42),
+                direct_url: Some("https://download.1fichier.com/token/file.zip".into()),
+                traffic_used_bytes: Some(1),
+                traffic_total_bytes: Some(100),
+            })
         }
     }
 
@@ -618,6 +589,10 @@ mod tests {
         assert_eq!(
             plugin.credentials.lock().unwrap().as_slice(),
             ["expired-key", "working-key"]
+        );
+        assert_eq!(
+            plugin.services.lock().unwrap().as_slice(),
+            ["vortex-mod-1fichier", "vortex-mod-1fichier"]
         );
     }
 

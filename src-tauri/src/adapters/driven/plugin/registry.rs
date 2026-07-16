@@ -44,6 +44,7 @@ impl Drop for CredentialScope {
 pub struct LoadedPlugin {
     pub manifest: PluginManifest,
     pub plugin: Arc<Mutex<extism::Plugin>>,
+    pub credential_slot: CredentialSlot,
     pub enabled: bool,
 }
 
@@ -137,10 +138,9 @@ impl PluginRegistry {
         name: &str,
         func: &str,
         input: &str,
-        slot: CredentialSlot,
         credential: Credential,
     ) -> Result<String, DomainError> {
-        self.call_plugin_inner(name, func, input, Some((slot, credential)))
+        self.call_plugin_inner(name, func, input, Some(credential))
     }
 
     /// Container plugins decode binary blobs (DLC / CCF / RSDF / Metalink);
@@ -159,7 +159,7 @@ impl PluginRegistry {
         name: &str,
         func: &str,
         input: I,
-        scoped_credential: Option<(CredentialSlot, Credential)>,
+        scoped_credential: Option<Credential>,
     ) -> Result<String, DomainError>
     where
         I: extism::convert::ToBytes<'a>,
@@ -167,18 +167,21 @@ impl PluginRegistry {
         // Clone the Arc<Mutex<Plugin>> and drop the DashMap shard guard
         // before locking — holding the shard across a slow WASM call would
         // block every other plugin lookup behind the same shard.
-        let plugin_handle = {
+        let (plugin_handle, credential_slot) = {
             let entry = self
                 .plugins
                 .get(name)
                 .ok_or_else(|| DomainError::NotFound(name.to_string()))?;
-            Arc::clone(&entry.plugin)
+            (
+                Arc::clone(&entry.plugin),
+                Arc::clone(&entry.credential_slot),
+            )
         };
         let mut plugin = plugin_handle
             .lock()
             .map_err(|_| DomainError::PluginError(format!("plugin '{name}' mutex poisoned")))?;
         let _credential_scope = scoped_credential
-            .map(|(slot, credential)| CredentialScope::new(slot, credential))
+            .map(|credential| CredentialScope::new(credential_slot, credential))
             .transpose()?;
         let fn_exists = plugin.function_exists(func);
         tracing::debug!(plugin = name, func, fn_exists, "plugin call pre-call");
@@ -231,6 +234,7 @@ mod tests {
         LoadedPlugin {
             manifest: make_manifest(name),
             plugin: Arc::new(Mutex::new(make_extism_plugin())),
+            credential_slot: Arc::new(Mutex::new(None)),
             enabled: true,
         }
     }
@@ -269,20 +273,23 @@ mod tests {
 
     #[test]
     fn test_scoped_credential_is_cleared_when_plugin_call_fails() {
-        use crate::adapters::driven::plugin::capabilities::SharedHostResources;
         use crate::domain::model::credential::Credential;
 
         let registry = PluginRegistry::new();
         registry.insert("plug-a".to_string(), make_loaded("plug-a"));
-        let resources = SharedHostResources::new();
-        let slot = resources.credential_slot("plug-a");
+        let slot = Arc::clone(
+            &registry
+                .plugins
+                .get("plug-a")
+                .expect("loaded plugin")
+                .credential_slot,
+        );
 
         let error = registry
             .call_plugin_with_credential(
                 "plug-a",
                 "missing",
                 "",
-                Arc::clone(&slot),
                 Credential::new("alice", "secret"),
             )
             .expect_err("missing export");

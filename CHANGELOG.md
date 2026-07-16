@@ -9,9 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
-- **MAT-132 adversarial account tests**: added fail-closed coverage for
-  contradictory plugin validation states and plugin diagnostics that contain
-  credential-like material.
+- **MAT-132 credential boundary hardening**: account extraction now calls the
+  exact selected plugin instead of resolving the URL a second time, credential
+  slots are isolated per loaded plugin generation across hot reloads, hoster
+  JSON is parsed at the adapter boundary, contradictory validation states fail
+  closed, and untrusted plugin diagnostics cannot reach events or IPC.
 - Updated compatible Rust and frontend dependencies, including the patched
   `quinn-proto` release. Disabled unused SeaORM migration defaults so the
   MySQL/PostgreSQL drivers and vulnerable `rsa` crate are no longer included.

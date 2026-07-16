@@ -7,6 +7,7 @@ use crate::domain::error::DomainError;
 use crate::domain::model::credential::Credential;
 use crate::domain::model::plugin::{PluginInfo, PluginManifest};
 use crate::domain::ports::driven::account_validator::ValidationOutcome;
+use crate::domain::ports::driven::hoster_link::ExtractedHosterLink;
 use crate::domain::ports::driven::plugin_store_client::OfficialPluginProvenance;
 
 /// Result of a `download_to_file` plugin call.
@@ -84,13 +85,19 @@ pub trait PluginLoader: Send + Sync {
         ))
     }
 
-    /// Extract links while exposing one account credential only for this call.
-    fn extract_links_with_credential(
+    /// Extract one hoster link from the exact named plugin.
+    ///
+    /// `service_name` binds account selection to the called plugin. Adapters
+    /// must not resolve the URL again after the application selects an account.
+    fn extract_hoster_link(
         &self,
-        url: &str,
-        _credential: &Credential,
-    ) -> Result<String, DomainError> {
-        self.extract_links(url)
+        service_name: &str,
+        _url: &str,
+        _credential: Option<&Credential>,
+    ) -> Result<ExtractedHosterLink, DomainError> {
+        Err(DomainError::NotFound(format!(
+            "hoster extraction not supported for service '{service_name}'"
+        )))
     }
 
     /// Validate an account through the plugin matching `service_name`.
@@ -236,11 +243,14 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_links_with_credential_default_delegates_without_support() {
+    fn test_extract_hoster_link_default_fails_closed() {
         let loader = MinimalLoader;
         let credential = Credential::new("alice", "secret");
-        let result =
-            loader.extract_links_with_credential("https://1fichier.com/?abc123", &credential);
+        let result = loader.extract_hoster_link(
+            "vortex-mod-1fichier",
+            "https://1fichier.com/?abc123",
+            Some(&credential),
+        );
         assert!(matches!(result, Err(DomainError::NotFound(_))));
     }
 

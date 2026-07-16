@@ -11,10 +11,11 @@ use crate::domain::model::credential::Credential;
 use crate::domain::model::plugin::{PluginInfo, PluginManifest};
 use crate::domain::ports::driven::plugin_loader::DownloadedFileInfo;
 use crate::domain::ports::driven::plugin_store_client::OfficialPluginProvenance;
-use crate::domain::ports::driven::{PluginLoader, ValidationOutcome};
+use crate::domain::ports::driven::{ExtractedHosterLink, PluginLoader, ValidationOutcome};
 
 use super::builtin::HttpModule;
-use super::capabilities::{SharedHostResources, build_host_functions_with_grants};
+use super::capabilities::{SharedHostResources, build_host_functions_for_instance};
+use super::hoster_contract::parse_hoster_link;
 use super::manifest::{
     find_wasm_file, parse_manifest, parse_manifest_metadata, parse_manifest_metadata_bytes,
 };
@@ -364,14 +365,15 @@ impl PluginLoader for ExtismPluginLoader {
             &manifest_bytes,
         );
         let extism_manifest = extism::Manifest::new([extism::Wasm::data(wasm_bytes)]);
-        let host_functions =
-            build_host_functions_with_grants(&disk_manifest, &self.shared_resources, grants);
+        let (host_functions, credential_slot) =
+            build_host_functions_for_instance(&disk_manifest, &self.shared_resources, grants);
         let plugin = extism::Plugin::new(&extism_manifest, host_functions, true)
             .map_err(|e| DomainError::PluginError(format!("failed to load plugin: {e}")))?;
 
         let loaded = LoadedPlugin {
             manifest: disk_manifest,
             plugin: std::sync::Arc::new(std::sync::Mutex::new(plugin)),
+            credential_slot,
             enabled: true,
         };
 
@@ -489,31 +491,41 @@ impl PluginLoader for ExtismPluginLoader {
         self.call_url_plugin_function(url, "extract_links")
     }
 
-    fn extract_links_with_credential(
+    fn extract_hoster_link(
         &self,
+        service_name: &str,
         url: &str,
-        credential: &Credential,
-    ) -> Result<String, DomainError> {
-        let info = self.resolve_wasm_plugin(url)?;
-        if !self
+        credential: Option<&Credential>,
+    ) -> Result<ExtractedHosterLink, DomainError> {
+        let info = self
             .registry
-            .function_exists(info.name(), "extract_links")?
-        {
+            .list_info()
+            .into_iter()
+            .find(|info| info.name() == service_name)
+            .ok_or_else(|| DomainError::NotFound(service_name.to_string()))?;
+        if !info.is_enabled() {
             return Err(DomainError::NotFound(format!(
-                "plugin '{}' does not export 'extract_links'",
-                info.name()
+                "plugin '{service_name}' is disabled"
             )));
         }
-        let slot = self.shared_resources.credential_slot(info.name());
-        self.registry
-            .call_plugin_with_credential(
-                info.name(),
-                "extract_links",
-                url,
-                slot,
-                credential.clone(),
-            )
-            .map_err(|error| classify_account_plugin_error(&error.to_string()))
+        if !self
+            .registry
+            .function_exists(service_name, "extract_links")?
+        {
+            return Err(DomainError::NotFound(format!(
+                "plugin '{service_name}' does not export 'extract_links'"
+            )));
+        }
+        let output = match credential {
+            Some(credential) => self
+                .registry
+                .call_plugin_with_credential(service_name, "extract_links", url, credential.clone())
+                .map_err(|error| classify_account_plugin_error(&error.to_string()))?,
+            None => self
+                .registry
+                .call_plugin(service_name, "extract_links", url)?,
+        };
+        parse_hoster_link(&output)
     }
 
     fn validate_account(
@@ -541,16 +553,9 @@ impl PluginLoader for ExtismPluginLoader {
             )));
         }
 
-        let slot = self.shared_resources.credential_slot(service_name);
         let output = self
             .registry
-            .call_plugin_with_credential(
-                service_name,
-                "validate_account",
-                "",
-                slot,
-                credential.clone(),
-            )
+            .call_plugin_with_credential(service_name, "validate_account", "", credential.clone())
             .map_err(|error| classify_account_plugin_error(&error.to_string()))?;
         parse_validation_outcome(&output)
     }
@@ -755,16 +760,21 @@ fn is_adaptive_stream_error(msg: &str) -> bool {
 }
 
 fn classify_account_plugin_error(message: &str) -> DomainError {
-    if message.contains("ACCOUNT_INVALID_CREDENTIALS") {
+    let has_code = |expected: &str| {
+        message
+            .split(|character: char| !(character.is_ascii_uppercase() || character == '_'))
+            .any(|token| token == expected)
+    };
+    if has_code("ACCOUNT_INVALID_CREDENTIALS") {
         DomainError::AccountInvalidCredentials
-    } else if message.contains("ACCOUNT_EXPIRED") {
+    } else if has_code("ACCOUNT_EXPIRED") {
         DomainError::AccountExpired
-    } else if message.contains("ACCOUNT_COOLDOWN") {
+    } else if has_code("ACCOUNT_COOLDOWN") {
         DomainError::AccountCooldown
-    } else if message.contains("ACCOUNT_QUOTA_EXCEEDED") {
+    } else if has_code("ACCOUNT_QUOTA_EXCEEDED") {
         DomainError::AccountQuotaExceeded
     } else {
-        DomainError::PluginError(message.to_string())
+        DomainError::PluginError("plugin account operation failed".into())
     }
 }
 
@@ -781,26 +791,36 @@ struct PluginValidationOutcome {
     traffic_total: Option<u64>,
     #[serde(default, alias = "validUntil")]
     valid_until: Option<u64>,
-    #[serde(default, alias = "errorMessage")]
-    error_message: Option<String>,
 }
 
 fn parse_validation_outcome(output: &str) -> Result<ValidationOutcome, DomainError> {
     use std::str::FromStr;
 
-    let parsed: PluginValidationOutcome = serde_json::from_str(output).map_err(|error| {
-        DomainError::PluginError(format!(
-            "plugin account validation returned invalid JSON: {error}"
-        ))
+    let parsed: PluginValidationOutcome = serde_json::from_str(output).map_err(|_| {
+        DomainError::PluginError("plugin account validation returned invalid JSON".into())
     })?;
     let status = match parsed.status {
         Some(status) => AccountStatus::from_str(&status).map_err(|_| {
-            DomainError::PluginError(format!(
-                "plugin account validation returned unknown status '{status}'"
-            ))
+            DomainError::PluginError("plugin account validation returned unknown status".into())
         })?,
         None if parsed.valid => AccountStatus::Valid,
         None => AccountStatus::Error,
+    };
+    if parsed.valid != (status == AccountStatus::Valid) {
+        return Err(DomainError::PluginError(
+            "plugin account validation returned contradictory state".into(),
+        ));
+    }
+    let error_message = match status {
+        AccountStatus::Valid => None,
+        AccountStatus::InvalidCredentials => Some("Account credentials were rejected".into()),
+        AccountStatus::MissingCredential => Some("Account credential is missing".into()),
+        AccountStatus::Expired => Some("Account is expired".into()),
+        AccountStatus::QuotaExhausted => Some("Account quota is exhausted".into()),
+        AccountStatus::Cooldown => Some("Account is temporarily rate-limited".into()),
+        AccountStatus::Unverified | AccountStatus::Error => {
+            Some("Account validation failed".into())
+        }
     };
     Ok(ValidationOutcome {
         valid: parsed.valid,
@@ -809,7 +829,7 @@ fn parse_validation_outcome(output: &str) -> Result<ValidationOutcome, DomainErr
         traffic_left: parsed.traffic_left,
         traffic_total: parsed.traffic_total,
         valid_until: parsed.valid_until,
-        error_message: parsed.error_message,
+        error_message,
     })
 }
 
@@ -852,10 +872,10 @@ mod tests {
     #[test]
     fn unknown_account_plugin_error_stays_a_plugin_error() {
         let error = classify_account_plugin_error("PLUGIN_ERROR: malformed response");
-        assert!(matches!(
+        assert_eq!(
             error,
-            DomainError::PluginError(message) if message.contains("malformed response")
-        ));
+            DomainError::PluginError("plugin account operation failed".into())
+        );
     }
 
     #[test]
