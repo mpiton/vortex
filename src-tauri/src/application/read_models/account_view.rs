@@ -116,6 +116,9 @@ mod tests {
         assert_eq!(dto.last_validated, Some(1_900_000_000_000));
         assert_eq!(dto.created_at, 1_700_000_000_000);
         assert_eq!(dto.credential_ref, "keyring://real-debrid/alice");
+        let value = serde_json::to_value(&dto).unwrap();
+        assert_eq!(value["status"], "valid");
+        assert!(value["exhaustedUntil"].is_null());
     }
 
     #[test]
@@ -151,6 +154,8 @@ mod tests {
             "validUntil",
             "lastValidated",
             "createdAt",
+            "status",
+            "exhaustedUntil",
             "credentialRef",
         ] {
             assert!(

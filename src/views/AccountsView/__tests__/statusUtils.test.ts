@@ -14,6 +14,8 @@ function base(overrides: Partial<AccountView> = {}): AccountView {
     validUntil: null,
     lastValidated: null,
     createdAt: 0,
+    status: "unverified",
+    exhaustedUntil: null,
     credentialRef: "keyring://real-debrid/alice",
     ...overrides,
   };
@@ -23,6 +25,7 @@ describe("deriveAccountStatus", () => {
   it("returns 'disabled' when the account is disabled even if otherwise valid", () => {
     const account = base({
       enabled: false,
+      status: "valid",
       lastValidated: 1_000,
       validUntil: 2_000_000_000_000,
     });
@@ -30,7 +33,7 @@ describe("deriveAccountStatus", () => {
   });
 
   it("returns 'expired' when valid_until is in the past", () => {
-    const account = base({ validUntil: 1, lastValidated: 0 });
+    const account = base({ status: "valid", validUntil: 1, lastValidated: 0 });
     expect(deriveAccountStatus(account, 100)).toBe("expired");
   });
 
@@ -40,12 +43,23 @@ describe("deriveAccountStatus", () => {
   });
 
   it("returns 'active' when enabled, validated, not expired", () => {
-    const account = base({ lastValidated: 1, validUntil: 100_000 });
+    const account = base({ status: "valid", lastValidated: 1, validUntil: 100_000 });
     expect(deriveAccountStatus(account, 1)).toBe("active");
   });
 
   it("returns 'active' when validUntil is null but lastValidated set", () => {
-    const account = base({ lastValidated: 1, validUntil: null });
+    const account = base({ status: "valid", lastValidated: 1, validUntil: null });
     expect(deriveAccountStatus(account, 1)).toBe("active");
+  });
+
+  it.each([
+    ["invalid_credentials", "invalidCredentials"],
+    ["missing_credential", "missingCredential"],
+    ["expired", "expired"],
+    ["quota_exhausted", "quotaExhausted"],
+    ["cooldown", "cooldown"],
+    ["error", "error"],
+  ] as const)("maps persisted '%s' to '%s'", (persisted, expected) => {
+    expect(deriveAccountStatus(base({ status: persisted }), 1)).toBe(expected);
   });
 });
