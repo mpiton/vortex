@@ -859,6 +859,18 @@ mod tests {
     }
 
     #[test]
+    fn unknown_account_plugin_error_does_not_expose_plugin_diagnostics() {
+        let error = classify_account_plugin_error(
+            "PLUGIN_ERROR: upstream echoed Authorization: Bearer super-secret-key",
+        );
+        assert_eq!(
+            error,
+            DomainError::PluginError("plugin account operation failed".into())
+        );
+        assert!(!error.to_string().contains("super-secret-key"));
+    }
+
+    #[test]
     fn validation_response_defaults_success_to_valid_status() {
         let outcome = parse_validation_outcome(r#"{"valid":true}"#).expect("valid outcome");
         assert!(outcome.valid);
@@ -874,6 +886,20 @@ mod tests {
         assert_eq!(outcome.status, AccountStatus::QuotaExhausted);
         assert_eq!(outcome.traffic_left, Some(0));
         assert_eq!(outcome.traffic_total, Some(100));
+    }
+
+    #[test]
+    fn validation_response_rejects_invalid_flag_with_valid_status() {
+        let error = parse_validation_outcome(r#"{"valid":false,"status":"valid"}"#)
+            .expect_err("contradictory validation response must fail closed");
+        assert!(matches!(error, DomainError::PluginError(_)));
+    }
+
+    #[test]
+    fn validation_response_rejects_valid_flag_with_non_valid_status() {
+        let error = parse_validation_outcome(r#"{"valid":true,"status":"expired"}"#)
+            .expect_err("contradictory validation response must fail closed");
+        assert!(matches!(error, DomainError::PluginError(_)));
     }
 
     fn setup_plugin_dir(plugins_dir: &Path, name: &str) {
