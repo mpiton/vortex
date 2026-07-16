@@ -31,6 +31,7 @@ impl SharedHostResources {
         // gives the remote side a way to identify traffic from Vortex
         // rather than generic scripted clients.
         reqwest::blocking::Client::builder()
+            .no_proxy()
             .user_agent("Vortex/0.1")
             .redirect(reqwest::redirect::Policy::none())
             .timeout(timeout)

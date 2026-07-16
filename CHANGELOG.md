@@ -53,6 +53,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **MAT-132 final review hardening**: premium extraction now runs through one
+  CQRS command handler shared by link analysis and just-in-time downloads.
+  Account failures persist before typed events, cooldown recovery uses one
+  atomic row write, per-account locks are reclaimed and cover download
+  association persistence, account events refresh the UI immediately, and
+  restricted HTTP clients ignore system proxies while rejecting additional
+  non-public IPv6 ranges. The official 1fichier registry entry now targets the
+  credential-validation-capable v1.1.0 artifact.
 - **MAT-132 review regressions**: added coverage for fail-closed account state
   persistence, premium account lifecycle races, account-event refreshes, lock
   reclamation, and IPv6/proxy SSRF boundaries.

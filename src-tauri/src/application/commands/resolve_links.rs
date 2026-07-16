@@ -7,12 +7,10 @@ use serde::Serialize;
 use uuid::Uuid;
 
 use crate::application::command_bus::CommandBus;
+use crate::application::commands::resolve_premium_source::ResolvePremiumSourceCommand;
 use crate::application::error::AppError;
 use crate::application::services::account_rotator::NextAccountOutcome;
-use crate::application::services::account_state::{apply_status, status_for_plugin_error};
 use crate::domain::error::DomainError;
-use crate::domain::model::account::AccountStatus;
-use crate::domain::model::credential::Credential;
 use crate::domain::model::http::HttpResponse;
 use crate::domain::model::plugin::PluginCategory;
 use crate::domain::ports::driven::ExtractedHosterLink;
@@ -213,7 +211,7 @@ impl CommandBus {
         url: &str,
         service_name: &str,
     ) -> Result<HosterResolution, AppError> {
-        if let (Some(repo), Some(store)) = (self.account_repo(), self.account_credential_store()) {
+        if let Some(repo) = self.account_repo() {
             let max_attempts = repo.list_by_service(service_name)?.len();
             let mut last_temporary_error = None;
             for _ in 0..max_attempts {
@@ -226,58 +224,34 @@ impl CommandBus {
                             .into());
                     }
                 };
-                let operation_lock = self.account_operation_lock(selected.id())?;
-                let _operation_guard = operation_lock.lock().await;
-                let Some(mut account) = repo.find_by_id(selected.id())? else {
-                    continue;
-                };
-                if account.service_name() != service_name
-                    || !account.is_selectable(self.account_now_ms()?)
-                {
-                    continue;
-                }
-                let Some(password) = store.get_password(account.id())? else {
-                    account.set_status(AccountStatus::MissingCredential);
-                    repo.save(&account)?;
-                    continue;
-                };
-                let credential = Credential::new(account.username(), password);
-
-                match self
-                    .plugin_loader()
-                    .extract_hoster_link(service_name, url, Some(&credential))
-                {
+                let handler = self.premium_source_handler().ok_or_else(|| {
+                    AppError::Validation("premium source handler not configured".into())
+                })?;
+                let command = ResolvePremiumSourceCommand::new(
+                    selected.id().clone(),
+                    service_name.to_string(),
+                    url.to_string(),
+                );
+                match handler.handle(command).await {
                     Ok(link) => {
-                        if let Some(total) = link.traffic_total_bytes {
-                            account.set_traffic_total(total);
-                            if let Some(used) = link.traffic_used_bytes {
-                                account.set_traffic_left(total.saturating_sub(used));
-                            }
-                        }
-                        account.set_status(AccountStatus::Valid);
-                        repo.save(&account)?;
                         return Ok(into_hoster_resolution(
                             link,
-                            Some(account.id().as_str()),
+                            Some(selected.id().as_str()),
                             url,
                         ));
                     }
-                    Err(error) => {
-                        let Some(status) = status_for_plugin_error(&error) else {
-                            return Err(error.into());
-                        };
-                        if status.is_temporary() {
-                            last_temporary_error = Some(error.clone());
-                        }
-                        if status == AccountStatus::QuotaExhausted
-                            && let Some(rotator) = self.account_rotator()
-                        {
-                            rotator.mark_exhausted(account.id(), service_name, 60)?;
-                        } else {
-                            apply_status(&mut account, status, self.account_now_ms()?);
-                            repo.save(&account)?;
-                        }
+                    Err(
+                        error @ (DomainError::AccountCooldown | DomainError::AccountQuotaExceeded),
+                    ) => {
+                        last_temporary_error = Some(error);
                     }
+                    Err(
+                        DomainError::AccountInvalidCredentials
+                        | DomainError::AccountExpired
+                        | DomainError::NotFound(_)
+                        | DomainError::ValidationError(_),
+                    ) => {}
+                    Err(error) => return Err(error.into()),
                 }
             }
             if let Some(error) = last_temporary_error {

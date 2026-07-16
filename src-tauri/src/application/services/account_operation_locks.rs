@@ -1,7 +1,7 @@
 //! Per-account serialization for metadata, keyring, and plugin operations.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use tokio::sync::Mutex as AsyncMutex;
 
 use crate::application::error::AppError;
@@ -9,7 +9,7 @@ use crate::domain::model::account::AccountId;
 
 #[derive(Default)]
 pub struct AccountOperationLocks {
-    entries: Mutex<HashMap<AccountId, Arc<AsyncMutex<()>>>>,
+    entries: Mutex<HashMap<AccountId, Weak<AsyncMutex<()>>>>,
 }
 
 impl AccountOperationLocks {
@@ -18,10 +18,13 @@ impl AccountOperationLocks {
             .entries
             .lock()
             .map_err(|_| AppError::Validation("account operation locks mutex poisoned".into()))?;
-        Ok(entries
-            .entry(id.clone())
-            .or_insert_with(|| Arc::new(AsyncMutex::new(())))
-            .clone())
+        entries.retain(|_, lock| lock.strong_count() > 0);
+        if let Some(lock) = entries.get(id).and_then(Weak::upgrade) {
+            return Ok(lock);
+        }
+        let lock = Arc::new(AsyncMutex::new(()));
+        entries.insert(id.clone(), Arc::downgrade(&lock));
+        Ok(lock)
     }
 }
 

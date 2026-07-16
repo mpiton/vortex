@@ -66,6 +66,30 @@ export interface ClipboardMonitoringChangedPayload {
   enabled: boolean;
 }
 
+export interface AccountIdPayload {
+  id: string;
+}
+
+export interface AccountAddedPayload extends AccountIdPayload {
+  serviceName: string;
+}
+
+export interface AccountValidatedPayload extends AccountIdPayload {
+  latencyMs: number | null;
+  trafficLeft: number | null;
+  trafficTotal: number | null;
+  validUntil: number | null;
+}
+
+export interface AccountValidationFailedPayload extends AccountIdPayload {
+  error: string;
+}
+
+export interface AccountExhaustedPayload extends AccountIdPayload {
+  serviceName: string;
+  exhaustedUntilMs: number;
+}
+
 export type TauriEventMap = {
   "download-created": DownloadIdPayload;
   "download-started": DownloadIdPayload;
@@ -91,6 +115,12 @@ export type TauriEventMap = {
   "package-created": PackageCreatedPayload;
   "clipboard-url-detected": ClipboardUrlDetectedPayload;
   "clipboard-monitoring-changed": ClipboardMonitoringChangedPayload;
+  "account-added": AccountAddedPayload;
+  "account-updated": AccountIdPayload;
+  "account-deleted": AccountIdPayload;
+  "account-validated": AccountValidatedPayload;
+  "account-validation-failed": AccountValidationFailedPayload;
+  "account-exhausted": AccountExhaustedPayload;
 };
 
 export type TauriEventName = keyof TauriEventMap;

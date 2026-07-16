@@ -25,8 +25,6 @@ impl CommandBus {
         cmd: super::StartDownloadCommand,
     ) -> Result<DownloadId, AppError> {
         let url = Url::new(&cmd.url)?;
-        self.validate_download_account(cmd.module_name.as_deref(), cmd.account_id.as_ref())
-            .await?;
 
         // Use the pre-computed filename when available (e.g. set by media plugins
         // that already know the video title). Otherwise probe via HEAD or fall back
@@ -67,6 +65,16 @@ impl CommandBus {
         let dest = dest_dir.join(&file_name);
 
         let id = next_download_id();
+        let account_lock = cmd
+            .account_id
+            .as_ref()
+            .map(|id| self.account_operation_lock(id))
+            .transpose()?;
+        let _account_guard = match account_lock {
+            Some(lock) => Some(lock.lock_owned().await),
+            None => None,
+        };
+        self.validate_download_account(cmd.module_name.as_deref(), cmd.account_id.as_ref())?;
         // Append to the back of the queue so a freshly added download
         // does not jump in front of items the user has explicitly
         // reordered (default queue_position 0 would sort before 1..N).
@@ -95,7 +103,7 @@ impl CommandBus {
         Ok(id)
     }
 
-    async fn validate_download_account(
+    fn validate_download_account(
         &self,
         module_name: Option<&str>,
         account_id: Option<&AccountId>,
@@ -114,8 +122,6 @@ impl CommandBus {
         let store = self.account_credential_store().ok_or_else(|| {
             AppError::Validation("account credential store not configured".into())
         })?;
-        let operation_lock = self.account_operation_lock(account_id)?;
-        let _operation_guard = operation_lock.lock().await;
         let mut account = repo.find_by_id(account_id)?.ok_or_else(|| {
             AppError::NotFound(format!("account {} not found", account_id.as_str()))
         })?;

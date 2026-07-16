@@ -6,10 +6,12 @@
 
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::application::command_bus::CommandBus;
+use crate::application::commands::resolve_premium_source::ResolvePremiumSourceHandler;
+use crate::application::services::account_operation_locks::AccountOperationLocks;
 use crate::application::test_support::NoopHistoryRepo;
 use crate::domain::error::DomainError;
 use crate::domain::event::DomainEvent;
@@ -33,12 +35,14 @@ use crate::domain::ports::driven::{
 
 pub(crate) struct InMemoryAccountRepo {
     store: Mutex<HashMap<AccountId, Account>>,
+    save_count: AtomicUsize,
 }
 
 impl InMemoryAccountRepo {
     pub(crate) fn new() -> Self {
         Self {
             store: Mutex::new(HashMap::new()),
+            save_count: AtomicUsize::new(0),
         }
     }
 
@@ -51,6 +55,10 @@ impl InMemoryAccountRepo {
         });
         accounts
     }
+
+    pub(crate) fn save_count(&self) -> usize {
+        self.save_count.load(Ordering::SeqCst)
+    }
 }
 
 impl AccountRepository for InMemoryAccountRepo {
@@ -59,6 +67,7 @@ impl AccountRepository for InMemoryAccountRepo {
     }
 
     fn save(&self, account: &Account) -> Result<(), DomainError> {
+        self.save_count.fetch_add(1, Ordering::SeqCst);
         let mut guard = self.store.lock().unwrap();
         for (id, existing) in guard.iter() {
             if id != account.id()
@@ -796,6 +805,16 @@ pub(crate) fn build_account_bus_with_plugin_loader(
     codec: Option<Arc<dyn PassphraseCodec>>,
     plugin_loader: Arc<dyn PluginLoader>,
 ) -> CommandBus {
+    let clock: Arc<dyn Clock> = Arc::new(FixedAccountClock);
+    let locks = Arc::new(AccountOperationLocks::default());
+    let premium_handler = Arc::new(ResolvePremiumSourceHandler::new(
+        account_repo.clone(),
+        credential_store.clone(),
+        plugin_loader.clone(),
+        event_bus.clone(),
+        clock.clone(),
+        locks.clone(),
+    ));
     let mut bus = CommandBus::new(
         Arc::new(StubDownloadRepo),
         Arc::new(StubDownloadEngine),
@@ -812,7 +831,9 @@ pub(crate) fn build_account_bus_with_plugin_loader(
     )
     .with_account_repo(account_repo)
     .with_account_credential_store(credential_store)
-    .with_account_clock(Arc::new(FixedAccountClock));
+    .with_account_clock(clock)
+    .with_account_operation_locks(locks)
+    .with_premium_source_handler(premium_handler);
 
     if let Some(v) = validator {
         bus = bus.with_account_validator(v);

@@ -44,6 +44,7 @@ pub(crate) fn restricted_download_client(
     }
     let addresses = validate_public_url(url)?;
     let mut builder = reqwest::Client::builder()
+        .no_proxy()
         .user_agent("Vortex/0.1")
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(Duration::from_secs(30))
@@ -87,13 +88,21 @@ pub(crate) fn is_forbidden_ip(ip: &IpAddr) -> bool {
                 || (a == 255 && b == 255 && c == 255 && d == 255)
         }
         IpAddr::V6(ip) => {
-            let first = ip.segments()[0];
+            let segments = ip.segments();
+            let first = segments[0];
             ip.is_loopback()
                 || ip.is_unspecified()
                 || ip.is_multicast()
                 || (first & 0xfe00) == 0xfc00
                 || (first & 0xffc0) == 0xfe80
-                || ip.segments()[..2] == [0x2001, 0x0db8]
+                || (first & 0xffc0) == 0xfec0
+                || matches!(segments, [0x0064, 0xff9b, 0x0001, ..])
+                || matches!(segments, [0x0100, 0, 0, 0, ..])
+                || matches!(segments, [0x2001, 0x0002, 0, ..])
+                || matches!(segments, [0x2001, 0x0db8, ..])
+                || matches!(segments, [0x2002, ..])
+                || matches!(segments, [0x3ff0..=0x3fff, ..])
+                || matches!(segments, [0x5f00, ..])
         }
     }
 }

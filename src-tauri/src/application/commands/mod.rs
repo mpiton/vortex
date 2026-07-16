@@ -37,6 +37,7 @@ mod remove_download;
 mod remove_download_from_package;
 mod report_broken_plugin;
 mod resolve_links;
+pub mod resolve_premium_source;
 mod resume_all;
 mod resume_download;
 mod retry_download;

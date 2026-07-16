@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use tokio::sync::Semaphore;
 
+use crate::application::commands::resolve_premium_source::ResolvePremiumSourceHandler;
 use crate::application::services::account_operation_locks::AccountOperationLocks;
 use crate::application::services::{AccountRotator, AccountSelector};
 use crate::domain::model::account::AccountId;
@@ -102,6 +103,7 @@ pub struct CommandBus {
     account_rotator: Option<Arc<AccountRotator>>,
     account_operation_locks: Arc<AccountOperationLocks>,
     account_clock: Option<Arc<dyn Clock>>,
+    premium_source_handler: Option<Arc<ResolvePremiumSourceHandler>>,
     passphrase_codec: Option<Arc<dyn PassphraseCodec>>,
     /// Serializes queue-position allocation across handlers. Without this,
     /// two concurrent move-to-top/move-to-bottom/start-download calls can
@@ -173,6 +175,7 @@ impl CommandBus {
             account_rotator: None,
             account_operation_locks: Arc::new(AccountOperationLocks::default()),
             account_clock: None,
+            premium_source_handler: None,
             passphrase_codec: None,
             queue_position_lock: tokio::sync::Mutex::new(()),
             link_check_limiter,
@@ -236,10 +239,15 @@ impl CommandBus {
         self
     }
 
-    pub(crate) fn with_account_operation_locks(
+    pub fn with_premium_source_handler(
         mut self,
-        locks: Arc<AccountOperationLocks>,
+        handler: Arc<ResolvePremiumSourceHandler>,
     ) -> Self {
+        self.premium_source_handler = Some(handler);
+        self
+    }
+
+    pub fn with_account_operation_locks(mut self, locks: Arc<AccountOperationLocks>) -> Self {
         self.account_operation_locks = locks;
         self
     }
@@ -269,6 +277,10 @@ impl CommandBus {
 
     pub fn account_rotator(&self) -> Option<&AccountRotator> {
         self.account_rotator.as_deref()
+    }
+
+    pub fn premium_source_handler(&self) -> Option<&ResolvePremiumSourceHandler> {
+        self.premium_source_handler.as_deref()
     }
 
     pub(crate) fn account_operation_lock(

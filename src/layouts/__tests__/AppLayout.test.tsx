@@ -6,6 +6,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { AppLayout } from "../AppLayout";
 import { useUiStore } from "@/stores/uiStore";
 import { useSettingsStore } from "@/stores/settingsStore";
+import { useAccountEvents } from "@/hooks/useAccountEvents";
 import type { AppConfig } from "@/types/settings";
 import enTranslations from "@/i18n/locales/en.json";
 
@@ -57,6 +58,10 @@ vi.mock("@/hooks/useDownloadProgress", () => ({
 
 vi.mock("@/hooks/useDownloadEvents", () => ({
   useDownloadEvents: vi.fn(),
+}));
+
+vi.mock("@/hooks/useAccountEvents", () => ({
+  useAccountEvents: vi.fn(),
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -126,6 +131,7 @@ describe("AppLayout", () => {
 
   it("should render Sidebar, main content, and StatusBar", () => {
     renderAppLayout();
+    expect(useAccountEvents).toHaveBeenCalledOnce();
     expect(screen.getByAltText("Vortex")).toBeInTheDocument();
     expect(screen.getByText("Downloads Page")).toBeInTheDocument();
     expect(screen.getByText(/vortex v0\.1\.0/)).toBeInTheDocument();

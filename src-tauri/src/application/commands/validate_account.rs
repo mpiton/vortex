@@ -97,13 +97,12 @@ pub(super) fn sync_validation_availability(
     bus: &CommandBus,
     id: &crate::domain::model::account::AccountId,
     outcome: &ValidationOutcome,
-) -> Result<(), AppError> {
+) {
     if outcome.is_valid()
         && let Some(rotator) = bus.account_rotator()
     {
-        rotator.clear_exhausted(id)?;
+        rotator.clear_cached_exhausted(id);
     }
-    Ok(())
 }
 
 impl CommandBus {
@@ -144,7 +143,7 @@ impl CommandBus {
 
         let attempt = validate_credentials(validator, &account, &password);
         repo.save(&apply_validation(&account, &attempt.outcome, cmd.now_ms))?;
-        sync_validation_availability(self, &cmd.id, &attempt.outcome)?;
+        sync_validation_availability(self, &cmd.id, &attempt.outcome);
         publish_validation(self, cmd.id, &attempt.outcome);
 
         match attempt.error {
@@ -360,6 +359,7 @@ mod tests {
         rotator
             .mark_exhausted(account.id(), account.service_name(), 60)
             .expect("mark exhausted");
+        let saves_before_validation = repo.save_count();
         let bus = build_account_bus(repo.clone(), credentials, events, Some(validator), None)
             .with_account_rotator(rotator.clone());
 
@@ -371,6 +371,7 @@ mod tests {
         .expect("validation succeeds");
 
         assert!(!rotator.is_exhausted(account.id()).expect("rotator state"));
+        assert_eq!(repo.save_count(), saves_before_validation + 1);
         assert_eq!(
             repo.find_by_id(account.id()).unwrap().unwrap().status(),
             AccountStatus::Valid

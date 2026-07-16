@@ -55,6 +55,7 @@ pub use adapters::driven::tray::{
     spawn_tray_animator,
 };
 pub use application::command_bus::CommandBus;
+pub use application::commands::resolve_premium_source::ResolvePremiumSourceHandler;
 pub use application::commands::store_refresh::{read_cache, write_cache};
 pub use application::error::AppError;
 pub use application::query_bus::QueryBus;
@@ -66,7 +67,9 @@ pub use application::read_models::{
     stats_view::{DailyVolumeDto, HostStatsDto, ModuleStatsDto, StatsViewDto},
 };
 pub use application::services::backfill_history_for_completed_downloads;
-pub use application::services::{AccountRotator, AccountSelector, QueueManager};
+pub use application::services::{
+    AccountOperationLocks, AccountRotator, AccountSelector, QueueManager,
+};
 pub use domain::model::ExtractionConfig;
 
 pub use adapters::driving::tauri_ipc::{
@@ -258,15 +261,16 @@ pub fn run() {
             let account_operation_locks = Arc::new(
                 application::services::account_operation_locks::AccountOperationLocks::default(),
             );
-            let premium_source_resolver: Arc<dyn DownloadSourceResolver> = Arc::new(
-                application::services::premium_source_resolver::PremiumSourceResolver::new(
-                    account_repo.clone(),
-                    account_credential_store.clone(),
-                    plugin_loader.clone(),
-                    account_clock.clone(),
-                    account_operation_locks.clone(),
-                ),
-            );
+            let premium_source_handler = Arc::new(ResolvePremiumSourceHandler::new(
+                account_repo.clone(),
+                account_credential_store.clone(),
+                plugin_loader.clone(),
+                event_bus.clone(),
+                account_clock.clone(),
+                account_operation_locks.clone(),
+            ));
+            let premium_source_resolver: Arc<dyn DownloadSourceResolver> =
+                premium_source_handler.clone();
 
             // ── Download engine ─────────────────────────────────────
             let initial_engine_config = config_store
@@ -415,6 +419,7 @@ pub fn run() {
                 .with_account_rotator(account_rotator)
                 .with_account_clock(account_clock)
                 .with_account_operation_locks(account_operation_locks)
+                .with_premium_source_handler(premium_source_handler)
                 .with_package_repo(package_repo.clone())
                 .with_passphrase_codec(passphrase_codec),
             );

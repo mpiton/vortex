@@ -246,6 +246,23 @@ impl AccountRotator {
         Ok(())
     }
 
+    /// Clear only the non-canonical in-memory cooldown cache.
+    ///
+    /// Command handlers use this after atomically saving an aggregate whose
+    /// validated status already cleared the persisted deadline. Keeping this
+    /// operation repository-free avoids a second save that could fail after
+    /// the validated state was committed.
+    pub(crate) fn clear_cached_exhausted(&self, account_id: &AccountId) {
+        let mut guard = match self.exhausted.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                tracing::warn!("recovering poisoned non-canonical account cooldown cache");
+                poisoned.into_inner()
+            }
+        };
+        guard.remove(account_id);
+    }
+
     /// `true` when `account_id` has an active cooldown at the current
     /// clock reading. Expired entries are NOT pruned by this call —
     /// pruning happens lazily inside `next_account` /

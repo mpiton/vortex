@@ -125,7 +125,7 @@ impl CommandBus {
             return Err(error.into());
         }
         if let Some(attempt) = &validation {
-            sync_validation_availability(self, &cmd.id, &attempt.outcome)?;
+            sync_validation_availability(self, &cmd.id, &attempt.outcome);
         }
 
         self.event_bus()
