@@ -183,7 +183,7 @@ describe("LinkGrabberView", () => {
   });
 
   it("passes the source URL and premium account association to download_start", async () => {
-    const sourceUrl = "https://1fichier.com/?abc123";
+    const sourceUrl = "ftp://1fichier.com/file.zip";
     const directUrl = "https://download.1fichier.com/token/file.zip";
     mockInvoke.mockImplementation((command) => {
       if (command === "link_resolve") {

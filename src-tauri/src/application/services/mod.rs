@@ -1,12 +1,14 @@
 pub(crate) mod account_operation_locks;
 pub mod account_rotator;
 pub mod account_selector;
+pub(crate) mod account_state;
 pub mod checksum_validator;
 pub mod engine_config_bridge;
 pub(crate) mod group_lock;
 pub mod history_backfill;
 pub mod history_paginate;
 pub mod playlist_grouper;
+pub(crate) mod premium_source_resolver;
 pub mod queue_config_bridge;
 pub mod queue_manager;
 pub mod split_archive_grouper;

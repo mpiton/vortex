@@ -236,6 +236,14 @@ impl CommandBus {
         self
     }
 
+    pub(crate) fn with_account_operation_locks(
+        mut self,
+        locks: Arc<AccountOperationLocks>,
+    ) -> Self {
+        self.account_operation_locks = locks;
+        self
+    }
+
     /// Builder-style setter for the passphrase codec used by the
     /// import / export commands.
     pub fn with_passphrase_codec(mut self, codec: Arc<dyn PassphraseCodec>) -> Self {

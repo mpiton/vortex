@@ -2,15 +2,15 @@
 
 use std::collections::HashMap;
 use std::io::Read;
-use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use super::capabilities::PluginHostContext;
+use super::capabilities::{CredentialSlot, PluginHostContext};
 use super::ytdlp_broker::{
     LegacySubprocessRequest, PluginYtDlpRequest, run_legacy_request, run_plugin_request,
 };
+use crate::adapters::driven::network::validate_public_url;
 
 // ── JSON types ────────────────────────────────────────────────────────────────
 
@@ -68,107 +68,19 @@ fn write_output_string(
     plugin.memory_set_val(&mut outputs[0], value.as_bytes())
 }
 
-/// Reject URLs targeting internal/loopback networks (SSRF protection).
-fn validate_url_not_internal(url: &reqwest::Url) -> Result<Option<Vec<SocketAddr>>, extism::Error> {
-    if let Some(host) = url.host_str() {
-        // Reject localhost variants
-        if host == "localhost" || host.ends_with(".localhost") {
-            return Err(anyhow::anyhow!(
-                "http_request: requests to localhost are forbidden"
-            ));
-        }
-
-        if let Ok(ip) = host.parse::<IpAddr>() {
-            if is_forbidden_ip(&ip) {
-                return Err(anyhow::anyhow!(
-                    "http_request: requests to internal networks are forbidden"
-                ));
-            }
-            return Ok(None);
-        }
-
-        let port = url
-            .port_or_known_default()
-            .ok_or_else(|| anyhow::anyhow!("http_request: URL is missing a known port"))?;
-
-        let resolved_addrs = (host, port)
-            .to_socket_addrs()
-            .map_err(|e| anyhow::anyhow!("http_request: failed to resolve host '{host}': {e}"))?
-            .collect::<Vec<_>>();
-
-        if resolved_addrs.is_empty() {
-            return Err(anyhow::anyhow!(
-                "http_request: host '{host}' did not resolve to any addresses"
-            ));
-        }
-
-        if resolved_addrs
-            .iter()
-            .any(|addr| is_forbidden_ip(&addr.ip()))
-        {
-            return Err(anyhow::anyhow!(
-                "http_request: requests to internal networks are forbidden"
-            ));
-        }
-
-        return Ok(Some(resolved_addrs));
-    }
-    Ok(None)
-}
-
-fn normalize_ip(ip: &IpAddr) -> IpAddr {
-    match ip {
-        IpAddr::V4(v4) => IpAddr::V4(*v4),
-        IpAddr::V6(v6) => v6
-            .to_ipv4_mapped()
-            .map(IpAddr::V4)
-            .unwrap_or(IpAddr::V6(*v6)),
-    }
-}
-
-fn is_forbidden_ip(ip: &IpAddr) -> bool {
-    let normalized = normalize_ip(ip);
-    normalized.is_loopback()
-        || normalized.is_unspecified()
-        || is_private_ip(&normalized)
-        || is_link_local(&normalized)
-}
-
-fn is_private_ip(ip: &IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(v4) => {
-            let octets = v4.octets();
-            octets[0] == 10
-                || (octets[0] == 172 && (16..=31).contains(&octets[1]))
-                || (octets[0] == 192 && octets[1] == 168)
-        }
-        IpAddr::V6(v6) => {
-            if let Some(v4) = v6.to_ipv4_mapped() {
-                return is_private_ip(&IpAddr::V4(v4));
-            }
-            let segments = v6.segments();
-            // fc00::/7 (unique local)
-            (segments[0] & 0xfe00) == 0xfc00
-        }
-    }
-}
-
-fn is_link_local(ip: &IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(v4) => {
-            let octets = v4.octets();
-            // 169.254.0.0/16 (includes AWS metadata 169.254.169.254)
-            octets[0] == 169 && octets[1] == 254
-        }
-        IpAddr::V6(v6) => {
-            if let Some(v4) = v6.to_ipv4_mapped() {
-                return is_link_local(&IpAddr::V4(v4));
-            }
-            let segments = v6.segments();
-            // fe80::/10
-            (segments[0] & 0xffc0) == 0xfe80
-        }
-    }
+fn safe_plugin_log_message(
+    message: &str,
+    credential_slot: &CredentialSlot,
+) -> Result<String, extism::Error> {
+    let carries_credential = credential_slot
+        .lock()
+        .map_err(|_| anyhow::anyhow!("log: credential slot poisoned"))?
+        .is_some();
+    Ok(if carries_credential {
+        "plugin log redacted during credential operation".into()
+    } else {
+        message.to_string()
+    })
 }
 
 fn read_http_body_capped(
@@ -207,11 +119,12 @@ pub fn make_log_function(user_data: extism::UserData<PluginHostContext>) -> exti
                 .lock()
                 .map_err(|_| anyhow::anyhow!("log: mutex poisoned"))?;
             let plugin_name = ctx.plugin_name.as_str();
+            let message = safe_plugin_log_message(&req.message, &ctx.credential_slot)?;
             match req.level.as_str() {
-                "error" => tracing::error!(plugin = plugin_name, "{}", req.message),
-                "warn" => tracing::warn!(plugin = plugin_name, "{}", req.message),
-                "debug" => tracing::debug!(plugin = plugin_name, "{}", req.message),
-                _ => tracing::info!(plugin = plugin_name, "{}", req.message),
+                "error" => tracing::error!(plugin = plugin_name, "{}", message),
+                "warn" => tracing::warn!(plugin = plugin_name, "{}", message),
+                "debug" => tracing::debug!(plugin = plugin_name, "{}", message),
+                _ => tracing::info!(plugin = plugin_name, "{}", message),
             }
             Ok(())
         },
@@ -241,7 +154,8 @@ pub fn make_http_request_function(
                 .map_err(|e| anyhow::anyhow!("http_request: invalid URL '{}': {e}", req.url))?;
 
             // F1: SSRF protection — reject internal/loopback destinations
-            let resolved_addrs = validate_url_not_internal(&url)?;
+            let resolved_addrs =
+                validate_public_url(&url).map_err(|e| anyhow::anyhow!("http_request: {e}"))?;
 
             // F6: Minimize mutex scope — prepare the client, then release the lock
             let client = {
@@ -556,6 +470,7 @@ pub fn make_legacy_run_subprocess_function(
 mod tests {
     use super::*;
     use crate::adapters::driven::plugin::capabilities::SharedHostResources;
+    use crate::domain::model::credential::Credential;
 
     #[test]
     fn test_log_request_deserialization() {
@@ -619,13 +534,20 @@ mod tests {
     }
 
     #[test]
-    fn test_ipv4_mapped_ipv6_is_forbidden() {
-        let loopback = "::ffff:127.0.0.1".parse::<IpAddr>().unwrap();
-        let private = "::ffff:10.0.0.1".parse::<IpAddr>().unwrap();
-        let link_local = "::ffff:169.254.169.254".parse::<IpAddr>().unwrap();
+    fn plugin_logs_are_fully_redacted_while_a_credential_is_scoped() {
+        let slot = Arc::new(std::sync::Mutex::new(Some(Credential::new(
+            "alice",
+            "super-secret",
+        ))));
 
-        assert!(is_forbidden_ip(&loopback));
-        assert!(is_forbidden_ip(&private));
-        assert!(is_forbidden_ip(&link_local));
+        let message = safe_plugin_log_message(
+            "Authorization: Bearer super-secret; direct=https://cdn/token",
+            &slot,
+        )
+        .unwrap();
+
+        assert_eq!(message, "plugin log redacted during credential operation");
+        assert!(!message.contains("super-secret"));
+        assert!(!message.contains("cdn/token"));
     }
 }

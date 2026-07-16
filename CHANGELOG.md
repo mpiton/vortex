@@ -9,10 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
-- **MAT-132 transient premium URLs**: failing-first backend and frontend
-  contracts require short-lived direct download capabilities to remain inside
-  the native runtime; IPC and queued download persistence carry the stable
-  source URL plus opaque account id instead.
+- **MAT-132 transient premium URLs**: link analysis, IPC, queued downloads, and
+  resume sidecars now retain only the stable source URL plus opaque account id.
+  The engine resolves the direct capability immediately before connecting,
+  pins its public DNS answers, requires credential-free HTTPS, and rejects
+  redirects/private networks. Sensitive network diagnostics and all plugin
+  logs emitted while a credential is scoped are redacted.
 - **MAT-132 credential boundary hardening**: account extraction now calls the
   exact selected plugin instead of resolving the URL a second time, credential
   slots are isolated per loaded plugin generation across hot reloads, hoster

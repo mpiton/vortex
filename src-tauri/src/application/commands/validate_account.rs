@@ -10,6 +10,7 @@
 use super::ValidationOutcomeDto;
 use crate::application::command_bus::CommandBus;
 use crate::application::error::AppError;
+use crate::application::services::account_state::{apply_status, status_for_plugin_error};
 use crate::domain::error::DomainError;
 use crate::domain::event::DomainEvent;
 use crate::domain::model::account::{Account, AccountStatus};
@@ -30,23 +31,12 @@ pub(super) fn validate_credentials(
             outcome,
             error: None,
         },
-        Err(DomainError::AccountInvalidCredentials) => typed_rejection(
-            AccountStatus::InvalidCredentials,
-            DomainError::AccountInvalidCredentials,
-        ),
-        Err(DomainError::AccountExpired) => {
-            typed_rejection(AccountStatus::Expired, DomainError::AccountExpired)
-        }
-        Err(DomainError::AccountCooldown) => {
-            typed_rejection(AccountStatus::Cooldown, DomainError::AccountCooldown)
-        }
-        Err(DomainError::AccountQuotaExceeded) => typed_rejection(
-            AccountStatus::QuotaExhausted,
-            DomainError::AccountQuotaExceeded,
-        ),
-        Err(error) => AccountValidationAttempt {
-            outcome: ValidationOutcome::rejected(AccountStatus::Error, error.to_string()),
-            error: Some(error),
+        Err(error) => match status_for_plugin_error(&error) {
+            Some(status) => typed_rejection(status, error),
+            None => AccountValidationAttempt {
+                outcome: ValidationOutcome::rejected(AccountStatus::Error, error.to_string()),
+                error: Some(error),
+            },
         },
     }
 }
@@ -63,19 +53,9 @@ pub(super) fn apply_validation(
     outcome: &ValidationOutcome,
     now_ms: u64,
 ) -> Account {
-    const TEMPORARY_FAILURE_TTL_MS: u64 = 60_000;
-
     let mut next = account.clone();
     next.set_last_validated(now_ms);
-    match outcome.status {
-        AccountStatus::QuotaExhausted => {
-            next.mark_exhausted(now_ms.saturating_add(TEMPORARY_FAILURE_TTL_MS));
-        }
-        AccountStatus::Cooldown => {
-            next.mark_cooldown(now_ms.saturating_add(TEMPORARY_FAILURE_TTL_MS));
-        }
-        status => next.set_status(status),
-    }
+    apply_status(&mut next, outcome.status, now_ms);
     if outcome.is_valid() {
         if let Some(traffic_left) = outcome.traffic_left {
             next.set_traffic_left(traffic_left);

@@ -53,6 +53,8 @@ pub(crate) struct SegmentParams {
     /// Per-segment downloaded counter, observable by the engine to estimate
     /// throughput when picking a split target.
     pub segment_progress: Arc<AtomicU64>,
+    /// Suppress request diagnostics that may contain a short-lived capability.
+    pub sensitive_url: bool,
 }
 
 /// Downloads a single byte range and writes it to disk.
@@ -76,6 +78,7 @@ pub(crate) async fn download_segment(params: SegmentParams) -> Result<u64, Segme
         cancel_token,
         shared_downloaded,
         segment_progress,
+        sensitive_url,
     } = params;
     let initial_end = *end_byte_rx.borrow();
     event_bus.publish(DomainEvent::SegmentStarted {
@@ -115,7 +118,11 @@ pub(crate) async fn download_segment(params: SegmentParams) -> Result<u64, Segme
     }
 
     let response = req.send().await.map_err(|e| {
-        let msg = format!("HTTP request failed: {}", format_error_chain(&e));
+        let msg = if sensitive_url {
+            "HTTP request failed for protected source".to_string()
+        } else {
+            format!("HTTP request failed: {}", format_error_chain(&e))
+        };
         event_bus.publish(DomainEvent::SegmentFailed {
             download_id,
             segment_id: segment_index,
@@ -195,7 +202,11 @@ pub(crate) async fn download_segment(params: SegmentParams) -> Result<u64, Segme
                 SegmentError::Http(msg)
             })?
             .map_err(|e| {
-                let msg = format!("chunk read error: {}", format_error_chain(&e));
+                let msg = if sensitive_url {
+                    "chunk read failed for protected source".to_string()
+                } else {
+                    format!("chunk read error: {}", format_error_chain(&e))
+                };
                 event_bus.publish(DomainEvent::SegmentFailed {
                     download_id,
                     segment_id: segment_index,
@@ -426,6 +437,7 @@ mod tests {
             cancel_token: cancel,
             shared_downloaded: Arc::new(AtomicU64::new(0)),
             segment_progress: Arc::new(AtomicU64::new(0)),
+            sensitive_url: false,
         })
         .await;
 
@@ -479,6 +491,7 @@ mod tests {
             cancel_token: cancel,
             shared_downloaded: Arc::new(AtomicU64::new(0)),
             segment_progress: Arc::new(AtomicU64::new(0)),
+            sensitive_url: false,
         })
         .await;
 
@@ -532,6 +545,7 @@ mod tests {
             cancel_token: cancel,
             shared_downloaded: Arc::new(AtomicU64::new(0)),
             segment_progress: Arc::new(AtomicU64::new(0)),
+            sensitive_url: false,
         })
         .await;
 
@@ -577,6 +591,7 @@ mod tests {
             cancel_token: cancel,
             shared_downloaded: Arc::new(AtomicU64::new(0)),
             segment_progress: Arc::new(AtomicU64::new(0)),
+            sensitive_url: false,
         })
         .await;
 
@@ -639,6 +654,7 @@ mod tests {
             cancel_token: cancel,
             shared_downloaded: Arc::new(AtomicU64::new(0)),
             segment_progress: Arc::new(AtomicU64::new(0)),
+            sensitive_url: false,
         })
         .await;
 
@@ -694,6 +710,7 @@ mod tests {
             cancel_token: cancel,
             shared_downloaded: Arc::new(AtomicU64::new(0)),
             segment_progress: Arc::new(AtomicU64::new(0)),
+            sensitive_url: false,
         })
         .await;
 
@@ -777,6 +794,7 @@ mod tests {
             cancel_token: cancel,
             shared_downloaded: Arc::new(AtomicU64::new(0)),
             segment_progress: segment_progress.clone(),
+            sensitive_url: false,
         })
         .await;
 
@@ -831,6 +849,7 @@ mod tests {
             cancel_token: cancel,
             shared_downloaded: shared_downloaded.clone(),
             segment_progress: Arc::new(AtomicU64::new(0)),
+            sensitive_url: false,
         })
         .await;
 

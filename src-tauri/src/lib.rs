@@ -9,8 +9,8 @@ use tauri::Manager;
 use domain::ports::driven::{
     AccountCredentialStore, AccountRepository, ArchiveExtractor, ClipboardObserver, Clock,
     ConfigStore, CredentialStore, DownloadEngine, DownloadReadRepository, DownloadRepository,
-    EventBus, FileStorage, HistoryRepository, HttpClient, PassphraseCodec, PluginLoader,
-    PluginReadRepository, StatsRepository,
+    DownloadSourceResolver, EventBus, FileStorage, HistoryRepository, HttpClient, PassphraseCodec,
+    PluginLoader, PluginReadRepository, StatsRepository,
 };
 
 // Public API — concrete types for app wiring (main.rs, Tauri setup, integration tests)
@@ -255,6 +255,18 @@ pub fn run() {
             );
             let account_validator =
                 Arc::new(PluginAccountValidator::new(plugin_loader.clone()));
+            let account_operation_locks = Arc::new(
+                application::services::account_operation_locks::AccountOperationLocks::default(),
+            );
+            let premium_source_resolver: Arc<dyn DownloadSourceResolver> = Arc::new(
+                application::services::premium_source_resolver::PremiumSourceResolver::new(
+                    account_repo.clone(),
+                    account_credential_store.clone(),
+                    plugin_loader.clone(),
+                    account_clock.clone(),
+                    account_operation_locks.clone(),
+                ),
+            );
 
             // ── Download engine ─────────────────────────────────────
             let initial_engine_config = config_store
@@ -267,6 +279,7 @@ pub fn run() {
                     event_bus.clone(),
                     4,
                 )
+                .with_source_resolver(premium_source_resolver)
                 .with_dynamic_split(
                     initial_engine_config.dynamic_split_enabled,
                     initial_engine_config.dynamic_split_min_remaining_mb,
@@ -401,6 +414,7 @@ pub fn run() {
                 .with_account_selector(account_selector)
                 .with_account_rotator(account_rotator)
                 .with_account_clock(account_clock)
+                .with_account_operation_locks(account_operation_locks)
                 .with_package_repo(package_repo.clone())
                 .with_passphrase_codec(passphrase_codec),
             );

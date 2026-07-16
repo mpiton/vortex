@@ -9,6 +9,7 @@ use uuid::Uuid;
 use crate::application::command_bus::CommandBus;
 use crate::application::error::AppError;
 use crate::application::services::account_rotator::NextAccountOutcome;
+use crate::application::services::account_state::{apply_status, status_for_plugin_error};
 use crate::domain::error::DomainError;
 use crate::domain::model::account::AccountStatus;
 use crate::domain::model::credential::Credential;
@@ -255,17 +256,15 @@ impl CommandBus {
                         }
                         account.set_status(AccountStatus::Valid);
                         repo.save(&account)?;
-                        return Ok(into_hoster_resolution(link, Some(account.id().as_str())));
+                        return Ok(into_hoster_resolution(
+                            link,
+                            Some(account.id().as_str()),
+                            url,
+                        ));
                     }
                     Err(error) => {
-                        let status = match error {
-                            DomainError::AccountInvalidCredentials => {
-                                AccountStatus::InvalidCredentials
-                            }
-                            DomainError::AccountExpired => AccountStatus::Expired,
-                            DomainError::AccountCooldown => AccountStatus::Cooldown,
-                            DomainError::AccountQuotaExceeded => AccountStatus::QuotaExhausted,
-                            other => return Err(other.into()),
+                        let Some(status) = status_for_plugin_error(&error) else {
+                            return Err(error.into());
                         };
                         if status.is_temporary() {
                             last_temporary_error = Some(error.clone());
@@ -274,19 +273,8 @@ impl CommandBus {
                             && let Some(rotator) = self.account_rotator()
                         {
                             rotator.mark_exhausted(account.id(), service_name, 60)?;
-                        } else if matches!(
-                            status,
-                            AccountStatus::QuotaExhausted | AccountStatus::Cooldown
-                        ) {
-                            let until_ms = self.account_now_ms()?.saturating_add(60_000);
-                            if status == AccountStatus::Cooldown {
-                                account.mark_cooldown(until_ms);
-                            } else {
-                                account.mark_exhausted(until_ms);
-                            }
-                            repo.save(&account)?;
                         } else {
-                            account.set_status(status);
+                            apply_status(&mut account, status, self.account_now_ms()?);
                             repo.save(&account)?;
                         }
                     }
@@ -300,7 +288,7 @@ impl CommandBus {
         let link = self
             .plugin_loader()
             .extract_hoster_link(service_name, url, None)?;
-        Ok(into_hoster_resolution(link, None))
+        Ok(into_hoster_resolution(link, None, url))
     }
 
     fn next_hoster_account(&self, service_name: &str) -> Result<NextAccountOutcome, AppError> {
@@ -315,10 +303,14 @@ impl CommandBus {
     }
 }
 
-fn into_hoster_resolution(link: ExtractedHosterLink, account_id: Option<&str>) -> HosterResolution {
+fn into_hoster_resolution(
+    link: ExtractedHosterLink,
+    account_id: Option<&str>,
+    stable_url: &str,
+) -> HosterResolution {
     let selected_account = link.direct_url.as_ref().and(account_id).map(str::to_string);
     HosterResolution {
-        resolved_url: link.direct_url.unwrap_or(link.source_url),
+        resolved_url: stable_url.to_string(),
         filename: link.filename,
         size_bytes: link.size_bytes,
         account_id: selected_account,

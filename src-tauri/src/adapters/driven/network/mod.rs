@@ -1,12 +1,14 @@
 mod checksum;
 mod download_engine;
 mod reqwest_client;
+mod safe_url;
 mod segment_worker;
 mod wait_manager;
 
 pub use checksum::StreamingChecksumComputer;
 pub use download_engine::SegmentedDownloadEngine;
 pub use reqwest_client::ReqwestHttpClient;
+pub(crate) use safe_url::{restricted_download_client, validate_public_url};
 pub use wait_manager::WaitManager;
 
 pub(super) fn format_error_chain(err: &(dyn std::error::Error + 'static)) -> String {
