@@ -4,15 +4,17 @@
 use std::sync::Arc;
 
 use vortex_lib::domain::ports::driven::{
-    ArchiveExtractor, ClipboardObserver, ConfigStore, CredentialStore, DownloadEngine,
-    DownloadReadRepository, DownloadRepository, EventBus, FileStorage, HistoryRepository,
-    HttpClient, PluginLoader, PluginReadRepository, StatsRepository,
+    AccountCredentialStore, AccountRepository, ArchiveExtractor, ClipboardObserver, Clock,
+    ConfigStore, CredentialStore, DownloadEngine, DownloadReadRepository, DownloadRepository,
+    EventBus, FileStorage, HistoryRepository, HttpClient, PluginLoader, PluginReadRepository,
+    StatsRepository,
 };
 use vortex_lib::{
-    CommandBus, ExtismPluginLoader, ExtractionConfig, FsFileStorage, NoopCredentialStore, QueryBus,
-    ReqwestHttpClient, SegmentedDownloadEngine, SharedHostResources, SqliteDownloadReadRepo,
-    SqliteDownloadRepo, SqliteHistoryRepo, SqliteStatsRepo, TokioEventBus, TomlConfigStore,
-    VortexArchiveExtractor, connection,
+    AccountRotator, AccountSelector, CommandBus, ExtismPluginLoader, ExtractionConfig,
+    FsFileStorage, KeyringAccountStore, NoopCredentialStore, PluginAccountValidator, QueryBus,
+    ReqwestHttpClient, SegmentedDownloadEngine, SharedHostResources, SqliteAccountRepo,
+    SqliteDownloadReadRepo, SqliteDownloadRepo, SqliteHistoryRepo, SqliteStatsRepo, SystemClock,
+    TokioEventBus, TomlConfigStore, VortexArchiveExtractor, connection,
 };
 
 /// Verifies that all driven adapters satisfy their port traits and that
@@ -55,7 +57,9 @@ fn test_appstate_wiring_with_in_memory_db() {
     let download_read_repo: Arc<dyn DownloadReadRepository> =
         Arc::new(SqliteDownloadReadRepo::new(db.clone()));
     let history_repo: Arc<dyn HistoryRepository> = Arc::new(SqliteHistoryRepo::new(db.clone()));
-    let stats_repo: Arc<dyn StatsRepository> = Arc::new(SqliteStatsRepo::new(db));
+    let stats_repo: Arc<dyn StatsRepository> = Arc::new(SqliteStatsRepo::new(db.clone()));
+    let account_repo: Arc<dyn AccountRepository> = Arc::new(SqliteAccountRepo::new(db.clone()));
+    let account_credential_store: Arc<dyn AccountCredentialStore> = Arc::new(KeyringAccountStore);
 
     // Plugin system
     let plugins_dir = tempfile::tempdir().expect("plugins dir");
@@ -66,6 +70,19 @@ fn test_appstate_wiring_with_in_memory_db() {
     );
     let plugin_read_repo: Arc<dyn PluginReadRepository> = plugin_loader_impl.registry().clone();
     let plugin_loader: Arc<dyn PluginLoader> = plugin_loader_impl;
+    let account_clock: Arc<dyn Clock> = Arc::new(SystemClock);
+    let account_selector = AccountSelector::new(
+        account_repo.clone(),
+        event_bus.clone(),
+        account_clock.clone(),
+    );
+    let account_rotator = AccountRotator::new(
+        account_selector.clone(),
+        account_repo.clone(),
+        event_bus.clone(),
+        account_clock,
+    );
+    let account_validator = Arc::new(PluginAccountValidator::new(plugin_loader.clone()));
 
     // Download engine
     let download_engine: Arc<dyn DownloadEngine> = Arc::new(SegmentedDownloadEngine::new(
@@ -79,34 +96,50 @@ fn test_appstate_wiring_with_in_memory_db() {
     let clipboard_observer: Arc<dyn ClipboardObserver> = Arc::new(StubClipboardObserver);
 
     // CQRS buses
-    let command_bus = Arc::new(CommandBus::new(
-        download_repo,
-        download_engine,
-        event_bus,
-        file_storage,
-        http_client,
-        plugin_loader,
-        config_store,
-        credential_store,
-        clipboard_observer,
-        archive_extractor.clone(),
-        history_repo.clone(),
-        None,
-    ));
+    let command_bus = Arc::new(
+        CommandBus::new(
+            download_repo,
+            download_engine,
+            event_bus,
+            file_storage,
+            http_client,
+            plugin_loader,
+            config_store,
+            credential_store,
+            clipboard_observer,
+            archive_extractor.clone(),
+            history_repo.clone(),
+            None,
+        )
+        .with_account_repo(account_repo.clone())
+        .with_account_credential_store(account_credential_store)
+        .with_account_validator(account_validator)
+        .with_account_selector(account_selector)
+        .with_account_rotator(account_rotator),
+    );
 
-    let query_bus = Arc::new(QueryBus::new(
-        download_read_repo,
-        history_repo,
-        stats_repo,
-        plugin_read_repo,
-        archive_extractor,
-    ));
+    let query_bus = Arc::new(
+        QueryBus::new(
+            download_read_repo,
+            history_repo,
+            stats_repo,
+            plugin_read_repo,
+            archive_extractor,
+        )
+        .with_account_repo(account_repo),
+    );
 
     // Verify command bus is wired (exercise a read through it)
     let _config = command_bus
         .config_store()
         .get_config()
         .expect("config load");
+    assert!(command_bus.account_repo().is_some());
+    assert!(command_bus.account_credential_store().is_some());
+    assert!(command_bus.account_validator().is_some());
+    assert!(command_bus.account_selector().is_some());
+    assert!(command_bus.account_rotator().is_some());
+    assert!(query_bus.account_repo().is_some());
 
     // Verify query bus can execute a read query (empty DB → empty results)
     let downloads = query_bus

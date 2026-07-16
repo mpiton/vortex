@@ -65,8 +65,8 @@ pub use application::read_models::{
     plugin_view::PluginViewDto,
     stats_view::{DailyVolumeDto, HostStatsDto, ModuleStatsDto, StatsViewDto},
 };
-pub use application::services::QueueManager;
 pub use application::services::backfill_history_for_completed_downloads;
+pub use application::services::{AccountRotator, AccountSelector, QueueManager};
 pub use domain::model::ExtractionConfig;
 
 pub use adapters::driving::tauri_ipc::{
@@ -241,6 +241,20 @@ pub fn run() {
             let plugin_read_repo: Arc<dyn PluginReadRepository> =
                 plugin_loader_impl.registry().clone();
             let plugin_loader: Arc<dyn PluginLoader> = plugin_loader_impl.clone();
+            let account_clock: Arc<dyn Clock> = Arc::new(SystemClock);
+            let account_selector = AccountSelector::new(
+                account_repo.clone(),
+                event_bus.clone(),
+                account_clock.clone(),
+            );
+            let account_rotator = AccountRotator::new(
+                account_selector.clone(),
+                account_repo.clone(),
+                event_bus.clone(),
+                account_clock,
+            );
+            let account_validator =
+                Arc::new(PluginAccountValidator::new(plugin_loader.clone()));
 
             // ── Download engine ─────────────────────────────────────
             let initial_engine_config = config_store
@@ -383,6 +397,9 @@ pub fn run() {
                 .with_plugin_config_store(plugin_config_store.clone())
                 .with_account_repo(account_repo.clone())
                 .with_account_credential_store(account_credential_store)
+                .with_account_validator(account_validator)
+                .with_account_selector(account_selector)
+                .with_account_rotator(account_rotator)
                 .with_package_repo(package_repo.clone())
                 .with_passphrase_codec(passphrase_codec),
             );
