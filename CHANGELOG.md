@@ -47,9 +47,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **MAT-132 account-state regression coverage**: added failing-first tests for
-  stale subscription expiry removal, bounded temporary validation states, and
-  exhausted premium accounts never silently falling back to anonymous mode.
+- **MAT-132 account-state hardening**: validation now derives validity from its
+  typed status, clears stale subscription expiries, bounds temporary failures,
+  and invalidates the rotator cache on recovery. Per-account async locks prevent
+  slow plugin calls from undoing deletes or edits; password rotation writes the
+  keyring first and restores the prior secret on SQLite failure. Cooldown checks
+  use an injected clock, and exhausted premium accounts no longer fall back to
+  anonymous extraction.
 - **Lot 1 install race fixes (MAT-131)**: adaptive downloads atomically reserve
   unique destination files before copying, and failed Store installs clean
   their staging directory before propagating loader or task errors.

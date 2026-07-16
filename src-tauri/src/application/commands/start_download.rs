@@ -25,7 +25,8 @@ impl CommandBus {
         cmd: super::StartDownloadCommand,
     ) -> Result<DownloadId, AppError> {
         let url = Url::new(&cmd.url)?;
-        self.validate_download_account(cmd.module_name.as_deref(), cmd.account_id.as_ref())?;
+        self.validate_download_account(cmd.module_name.as_deref(), cmd.account_id.as_ref())
+            .await?;
 
         // Use the pre-computed filename when available (e.g. set by media plugins
         // that already know the video title). Otherwise probe via HEAD or fall back
@@ -94,7 +95,7 @@ impl CommandBus {
         Ok(id)
     }
 
-    fn validate_download_account(
+    async fn validate_download_account(
         &self,
         module_name: Option<&str>,
         account_id: Option<&AccountId>,
@@ -113,6 +114,8 @@ impl CommandBus {
         let store = self.account_credential_store().ok_or_else(|| {
             AppError::Validation("account credential store not configured".into())
         })?;
+        let operation_lock = self.account_operation_lock(account_id)?;
+        let _operation_guard = operation_lock.lock().await;
         let mut account = repo.find_by_id(account_id)?.ok_or_else(|| {
             AppError::NotFound(format!("account {} not found", account_id.as_str()))
         })?;
@@ -130,7 +133,7 @@ impl CommandBus {
                 account_id.as_str()
             )));
         }
-        if !account.is_selectable(current_time_ms()) {
+        if !account.is_selectable(self.account_now_ms()?) {
             return Err(AppError::Validation(format!(
                 "account {} is not available",
                 account_id.as_str()
@@ -138,13 +141,6 @@ impl CommandBus {
         }
         Ok(())
     }
-}
-
-fn current_time_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
 }
 
 /// Generate a restart-safe, collision-resistant download ID that fits
@@ -224,7 +220,15 @@ mod tests {
         FakeAccountCredentialStore, InMemoryAccountRepo,
     };
     use crate::domain::model::account::{Account, AccountId, AccountStatus, AccountType};
-    use crate::domain::ports::driven::{AccountCredentialStore, AccountRepository};
+    use crate::domain::ports::driven::{AccountCredentialStore, AccountRepository, Clock};
+
+    struct FixedAccountClock;
+
+    impl Clock for FixedAccountClock {
+        fn now_unix_secs(&self) -> u64 {
+            1
+        }
+    }
 
     struct MockDownloadRepo {
         store: Mutex<HashMap<u64, Download>>,
@@ -541,7 +545,8 @@ mod tests {
         credentials.store_password(&account_id, "api-key").unwrap();
         let bus = bus
             .with_account_repo(account_repo)
-            .with_account_credential_store(credentials);
+            .with_account_credential_store(credentials)
+            .with_account_clock(Arc::new(FixedAccountClock));
 
         let id = bus
             .handle_start_download(StartDownloadCommand {
@@ -598,6 +603,48 @@ mod tests {
             .expect_err("missing credential must reject association");
 
         assert!(matches!(error, AppError::NotFound(_)));
+    }
+
+    #[tokio::test]
+    async fn test_start_download_uses_injected_clock_for_account_cooldown() {
+        let (bus, _, _) = make_command_bus(Arc::new(MockHttpClient::failing()));
+        let account_repo = Arc::new(InMemoryAccountRepo::new());
+        let credentials = Arc::new(FakeAccountCredentialStore::new());
+        let account_id = AccountId::new("account-1");
+        let account = Account::reconstruct_with_status(
+            account_id.clone(),
+            "vortex-mod-1fichier".into(),
+            "alice".into(),
+            AccountType::Premium,
+            true,
+            None,
+            None,
+            Some(u64::MAX),
+            Some(1),
+            0,
+            AccountStatus::Cooldown,
+            Some(2_000),
+        );
+        account_repo.save(&account).unwrap();
+        credentials.store_password(&account_id, "api-key").unwrap();
+        let bus = bus
+            .with_account_repo(account_repo)
+            .with_account_credential_store(credentials)
+            .with_account_clock(Arc::new(FixedAccountClock));
+
+        let error = bus
+            .handle_start_download(StartDownloadCommand {
+                url: "https://download.1fichier.com/token/file.zip".into(),
+                destination: Some(PathBuf::from("/tmp")),
+                filename: Some("file.zip".into()),
+                source_hostname_override: Some("1fichier.com".into()),
+                module_name: Some("vortex-mod-1fichier".into()),
+                account_id: Some(account_id),
+            })
+            .await
+            .expect_err("injected clock keeps cooldown active");
+
+        assert!(matches!(error, AppError::Validation(_)));
     }
 
     #[tokio::test]

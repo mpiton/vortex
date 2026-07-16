@@ -484,7 +484,7 @@ pub struct ValidationOutcomeDto {
 impl From<crate::domain::ports::driven::ValidationOutcome> for ValidationOutcomeDto {
     fn from(o: crate::domain::ports::driven::ValidationOutcome) -> Self {
         Self {
-            valid: o.valid,
+            valid: o.is_valid(),
             latency_ms: o.latency_ms,
             traffic_left: o.traffic_left,
             traffic_total: o.traffic_total,

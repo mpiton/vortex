@@ -27,6 +27,8 @@ impl CommandBus {
         let store = self.account_credential_store().ok_or_else(|| {
             AppError::Validation("account credential store not configured".into())
         })?;
+        let operation_lock = self.account_operation_lock(&cmd.id)?;
+        let _operation_guard = operation_lock.lock().await;
 
         repo.delete(&cmd.id)?;
         if let Err(e) = store.delete_password(&cmd.id) {

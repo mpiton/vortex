@@ -24,8 +24,9 @@ use crate::domain::model::package::{Package, PackageId};
 use crate::domain::model::plugin::{PluginInfo, PluginManifest};
 use crate::domain::ports::driven::{
     AccountCredentialStore, AccountRepository, AccountValidator, ArchiveExtractor,
-    ClipboardObserver, ConfigStore, CredentialStore, DownloadEngine, DownloadRepository, EventBus,
-    FileStorage, HttpClient, PackageRepository, PassphraseCodec, PluginLoader, ValidationOutcome,
+    ClipboardObserver, Clock, ConfigStore, CredentialStore, DownloadEngine, DownloadRepository,
+    EventBus, FileStorage, HttpClient, PackageRepository, PassphraseCodec, PluginLoader,
+    ValidationOutcome,
 };
 
 // ── In-memory account repository ─────────────────────────────────────
@@ -199,6 +200,14 @@ impl AccountCredentialStore for FakeAccountCredentialStore {
 pub(crate) struct FakeAccountValidator {
     behavior: Mutex<HashMap<String, ValidatorBehavior>>,
     calls: Mutex<Vec<(String, String, String)>>,
+}
+
+struct FixedAccountClock;
+
+impl Clock for FixedAccountClock {
+    fn now_unix_secs(&self) -> u64 {
+        1_700_000_000
+    }
 }
 
 #[derive(Clone)]
@@ -802,7 +811,8 @@ pub(crate) fn build_account_bus_with_plugin_loader(
         None,
     )
     .with_account_repo(account_repo)
-    .with_account_credential_store(credential_store);
+    .with_account_credential_store(credential_store)
+    .with_account_clock(Arc::new(FixedAccountClock));
 
     if let Some(v) = validator {
         bus = bus.with_account_validator(v);

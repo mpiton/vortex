@@ -122,7 +122,7 @@ mod tests {
             .validate("vortex-mod-1fichier", "alice", "bad-key")
             .expect("typed rejection is an outcome");
 
-        assert!(!outcome.valid);
+        assert!(!outcome.is_valid());
         assert_eq!(outcome.status, AccountStatus::InvalidCredentials);
         assert_eq!(outcome.latency_ms, Some(42));
     }

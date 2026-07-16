@@ -17,7 +17,6 @@ use crate::domain::model::account::AccountStatus;
 /// explain *why* (wrong password, expired, rate-limited, ...).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ValidationOutcome {
-    pub valid: bool,
     pub status: AccountStatus,
     pub latency_ms: Option<u64>,
     pub traffic_left: Option<u64>,
@@ -29,7 +28,6 @@ pub struct ValidationOutcome {
 impl ValidationOutcome {
     pub fn ok() -> Self {
         Self {
-            valid: true,
             status: AccountStatus::Valid,
             ..Self::default()
         }
@@ -37,11 +35,14 @@ impl ValidationOutcome {
 
     pub fn rejected(status: AccountStatus, error_message: impl Into<String>) -> Self {
         Self {
-            valid: false,
             status,
             error_message: Some(error_message.into()),
             ..Self::default()
         }
+    }
+
+    pub fn is_valid(&self) -> bool {
+        self.status == AccountStatus::Valid
     }
 }
 
@@ -68,7 +69,7 @@ mod tests {
     #[test]
     fn test_validation_outcome_ok_marks_valid_with_no_error() {
         let out = ValidationOutcome::ok();
-        assert!(out.valid);
+        assert!(out.is_valid());
         assert_eq!(out.status, AccountStatus::Valid);
         assert!(out.error_message.is_none());
         assert!(out.latency_ms.is_none());
@@ -78,7 +79,7 @@ mod tests {
     #[test]
     fn test_validation_outcome_rejected_records_message_and_invalid_flag() {
         let out = ValidationOutcome::rejected(AccountStatus::InvalidCredentials, "wrong password");
-        assert!(!out.valid);
+        assert!(!out.is_valid());
         assert_eq!(out.status, AccountStatus::InvalidCredentials);
         assert_eq!(out.error_message.as_deref(), Some("wrong password"));
     }
@@ -86,7 +87,7 @@ mod tests {
     #[test]
     fn test_validation_outcome_default_is_invalid_and_empty() {
         let out = ValidationOutcome::default();
-        assert!(!out.valid);
+        assert!(!out.is_valid());
         assert!(out.latency_ms.is_none());
         assert!(out.error_message.is_none());
     }

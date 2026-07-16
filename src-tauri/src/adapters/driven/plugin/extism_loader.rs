@@ -823,7 +823,6 @@ fn parse_validation_outcome(output: &str) -> Result<ValidationOutcome, DomainErr
         }
     };
     Ok(ValidationOutcome {
-        valid: parsed.valid,
         status,
         latency_ms: parsed.latency_ms,
         traffic_left: parsed.traffic_left,
@@ -893,7 +892,7 @@ mod tests {
     #[test]
     fn validation_response_defaults_success_to_valid_status() {
         let outcome = parse_validation_outcome(r#"{"valid":true}"#).expect("valid outcome");
-        assert!(outcome.valid);
+        assert!(outcome.is_valid());
         assert_eq!(outcome.status, AccountStatus::Valid);
     }
 

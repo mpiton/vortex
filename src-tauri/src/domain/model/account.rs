@@ -68,6 +68,12 @@ pub enum AccountStatus {
     Error,
 }
 
+impl AccountStatus {
+    pub fn is_temporary(self) -> bool {
+        matches!(self, Self::QuotaExhausted | Self::Cooldown)
+    }
+}
+
 impl fmt::Display for AccountStatus {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let value = match self {
@@ -290,16 +296,17 @@ impl Account {
         self.valid_until = Some(timestamp);
     }
 
+    pub fn replace_valid_until(&mut self, timestamp: Option<u64>) {
+        self.valid_until = timestamp;
+    }
+
     pub fn set_last_validated(&mut self, timestamp: u64) {
         self.last_validated = Some(timestamp);
     }
 
     pub fn set_status(&mut self, status: AccountStatus) {
         self.status = status;
-        if !matches!(
-            status,
-            AccountStatus::QuotaExhausted | AccountStatus::Cooldown
-        ) {
+        if !status.is_temporary() {
             self.exhausted_until = None;
         }
     }
@@ -308,11 +315,7 @@ impl Account {
         self.status
     }
 
-    pub fn mark_unavailable(&mut self, status: AccountStatus, until_ms: u64) {
-        debug_assert!(matches!(
-            status,
-            AccountStatus::QuotaExhausted | AccountStatus::Cooldown
-        ));
+    fn mark_temporarily_unavailable(&mut self, status: AccountStatus, until_ms: u64) {
         self.status = status;
         self.exhausted_until = Some(until_ms);
     }
@@ -344,17 +347,19 @@ impl Account {
     /// Mark this account as quota-exhausted until `until_ms` (Unix epoch
     /// ms). Adapters persist the status and deadline with the aggregate.
     pub fn mark_exhausted(&mut self, until_ms: u64) {
-        self.mark_unavailable(AccountStatus::QuotaExhausted, until_ms);
+        self.mark_temporarily_unavailable(AccountStatus::QuotaExhausted, until_ms);
+    }
+
+    /// Mark this account as rate-limited until `until_ms` (Unix epoch ms).
+    pub fn mark_cooldown(&mut self, until_ms: u64) {
+        self.mark_temporarily_unavailable(AccountStatus::Cooldown, until_ms);
     }
 
     /// Drop any pending quota-exhaustion marker, regardless of the
     /// remaining cooldown.
     pub fn clear_exhausted(&mut self) {
         self.exhausted_until = None;
-        if matches!(
-            self.status,
-            AccountStatus::QuotaExhausted | AccountStatus::Cooldown
-        ) {
+        if self.status.is_temporary() {
             self.status = AccountStatus::Valid;
         }
     }
@@ -666,11 +671,11 @@ mod tests {
         account.set_status(AccountStatus::InvalidCredentials);
         assert!(!account.is_selectable(1_000));
 
-        account.mark_unavailable(AccountStatus::Cooldown, 2_000);
+        account.mark_cooldown(2_000);
         assert!(!account.is_selectable(1_999));
         assert!(account.is_selectable(2_000));
 
-        account.mark_unavailable(AccountStatus::QuotaExhausted, 3_000);
+        account.mark_exhausted(3_000);
         assert!(!account.is_selectable(2_999));
         assert!(account.is_selectable(3_000));
     }

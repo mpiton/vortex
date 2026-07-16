@@ -583,7 +583,7 @@ mod tests {
             Some(now_ms),
             true,
         );
-        cooling.mark_unavailable(AccountStatus::Cooldown, now_ms + 30_000);
+        cooling.mark_cooldown(now_ms + 30_000);
 
         let (selector, _bus) = build_selector(vec![cooling], now_secs);
 

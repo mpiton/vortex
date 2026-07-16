@@ -10,7 +10,7 @@ use crate::application::command_bus::CommandBus;
 use crate::application::error::AppError;
 use crate::application::services::account_rotator::NextAccountOutcome;
 use crate::domain::error::DomainError;
-use crate::domain::model::account::{Account, AccountStatus};
+use crate::domain::model::account::AccountStatus;
 use crate::domain::model::credential::Credential;
 use crate::domain::model::http::HttpResponse;
 use crate::domain::model::plugin::PluginCategory;
@@ -111,7 +111,7 @@ impl CommandBus {
                     if matches!(info.category(), PluginCategory::Hoster | PluginCategory::Debrid)
             );
             if is_hoster {
-                match self.resolve_hoster_link(url, &module_name) {
+                match self.resolve_hoster_link(url, &module_name).await {
                     Ok(resolved) => results.push(ResolvedLinkDto {
                         id,
                         original_url: url.clone(),
@@ -207,17 +207,34 @@ impl CommandBus {
         Ok(results)
     }
 
-    fn resolve_hoster_link(
+    async fn resolve_hoster_link(
         &self,
         url: &str,
         service_name: &str,
     ) -> Result<HosterResolution, AppError> {
         if let (Some(repo), Some(store)) = (self.account_repo(), self.account_credential_store()) {
             let max_attempts = repo.list_by_service(service_name)?.len();
+            let mut last_temporary_error = None;
             for _ in 0..max_attempts {
-                let Some(mut account) = self.next_hoster_account(service_name)? else {
-                    break;
+                let selected = match self.next_hoster_account(service_name)? {
+                    NextAccountOutcome::Picked(account) => account,
+                    NextAccountOutcome::NoneAvailable => break,
+                    NextAccountOutcome::AllExhausted { .. } => {
+                        return Err(last_temporary_error
+                            .unwrap_or(DomainError::AccountQuotaExceeded)
+                            .into());
+                    }
                 };
+                let operation_lock = self.account_operation_lock(selected.id())?;
+                let _operation_guard = operation_lock.lock().await;
+                let Some(mut account) = repo.find_by_id(selected.id())? else {
+                    continue;
+                };
+                if account.service_name() != service_name
+                    || !account.is_selectable(self.account_now_ms()?)
+                {
+                    continue;
+                }
                 let Some(password) = store.get_password(account.id())? else {
                     account.set_status(AccountStatus::MissingCredential);
                     repo.save(&account)?;
@@ -250,6 +267,9 @@ impl CommandBus {
                             DomainError::AccountQuotaExceeded => AccountStatus::QuotaExhausted,
                             other => return Err(other.into()),
                         };
+                        if status.is_temporary() {
+                            last_temporary_error = Some(error.clone());
+                        }
                         if status == AccountStatus::QuotaExhausted
                             && let Some(rotator) = self.account_rotator()
                         {
@@ -258,8 +278,12 @@ impl CommandBus {
                             status,
                             AccountStatus::QuotaExhausted | AccountStatus::Cooldown
                         ) {
-                            account
-                                .mark_unavailable(status, current_time_ms().saturating_add(60_000));
+                            let until_ms = self.account_now_ms()?.saturating_add(60_000);
+                            if status == AccountStatus::Cooldown {
+                                account.mark_cooldown(until_ms);
+                            } else {
+                                account.mark_exhausted(until_ms);
+                            }
                             repo.save(&account)?;
                         } else {
                             account.set_status(status);
@@ -267,6 +291,9 @@ impl CommandBus {
                         }
                     }
                 }
+            }
+            if let Some(error) = last_temporary_error {
+                return Err(error.into());
             }
         }
 
@@ -276,15 +303,15 @@ impl CommandBus {
         Ok(into_hoster_resolution(link, None))
     }
 
-    fn next_hoster_account(&self, service_name: &str) -> Result<Option<Account>, AppError> {
+    fn next_hoster_account(&self, service_name: &str) -> Result<NextAccountOutcome, AppError> {
         let Some(rotator) = self.account_rotator() else {
-            return self.resolve_account_for(service_name);
+            return Ok(match self.resolve_account_for(service_name)? {
+                Some(account) => NextAccountOutcome::Picked(account),
+                None => NextAccountOutcome::NoneAvailable,
+            });
         };
         let strategy = self.config_store().get_config()?.account_selection_strategy;
-        match rotator.next_account(service_name, strategy)? {
-            NextAccountOutcome::Picked(account) => Ok(Some(account)),
-            NextAccountOutcome::NoneAvailable | NextAccountOutcome::AllExhausted { .. } => Ok(None),
-        }
+        rotator.next_account(service_name, strategy)
     }
 }
 
@@ -296,13 +323,6 @@ fn into_hoster_resolution(link: ExtractedHosterLink, account_id: Option<&str>) -
         size_bytes: link.size_bytes,
         account_id: selected_account,
     }
-}
-
-fn current_time_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
 }
 
 fn sanitize_hoster_error(error: &AppError) -> String {

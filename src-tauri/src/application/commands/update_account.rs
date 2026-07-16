@@ -15,7 +15,9 @@ use crate::domain::event::DomainEvent;
 use crate::domain::model::account::Account;
 use crate::domain::ports::driven::ValidationOutcome;
 
-use super::validate_account::{apply_validation, publish_validation, validate_credentials};
+use super::validate_account::{
+    apply_validation, publish_validation, sync_validation_availability, validate_credentials,
+};
 
 impl CommandBus {
     pub async fn handle_update_account(
@@ -28,6 +30,8 @@ impl CommandBus {
         let store = self.account_credential_store().ok_or_else(|| {
             AppError::Validation("account credential store not configured".into())
         })?;
+        let operation_lock = self.account_operation_lock(&cmd.id)?;
+        let _operation_guard = operation_lock.lock().await;
 
         let account = repo
             .find_by_id(&cmd.id)?
@@ -99,39 +103,29 @@ impl CommandBus {
             None
         };
 
-        repo.save(&next)?;
-
-        // Apply password rotation after the row is persisted. If the
-        // keyring write fails we roll the row back to the original so
-        // callers never observe a row that says "password rotated" while
-        // the keyring still holds the previous secret.
-        if let Some(pw) = cmd.patch.password
-            && let Err(e) = store.store_password(&cmd.id, &pw)
+        if let Some(password) = cmd.patch.password.as_deref()
+            && let Err(error) = store.store_password(&cmd.id, password)
         {
-            if let Err(rollback_err) = repo.save(&account) {
+            restore_password(store, &cmd.id, previous_password.as_deref(), &error);
+            return Err(error.into());
+        }
+
+        if let Err(error) = repo.save(&next) {
+            if cmd.patch.password.is_some() {
+                restore_password(store, &cmd.id, previous_password.as_deref(), &error);
+            }
+            if let Err(rollback_error) = repo.save(&account) {
                 tracing::warn!(
                     account_id = %cmd.id.as_str(),
-                    keyring_error = %e,
-                    rollback_error = %rollback_err,
-                    "keyring rotation failed and row rollback also failed; row metadata diverges from keyring"
+                    save_error = %error,
+                    rollback_error = %rollback_error,
+                    "account row save failed and rollback also failed"
                 );
             }
-            // Restore the previous password (or wipe the entry if the
-            // account had none) so a partially-completed write doesn't
-            // leave a half-rotated credential in the keyring.
-            let restore_result = match previous_password {
-                Some(prev) => store.store_password(&cmd.id, &prev),
-                None => store.delete_password(&cmd.id),
-            };
-            if let Err(restore_err) = restore_result {
-                tracing::warn!(
-                    account_id = %cmd.id.as_str(),
-                    keyring_error = %e,
-                    restore_error = %restore_err,
-                    "keyring rotation failed and the password-restore step also failed; keyring may hold a partially rotated secret"
-                );
-            }
-            return Err(e.into());
+            return Err(error.into());
+        }
+        if let Some(attempt) = &validation {
+            sync_validation_availability(self, &cmd.id, &attempt.outcome)?;
         }
 
         self.event_bus()
@@ -140,6 +134,26 @@ impl CommandBus {
             publish_validation(self, cmd.id, &attempt.outcome);
         }
         Ok(())
+    }
+}
+
+fn restore_password(
+    store: &dyn crate::domain::ports::driven::AccountCredentialStore,
+    id: &crate::domain::model::account::AccountId,
+    previous_password: Option<&str>,
+    cause: &crate::domain::error::DomainError,
+) {
+    let restored = match previous_password {
+        Some(password) => store.store_password(id, password),
+        None => store.delete_password(id),
+    };
+    if let Err(restore_error) = restored {
+        tracing::warn!(
+            account_id = %id.as_str(),
+            error = %cause,
+            restore_error = %restore_error,
+            "account password restore failed; keyring may be inconsistent"
+        );
     }
 }
 
@@ -455,5 +469,42 @@ mod tests {
             err,
             AppError::Domain(DomainError::AlreadyExists(_))
         ));
+    }
+
+    #[tokio::test]
+    async fn repo_failure_after_password_rotation_restores_the_previous_secret() {
+        let repo = Arc::new(InMemoryAccountRepo::new());
+        let creds = Arc::new(FakeAccountCredentialStore::new());
+        let events = Arc::new(CapturingEventBus::new());
+        let bus = build_account_bus(repo, creds.clone(), events, None, None);
+        let id = bus
+            .handle_add_account(add_command("real-debrid", "alice", "old-pw"))
+            .await
+            .expect("first account");
+        bus.handle_add_account(add_command("real-debrid", "bob", "other-pw"))
+            .await
+            .expect("conflicting account");
+
+        let error = bus
+            .handle_update_account(UpdateAccountCommand {
+                id: id.clone(),
+                now_ms: 1_800_000_000_000,
+                patch: AccountPatch {
+                    username: Some("bob".into()),
+                    password: Some("new-pw".into()),
+                    ..AccountPatch::default()
+                },
+            })
+            .await
+            .expect_err("duplicate username must reject the row");
+
+        assert!(matches!(
+            error,
+            AppError::Domain(DomainError::AlreadyExists(_))
+        ));
+        assert_eq!(creds.get_password(&id).unwrap().as_deref(), Some("old-pw"));
+        let attempts = creds.write_attempts();
+        assert_eq!(attempts[attempts.len() - 2].1, "new-pw");
+        assert_eq!(attempts[attempts.len() - 1].1, "old-pw");
     }
 }

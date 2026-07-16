@@ -220,7 +220,7 @@ impl AccountRotator {
                 .chain(std::iter::once(proposed))
                 .max()
                 .unwrap_or(proposed);
-            account.mark_unavailable(AccountStatus::QuotaExhausted, final_deadline);
+            account.mark_exhausted(final_deadline);
             self.repo.save(&account)?;
             guard.insert(account_id.clone(), final_deadline);
             final_deadline

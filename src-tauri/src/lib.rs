@@ -251,7 +251,7 @@ pub fn run() {
                 account_selector.clone(),
                 account_repo.clone(),
                 event_bus.clone(),
-                account_clock,
+                account_clock.clone(),
             );
             let account_validator =
                 Arc::new(PluginAccountValidator::new(plugin_loader.clone()));
@@ -400,6 +400,7 @@ pub fn run() {
                 .with_account_validator(account_validator)
                 .with_account_selector(account_selector)
                 .with_account_rotator(account_rotator)
+                .with_account_clock(account_clock)
                 .with_package_repo(package_repo.clone())
                 .with_passphrase_codec(passphrase_codec),
             );

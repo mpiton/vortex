@@ -63,19 +63,27 @@ pub(super) fn apply_validation(
     outcome: &ValidationOutcome,
     now_ms: u64,
 ) -> Account {
-    let mut next = clone_account(account);
+    const TEMPORARY_FAILURE_TTL_MS: u64 = 60_000;
+
+    let mut next = account.clone();
     next.set_last_validated(now_ms);
-    next.set_status(outcome.status);
-    if outcome.valid {
+    match outcome.status {
+        AccountStatus::QuotaExhausted => {
+            next.mark_exhausted(now_ms.saturating_add(TEMPORARY_FAILURE_TTL_MS));
+        }
+        AccountStatus::Cooldown => {
+            next.mark_cooldown(now_ms.saturating_add(TEMPORARY_FAILURE_TTL_MS));
+        }
+        status => next.set_status(status),
+    }
+    if outcome.is_valid() {
         if let Some(traffic_left) = outcome.traffic_left {
             next.set_traffic_left(traffic_left);
         }
         if let Some(traffic_total) = outcome.traffic_total {
             next.set_traffic_total(traffic_total);
         }
-        if let Some(valid_until) = outcome.valid_until {
-            next.set_valid_until(valid_until);
-        }
+        next.replace_valid_until(outcome.valid_until);
     }
     next
 }
@@ -85,7 +93,7 @@ pub(super) fn publish_validation(
     id: crate::domain::model::account::AccountId,
     outcome: &ValidationOutcome,
 ) {
-    if outcome.valid {
+    if outcome.is_valid() {
         bus.event_bus().publish(DomainEvent::AccountValidated {
             id,
             latency_ms: outcome.latency_ms,
@@ -105,6 +113,19 @@ pub(super) fn publish_validation(
     }
 }
 
+pub(super) fn sync_validation_availability(
+    bus: &CommandBus,
+    id: &crate::domain::model::account::AccountId,
+    outcome: &ValidationOutcome,
+) -> Result<(), AppError> {
+    if outcome.is_valid()
+        && let Some(rotator) = bus.account_rotator()
+    {
+        rotator.clear_exhausted(id)?;
+    }
+    Ok(())
+}
+
 impl CommandBus {
     pub async fn handle_validate_account(
         &self,
@@ -119,6 +140,8 @@ impl CommandBus {
         let validator = self
             .account_validator()
             .ok_or_else(|| AppError::Validation("account validator not configured".into()))?;
+        let operation_lock = self.account_operation_lock(&cmd.id)?;
+        let _operation_guard = operation_lock.lock().await;
 
         let account = repo
             .find_by_id(&cmd.id)?
@@ -141,6 +164,7 @@ impl CommandBus {
 
         let attempt = validate_credentials(validator, &account, &password);
         repo.save(&apply_validation(&account, &attempt.outcome, cmd.now_ms))?;
+        sync_validation_availability(self, &cmd.id, &attempt.outcome)?;
         publish_validation(self, cmd.id, &attempt.outcome);
 
         match attempt.error {
@@ -151,39 +175,51 @@ impl CommandBus {
     }
 }
 
-fn clone_account(account: &Account) -> Account {
-    Account::reconstruct_with_status(
-        account.id().clone(),
-        account.service_name().to_string(),
-        account.username().to_string(),
-        account.account_type(),
-        account.is_enabled(),
-        account.traffic_left(),
-        account.traffic_total(),
-        account.valid_until(),
-        account.last_validated(),
-        account.created_at(),
-        account.status(),
-        account.exhausted_until(),
-    )
-}
-
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{Arc, Condvar, Mutex};
+    use std::time::Duration;
 
-    use super::super::{AddAccountCommand, ValidateAccountCommand};
+    use super::super::{AddAccountCommand, DeleteAccountCommand, ValidateAccountCommand};
     use crate::application::commands::tests_support::{
         CapturingEventBus, FakeAccountCredentialStore, FakeAccountValidator, InMemoryAccountRepo,
         ValidatorBehavior, build_account_bus,
     };
     use crate::application::error::AppError;
+    use crate::application::services::{AccountRotator, AccountSelector};
     use crate::domain::error::DomainError;
     use crate::domain::event::DomainEvent;
     use crate::domain::model::account::{Account, AccountId, AccountStatus, AccountType};
     use crate::domain::ports::driven::{
-        AccountCredentialStore, AccountRepository, ValidationOutcome,
+        AccountCredentialStore, AccountRepository, AccountValidator, Clock, ValidationOutcome,
     };
+
+    struct ValidationClock;
+
+    impl Clock for ValidationClock {
+        fn now_unix_secs(&self) -> u64 {
+            1_700_000_000
+        }
+    }
+
+    struct BlockingValidator {
+        entered: Mutex<Option<std::sync::mpsc::Sender<()>>>,
+        release: Arc<(Mutex<bool>, Condvar)>,
+    }
+
+    impl AccountValidator for BlockingValidator {
+        fn validate(&self, _: &str, _: &str, _: &str) -> Result<ValidationOutcome, DomainError> {
+            if let Some(sender) = self.entered.lock().expect("entered mutex").take() {
+                sender.send(()).expect("test receiver remains alive");
+            }
+            let (mutex, condition) = &*self.release;
+            let mut released = mutex.lock().expect("release mutex");
+            while !*released {
+                released = condition.wait(released).expect("release wait");
+            }
+            Ok(ValidationOutcome::ok())
+        }
+    }
 
     fn add_command(service: &str) -> AddAccountCommand {
         AddAccountCommand {
@@ -232,6 +268,135 @@ mod tests {
         assert_eq!(validated.exhausted_until(), Some(60_200));
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn concurrent_delete_cannot_be_undone_by_a_slow_validation() {
+        let repo = Arc::new(InMemoryAccountRepo::new());
+        let credentials = Arc::new(FakeAccountCredentialStore::new());
+        let account = Account::new(
+            AccountId::new("account-1"),
+            "vortex-mod-1fichier".into(),
+            "alice".into(),
+            AccountType::Premium,
+            1,
+        );
+        repo.save(&account).expect("seed account");
+        credentials
+            .store_password(account.id(), "api-key")
+            .expect("seed credential");
+
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let release = Arc::new((Mutex::new(false), Condvar::new()));
+        let validator = Arc::new(BlockingValidator {
+            entered: Mutex::new(Some(entered_tx)),
+            release: release.clone(),
+        });
+        let events = Arc::new(CapturingEventBus::new());
+        let bus = Arc::new(build_account_bus(
+            repo.clone(),
+            credentials,
+            events,
+            Some(validator),
+            None,
+        ));
+
+        let validating_bus = bus.clone();
+        let validating = tokio::spawn(async move {
+            validating_bus
+                .handle_validate_account(ValidateAccountCommand {
+                    id: AccountId::new("account-1"),
+                    now_ms: 2,
+                })
+                .await
+        });
+        tokio::task::spawn_blocking(move || entered_rx.recv_timeout(Duration::from_secs(1)))
+            .await
+            .expect("join entered wait")
+            .expect("validator entered");
+
+        let deleting_bus = bus.clone();
+        let mut deleting = tokio::spawn(async move {
+            deleting_bus
+                .handle_delete_account(DeleteAccountCommand {
+                    id: AccountId::new("account-1"),
+                })
+                .await
+        });
+        let deleted_while_validation_blocked =
+            tokio::time::timeout(Duration::from_millis(100), &mut deleting)
+                .await
+                .ok();
+
+        let (mutex, condition) = &*release;
+        *mutex.lock().expect("release mutex") = true;
+        condition.notify_all();
+        validating
+            .await
+            .expect("validation join")
+            .expect("validation");
+        match deleted_while_validation_blocked {
+            Some(result) => result.expect("delete join").expect("delete"),
+            None => deleting.await.expect("delete join").expect("delete"),
+        }
+
+        assert!(
+            repo.find_by_id(account.id())
+                .expect("read account")
+                .is_none(),
+            "a validation that began before deletion must not recreate the row"
+        );
+    }
+
+    #[tokio::test]
+    async fn successful_validation_clears_the_rotator_cooldown_cache() {
+        let repo = Arc::new(InMemoryAccountRepo::new());
+        let credentials = Arc::new(FakeAccountCredentialStore::new());
+        let events = Arc::new(CapturingEventBus::new());
+        let validator = Arc::new(FakeAccountValidator::new());
+        validator.set(
+            "vortex-mod-1fichier",
+            ValidatorBehavior::Ok(ValidationOutcome::ok()),
+        );
+        let account = Account::reconstruct_with_status(
+            AccountId::new("account-1"),
+            "vortex-mod-1fichier".into(),
+            "alice".into(),
+            AccountType::Premium,
+            true,
+            None,
+            None,
+            Some(u64::MAX),
+            Some(1),
+            1,
+            AccountStatus::Valid,
+            None,
+        );
+        repo.save(&account).expect("seed account");
+        credentials
+            .store_password(account.id(), "api-key")
+            .expect("seed credential");
+        let clock: Arc<dyn Clock> = Arc::new(ValidationClock);
+        let selector = AccountSelector::new(repo.clone(), events.clone(), clock.clone());
+        let rotator = AccountRotator::new(selector, repo.clone(), events.clone(), clock);
+        rotator
+            .mark_exhausted(account.id(), account.service_name(), 60)
+            .expect("mark exhausted");
+        let bus = build_account_bus(repo.clone(), credentials, events, Some(validator), None)
+            .with_account_rotator(rotator.clone());
+
+        bus.handle_validate_account(ValidateAccountCommand {
+            id: account.id().clone(),
+            now_ms: 1_700_000_000_000,
+        })
+        .await
+        .expect("validation succeeds");
+
+        assert!(!rotator.is_exhausted(account.id()).expect("rotator state"));
+        assert_eq!(
+            repo.find_by_id(account.id()).unwrap().unwrap().status(),
+            AccountStatus::Valid
+        );
+    }
+
     #[tokio::test]
     async fn test_validate_account_unknown_service_returns_not_found() {
         let repo = Arc::new(InMemoryAccountRepo::new());
@@ -271,7 +436,6 @@ mod tests {
         validator.set(
             "real-debrid",
             ValidatorBehavior::Ok(ValidationOutcome {
-                valid: true,
                 status: crate::domain::model::account::AccountStatus::Valid,
                 latency_ms: Some(120),
                 traffic_left: Some(50_000),

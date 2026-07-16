@@ -36,6 +36,8 @@ impl CommandBus {
         })?;
 
         let id = AccountId::new(Uuid::new_v4().to_string());
+        let operation_lock = self.account_operation_lock(&id)?;
+        let _operation_guard = operation_lock.lock().await;
         let account = Account::new(
             id.clone(),
             service_name,
