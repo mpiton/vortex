@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::application::command_bus::CommandBus;
 use crate::application::error::AppError;
 use crate::domain::event::DomainEvent;
+use crate::domain::model::account::{AccountId, AccountStatus};
 use crate::domain::model::download::{Download, DownloadId, Url};
 use crate::domain::model::http::HttpResponse;
 
@@ -24,6 +25,7 @@ impl CommandBus {
         cmd: super::StartDownloadCommand,
     ) -> Result<DownloadId, AppError> {
         let url = Url::new(&cmd.url)?;
+        self.validate_download_account(cmd.module_name.as_deref(), cmd.account_id.as_ref())?;
 
         // Use the pre-computed filename when available (e.g. set by media plugins
         // that already know the video title). Otherwise probe via HEAD or fall back
@@ -78,6 +80,12 @@ impl CommandBus {
         if let Some(hostname) = cmd.source_hostname_override {
             download = download.with_source_hostname(hostname);
         }
+        if let Some(module_name) = cmd.module_name {
+            download = download.with_module_name(module_name);
+        }
+        if let Some(account_id) = cmd.account_id {
+            download = download.with_account_id(account_id);
+        }
 
         self.download_repo().save(&download)?;
         self.event_bus()
@@ -85,6 +93,58 @@ impl CommandBus {
 
         Ok(id)
     }
+
+    fn validate_download_account(
+        &self,
+        module_name: Option<&str>,
+        account_id: Option<&AccountId>,
+    ) -> Result<(), AppError> {
+        let (Some(module_name), Some(account_id)) = (module_name, account_id) else {
+            if account_id.is_some() {
+                return Err(AppError::Validation(
+                    "account association requires a plugin name".into(),
+                ));
+            }
+            return Ok(());
+        };
+        let repo = self
+            .account_repo()
+            .ok_or_else(|| AppError::Validation("account repository not configured".into()))?;
+        let store = self.account_credential_store().ok_or_else(|| {
+            AppError::Validation("account credential store not configured".into())
+        })?;
+        let mut account = repo.find_by_id(account_id)?.ok_or_else(|| {
+            AppError::NotFound(format!("account {} not found", account_id.as_str()))
+        })?;
+        if account.service_name() != module_name {
+            return Err(AppError::Validation(format!(
+                "account {} is not compatible with plugin {module_name}",
+                account_id.as_str()
+            )));
+        }
+        if store.get_password(account_id)?.is_none() {
+            account.set_status(AccountStatus::MissingCredential);
+            repo.save(&account)?;
+            return Err(AppError::NotFound(format!(
+                "credential for account {} not found",
+                account_id.as_str()
+            )));
+        }
+        if !account.is_selectable(current_time_ms()) {
+            return Err(AppError::Validation(format!(
+                "account {} is not available",
+                account_id.as_str()
+            )));
+        }
+        Ok(())
+    }
+}
+
+fn current_time_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
 }
 
 /// Generate a restart-safe, collision-resistant download ID that fits

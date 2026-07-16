@@ -3,12 +3,17 @@
 //! Checks each URL via plugin loader and HTTP HEAD, returning
 //! resolution metadata for the frontend link grabber view.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::application::command_bus::CommandBus;
 use crate::application::error::AppError;
+use crate::application::services::account_rotator::NextAccountOutcome;
+use crate::domain::error::DomainError;
+use crate::domain::model::account::{Account, AccountStatus};
+use crate::domain::model::credential::Credential;
 use crate::domain::model::http::HttpResponse;
+use crate::domain::model::plugin::PluginCategory;
 
 use super::ResolveLinksCommand;
 
@@ -28,6 +33,28 @@ pub struct ResolvedLinkDto {
     pub account_id: Option<String>,
     pub is_media: bool,
     pub media_type: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct HosterExtractResponse {
+    files: Vec<HosterFile>,
+}
+
+#[derive(Debug, Deserialize)]
+struct HosterFile {
+    url: String,
+    filename: Option<String>,
+    size_bytes: Option<u64>,
+    direct_url: Option<String>,
+    traffic_used_bytes: Option<u64>,
+    traffic_total_bytes: Option<u64>,
+}
+
+struct HosterResolution {
+    resolved_url: String,
+    filename: Option<String>,
+    size_bytes: Option<u64>,
+    account_id: Option<String>,
 }
 
 impl CommandBus {
@@ -91,12 +118,46 @@ impl CommandBus {
                 Ok(Some(info)) => info.name().to_string(),
                 _ => "core-http".to_string(),
             };
-            // Account dispatcher hook (task 24): plugins that need
-            // credentials must request them via
-            // `CommandBus::resolve_account_for(service_name)` so the
-            // selector strategy from `AppConfig` is honoured. Resolve
-            // is best-effort metadata only — no account is fetched here
-            // to avoid emitting `AccountSelected` once per probed URL.
+
+            let is_hoster = matches!(
+                plugin_info.as_ref().ok().and_then(Option::as_ref),
+                Some(info)
+                    if matches!(info.category(), PluginCategory::Hoster | PluginCategory::Debrid)
+            );
+            if is_hoster {
+                match self.resolve_hoster_link(url, &module_name) {
+                    Ok(resolved) => results.push(ResolvedLinkDto {
+                        id,
+                        original_url: url.clone(),
+                        resolved_url: Some(resolved.resolved_url),
+                        filename: resolved.filename,
+                        size_bytes: resolved.size_bytes,
+                        status: "online".to_string(),
+                        error_message: None,
+                        module_name,
+                        account_id: resolved.account_id,
+                        is_media: false,
+                        media_type: None,
+                    }),
+                    Err(error) => {
+                        tracing::debug!(module_name, "hoster link resolution failed");
+                        results.push(ResolvedLinkDto {
+                            id,
+                            original_url: url.clone(),
+                            resolved_url: None,
+                            filename: None,
+                            size_bytes: None,
+                            status: "error".to_string(),
+                            error_message: Some(sanitize_hoster_error(&error)),
+                            module_name,
+                            account_id: None,
+                            is_media: false,
+                            media_type: None,
+                        });
+                    }
+                }
+                continue;
+            }
 
             let is_media = is_media_url(url);
             let media_type = if is_media {
@@ -158,6 +219,148 @@ impl CommandBus {
         }
 
         Ok(results)
+    }
+
+    fn resolve_hoster_link(
+        &self,
+        url: &str,
+        service_name: &str,
+    ) -> Result<HosterResolution, AppError> {
+        if let (Some(repo), Some(store)) = (self.account_repo(), self.account_credential_store()) {
+            let max_attempts = repo.list_by_service(service_name)?.len();
+            for _ in 0..max_attempts {
+                let Some(mut account) = self.next_hoster_account(service_name)? else {
+                    break;
+                };
+                let Some(password) = store.get_password(account.id())? else {
+                    account.set_status(AccountStatus::MissingCredential);
+                    repo.save(&account)?;
+                    continue;
+                };
+                let credential = Credential::new(account.username(), password);
+
+                match self
+                    .plugin_loader()
+                    .extract_links_with_credential(url, &credential)
+                {
+                    Ok(payload) => {
+                        let resolved =
+                            parse_hoster_response(&payload, Some(account.id().as_str()))?;
+                        if let Some(total) = resolved.traffic_total_bytes {
+                            account.set_traffic_total(total);
+                            if let Some(used) = resolved.traffic_used_bytes {
+                                account.set_traffic_left(total.saturating_sub(used));
+                            }
+                        }
+                        account.set_status(AccountStatus::Valid);
+                        repo.save(&account)?;
+                        return Ok(resolved.into_resolution());
+                    }
+                    Err(error) => {
+                        let status = match error {
+                            DomainError::AccountInvalidCredentials => {
+                                AccountStatus::InvalidCredentials
+                            }
+                            DomainError::AccountExpired => AccountStatus::Expired,
+                            DomainError::AccountCooldown => AccountStatus::Cooldown,
+                            DomainError::AccountQuotaExceeded => AccountStatus::QuotaExhausted,
+                            other => return Err(other.into()),
+                        };
+                        if status == AccountStatus::QuotaExhausted
+                            && let Some(rotator) = self.account_rotator()
+                        {
+                            rotator.mark_exhausted(account.id(), service_name, 60)?;
+                        } else if matches!(
+                            status,
+                            AccountStatus::QuotaExhausted | AccountStatus::Cooldown
+                        ) {
+                            account
+                                .mark_unavailable(status, current_time_ms().saturating_add(60_000));
+                            repo.save(&account)?;
+                        } else {
+                            account.set_status(status);
+                            repo.save(&account)?;
+                        }
+                    }
+                }
+            }
+        }
+
+        let payload = self.plugin_loader().extract_links(url)?;
+        Ok(parse_hoster_response(&payload, None)?.into_resolution())
+    }
+
+    fn next_hoster_account(&self, service_name: &str) -> Result<Option<Account>, AppError> {
+        let Some(rotator) = self.account_rotator() else {
+            return self.resolve_account_for(service_name);
+        };
+        let strategy = self.config_store().get_config()?.account_selection_strategy;
+        match rotator.next_account(service_name, strategy)? {
+            NextAccountOutcome::Picked(account) => Ok(Some(account)),
+            NextAccountOutcome::NoneAvailable | NextAccountOutcome::AllExhausted { .. } => Ok(None),
+        }
+    }
+}
+
+struct ParsedHosterResponse {
+    file: HosterFile,
+    account_id: Option<String>,
+    traffic_used_bytes: Option<u64>,
+    traffic_total_bytes: Option<u64>,
+}
+
+impl ParsedHosterResponse {
+    fn into_resolution(self) -> HosterResolution {
+        let direct_url = self.file.direct_url;
+        HosterResolution {
+            resolved_url: direct_url.unwrap_or(self.file.url),
+            filename: self.file.filename,
+            size_bytes: self.file.size_bytes,
+            account_id: self.account_id,
+        }
+    }
+}
+
+fn parse_hoster_response(
+    payload: &str,
+    account_id: Option<&str>,
+) -> Result<ParsedHosterResponse, AppError> {
+    let response: HosterExtractResponse = serde_json::from_str(payload)
+        .map_err(|_| AppError::Plugin("hoster returned an invalid response".into()))?;
+    let file = response
+        .files
+        .into_iter()
+        .next()
+        .ok_or_else(|| AppError::Plugin("hoster returned no file".into()))?;
+    let selected_account = file.direct_url.as_ref().and(account_id).map(str::to_string);
+    Ok(ParsedHosterResponse {
+        traffic_used_bytes: file.traffic_used_bytes,
+        traffic_total_bytes: file.traffic_total_bytes,
+        file,
+        account_id: selected_account,
+    })
+}
+
+fn current_time_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+fn sanitize_hoster_error(error: &AppError) -> String {
+    match error {
+        AppError::Domain(DomainError::AccountInvalidCredentials) => {
+            "Account credentials were rejected".to_string()
+        }
+        AppError::Domain(DomainError::AccountExpired) => "Account is expired".to_string(),
+        AppError::Domain(DomainError::AccountCooldown) => {
+            "Account is temporarily rate-limited".to_string()
+        }
+        AppError::Domain(DomainError::AccountQuotaExceeded) => {
+            "Account quota is exhausted".to_string()
+        }
+        _ => "Could not resolve hoster link".to_string(),
     }
 }
 
