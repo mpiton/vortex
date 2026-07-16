@@ -220,6 +220,29 @@ mod tests {
     }
 
     #[test]
+    fn test_scoped_credential_is_cleared_when_plugin_call_fails() {
+        use crate::adapters::driven::plugin::capabilities::SharedHostResources;
+        use crate::domain::model::credential::Credential;
+
+        let registry = PluginRegistry::new();
+        registry.insert("plug-a".to_string(), make_loaded("plug-a"));
+        let resources = SharedHostResources::new();
+        let slot = resources.credential_slot("plug-a");
+
+        let error = registry
+            .call_plugin_with_credential(
+                "plug-a",
+                "missing",
+                "",
+                Arc::clone(&slot),
+                Credential::new("alice", "secret"),
+            )
+            .expect_err("missing export");
+        assert!(matches!(error, DomainError::PluginError(_)));
+        assert!(slot.lock().unwrap().is_none());
+    }
+
+    #[test]
     fn test_set_enabled() {
         let registry = PluginRegistry::new();
         registry.insert("plug-a".to_string(), make_loaded("plug-a"));

@@ -428,6 +428,21 @@ mod tests {
     }
 
     #[test]
+    fn test_scoped_credential_slots_are_isolated_by_plugin() {
+        let shared = SharedHostResources::new();
+        let first = shared.credential_slot("vortex-mod-1fichier");
+        let second = shared.credential_slot("vortex-mod-other");
+
+        assert!(first.lock().unwrap().is_none());
+        assert!(second.lock().unwrap().is_none());
+        assert!(!Arc::ptr_eq(&first, &second));
+        assert!(Arc::ptr_eq(
+            &first,
+            &shared.credential_slot("vortex-mod-1fichier")
+        ));
+    }
+
+    #[test]
     fn test_subprocess_denied_unauthorized_binary() {
         // Verify capability check logic: only declared binaries are allowed
         let caps: Vec<String> = vec!["subprocess:ffmpeg".to_string()];
