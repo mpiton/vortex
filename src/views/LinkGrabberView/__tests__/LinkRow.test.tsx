@@ -89,4 +89,16 @@ describe("LinkRow hoster errors", () => {
     expect(screen.getByText("No downloadable file was found")).toBeInTheDocument();
     expect(screen.getByTestId(`link-row-${baseLink.originalUrl}`).dataset.status).toBe("error");
   });
+
+  it("clears a stale analysis error after a live probe recovers", () => {
+    useLinkGrabberStore.getState().setStatus(baseLink.originalUrl, { kind: "online" });
+    renderRow({
+      ...baseLink,
+      status: "error",
+      errorMessage: "Network request failed",
+    });
+
+    expect(screen.queryByText("Network request failed")).not.toBeInTheDocument();
+    expect(screen.getByTestId(`link-row-${baseLink.originalUrl}`).dataset.status).toBe("online");
+  });
 });

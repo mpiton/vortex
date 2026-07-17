@@ -57,7 +57,10 @@ export function groupLinks(
   }, {});
 }
 
-function statusOf(link: ResolvedLink, liveStatuses: Record<string, LinkProbeStatus>): LinkStatus {
+function statusOf(
+  link: ResolvedLink,
+  liveStatuses: Partial<Record<string, LinkProbeStatus>>,
+): LinkStatus {
   const live = liveStatuses[link.originalUrl];
   return (live?.kind as LinkStatus | undefined) ?? link.status;
 }
@@ -65,7 +68,7 @@ function statusOf(link: ResolvedLink, liveStatuses: Record<string, LinkProbeStat
 export function applyFilter(
   links: ResolvedLink[],
   filter: FilterType,
-  liveStatuses: Record<string, LinkProbeStatus> = {},
+  liveStatuses: Partial<Record<string, LinkProbeStatus>> = {},
 ): ResolvedLink[] {
   if (filter === "all") return links;
   if (filter === "online") {

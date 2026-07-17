@@ -16,7 +16,7 @@ use crate::domain::ports::driven::{
     AccountRepository, Clock, ConfigStore, DownloadRepository, ExtractedHosterLink, PluginLoader,
 };
 
-use super::ResolvePremiumSourceHandler;
+use super::ResolveHosterSourceHandler;
 
 pub(super) struct FixedClock;
 
@@ -174,7 +174,7 @@ pub(super) fn handler(
     credentials: Arc<FakeAccountCredentialStore>,
     plugin: Arc<DirectUrlPlugin>,
     events: Arc<CapturingEventBus>,
-) -> Arc<ResolvePremiumSourceHandler> {
+) -> Arc<ResolveHosterSourceHandler> {
     handler_with_downloads(
         repo,
         credentials,
@@ -190,11 +190,11 @@ pub(super) fn handler_with_downloads(
     plugin: Arc<DirectUrlPlugin>,
     events: Arc<CapturingEventBus>,
     downloads: Arc<dyn DownloadRepository>,
-) -> Arc<ResolvePremiumSourceHandler> {
+) -> Arc<ResolveHosterSourceHandler> {
     let clock: Arc<dyn Clock> = Arc::new(FixedClock);
     let selector = AccountSelector::new(repo.clone(), events.clone(), clock.clone());
     let rotator = AccountRotator::new(selector, repo.clone(), events.clone(), clock.clone());
-    Arc::new(ResolvePremiumSourceHandler::new(
+    Arc::new(ResolveHosterSourceHandler::new(
         repo,
         credentials,
         plugin,

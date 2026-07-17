@@ -19,7 +19,7 @@ export type LinkProbeStatus =
 
 interface LinkGrabberState {
   /** Live status keyed by the URL the user pasted. */
-  statuses: Record<string, LinkProbeStatus>;
+  statuses: Partial<Record<string, LinkProbeStatus>>;
   setStatus: (url: string, status: LinkProbeStatus) => void;
   setManyStatuses: (entries: Array<[string, LinkProbeStatus]>) => void;
   reset: () => void;

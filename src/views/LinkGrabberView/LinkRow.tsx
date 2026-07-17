@@ -49,7 +49,7 @@ export function LinkRow({ link, selected, onSelect, onMediaClick, onRetry }: Lin
   const liveStatus = useLinkGrabberStore((s) => s.statuses[link.originalUrl]);
   const effectiveStatus: LinkStatus = liveStatus?.kind ?? link.status;
   const showRetry = effectiveStatus === "unknown" && onRetry !== undefined;
-  const errorMessage = link.status === "error" ? link.errorMessage : null;
+  const errorMessage = effectiveStatus === "error" ? link.errorMessage : null;
 
   const duplicate = link.duplicate?.isDuplicate ? link.duplicate : null;
   const duplicateLabel = duplicate?.source ? t(duplicateLabelKeyMap[duplicate.source]) : null;

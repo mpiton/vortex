@@ -67,12 +67,20 @@ impl FileStorage for FsFileStorage {
             })?;
         // set_len creates a sparse file — the OS only allocates blocks
         // as data is actually written, so a 1 GB file uses ~0 bytes on disk.
-        file.set_len(size).map_err(|e| {
-            DomainError::StorageError(format!(
-                "failed to pre-allocate {} ({size} bytes): {e}",
+        if let Err(error) = file.set_len(size) {
+            drop(file);
+            if let Err(cleanup_error) = fs::remove_file(path) {
+                warn!(
+                    path = %path.display(),
+                    error = %cleanup_error,
+                    "failed to roll back an unsuccessful file reservation"
+                );
+            }
+            return Err(DomainError::StorageError(format!(
+                "failed to pre-allocate {} ({size} bytes): {error}",
                 path.display()
-            ))
-        })?;
+            )));
+        }
         debug!(path = %path.display(), size, "pre-allocated download file");
         Ok(())
     }
@@ -118,6 +126,30 @@ impl FileStorage for FsFileStorage {
                 path.display()
             ))
         })?;
+        Ok(())
+    }
+
+    fn grow_file(&self, path: &Path, minimum_size: u64) -> Result<(), DomainError> {
+        let file = OpenOptions::new().write(true).open(path).map_err(|e| {
+            DomainError::StorageError(format!("failed to open {} for growth: {e}", path.display()))
+        })?;
+        let current_size = file
+            .metadata()
+            .map(|metadata| metadata.len())
+            .map_err(|e| {
+                DomainError::StorageError(format!(
+                    "failed to read metadata for {}: {e}",
+                    path.display()
+                ))
+            })?;
+        if current_size < minimum_size {
+            file.set_len(minimum_size).map_err(|e| {
+                DomainError::StorageError(format!(
+                    "failed to grow {} to {minimum_size} bytes: {e}",
+                    path.display()
+                ))
+            })?;
+        }
         Ok(())
     }
 
@@ -206,6 +238,20 @@ impl FileStorage for FsFileStorage {
                 mp.display()
             ))),
         }
+    }
+
+    fn delete_download_artifacts(&self, path: &Path) -> Result<(), DomainError> {
+        match fs::remove_file(path) {
+            Ok(()) => debug!(path = %path.display(), "deleted download body"),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(DomainError::StorageError(format!(
+                    "failed to delete {}: {error}",
+                    path.display()
+                )));
+            }
+        }
+        self.delete_meta(path)
     }
 
     fn move_file(&self, from: &Path, to: &Path) -> Result<(), DomainError> {
@@ -477,6 +523,18 @@ mod tests {
     }
 
     #[test]
+    fn test_create_file_rolls_back_when_preallocation_fails() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file_path = dir.path().join("too-large.bin");
+        let storage = FsFileStorage::new();
+
+        let result = storage.create_file(&file_path, u64::MAX);
+
+        assert!(result.is_err());
+        assert!(!file_path.exists());
+    }
+
+    #[test]
     fn test_write_segment_at_offset() {
         let dir = tempfile::tempdir().expect("tempdir");
         let file_path = dir.path().join("download.bin");
@@ -575,6 +633,41 @@ mod tests {
         storage
             .delete_meta(&file_path)
             .expect("delete_meta on missing file should succeed");
+    }
+
+    #[test]
+    fn test_delete_download_artifacts_removes_body_and_metadata_idempotently() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file_path = dir.path().join("download.bin");
+        let storage = FsFileStorage::new();
+        storage.create_file(&file_path, 4).expect("create body");
+        storage
+            .write_meta(&file_path, &make_meta())
+            .expect("create metadata");
+
+        storage
+            .delete_download_artifacts(&file_path)
+            .expect("delete artifacts");
+        storage
+            .delete_download_artifacts(&file_path)
+            .expect("repeated deletion remains safe");
+
+        assert!(!file_path.exists());
+        assert!(!meta_path(&file_path).exists());
+    }
+
+    #[test]
+    fn test_delete_download_artifacts_preserves_metadata_when_body_removal_fails() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let body_path = dir.path().join("body-directory");
+        fs::create_dir(&body_path).expect("create body directory");
+        let storage = FsFileStorage::new();
+        storage
+            .write_meta(&body_path, &make_meta())
+            .expect("create ownership metadata");
+
+        assert!(storage.delete_download_artifacts(&body_path).is_err());
+        assert!(meta_path(&body_path).exists());
     }
 
     #[test]

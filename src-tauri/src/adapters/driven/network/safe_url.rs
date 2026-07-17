@@ -97,12 +97,6 @@ pub(crate) fn validated_plugin_headers(
     Ok(headers)
 }
 
-pub(crate) fn is_html_content_type(content_type: &str) -> bool {
-    let media_type = content_type.split(';').next().unwrap_or_default().trim();
-    media_type.eq_ignore_ascii_case("text/html")
-        || media_type.eq_ignore_ascii_case("application/xhtml+xml")
-}
-
 fn blocked() -> DomainError {
     DomainError::NetworkError("plugin URL targets a non-public network".into())
 }

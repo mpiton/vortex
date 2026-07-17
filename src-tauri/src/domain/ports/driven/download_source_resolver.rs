@@ -18,7 +18,7 @@ impl std::fmt::Debug for ResolvedDownloadSource {
 }
 
 impl ResolvedDownloadSource {
-    pub fn sensitive(request_url: String) -> Self {
+    pub fn protected(request_url: String) -> Self {
         Self {
             request_url,
             request_headers: Vec::new(),

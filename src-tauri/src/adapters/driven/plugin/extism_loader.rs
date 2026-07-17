@@ -773,18 +773,13 @@ fn is_adaptive_stream_error(msg: &str) -> bool {
 }
 
 fn classify_account_plugin_error(message: &str) -> DomainError {
-    let has_code = |expected: &str| {
-        message
-            .split(|character: char| !(character.is_ascii_uppercase() || character == '_'))
-            .any(|token| token == expected)
-    };
-    if has_code("ACCOUNT_INVALID_CREDENTIALS") {
+    if has_error_code(message, "ACCOUNT_INVALID_CREDENTIALS") {
         DomainError::AccountInvalidCredentials
-    } else if has_code("ACCOUNT_EXPIRED") {
+    } else if has_error_code(message, "ACCOUNT_EXPIRED") {
         DomainError::AccountExpired
-    } else if has_code("ACCOUNT_COOLDOWN") {
+    } else if has_error_code(message, "ACCOUNT_COOLDOWN") {
         DomainError::AccountCooldown
-    } else if has_code("ACCOUNT_QUOTA_EXCEEDED") {
+    } else if has_error_code(message, "ACCOUNT_QUOTA_EXCEEDED") {
         DomainError::AccountQuotaExceeded
     } else {
         DomainError::PluginError("plugin account operation failed".into())
@@ -792,32 +787,55 @@ fn classify_account_plugin_error(message: &str) -> DomainError {
 }
 
 fn classify_hoster_plugin_error(message: &str) -> DomainError {
-    let message = message.to_ascii_lowercase();
-    if message.contains("hoster_direct_url_expired")
-        || message.contains("status 410")
-        || message.contains("expired")
-    {
+    if has_error_code(message, "HOSTER_DIRECT_URL_EXPIRED") {
         DomainError::HosterDirectUrlExpired
-    } else if message.contains("hoster_authentication_required")
-        || message.contains("status 401")
-        || message.contains("status 403")
-        || message.contains("authentication")
-        || message.contains("invalid credentials")
-        || message.contains("password-protected")
-        || message.contains("private")
+    } else if has_error_code(message, "HOSTER_AUTHENTICATION_REQUIRED") {
+        DomainError::HosterAuthenticationRequired
+    } else if has_error_code(message, "HOSTER_NO_FILE") {
+        DomainError::HosterNoFile
+    } else {
+        classify_legacy_hoster_error(message)
+    }
+}
+
+fn has_error_code(message: &str, expected: &str) -> bool {
+    message
+        .split(|character: char| !(character.is_ascii_uppercase() || character == '_'))
+        .any(|token| token == expected)
+}
+
+/// Compatibility for the three Lot 1 plugins until their WASM ABI exposes
+/// structured error codes. Keep these matches tied to their exact diagnostics;
+/// generic prose must never become a trusted typed error.
+fn classify_legacy_hoster_error(message: &str) -> DomainError {
+    let message = message.to_ascii_lowercase();
+    if message.contains("error-passwordrequired")
+        || message.contains(
+            "no direct download link found in mediafire page (file may be private or password-protected)",
+        )
+        || has_official_hoster_http_status(&message, 401)
+        || has_official_hoster_http_status(&message, 403)
     {
         DomainError::HosterAuthenticationRequired
-    } else if message.contains("hoster_no_file")
-        || message.contains("status 404")
-        || message.contains("offline or removed")
-        || message.contains("folder is empty")
-        || message.contains("not found in folder")
-        || message.contains("no direct download link")
+    } else if has_official_hoster_http_status(&message, 410) {
+        DomainError::HosterDirectUrlExpired
+    } else if message.contains("mediafire file is offline or removed:")
+        || message.contains("pixeldrain file is offline or removed:")
+        || message.contains("gofile content is offline or removed:")
+        || message.contains("gofile folder is empty (no children)")
+        || (message.contains("gofile file id ") && message.ends_with(" not found in folder"))
+        || has_official_hoster_http_status(&message, 404)
     {
         DomainError::HosterNoFile
     } else {
         DomainError::PluginError("hoster plugin operation failed".into())
     }
+}
+
+fn has_official_hoster_http_status(message: &str, status: u16) -> bool {
+    ["mediafire", "pixeldrain", "gofile", "hoster"]
+        .into_iter()
+        .any(|service| message.contains(&format!("{service} http returned status {status}:")))
 }
 
 #[derive(serde::Deserialize)]
@@ -947,6 +965,14 @@ mod tests {
             classify_hoster_plugin_error("hoster HTTP returned status 410: gone"),
             DomainError::HosterDirectUrlExpired
         );
+        for service in ["MediaFire", "Pixeldrain", "Gofile"] {
+            assert_eq!(
+                classify_hoster_plugin_error(&format!(
+                    "{service} HTTP returned status 403: forbidden"
+                )),
+                DomainError::HosterAuthenticationRequired
+            );
+        }
         assert_eq!(
             classify_hoster_plugin_error(
                 "Gofile content is offline or removed: error-passwordRequired"

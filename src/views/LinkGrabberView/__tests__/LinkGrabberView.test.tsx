@@ -263,6 +263,7 @@ describe("LinkGrabberView", () => {
             moduleName: "vortex-mod-mediafire",
             accountId: null,
             isMedia: false,
+            requiresOnlineProbe: false,
           },
           {
             id: "gofile-error",
@@ -277,6 +278,7 @@ describe("LinkGrabberView", () => {
             moduleName: "vortex-mod-gofile",
             accountId: null,
             isMedia: false,
+            requiresOnlineProbe: false,
           },
         ]);
       }

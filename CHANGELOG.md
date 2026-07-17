@@ -64,6 +64,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **MAT-133 adversarial coverage**: added regressions for hostile stable URLs,
   blank capabilities, response fan-out, disguised HTML, destination collisions,
   exact error classification, and recoverable online probes.
+- **MAT-133 protected-source hardening**: plugin payloads and per-file metadata
+  are bounded, mono-file hosters retain the user-supplied stable URL, Gofile
+  child identifiers stay on validated official origins, and protected transfers
+  now reject disguised HTML without deleting or overwriting unowned destinations.
 - **MAT-132 PR review hardening**: premium selection now excludes free
   accounts, serializes persisted cooldowns with rotation, revalidates download
   associations on every JIT resolution, and lets cancellation win without late

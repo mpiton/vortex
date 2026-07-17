@@ -8,7 +8,7 @@ use crate::application::commands::tests_support::{
 };
 use crate::domain::event::DomainEvent;
 use crate::domain::model::account::AccountStatus;
-use crate::domain::model::download::{DownloadId, Url};
+use crate::domain::model::download::{Download, DownloadId, Url};
 use crate::domain::ports::driven::{
     AccountCredentialStore, AccountRepository, DownloadRepository, DownloadSourceResolver,
 };

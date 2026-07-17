@@ -52,6 +52,8 @@ export interface ResolvedLink {
   accountId: string | null;
   isMedia: boolean;
   mediaType?: "video" | "audio";
+  /** Backend-owned policy: hoster pages are never probed as file URLs. */
+  requiresOnlineProbe?: boolean;
   /**
    * Result of the duplicate-detection pass. `null` until the backend
    * has answered; `{ source: null, … }` once the probe has confirmed

@@ -151,13 +151,7 @@ export function LinkGrabberView() {
     // badge from an earlier paste does not bleed onto a new URL.
     resetLinkStatuses();
     const eligibleUrls = resolved
-      .filter(
-        (link) =>
-          link.status !== "error" &&
-          (link.moduleName === "builtin-http" ||
-            link.moduleName === "core-http" ||
-            link.moduleName === "http"),
-      )
+      .filter((link) => link.requiresOnlineProbe ?? true)
       .map((link) => link.originalUrl)
       .filter(
         (url) =>
