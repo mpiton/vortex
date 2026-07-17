@@ -53,6 +53,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **MAT-133 review portability**: resume metadata locks preserve read-only
+  sidecars, huge-file segment limits cannot wrap, and interruption coverage is
+  synchronized with persisted progress.
 - **MAT-133 final review hardening**: protected ranged responses are inspected
   independently, interrupted segments resume from persisted offsets, and
   metadata cleanup cannot race tombstone recovery.

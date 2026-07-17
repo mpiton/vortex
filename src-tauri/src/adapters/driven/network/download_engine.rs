@@ -44,6 +44,22 @@ struct RemoteMetadata {
 /// signal.
 const MIN_SPLIT_SAMPLE_DURATION: std::time::Duration = std::time::Duration::from_millis(500);
 
+fn segment_count_for_attempt(
+    requested_segments: u32,
+    total_size: u64,
+    min_segment_bytes: u64,
+    supports_range: bool,
+) -> u32 {
+    if supports_range && total_size > 0 {
+        let segment_limit = (total_size / min_segment_bytes)
+            .max(1)
+            .min(u64::from(u32::MAX)) as u32;
+        requested_segments.min(segment_limit).max(1)
+    } else {
+        1
+    }
+}
+
 /// Runtime state of one in-flight segment, tracked by the engine so it can
 /// shrink the segment's range and observe its throughput for dynamic split.
 struct SegmentRuntimeState {
@@ -776,13 +792,12 @@ async fn run_mirror_attempt(params: MirrorAttemptParams) -> AttemptOutcome {
         return AttemptOutcome::Cancelled;
     }
 
-    let num_segments = if supports_range && total_size > 0 {
-        segments_count
-            .min((total_size / min_segment_bytes).max(1) as u32)
-            .max(1)
-    } else {
-        1
-    };
+    let num_segments = segment_count_for_attempt(
+        segments_count,
+        total_size,
+        min_segment_bytes,
+        supports_range,
+    );
     let fresh_segments: Vec<SegmentMeta> = {
         let ranges: Vec<(u64, u64)> = if supports_range && total_size > 0 && num_segments > 1 {
             let segment_size = total_size / num_segments as u64;

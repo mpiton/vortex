@@ -217,7 +217,25 @@ async fn interrupted_attempt_persists_partial_segment_progress() {
         resume_supported: Some(true),
     }));
 
-    tokio::time::sleep(Duration::from_millis(650)).await;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let has_partial_segment = storage
+                .read_meta(&destination)
+                .expect("read in-progress metadata")
+                .is_some_and(|metadata| {
+                    metadata
+                        .segments
+                        .iter()
+                        .any(|segment| segment.downloaded_bytes > 0 && !segment.completed)
+                });
+            if has_partial_segment {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("partial segment progress is persisted");
     user_cancel_token.cancel();
     let outcome = tokio::time::timeout(Duration::from_secs(3), attempt)
         .await
@@ -237,6 +255,14 @@ async fn interrupted_attempt_persists_partial_segment_progress() {
             .iter()
             .any(|segment| segment.downloaded_bytes > 0 && !segment.completed),
         "partial segment progress must be persisted"
+    );
+}
+
+#[test]
+fn segment_count_does_not_wrap_for_huge_downloads() {
+    assert_eq!(
+        segment_count_for_attempt(8, u64::from(u32::MAX) + 2, 1, true),
+        8
     );
 }
 

@@ -47,7 +47,6 @@ impl SourcePolicy {
 
     pub(crate) fn body_prefix_decision(
         self,
-        _start_byte: u64,
         bytes: &[u8],
         end_of_stream: bool,
     ) -> BodyPrefixDecision {
@@ -268,11 +267,7 @@ mod tests {
     fn protected_binary_rejects_html_even_with_whitespace_and_bom() {
         let policy = SourcePolicy::Protected { allow_html: false };
         assert_eq!(
-            policy.body_prefix_decision(0, b"\xef\xbb\xbf \n<!DOCTYPE html><html>expired", false),
-            BodyPrefixDecision::Reject
-        );
-        assert_eq!(
-            policy.body_prefix_decision(1, b"<!doctype html>", false),
+            policy.body_prefix_decision(b"\xef\xbb\xbf \n<!DOCTYPE html><html>expired", false),
             BodyPrefixDecision::Reject
         );
         for body in [
@@ -282,13 +277,12 @@ mod tests {
             b"<rss version=\"2.0\">".as_slice(),
         ] {
             assert_eq!(
-                policy.body_prefix_decision(0, body, false),
+                policy.body_prefix_decision(body, false),
                 BodyPrefixDecision::Accept
             );
         }
         assert_eq!(
             policy.body_prefix_decision(
-                0,
                 b"<?xml version=\"1.0\"?><html xmlns=\"http://www.w3.org/1999/xhtml\">expired",
                 false,
             ),
@@ -296,7 +290,6 @@ mod tests {
         );
         assert_eq!(
             policy.body_prefix_decision(
-                0,
                 b"<?xml version=\"1.0\"?><!-- response --><html>expired",
                 false,
             ),
@@ -304,18 +297,17 @@ mod tests {
         );
         assert_eq!(
             policy.body_prefix_decision(
-                0,
                 b"<?xml version=\"1.0\"?><!doctype svg><html>expired",
                 false,
             ),
             BodyPrefixDecision::Reject
         );
         assert_eq!(
-            policy.body_prefix_decision(0, b"<", false),
+            policy.body_prefix_decision(b"<", false),
             BodyPrefixDecision::NeedMore
         );
         assert_eq!(
-            policy.body_prefix_decision(0, b"<!doctype html>", false),
+            policy.body_prefix_decision(b"<!doctype html>", false),
             BodyPrefixDecision::Reject
         );
         for body in [
@@ -326,7 +318,7 @@ mod tests {
             b"<p>expired</p>".as_slice(),
         ] {
             assert_eq!(
-                policy.body_prefix_decision(0, body, false),
+                policy.body_prefix_decision(body, false),
                 BodyPrefixDecision::Reject,
                 "{body:?}"
             );
@@ -339,7 +331,7 @@ mod tests {
         let prefix = vec![b' '; MAX_PROTECTED_PREFIX_BYTES];
 
         assert_eq!(
-            policy.body_prefix_decision(0, &prefix, false),
+            policy.body_prefix_decision(&prefix, false),
             BodyPrefixDecision::Reject
         );
     }
@@ -355,7 +347,7 @@ mod tests {
             b"<?xml version=\"1.0\"?><htm".as_slice(),
         ] {
             assert_eq!(
-                policy.body_prefix_decision(0, body, true),
+                policy.body_prefix_decision(body, true),
                 BodyPrefixDecision::Reject,
                 "{body:?}"
             );
@@ -368,11 +360,8 @@ mod tests {
         assert!(allows_html_filename("page.htm"));
         assert!(!allows_html_filename("archive.bin"));
         assert!(matches!(
-            SourcePolicy::Protected { allow_html: true }.body_prefix_decision(
-                0,
-                b"<!doctype html><html>document",
-                false
-            ),
+            SourcePolicy::Protected { allow_html: true }
+                .body_prefix_decision(b"<!doctype html><html>document", false),
             BodyPrefixDecision::Accept
         ));
     }

@@ -98,7 +98,7 @@ fn recover_staged_meta(download_path: &Path) -> Result<(), DomainError> {
         return Ok(());
     }
     for staged in staged_meta_paths(download_path)? {
-        let staged_guard = match OpenOptions::new().read(true).write(true).open(&staged) {
+        let staged_guard = match OpenOptions::new().read(true).open(&staged) {
             Ok(file) => file,
             Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
             Err(error) => {
@@ -381,7 +381,7 @@ impl FileStorage for FsFileStorage {
         recover_staged_meta(path)?;
         let mp = meta_path(path);
         let staged_meta = unique_sibling_path(&mp, "vortex-meta", "delete");
-        let metadata_guard = match OpenOptions::new().read(true).write(true).open(&mp) {
+        let metadata_guard = match OpenOptions::new().read(true).open(&mp) {
             Ok(file) => {
                 file.lock().map_err(|error| {
                     DomainError::StorageError(format!(
@@ -809,6 +809,39 @@ mod tests {
         assert!(!mp.exists());
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn read_only_metadata_can_be_recovered_and_deleted() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file_path = dir.path().join("download.bin");
+        let storage = FsFileStorage::new();
+        let original = make_meta();
+        storage.create_file(&file_path, 4).expect("create body");
+        storage
+            .write_meta(&file_path, &original)
+            .expect("write metadata");
+
+        let mp = meta_path(&file_path);
+        let staged = unique_sibling_path(&mp, "vortex-meta", "delete");
+        fs::rename(&mp, &staged).expect("simulate crash after staging metadata");
+        fs::set_permissions(&staged, fs::Permissions::from_mode(0o444))
+            .expect("make staged metadata read-only");
+
+        let restored = storage
+            .read_meta(&file_path)
+            .expect("recover read-only staged metadata")
+            .expect("metadata must remain recoverable");
+        assert_eq!(restored, original);
+
+        storage
+            .delete_download_artifacts(&file_path)
+            .expect("delete artifacts with read-only metadata");
+        assert!(!file_path.exists());
+        assert!(!mp.exists());
+    }
+
     #[test]
     fn test_delete_meta_removes_file() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -908,7 +941,6 @@ mod tests {
         let staged = unique_sibling_path(&mp, "vortex-meta", "delete");
         let guard = OpenOptions::new()
             .read(true)
-            .write(true)
             .open(&mp)
             .expect("open metadata guard");
         guard.lock().expect("lock metadata guard");
