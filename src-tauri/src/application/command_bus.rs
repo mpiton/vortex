@@ -8,7 +8,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use tokio::sync::Semaphore;
 
+use crate::application::services::account_operation_locks::AccountOperationLocks;
 use crate::application::services::{AccountRotator, AccountSelector};
+use crate::domain::error::DomainError;
+use crate::domain::model::account::{Account, AccountId};
 use crate::domain::model::config::{
     DEFAULT_LINK_CHECK_PARALLELISM, normalize_link_check_parallelism,
 };
@@ -65,7 +68,7 @@ impl LinkCheckLimiter {
 }
 use crate::domain::ports::driven::{
     AccountCredentialStore, AccountRepository, AccountValidator, ArchiveExtractor,
-    ChecksumComputer, ClipboardObserver, ConfigStore, CredentialStore, DownloadEngine,
+    ChecksumComputer, ClipboardObserver, Clock, ConfigStore, CredentialStore, DownloadEngine,
     DownloadRepository, EventBus, FileOpener, FileStorage, HistoryRepository, HttpClient,
     PackageRepository, PassphraseCodec, PluginConfigStore, PluginLoader, PluginStoreClient,
     UrlOpener,
@@ -98,6 +101,8 @@ pub struct CommandBus {
     account_validator: Option<Arc<dyn AccountValidator>>,
     account_selector: Option<Arc<AccountSelector>>,
     account_rotator: Option<Arc<AccountRotator>>,
+    account_operation_locks: Arc<AccountOperationLocks>,
+    account_clock: Option<Arc<dyn Clock>>,
     passphrase_codec: Option<Arc<dyn PassphraseCodec>>,
     /// Serializes queue-position allocation across handlers. Without this,
     /// two concurrent move-to-top/move-to-bottom/start-download calls can
@@ -167,6 +172,8 @@ impl CommandBus {
             account_validator: None,
             account_selector: None,
             account_rotator: None,
+            account_operation_locks: Arc::new(AccountOperationLocks::default()),
+            account_clock: None,
             passphrase_codec: None,
             queue_position_lock: tokio::sync::Mutex::new(()),
             link_check_limiter,
@@ -225,6 +232,16 @@ impl CommandBus {
         self
     }
 
+    pub fn with_account_clock(mut self, clock: Arc<dyn Clock>) -> Self {
+        self.account_clock = Some(clock);
+        self
+    }
+
+    pub fn with_account_operation_locks(mut self, locks: Arc<AccountOperationLocks>) -> Self {
+        self.account_operation_locks = locks;
+        self
+    }
+
     /// Builder-style setter for the passphrase codec used by the
     /// import / export commands.
     pub fn with_passphrase_codec(mut self, codec: Arc<dyn PassphraseCodec>) -> Self {
@@ -244,12 +261,45 @@ impl CommandBus {
         self.account_validator.as_deref()
     }
 
+    pub(crate) fn account_validator_arc(&self) -> Option<Arc<dyn AccountValidator>> {
+        self.account_validator.clone()
+    }
+
     pub fn account_selector(&self) -> Option<&AccountSelector> {
         self.account_selector.as_deref()
     }
 
     pub fn account_rotator(&self) -> Option<&AccountRotator> {
         self.account_rotator.as_deref()
+    }
+
+    pub(crate) fn save_account_availability(
+        &self,
+        repo: &dyn AccountRepository,
+        account: &Account,
+    ) -> Result<(), DomainError> {
+        match self.account_rotator() {
+            Some(rotator) => rotator.save_account(account),
+            None => repo.save(account),
+        }
+    }
+
+    pub(crate) fn account_operation_lock(
+        &self,
+        id: &AccountId,
+    ) -> Result<Arc<tokio::sync::Mutex<()>>, crate::application::error::AppError> {
+        self.account_operation_locks.lock_for(id)
+    }
+
+    pub(crate) fn account_now_ms(&self) -> Result<u64, crate::application::error::AppError> {
+        self.account_clock
+            .as_deref()
+            .map(Clock::now_unix_ms)
+            .ok_or_else(|| {
+                crate::application::error::AppError::Validation(
+                    "account clock not configured".into(),
+                )
+            })
     }
 
     pub fn passphrase_codec(&self) -> Option<&dyn PassphraseCodec> {

@@ -1,13 +1,39 @@
 //! Capability-based host function registration for WASM plugins.
 
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use dashmap::DashMap;
 
+use crate::domain::model::credential::Credential;
 use crate::domain::model::plugin::PluginManifest;
 use crate::domain::ports::driven::CredentialStore;
+
+#[derive(Default)]
+pub struct CredentialSlotState {
+    credential: Mutex<Option<Credential>>,
+    exposed: AtomicBool,
+}
+
+impl CredentialSlotState {
+    pub(crate) fn lock(
+        &self,
+    ) -> std::sync::LockResult<std::sync::MutexGuard<'_, Option<Credential>>> {
+        self.credential.lock()
+    }
+
+    pub(crate) fn mark_exposed(&self) {
+        self.exposed.store(true, Ordering::SeqCst);
+    }
+
+    pub(crate) fn has_been_exposed(&self) -> bool {
+        self.exposed.load(Ordering::SeqCst)
+    }
+}
+
+pub(crate) type CredentialSlot = Arc<CredentialSlotState>;
 
 /// Shared resources across all plugins (singleton).
 pub struct SharedHostResources {
@@ -28,6 +54,7 @@ impl SharedHostResources {
         // gives the remote side a way to identify traffic from Vortex
         // rather than generic scripted clients.
         reqwest::blocking::Client::builder()
+            .no_proxy()
             .user_agent("Vortex/0.1")
             .redirect(reqwest::redirect::Policy::none())
             .timeout(timeout)
@@ -92,6 +119,7 @@ pub struct PluginHostContext {
     pub(crate) plugin_name: String,
     pub(crate) capabilities: Vec<String>,
     pub(crate) shared: Arc<SharedHostResources>,
+    pub(crate) credential_slot: CredentialSlot,
 }
 
 /// Host-owned privileges established outside the plugin manifest.
@@ -116,10 +144,31 @@ pub fn build_host_functions(
     build_host_functions_with_grants(manifest, shared, HostFunctionGrants::default())
 }
 
+#[cfg(test)]
 pub(super) fn build_host_functions_with_grants(
     manifest: &PluginManifest,
     shared: &Arc<SharedHostResources>,
     grants: HostFunctionGrants,
+) -> Vec<extism::Function> {
+    build_host_functions_for_instance(manifest, shared, grants).0
+}
+
+pub(super) fn build_host_functions_for_instance(
+    manifest: &PluginManifest,
+    shared: &Arc<SharedHostResources>,
+    grants: HostFunctionGrants,
+) -> (Vec<extism::Function>, CredentialSlot) {
+    let credential_slot = Arc::new(CredentialSlotState::default());
+    let functions =
+        build_host_functions_with_slot(manifest, shared, grants, Arc::clone(&credential_slot));
+    (functions, credential_slot)
+}
+
+fn build_host_functions_with_slot(
+    manifest: &PluginManifest,
+    shared: &Arc<SharedHostResources>,
+    grants: HostFunctionGrants,
+    credential_slot: CredentialSlot,
 ) -> Vec<extism::Function> {
     let name = manifest.info().name().to_string();
 
@@ -163,6 +212,7 @@ pub(super) fn build_host_functions_with_grants(
         plugin_name: name,
         capabilities: manifest.capabilities().to_vec(),
         shared: Arc::clone(shared),
+        credential_slot,
     };
     let user_data = extism::UserData::new(ctx);
 
@@ -425,6 +475,20 @@ mod tests {
             .get("unknown-service")
             .unwrap();
         assert!(missing.is_none());
+    }
+
+    #[test]
+    fn test_scoped_credential_slots_are_isolated_by_plugin_instance() {
+        let shared = Arc::new(SharedHostResources::new());
+        let manifest = make_named_manifest_with_caps("vortex-mod-1fichier", vec![]);
+        let (_, first) =
+            build_host_functions_for_instance(&manifest, &shared, HostFunctionGrants::default());
+        let (_, second) =
+            build_host_functions_for_instance(&manifest, &shared, HostFunctionGrants::default());
+
+        assert!(first.lock().unwrap().is_none());
+        assert!(second.lock().unwrap().is_none());
+        assert!(!Arc::ptr_eq(&first, &second));
     }
 
     #[test]

@@ -6,10 +6,11 @@
 
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::application::command_bus::CommandBus;
+use crate::application::services::account_operation_locks::AccountOperationLocks;
 use crate::application::test_support::NoopHistoryRepo;
 use crate::domain::error::DomainError;
 use crate::domain::event::DomainEvent;
@@ -24,20 +25,23 @@ use crate::domain::model::package::{Package, PackageId};
 use crate::domain::model::plugin::{PluginInfo, PluginManifest};
 use crate::domain::ports::driven::{
     AccountCredentialStore, AccountRepository, AccountValidator, ArchiveExtractor,
-    ClipboardObserver, ConfigStore, CredentialStore, DownloadEngine, DownloadRepository, EventBus,
-    FileStorage, HttpClient, PackageRepository, PassphraseCodec, PluginLoader, ValidationOutcome,
+    ClipboardObserver, Clock, ConfigStore, CredentialStore, DownloadEngine, DownloadRepository,
+    EventBus, FileStorage, HttpClient, PackageRepository, PassphraseCodec, PluginLoader,
+    ValidationOutcome,
 };
 
 // ── In-memory account repository ─────────────────────────────────────
 
 pub(crate) struct InMemoryAccountRepo {
     store: Mutex<HashMap<AccountId, Account>>,
+    save_count: AtomicUsize,
 }
 
 impl InMemoryAccountRepo {
     pub(crate) fn new() -> Self {
         Self {
             store: Mutex::new(HashMap::new()),
+            save_count: AtomicUsize::new(0),
         }
     }
 
@@ -50,6 +54,10 @@ impl InMemoryAccountRepo {
         });
         accounts
     }
+
+    pub(crate) fn save_count(&self) -> usize {
+        self.save_count.load(Ordering::SeqCst)
+    }
 }
 
 impl AccountRepository for InMemoryAccountRepo {
@@ -58,6 +66,7 @@ impl AccountRepository for InMemoryAccountRepo {
     }
 
     fn save(&self, account: &Account) -> Result<(), DomainError> {
+        self.save_count.fetch_add(1, Ordering::SeqCst);
         let mut guard = self.store.lock().unwrap();
         for (id, existing) in guard.iter() {
             if id != account.id()
@@ -72,7 +81,7 @@ impl AccountRepository for InMemoryAccountRepo {
             }
         }
         let stored = match guard.get(account.id()) {
-            Some(existing) => Account::reconstruct(
+            Some(existing) => Account::reconstruct_with_status(
                 account.id().clone(),
                 account.service_name().to_string(),
                 account.username().to_string(),
@@ -83,6 +92,8 @@ impl AccountRepository for InMemoryAccountRepo {
                 account.valid_until(),
                 account.last_validated(),
                 existing.created_at(),
+                account.status(),
+                account.exhausted_until(),
             ),
             None => account.clone(),
         };
@@ -196,6 +207,15 @@ impl AccountCredentialStore for FakeAccountCredentialStore {
 
 pub(crate) struct FakeAccountValidator {
     behavior: Mutex<HashMap<String, ValidatorBehavior>>,
+    calls: Mutex<Vec<(String, String, String)>>,
+}
+
+struct FixedAccountClock;
+
+impl Clock for FixedAccountClock {
+    fn now_unix_secs(&self) -> u64 {
+        1_700_000_000
+    }
 }
 
 #[derive(Clone)]
@@ -204,12 +224,14 @@ pub(crate) enum ValidatorBehavior {
     Reject(String),
     Missing,
     Storage(String),
+    Domain(DomainError),
 }
 
 impl FakeAccountValidator {
     pub(crate) fn new() -> Self {
         Self {
             behavior: Mutex::new(HashMap::new()),
+            calls: Mutex::new(Vec::new()),
         }
     }
 
@@ -219,15 +241,24 @@ impl FakeAccountValidator {
             .unwrap()
             .insert(service_name.to_string(), behavior);
     }
+
+    pub(crate) fn calls(&self) -> Vec<(String, String, String)> {
+        self.calls.lock().unwrap().clone()
+    }
 }
 
 impl AccountValidator for FakeAccountValidator {
     fn validate(
         &self,
         service_name: &str,
-        _username: &str,
-        _password: &str,
+        username: &str,
+        password: &str,
     ) -> Result<ValidationOutcome, DomainError> {
+        self.calls.lock().unwrap().push((
+            service_name.to_string(),
+            username.to_string(),
+            password.to_string(),
+        ));
         let behavior = self
             .behavior
             .lock()
@@ -237,11 +268,15 @@ impl AccountValidator for FakeAccountValidator {
             .unwrap_or(ValidatorBehavior::Missing);
         match behavior {
             ValidatorBehavior::Ok(outcome) => Ok(outcome),
-            ValidatorBehavior::Reject(msg) => Ok(ValidationOutcome::rejected(msg)),
+            ValidatorBehavior::Reject(msg) => Ok(ValidationOutcome::rejected(
+                crate::domain::model::account::AccountStatus::InvalidCredentials,
+                msg,
+            )),
             ValidatorBehavior::Missing => Err(DomainError::NotFound(format!(
                 "no plugin for service {service_name}"
             ))),
             ValidatorBehavior::Storage(msg) => Err(DomainError::StorageError(msg)),
+            ValidatorBehavior::Domain(error) => Err(error),
         }
     }
 }
@@ -668,6 +703,23 @@ impl DownloadRepository for InMemoryDownloadRepo {
         Ok(())
     }
 
+    fn compare_and_set_account_reference(
+        &self,
+        id: DownloadId,
+        expected: &AccountId,
+        replacement: &AccountId,
+    ) -> Result<bool, DomainError> {
+        let mut store = self.store.lock().unwrap();
+        let Some(download) = store.get_mut(&id) else {
+            return Ok(false);
+        };
+        if download.account_id() != Some(expected) {
+            return Ok(false);
+        }
+        *download = download.clone().with_account_id(replacement.clone());
+        Ok(true)
+    }
+
     fn find_by_state(&self, state: DownloadState) -> Result<Vec<Download>, DomainError> {
         Ok(self
             .store
@@ -751,13 +803,33 @@ pub(crate) fn build_account_bus(
     validator: Option<Arc<dyn AccountValidator>>,
     codec: Option<Arc<dyn PassphraseCodec>>,
 ) -> CommandBus {
+    build_account_bus_with_plugin_loader(
+        account_repo,
+        credential_store,
+        event_bus,
+        validator,
+        codec,
+        Arc::new(StubPluginLoader),
+    )
+}
+
+pub(crate) fn build_account_bus_with_plugin_loader(
+    account_repo: Arc<dyn AccountRepository>,
+    credential_store: Arc<dyn AccountCredentialStore>,
+    event_bus: Arc<CapturingEventBus>,
+    validator: Option<Arc<dyn AccountValidator>>,
+    codec: Option<Arc<dyn PassphraseCodec>>,
+    plugin_loader: Arc<dyn PluginLoader>,
+) -> CommandBus {
+    let clock: Arc<dyn Clock> = Arc::new(FixedAccountClock);
+    let locks = Arc::new(AccountOperationLocks::default());
     let mut bus = CommandBus::new(
         Arc::new(StubDownloadRepo),
         Arc::new(StubDownloadEngine),
         event_bus,
         Arc::new(StubFileStorage),
         Arc::new(StubHttpClient),
-        Arc::new(StubPluginLoader),
+        plugin_loader,
         Arc::new(StubConfigStore),
         Arc::new(StubCredentialStore),
         Arc::new(StubClipboardObserver),
@@ -766,7 +838,9 @@ pub(crate) fn build_account_bus(
         None,
     )
     .with_account_repo(account_repo)
-    .with_account_credential_store(credential_store);
+    .with_account_credential_store(credential_store)
+    .with_account_clock(clock)
+    .with_account_operation_locks(locks);
 
     if let Some(v) = validator {
         bus = bus.with_account_validator(v);

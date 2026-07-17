@@ -15,6 +15,10 @@ use crate::application::error::AppError;
 use crate::domain::event::DomainEvent;
 use crate::domain::model::account::{Account, AccountId};
 
+use super::validate_account::{
+    apply_validation, publish_validation, validate_credentials_blocking,
+};
+
 impl CommandBus {
     pub async fn handle_add_account(
         &self,
@@ -34,6 +38,8 @@ impl CommandBus {
         })?;
 
         let id = AccountId::new(Uuid::new_v4().to_string());
+        let operation_lock = self.account_operation_lock(&id)?;
+        let _operation_guard = operation_lock.lock().await;
         let account = Account::new(
             id.clone(),
             service_name,
@@ -74,10 +80,64 @@ impl CommandBus {
             return Err(e.into());
         }
 
+        let validation = match self.account_validator_arc() {
+            Some(validator) => {
+                match validate_credentials_blocking(validator, account.clone(), cmd.password).await
+                {
+                    Ok(attempt) => Some(attempt),
+                    Err(error) => {
+                        if let Err(rollback_error) = repo.delete(&id) {
+                            tracing::warn!(
+                                account_id = %id.as_str(),
+                                validation_error = %error,
+                                rollback_error = %rollback_error,
+                                "account validation worker failed and row rollback also failed"
+                            );
+                        }
+                        if let Err(cleanup_error) = store.delete_password(&id) {
+                            tracing::warn!(
+                                account_id = %id.as_str(),
+                                validation_error = %error,
+                                cleanup_error = %cleanup_error,
+                                "account validation worker failed and credential cleanup also failed"
+                            );
+                        }
+                        return Err(error);
+                    }
+                }
+            }
+            None => None,
+        };
+        if let Some(attempt) = &validation {
+            let validated = apply_validation(&account, &attempt.outcome, cmd.created_at_ms);
+            if let Err(error) = self.save_account_availability(repo, &validated) {
+                if let Err(rollback_error) = repo.delete(&id) {
+                    tracing::warn!(
+                        account_id = %id.as_str(),
+                        validation_error = %error,
+                        rollback_error = %rollback_error,
+                        "account validation state failed to persist and row rollback also failed"
+                    );
+                }
+                if let Err(cleanup_error) = store.delete_password(&id) {
+                    tracing::warn!(
+                        account_id = %id.as_str(),
+                        validation_error = %error,
+                        cleanup_error = %cleanup_error,
+                        "account validation state failed to persist and credential cleanup also failed"
+                    );
+                }
+                return Err(error.into());
+            }
+        }
+
         self.event_bus().publish(DomainEvent::AccountAdded {
             id: id.clone(),
             service_name: account.service_name().to_string(),
         });
+        if let Some(attempt) = validation {
+            publish_validation(self, id.clone(), &attempt.outcome);
+        }
 
         Ok(id)
     }
@@ -97,13 +157,29 @@ mod tests {
 
     use super::super::AddAccountCommand;
     use crate::application::commands::tests_support::{
-        CapturingEventBus, FakeAccountCredentialStore, InMemoryAccountRepo, build_account_bus,
+        CapturingEventBus, FakeAccountCredentialStore, FakeAccountValidator, InMemoryAccountRepo,
+        ValidatorBehavior, build_account_bus,
     };
     use crate::application::error::AppError;
     use crate::domain::error::DomainError;
     use crate::domain::event::DomainEvent;
-    use crate::domain::model::account::AccountType;
-    use crate::domain::ports::driven::{AccountCredentialStore, AccountRepository};
+    use crate::domain::model::account::{AccountStatus, AccountType};
+    use crate::domain::ports::driven::{
+        AccountCredentialStore, AccountRepository, AccountValidator, ValidationOutcome,
+    };
+
+    struct PanickingValidator;
+
+    impl AccountValidator for PanickingValidator {
+        fn validate(
+            &self,
+            _service_name: &str,
+            _username: &str,
+            _password: &str,
+        ) -> Result<ValidationOutcome, DomainError> {
+            panic!("simulated validation worker failure")
+        }
+    }
 
     fn add_command(service: &str, user: &str, password: &str) -> AddAccountCommand {
         AddAccountCommand {
@@ -151,6 +227,51 @@ mod tests {
             }
             other => panic!("unexpected event: {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn test_add_account_validates_and_persists_valid_status() {
+        let repo = Arc::new(InMemoryAccountRepo::new());
+        let creds = Arc::new(FakeAccountCredentialStore::new());
+        let validator = Arc::new(FakeAccountValidator::new());
+        validator.set(
+            "vortex-mod-1fichier",
+            ValidatorBehavior::Ok(ValidationOutcome::ok()),
+        );
+        let events = Arc::new(CapturingEventBus::new());
+        let bus = build_account_bus(repo.clone(), creds, events, Some(validator.clone()), None);
+
+        let id = bus
+            .handle_add_account(add_command("vortex-mod-1fichier", "alice", "api-key"))
+            .await
+            .expect("invalid credentials do not discard account metadata");
+
+        let stored = repo.find_by_id(&id).unwrap().expect("account persisted");
+        assert_eq!(stored.status(), AccountStatus::Valid);
+        assert_eq!(stored.last_validated(), Some(1_700_000_000_000));
+        assert_eq!(validator.calls().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_add_account_keeps_rejected_account_with_typed_status() {
+        let repo = Arc::new(InMemoryAccountRepo::new());
+        let creds = Arc::new(FakeAccountCredentialStore::new());
+        let validator = Arc::new(FakeAccountValidator::new());
+        validator.set(
+            "vortex-mod-1fichier",
+            ValidatorBehavior::Reject("wrong key".into()),
+        );
+        let events = Arc::new(CapturingEventBus::new());
+        let bus = build_account_bus(repo.clone(), creds, events, Some(validator), None);
+
+        let id = bus
+            .handle_add_account(add_command("vortex-mod-1fichier", "alice", "bad-key"))
+            .await
+            .expect("rejected account remains configured");
+
+        let stored = repo.find_by_id(&id).unwrap().expect("account persisted");
+        assert_eq!(stored.status(), AccountStatus::InvalidCredentials);
+        assert_eq!(stored.last_validated(), Some(1_700_000_000_000));
     }
 
     #[tokio::test]
@@ -226,6 +347,34 @@ mod tests {
             repo.list().unwrap().is_empty(),
             "row must be rolled back when keyring write fails"
         );
+        assert!(events.snapshot().is_empty(), "no event on failure");
+    }
+
+    #[tokio::test]
+    async fn test_add_account_rolls_back_when_validation_worker_stops() {
+        let repo = Arc::new(InMemoryAccountRepo::new());
+        let creds = Arc::new(FakeAccountCredentialStore::new());
+        let events = Arc::new(CapturingEventBus::new());
+        let bus = build_account_bus(
+            repo.clone(),
+            creds.clone(),
+            events.clone(),
+            Some(Arc::new(PanickingValidator)),
+            None,
+        );
+
+        let err = bus
+            .handle_add_account(add_command("real-debrid", "alice", "pw"))
+            .await
+            .expect_err("validation worker failure surfaces");
+
+        assert!(matches!(
+            err,
+            AppError::Domain(DomainError::PluginError(message))
+                if message.contains("validation worker stopped")
+        ));
+        assert!(repo.list().unwrap().is_empty(), "row must be rolled back");
+        assert_eq!(creds.entry_count(), 0, "credential must be removed");
         assert!(events.snapshot().is_empty(), "no event on failure");
     }
 

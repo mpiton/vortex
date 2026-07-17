@@ -8,11 +8,115 @@
 //! (full latency + traffic readout) without re-reading the row.
 
 use super::ValidationOutcomeDto;
+use std::sync::Arc;
+
 use crate::application::command_bus::CommandBus;
 use crate::application::error::AppError;
+use crate::application::services::account_state::{apply_status, status_for_plugin_error};
 use crate::domain::error::DomainError;
 use crate::domain::event::DomainEvent;
-use crate::domain::model::account::Account;
+use crate::domain::model::account::{Account, AccountStatus};
+use crate::domain::ports::driven::{AccountValidator, ValidationOutcome};
+
+pub(super) struct AccountValidationAttempt {
+    pub outcome: ValidationOutcome,
+    pub error: Option<DomainError>,
+}
+
+pub(super) fn validate_credentials(
+    validator: &dyn AccountValidator,
+    account: &Account,
+    password: &str,
+) -> AccountValidationAttempt {
+    match validator.validate(account.service_name(), account.username(), password) {
+        Ok(outcome) => AccountValidationAttempt {
+            outcome,
+            error: None,
+        },
+        Err(error) => match status_for_plugin_error(&error) {
+            Some(status) => typed_rejection(status, error),
+            None => AccountValidationAttempt {
+                outcome: ValidationOutcome::rejected(AccountStatus::Error, error.to_string()),
+                error: Some(error),
+            },
+        },
+    }
+}
+
+pub(super) async fn validate_credentials_blocking(
+    validator: Arc<dyn AccountValidator>,
+    account: Account,
+    password: String,
+) -> Result<AccountValidationAttempt, AppError> {
+    tokio::task::spawn_blocking(move || {
+        validate_credentials(validator.as_ref(), &account, &password)
+    })
+    .await
+    .map_err(|_| {
+        AppError::Domain(DomainError::PluginError(
+            "account validation worker stopped".into(),
+        ))
+    })
+}
+
+fn typed_rejection(status: AccountStatus, error: DomainError) -> AccountValidationAttempt {
+    AccountValidationAttempt {
+        outcome: ValidationOutcome::rejected(status, error.to_string()),
+        error: None,
+    }
+}
+
+pub(super) fn validation_error_to_app(error: DomainError) -> AppError {
+    match error {
+        DomainError::NotFound(message) => AppError::NotFound(message),
+        other => other.into(),
+    }
+}
+
+pub(super) fn apply_validation(
+    account: &Account,
+    outcome: &ValidationOutcome,
+    now_ms: u64,
+) -> Account {
+    let mut next = account.clone();
+    next.set_last_validated(now_ms);
+    apply_status(&mut next, outcome.status, now_ms);
+    if outcome.is_valid() {
+        if let Some(traffic_left) = outcome.traffic_left {
+            next.set_traffic_left(traffic_left);
+        }
+        if let Some(traffic_total) = outcome.traffic_total {
+            next.set_traffic_total(traffic_total);
+        }
+        next.replace_valid_until(outcome.valid_until);
+    }
+    next
+}
+
+pub(super) fn publish_validation(
+    bus: &CommandBus,
+    id: crate::domain::model::account::AccountId,
+    outcome: &ValidationOutcome,
+) {
+    if outcome.is_valid() {
+        bus.event_bus().publish(DomainEvent::AccountValidated {
+            id,
+            latency_ms: outcome.latency_ms,
+            traffic_left: outcome.traffic_left,
+            traffic_total: outcome.traffic_total,
+            valid_until: outcome.valid_until,
+        });
+    } else {
+        bus.event_bus()
+            .publish(DomainEvent::AccountValidationFailed {
+                id,
+                error: outcome
+                    .error_message
+                    .clone()
+                    .unwrap_or_else(|| "validation rejected".into()),
+            });
+    }
+}
 
 impl CommandBus {
     pub async fn handle_validate_account(
@@ -26,115 +130,92 @@ impl CommandBus {
             AppError::Validation("account credential store not configured".into())
         })?;
         let validator = self
-            .account_validator()
+            .account_validator_arc()
             .ok_or_else(|| AppError::Validation("account validator not configured".into()))?;
+        let operation_lock = self.account_operation_lock(&cmd.id)?;
+        let _operation_guard = operation_lock.lock().await;
 
         let account = repo
             .find_by_id(&cmd.id)?
             .ok_or_else(|| AppError::NotFound(format!("account {} not found", cmd.id.as_str())))?;
 
-        let password = store.get_password(&cmd.id)?.ok_or_else(|| {
-            AppError::NotFound(format!(
-                "no stored password for account {}",
-                cmd.id.as_str()
-            ))
-        })?;
+        let password = match store.get_password(&cmd.id)? {
+            Some(password) => password,
+            None => {
+                let outcome = ValidationOutcome::rejected(
+                    AccountStatus::MissingCredential,
+                    format!("no stored password for account {}", cmd.id.as_str()),
+                );
+                self.save_account_availability(
+                    repo,
+                    &apply_validation(&account, &outcome, cmd.now_ms),
+                )?;
+                publish_validation(self, cmd.id.clone(), &outcome);
+                return Err(AppError::NotFound(
+                    outcome.error_message.unwrap_or_default(),
+                ));
+            }
+        };
 
-        let outcome =
-            match validator.validate(account.service_name(), account.username(), &password) {
-                Ok(o) => o,
-                Err(DomainError::NotFound(msg)) => {
-                    self.event_bus()
-                        .publish(DomainEvent::AccountValidationFailed {
-                            id: cmd.id.clone(),
-                            error: msg.clone(),
-                        });
-                    return Err(AppError::NotFound(msg));
-                }
-                Err(other) => {
-                    // Network failures, keyring read errors, and any
-                    // other domain error coming back from the validator
-                    // are surfaced as `AccountValidationFailed` so the
-                    // UI can react identically whether the upstream
-                    // service rejected the credentials or was simply
-                    // unreachable.
-                    self.event_bus()
-                        .publish(DomainEvent::AccountValidationFailed {
-                            id: cmd.id.clone(),
-                            error: other.to_string(),
-                        });
-                    return Err(other.into());
-                }
-            };
+        let attempt = validate_credentials_blocking(validator, account.clone(), password).await?;
+        self.save_account_availability(
+            repo,
+            &apply_validation(&account, &attempt.outcome, cmd.now_ms),
+        )?;
+        publish_validation(self, cmd.id, &attempt.outcome);
 
-        let mut next = clone_account(&account);
-        next.set_last_validated(cmd.now_ms);
-        if outcome.valid {
-            if let Some(t) = outcome.traffic_left {
-                next.set_traffic_left(t);
-            }
-            if let Some(t) = outcome.traffic_total {
-                next.set_traffic_total(t);
-            }
-            if let Some(v) = outcome.valid_until {
-                next.set_valid_until(v);
-            }
+        match attempt.error {
+            Some(error) => Err(validation_error_to_app(error)),
+            None => Ok(attempt.outcome.into()),
         }
-        repo.save(&next)?;
-
-        if outcome.valid {
-            self.event_bus().publish(DomainEvent::AccountValidated {
-                id: cmd.id,
-                latency_ms: outcome.latency_ms,
-                traffic_left: outcome.traffic_left,
-                traffic_total: outcome.traffic_total,
-                valid_until: outcome.valid_until,
-            });
-        } else {
-            self.event_bus()
-                .publish(DomainEvent::AccountValidationFailed {
-                    id: cmd.id,
-                    error: outcome
-                        .error_message
-                        .clone()
-                        .unwrap_or_else(|| "validation rejected".into()),
-                });
-        }
-
-        Ok(outcome.into())
     }
-}
-
-fn clone_account(account: &Account) -> Account {
-    Account::reconstruct(
-        account.id().clone(),
-        account.service_name().to_string(),
-        account.username().to_string(),
-        account.account_type(),
-        account.is_enabled(),
-        account.traffic_left(),
-        account.traffic_total(),
-        account.valid_until(),
-        account.last_validated(),
-        account.created_at(),
-    )
 }
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{Arc, Condvar, Mutex};
+    use std::time::Duration;
 
-    use super::super::{AddAccountCommand, ValidateAccountCommand};
+    use super::super::{AddAccountCommand, DeleteAccountCommand, ValidateAccountCommand};
     use crate::application::commands::tests_support::{
         CapturingEventBus, FakeAccountCredentialStore, FakeAccountValidator, InMemoryAccountRepo,
         ValidatorBehavior, build_account_bus,
     };
     use crate::application::error::AppError;
+    use crate::application::services::{AccountRotator, AccountSelector};
+    use crate::domain::error::DomainError;
     use crate::domain::event::DomainEvent;
-    use crate::domain::model::account::{AccountId, AccountType};
+    use crate::domain::model::account::{Account, AccountId, AccountStatus, AccountType};
     use crate::domain::ports::driven::{
-        AccountCredentialStore, AccountRepository, ValidationOutcome,
+        AccountCredentialStore, AccountRepository, AccountValidator, Clock, ValidationOutcome,
     };
+
+    struct ValidationClock;
+
+    impl Clock for ValidationClock {
+        fn now_unix_secs(&self) -> u64 {
+            1_700_000_000
+        }
+    }
+
+    struct BlockingValidator {
+        entered: Mutex<Option<std::sync::mpsc::Sender<()>>>,
+        release: Arc<(Mutex<bool>, Condvar)>,
+    }
+
+    impl AccountValidator for BlockingValidator {
+        fn validate(&self, _: &str, _: &str, _: &str) -> Result<ValidationOutcome, DomainError> {
+            if let Some(sender) = self.entered.lock().expect("entered mutex").take() {
+                sender.send(()).expect("test receiver remains alive");
+            }
+            let (mutex, condition) = &*self.release;
+            let mut released = mutex.lock().expect("release mutex");
+            while !*released {
+                released = condition.wait(released).expect("release wait");
+            }
+            Ok(ValidationOutcome::ok())
+        }
+    }
 
     fn add_command(service: &str) -> AddAccountCommand {
         AddAccountCommand {
@@ -144,6 +225,282 @@ mod tests {
             account_type: AccountType::Premium,
             created_at_ms: 1_700_000_000_000,
         }
+    }
+
+    #[test]
+    fn successful_validation_clears_a_stale_expiry() {
+        let mut account = Account::new(
+            AccountId::new("account-1"),
+            "vortex-mod-1fichier".into(),
+            "alice".into(),
+            AccountType::Premium,
+            1,
+        );
+        account.set_status(AccountStatus::Valid);
+        account.set_valid_until(100);
+
+        let validated = super::apply_validation(&account, &ValidationOutcome::ok(), 200);
+
+        assert_eq!(validated.valid_until(), None);
+    }
+
+    #[test]
+    fn temporary_validation_failure_records_a_retry_deadline() {
+        let account = Account::new(
+            AccountId::new("account-1"),
+            "vortex-mod-1fichier".into(),
+            "alice".into(),
+            AccountType::Premium,
+            1,
+        );
+        let outcome = ValidationOutcome::rejected(
+            AccountStatus::Cooldown,
+            DomainError::AccountCooldown.to_string(),
+        );
+
+        let validated = super::apply_validation(&account, &outcome, 200);
+
+        assert_eq!(validated.status(), AccountStatus::Cooldown);
+        assert_eq!(validated.exhausted_until(), Some(60_200));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn concurrent_delete_cannot_be_undone_by_a_slow_validation() {
+        let repo = Arc::new(InMemoryAccountRepo::new());
+        let credentials = Arc::new(FakeAccountCredentialStore::new());
+        let account = Account::new(
+            AccountId::new("account-1"),
+            "vortex-mod-1fichier".into(),
+            "alice".into(),
+            AccountType::Premium,
+            1,
+        );
+        repo.save(&account).expect("seed account");
+        credentials
+            .store_password(account.id(), "api-key")
+            .expect("seed credential");
+
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let release = Arc::new((Mutex::new(false), Condvar::new()));
+        let validator = Arc::new(BlockingValidator {
+            entered: Mutex::new(Some(entered_tx)),
+            release: release.clone(),
+        });
+        let events = Arc::new(CapturingEventBus::new());
+        let bus = Arc::new(build_account_bus(
+            repo.clone(),
+            credentials,
+            events,
+            Some(validator),
+            None,
+        ));
+
+        let validating_bus = bus.clone();
+        let validating = tokio::spawn(async move {
+            validating_bus
+                .handle_validate_account(ValidateAccountCommand {
+                    id: AccountId::new("account-1"),
+                    now_ms: 2,
+                })
+                .await
+        });
+        tokio::task::spawn_blocking(move || entered_rx.recv_timeout(Duration::from_secs(1)))
+            .await
+            .expect("join entered wait")
+            .expect("validator entered");
+
+        let deleting_bus = bus.clone();
+        let mut deleting = tokio::spawn(async move {
+            deleting_bus
+                .handle_delete_account(DeleteAccountCommand {
+                    id: AccountId::new("account-1"),
+                })
+                .await
+        });
+        let deleted_while_validation_blocked =
+            tokio::time::timeout(Duration::from_millis(100), &mut deleting)
+                .await
+                .ok();
+
+        let (mutex, condition) = &*release;
+        *mutex.lock().expect("release mutex") = true;
+        condition.notify_all();
+        validating
+            .await
+            .expect("validation join")
+            .expect("validation");
+        match deleted_while_validation_blocked {
+            Some(result) => result.expect("delete join").expect("delete"),
+            None => deleting.await.expect("delete join").expect("delete"),
+        }
+
+        assert!(
+            repo.find_by_id(account.id())
+                .expect("read account")
+                .is_none(),
+            "a validation that began before deletion must not recreate the row"
+        );
+    }
+
+    #[tokio::test]
+    async fn blocking_plugin_validation_does_not_stall_the_async_worker() {
+        let repo = Arc::new(InMemoryAccountRepo::new());
+        let credentials = Arc::new(FakeAccountCredentialStore::new());
+        let account = Account::new(
+            AccountId::new("account-1"),
+            "vortex-mod-1fichier".into(),
+            "alice".into(),
+            AccountType::Premium,
+            1,
+        );
+        repo.save(&account).expect("seed account");
+        credentials
+            .store_password(account.id(), "api-key")
+            .expect("seed credential");
+        let release = Arc::new((Mutex::new(false), Condvar::new()));
+        let validator = Arc::new(BlockingValidator {
+            entered: Mutex::new(None),
+            release: release.clone(),
+        });
+        let bus = Arc::new(build_account_bus(
+            repo,
+            credentials,
+            Arc::new(CapturingEventBus::new()),
+            Some(validator),
+            None,
+        ));
+        let failsafe_release = release.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(500));
+            let (released, condition) = &*failsafe_release;
+            *released.lock().expect("release mutex") = true;
+            condition.notify_all();
+        });
+        let validating = tokio::spawn(async move {
+            bus.handle_validate_account(ValidateAccountCommand {
+                id: AccountId::new("account-1"),
+                now_ms: 2,
+            })
+            .await
+        });
+
+        let started = std::time::Instant::now();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(
+            started.elapsed() < Duration::from_millis(250),
+            "synchronous plugin validation blocked the Tokio worker"
+        );
+
+        let (released, condition) = &*release;
+        *released.lock().expect("release mutex") = true;
+        condition.notify_all();
+        validating
+            .await
+            .expect("validation join")
+            .expect("validation succeeds");
+    }
+
+    #[tokio::test]
+    async fn successful_validation_clears_the_rotator_cooldown_cache() {
+        let repo = Arc::new(InMemoryAccountRepo::new());
+        let credentials = Arc::new(FakeAccountCredentialStore::new());
+        let events = Arc::new(CapturingEventBus::new());
+        let validator = Arc::new(FakeAccountValidator::new());
+        validator.set(
+            "vortex-mod-1fichier",
+            ValidatorBehavior::Ok(ValidationOutcome::ok()),
+        );
+        let mut account = Account::reconstruct_with_status(
+            AccountId::new("account-1"),
+            "vortex-mod-1fichier".into(),
+            "alice".into(),
+            AccountType::Premium,
+            true,
+            None,
+            None,
+            Some(u64::MAX),
+            Some(1),
+            1,
+            AccountStatus::Valid,
+            None,
+        );
+        account.mark_exhausted(1_700_000_060_000);
+        repo.save(&account).expect("seed account");
+        credentials
+            .store_password(account.id(), "api-key")
+            .expect("seed credential");
+        let clock: Arc<dyn Clock> = Arc::new(ValidationClock);
+        let selector = AccountSelector::new(repo.clone(), events.clone(), clock.clone());
+        let rotator = AccountRotator::new(selector, repo.clone(), events.clone(), clock);
+        let saves_before_validation = repo.save_count();
+        let bus = build_account_bus(repo.clone(), credentials, events, Some(validator), None)
+            .with_account_rotator(rotator.clone());
+
+        bus.handle_validate_account(ValidateAccountCommand {
+            id: account.id().clone(),
+            now_ms: 1_700_000_000_000,
+        })
+        .await
+        .expect("validation succeeds");
+
+        assert!(!rotator.is_exhausted(account.id()).expect("rotator state"));
+        assert_eq!(repo.save_count(), saves_before_validation + 1);
+        assert_eq!(
+            repo.find_by_id(account.id()).unwrap().unwrap().status(),
+            AccountStatus::Valid
+        );
+    }
+
+    #[tokio::test]
+    async fn temporary_validation_failure_commits_the_rotator_exclusion_immediately() {
+        let repo = Arc::new(InMemoryAccountRepo::new());
+        let credentials = Arc::new(FakeAccountCredentialStore::new());
+        let events = Arc::new(CapturingEventBus::new());
+        let validator = Arc::new(FakeAccountValidator::new());
+        validator.set(
+            "vortex-mod-1fichier",
+            ValidatorBehavior::Ok(ValidationOutcome::rejected(
+                AccountStatus::Cooldown,
+                "rate limited",
+            )),
+        );
+        let mut account = Account::new(
+            AccountId::new("account-1"),
+            "vortex-mod-1fichier".into(),
+            "alice".into(),
+            AccountType::Premium,
+            1,
+        );
+        account.set_status(AccountStatus::Valid);
+        repo.save(&account).expect("seed account");
+        credentials
+            .store_password(account.id(), "api-key")
+            .expect("seed credential");
+        let clock: Arc<dyn Clock> = Arc::new(ValidationClock);
+        let selector = AccountSelector::new(repo.clone(), events.clone(), clock.clone());
+        let rotator = AccountRotator::new(selector, repo.clone(), events.clone(), clock);
+        let bus = build_account_bus(repo, credentials, events, Some(validator), None)
+            .with_account_rotator(rotator.clone());
+
+        let outcome = bus
+            .handle_validate_account(ValidateAccountCommand {
+                id: account.id().clone(),
+                now_ms: 1_700_000_000_000,
+            })
+            .await
+            .expect("typed cooldown is a validation outcome");
+
+        assert!(!outcome.valid);
+        assert!(rotator.is_exhausted(account.id()).unwrap());
+        assert!(matches!(
+            rotator
+                .next_account(
+                    account.service_name(),
+                    crate::domain::model::account::AccountSelectionStrategy::BestTraffic,
+                )
+                .unwrap(),
+            crate::application::services::account_rotator::NextAccountOutcome::AllExhausted { .. }
+        ));
     }
 
     #[tokio::test]
@@ -185,7 +542,7 @@ mod tests {
         validator.set(
             "real-debrid",
             ValidatorBehavior::Ok(ValidationOutcome {
-                valid: true,
+                status: crate::domain::model::account::AccountStatus::Valid,
                 latency_ms: Some(120),
                 traffic_left: Some(50_000),
                 traffic_total: Some(100_000),
@@ -254,6 +611,7 @@ mod tests {
 
         let after = repo.find_by_id(&id).unwrap().unwrap();
         assert_eq!(after.last_validated(), Some(1_900_000_000_000));
+        assert_eq!(after.status(), AccountStatus::InvalidCredentials);
         assert!(after.traffic_left().is_none(), "no traffic on reject");
 
         assert!(
@@ -262,6 +620,36 @@ mod tests {
                 .iter()
                 .any(|e| matches!(e, DomainEvent::AccountValidationFailed { id: ev, error } if ev == &id && error == "wrong password"))
         );
+    }
+
+    #[tokio::test]
+    async fn test_validate_account_maps_typed_plugin_error_to_persisted_status() {
+        let repo = Arc::new(InMemoryAccountRepo::new());
+        let creds = Arc::new(FakeAccountCredentialStore::new());
+        let validator = Arc::new(FakeAccountValidator::new());
+        validator.set(
+            "vortex-mod-1fichier",
+            ValidatorBehavior::Domain(DomainError::AccountExpired),
+        );
+        let events = Arc::new(CapturingEventBus::new());
+        let bus = build_account_bus(repo.clone(), creds, events, Some(validator), None);
+        let id = bus
+            .handle_add_account(add_command("vortex-mod-1fichier"))
+            .await
+            .expect("account remains configured");
+
+        let outcome = bus
+            .handle_validate_account(ValidateAccountCommand {
+                id: id.clone(),
+                now_ms: 1_900_000_000_000,
+            })
+            .await
+            .expect("typed account failure is a validation outcome");
+
+        assert!(!outcome.valid);
+        let stored = repo.find_by_id(&id).unwrap().expect("account persisted");
+        assert_eq!(stored.status(), AccountStatus::Expired);
+        assert_eq!(stored.last_validated(), Some(1_900_000_000_000));
     }
 
     #[tokio::test]
@@ -340,5 +728,7 @@ mod tests {
             .await
             .expect_err("missing pw");
         assert!(matches!(err, AppError::NotFound(_)));
+        let stored = repo.find_by_id(&id).unwrap().expect("account persisted");
+        assert_eq!(stored.status(), AccountStatus::MissingCredential);
     }
 }

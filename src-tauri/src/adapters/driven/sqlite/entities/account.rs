@@ -1,7 +1,7 @@
 use sea_orm::entity::prelude::*;
 
 use crate::domain::error::DomainError;
-use crate::domain::model::account::{Account, AccountId, AccountType};
+use crate::domain::model::account::{Account, AccountId, AccountStatus, AccountType};
 
 use crate::adapters::driven::sqlite::util::safe_u64;
 
@@ -18,6 +18,8 @@ pub struct Model {
     pub traffic_total: Option<i64>,
     pub valid_until: Option<i64>,
     pub last_validated: Option<i64>,
+    pub status: String,
+    pub cooldown_until: Option<i64>,
     pub created_at: i64,
 }
 
@@ -29,7 +31,8 @@ impl ActiveModelBehavior for ActiveModel {}
 impl Model {
     pub fn into_domain(self) -> Result<Account, DomainError> {
         let account_type: AccountType = self.account_type.parse()?;
-        Ok(Account::reconstruct(
+        let status: AccountStatus = self.status.parse()?;
+        Ok(Account::reconstruct_with_status(
             AccountId::new(self.id),
             self.service_name,
             self.username,
@@ -40,6 +43,8 @@ impl Model {
             self.valid_until.map(safe_u64),
             self.last_validated.map(safe_u64),
             safe_u64(self.created_at),
+            status,
+            self.cooldown_until.map(safe_u64),
         ))
     }
 }
@@ -55,6 +60,8 @@ impl ActiveModel {
         let valid_until = checked_to_i64_opt(account.valid_until(), "valid_until", &id_str)?;
         let last_validated =
             checked_to_i64_opt(account.last_validated(), "last_validated", &id_str)?;
+        let cooldown_until =
+            checked_to_i64_opt(account.exhausted_until(), "cooldown_until", &id_str)?;
         let created_at = i64::try_from(account.created_at()).map_err(|_| {
             DomainError::ValidationError(format!("account {id_str}: created_at exceeds i64::MAX"))
         })?;
@@ -69,6 +76,8 @@ impl ActiveModel {
             traffic_total: Set(traffic_total),
             valid_until: Set(valid_until),
             last_validated: Set(last_validated),
+            status: Set(account.status().to_string()),
+            cooldown_until: Set(cooldown_until),
             created_at: Set(created_at),
         })
     }

@@ -22,6 +22,10 @@ pub enum DomainError {
     NetworkError(String),
     ValidationError(String),
     PluginError(String),
+    AccountInvalidCredentials,
+    AccountExpired,
+    AccountCooldown,
+    AccountQuotaExceeded,
     AdaptiveStreamOnly,
     /// Computed checksum did not match the expected value.
     ChecksumMismatch {
@@ -69,6 +73,12 @@ impl std::fmt::Display for DomainError {
             DomainError::PluginError(msg) => {
                 write!(f, "Plugin error: {msg}")
             }
+            DomainError::AccountInvalidCredentials => {
+                write!(f, "Account credentials were rejected")
+            }
+            DomainError::AccountExpired => write!(f, "Account is expired"),
+            DomainError::AccountCooldown => write!(f, "Account is temporarily rate-limited"),
+            DomainError::AccountQuotaExceeded => write!(f, "Account quota is exhausted"),
             DomainError::AdaptiveStreamOnly => write!(
                 f,
                 "Video is only available as adaptive stream (DASH/HLS); use download_to_file"

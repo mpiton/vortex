@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::application::command_bus::CommandBus;
 use crate::application::error::AppError;
 use crate::domain::event::DomainEvent;
+use crate::domain::model::account::{AccountId, AccountStatus};
 use crate::domain::model::download::{Download, DownloadId, Url};
 use crate::domain::model::http::HttpResponse;
 
@@ -64,6 +65,16 @@ impl CommandBus {
         let dest = dest_dir.join(&file_name);
 
         let id = next_download_id();
+        let account_lock = cmd
+            .account_id
+            .as_ref()
+            .map(|id| self.account_operation_lock(id))
+            .transpose()?;
+        let _account_guard = match account_lock {
+            Some(lock) => Some(lock.lock_owned().await),
+            None => None,
+        };
+        self.validate_download_account(cmd.module_name.as_deref(), cmd.account_id.as_ref())?;
         // Append to the back of the queue so a freshly added download
         // does not jump in front of items the user has explicitly
         // reordered (default queue_position 0 would sort before 1..N).
@@ -78,12 +89,68 @@ impl CommandBus {
         if let Some(hostname) = cmd.source_hostname_override {
             download = download.with_source_hostname(hostname);
         }
+        if let Some(module_name) = cmd.module_name {
+            download = download.with_module_name(module_name);
+        }
+        if let Some(account_id) = cmd.account_id {
+            download = download.with_account_id(account_id);
+        }
 
         self.download_repo().save(&download)?;
         self.event_bus()
             .publish(DomainEvent::DownloadCreated { id });
 
         Ok(id)
+    }
+
+    pub(super) fn validate_download_account(
+        &self,
+        module_name: Option<&str>,
+        account_id: Option<&AccountId>,
+    ) -> Result<(), AppError> {
+        let (Some(module_name), Some(account_id)) = (module_name, account_id) else {
+            if account_id.is_some() {
+                return Err(AppError::Validation(
+                    "account association requires a plugin name".into(),
+                ));
+            }
+            return Ok(());
+        };
+        let repo = self
+            .account_repo()
+            .ok_or_else(|| AppError::Validation("account repository not configured".into()))?;
+        let store = self.account_credential_store().ok_or_else(|| {
+            AppError::Validation("account credential store not configured".into())
+        })?;
+        let mut account = repo.find_by_id(account_id)?.ok_or_else(|| {
+            AppError::NotFound(format!("account {} not found", account_id.as_str()))
+        })?;
+        if account.service_name() != module_name {
+            return Err(AppError::Validation(format!(
+                "account {} is not compatible with plugin {module_name}",
+                account_id.as_str()
+            )));
+        }
+        if store.get_password(account_id)?.is_none() {
+            account.set_status(AccountStatus::MissingCredential);
+            self.save_account_availability(repo, &account)?;
+            self.event_bus()
+                .publish(DomainEvent::AccountValidationFailed {
+                    id: account_id.clone(),
+                    error: "Account credential is unavailable".into(),
+                });
+            return Err(AppError::NotFound(format!(
+                "credential for account {} not found",
+                account_id.as_str()
+            )));
+        }
+        if !account.is_selectable(self.account_now_ms()?) {
+            return Err(AppError::Validation(format!(
+                "account {} is not available",
+                account_id.as_str()
+            )));
+        }
+        Ok(())
     }
 }
 
@@ -144,7 +211,8 @@ mod tests {
     use std::sync::Mutex;
 
     use crate::application::command_bus::CommandBus;
-    use crate::application::commands::StartDownloadCommand;
+    use crate::application::commands::{DeleteAccountCommand, StartDownloadCommand};
+    use crate::application::error::AppError;
     use crate::domain::error::DomainError;
     use crate::domain::event::DomainEvent;
     use crate::domain::model::config::{AppConfig, ConfigPatch};
@@ -158,6 +226,41 @@ mod tests {
         EventBus, FileStorage, HttpClient, PluginLoader,
     };
     use std::sync::Arc;
+
+    use crate::application::commands::tests_support::{
+        FakeAccountCredentialStore, InMemoryAccountRepo,
+    };
+    use crate::domain::model::account::{Account, AccountId, AccountStatus, AccountType};
+    use crate::domain::ports::driven::{AccountCredentialStore, AccountRepository, Clock};
+
+    struct FixedAccountClock;
+
+    impl Clock for FixedAccountClock {
+        fn now_unix_secs(&self) -> u64 {
+            1
+        }
+    }
+
+    struct SignallingCredentialStore {
+        password_read: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    }
+
+    impl AccountCredentialStore for SignallingCredentialStore {
+        fn store_password(&self, _: &AccountId, _: &str) -> Result<(), DomainError> {
+            Ok(())
+        }
+
+        fn get_password(&self, _: &AccountId) -> Result<Option<String>, DomainError> {
+            if let Some(sender) = self.password_read.lock().unwrap().take() {
+                let _ = sender.send(());
+            }
+            Ok(Some("api-key".into()))
+        }
+
+        fn delete_password(&self, _: &AccountId) -> Result<(), DomainError> {
+            Ok(())
+        }
+    }
 
     struct MockDownloadRepo {
         store: Mutex<HashMap<u64, Download>>,
@@ -433,6 +536,8 @@ mod tests {
             destination: Some(PathBuf::from("/tmp/downloads")),
             filename: None,
             source_hostname_override: None,
+            module_name: None,
+            account_id: None,
         };
 
         let id = bus.handle_start_download(cmd).await.unwrap();
@@ -449,6 +554,198 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_start_download_persists_validated_account_association() {
+        let (bus, repo, _) = make_command_bus(Arc::new(MockHttpClient::failing()));
+        let account_repo = Arc::new(InMemoryAccountRepo::new());
+        let credentials = Arc::new(FakeAccountCredentialStore::new());
+        let account_id = AccountId::new("account-1");
+        let account = Account::reconstruct_with_status(
+            account_id.clone(),
+            "vortex-mod-1fichier".into(),
+            "alice".into(),
+            AccountType::Premium,
+            true,
+            None,
+            None,
+            Some(u64::MAX),
+            Some(1),
+            0,
+            AccountStatus::Valid,
+            None,
+        );
+        account_repo.save(&account).unwrap();
+        credentials.store_password(&account_id, "api-key").unwrap();
+        let bus = bus
+            .with_account_repo(account_repo)
+            .with_account_credential_store(credentials)
+            .with_account_clock(Arc::new(FixedAccountClock));
+
+        let id = bus
+            .handle_start_download(StartDownloadCommand {
+                url: "https://download.1fichier.com/token/file.zip".into(),
+                destination: Some(PathBuf::from("/tmp")),
+                filename: Some("file.zip".into()),
+                source_hostname_override: Some("1fichier.com".into()),
+                module_name: Some("vortex-mod-1fichier".into()),
+                account_id: Some(account_id.clone()),
+            })
+            .await
+            .expect("valid account association");
+
+        let stored = repo.store.lock().unwrap().get(&id.0).cloned().unwrap();
+        assert_eq!(stored.module_name(), Some("vortex-mod-1fichier"));
+        assert_eq!(stored.account_id(), Some(&account_id));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn account_delete_waits_until_validated_download_is_persisted() {
+        let (bus, _, _) = make_command_bus(Arc::new(MockHttpClient::failing()));
+        let account_repo = Arc::new(InMemoryAccountRepo::new());
+        let account_id = AccountId::new("account-1");
+        let mut account = Account::new(
+            account_id.clone(),
+            "vortex-mod-1fichier".into(),
+            "alice".into(),
+            AccountType::Premium,
+            0,
+        );
+        account.set_status(AccountStatus::Valid);
+        account_repo.save(&account).unwrap();
+        let (password_read_tx, password_read_rx) = tokio::sync::oneshot::channel();
+        let credentials = Arc::new(SignallingCredentialStore {
+            password_read: Mutex::new(Some(password_read_tx)),
+        });
+        let bus = Arc::new(
+            bus.with_account_repo(account_repo)
+                .with_account_credential_store(credentials)
+                .with_account_clock(Arc::new(FixedAccountClock)),
+        );
+        let queue_guard = bus.lock_queue_positions().await;
+        let start_bus = Arc::clone(&bus);
+        let start_account = account_id.clone();
+        let start = tokio::spawn(async move {
+            start_bus
+                .handle_start_download(StartDownloadCommand {
+                    url: "https://1fichier.com/?abc123".into(),
+                    destination: Some(PathBuf::from("/tmp")),
+                    filename: Some("file.zip".into()),
+                    source_hostname_override: None,
+                    module_name: Some("vortex-mod-1fichier".into()),
+                    account_id: Some(start_account),
+                })
+                .await
+        });
+        password_read_rx.await.expect("account validation reached");
+
+        let delete_bus = Arc::clone(&bus);
+        let mut deletion = tokio::spawn(async move {
+            delete_bus
+                .handle_delete_account(DeleteAccountCommand { id: account_id })
+                .await
+        });
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), &mut deletion)
+                .await
+                .is_err(),
+            "deletion must serialize with validation and persistence"
+        );
+
+        drop(queue_guard);
+        start.await.unwrap().expect("download persisted first");
+        let error = deletion
+            .await
+            .unwrap()
+            .expect_err("a referenced account cannot be deleted");
+        assert!(matches!(error, AppError::Validation(_)));
+    }
+
+    #[tokio::test]
+    async fn test_start_download_rejects_account_with_missing_credential() {
+        let (bus, _, events) = make_command_bus(Arc::new(MockHttpClient::failing()));
+        let account_repo = Arc::new(InMemoryAccountRepo::new());
+        let credentials = Arc::new(FakeAccountCredentialStore::new());
+        let account_id = AccountId::new("account-1");
+        let account = Account::reconstruct_with_status(
+            account_id.clone(),
+            "vortex-mod-1fichier".into(),
+            "alice".into(),
+            AccountType::Premium,
+            true,
+            None,
+            None,
+            Some(u64::MAX),
+            Some(1),
+            0,
+            AccountStatus::Valid,
+            None,
+        );
+        account_repo.save(&account).unwrap();
+        let bus = bus
+            .with_account_repo(account_repo)
+            .with_account_credential_store(credentials);
+
+        let error = bus
+            .handle_start_download(StartDownloadCommand {
+                url: "https://download.1fichier.com/token/file.zip".into(),
+                destination: Some(PathBuf::from("/tmp")),
+                filename: Some("file.zip".into()),
+                source_hostname_override: Some("1fichier.com".into()),
+                module_name: Some("vortex-mod-1fichier".into()),
+                account_id: Some(account_id.clone()),
+            })
+            .await
+            .expect_err("missing credential must reject association");
+
+        assert!(matches!(error, AppError::NotFound(_)));
+        assert!(events.events.lock().unwrap().iter().any(|event| matches!(
+            event,
+            DomainEvent::AccountValidationFailed { id, .. } if id == &account_id
+        )));
+    }
+
+    #[tokio::test]
+    async fn test_start_download_uses_injected_clock_for_account_cooldown() {
+        let (bus, _, _) = make_command_bus(Arc::new(MockHttpClient::failing()));
+        let account_repo = Arc::new(InMemoryAccountRepo::new());
+        let credentials = Arc::new(FakeAccountCredentialStore::new());
+        let account_id = AccountId::new("account-1");
+        let account = Account::reconstruct_with_status(
+            account_id.clone(),
+            "vortex-mod-1fichier".into(),
+            "alice".into(),
+            AccountType::Premium,
+            true,
+            None,
+            None,
+            Some(u64::MAX),
+            Some(1),
+            0,
+            AccountStatus::Cooldown,
+            Some(2_000),
+        );
+        account_repo.save(&account).unwrap();
+        credentials.store_password(&account_id, "api-key").unwrap();
+        let bus = bus
+            .with_account_repo(account_repo)
+            .with_account_credential_store(credentials)
+            .with_account_clock(Arc::new(FixedAccountClock));
+
+        let error = bus
+            .handle_start_download(StartDownloadCommand {
+                url: "https://download.1fichier.com/token/file.zip".into(),
+                destination: Some(PathBuf::from("/tmp")),
+                filename: Some("file.zip".into()),
+                source_hostname_override: Some("1fichier.com".into()),
+                module_name: Some("vortex-mod-1fichier".into()),
+                account_id: Some(account_id),
+            })
+            .await
+            .expect_err("injected clock keeps cooldown active");
+
+        assert!(matches!(error, AppError::Validation(_)));
+    }
+
+    #[tokio::test]
     async fn test_start_download_invalid_url_returns_error() {
         let (bus, _, _) = make_command_bus(Arc::new(MockHttpClient::failing()));
 
@@ -457,6 +754,8 @@ mod tests {
             destination: None,
             filename: None,
             source_hostname_override: None,
+            module_name: None,
+            account_id: None,
         };
 
         let result = bus.handle_start_download(cmd).await;
@@ -472,6 +771,8 @@ mod tests {
             destination: Some(PathBuf::from("/tmp")),
             filename: None,
             source_hostname_override: None,
+            module_name: None,
+            account_id: None,
         };
 
         let id = bus.handle_start_download(cmd).await.unwrap();
@@ -521,6 +822,8 @@ mod tests {
             destination: Some(PathBuf::from("/tmp")),
             filename: Some("Rick Astley - Never Gonna Give You Up.mp4".to_string()),
             source_hostname_override: None,
+            module_name: None,
+            account_id: None,
         };
 
         let id = bus.handle_start_download(cmd).await.unwrap();
@@ -554,6 +857,8 @@ mod tests {
             destination: Some(PathBuf::from("/tmp")),
             filename: Some("b.zip".to_string()),
             source_hostname_override: None,
+            module_name: None,
+            account_id: None,
         };
 
         let id = bus.handle_start_download(cmd).await.unwrap();
@@ -576,6 +881,8 @@ mod tests {
             destination: Some(PathBuf::from("/tmp")),
             filename: Some("video.mp4".to_string()),
             source_hostname_override: Some("www.youtube.com".to_string()),
+            module_name: None,
+            account_id: None,
         };
 
         let id = bus.handle_start_download(cmd).await.unwrap();

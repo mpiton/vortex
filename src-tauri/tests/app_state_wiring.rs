@@ -3,16 +3,21 @@
 
 use std::sync::Arc;
 
+use vortex_lib::domain::model::account::{Account, AccountId, AccountStatus, AccountType};
+use vortex_lib::domain::model::download::{Download, DownloadId, Url};
 use vortex_lib::domain::ports::driven::{
-    ArchiveExtractor, ClipboardObserver, ConfigStore, CredentialStore, DownloadEngine,
-    DownloadReadRepository, DownloadRepository, EventBus, FileStorage, HistoryRepository,
-    HttpClient, PluginLoader, PluginReadRepository, StatsRepository,
+    AccountCredentialStore, AccountRepository, ArchiveExtractor, ClipboardObserver, Clock,
+    ConfigStore, CredentialStore, DownloadEngine, DownloadReadRepository, DownloadRepository,
+    DownloadSourceResolver, EventBus, FileStorage, HistoryRepository, HttpClient, PluginLoader,
+    PluginReadRepository, StatsRepository,
 };
 use vortex_lib::{
-    CommandBus, ExtismPluginLoader, ExtractionConfig, FsFileStorage, NoopCredentialStore, QueryBus,
-    ReqwestHttpClient, SegmentedDownloadEngine, SharedHostResources, SqliteDownloadReadRepo,
-    SqliteDownloadRepo, SqliteHistoryRepo, SqliteStatsRepo, TokioEventBus, TomlConfigStore,
-    VortexArchiveExtractor, connection,
+    AccountOperationLocks, AccountRotator, AccountSelector, CommandBus, ExtismPluginLoader,
+    ExtractionConfig, FsFileStorage, KeyringAccountStore, NoopCredentialStore,
+    PluginAccountValidator, QueryBus, ReqwestHttpClient, ResolvePremiumSourceHandler,
+    SegmentedDownloadEngine, SharedHostResources, SqliteAccountRepo, SqliteDownloadReadRepo,
+    SqliteDownloadRepo, SqliteHistoryRepo, SqliteStatsRepo, SystemClock, TokioEventBus,
+    TomlConfigStore, VortexArchiveExtractor, connection,
 };
 
 /// Verifies that all driven adapters satisfy their port traits and that
@@ -55,7 +60,9 @@ fn test_appstate_wiring_with_in_memory_db() {
     let download_read_repo: Arc<dyn DownloadReadRepository> =
         Arc::new(SqliteDownloadReadRepo::new(db.clone()));
     let history_repo: Arc<dyn HistoryRepository> = Arc::new(SqliteHistoryRepo::new(db.clone()));
-    let stats_repo: Arc<dyn StatsRepository> = Arc::new(SqliteStatsRepo::new(db));
+    let stats_repo: Arc<dyn StatsRepository> = Arc::new(SqliteStatsRepo::new(db.clone()));
+    let account_repo: Arc<dyn AccountRepository> = Arc::new(SqliteAccountRepo::new(db.clone()));
+    let account_credential_store: Arc<dyn AccountCredentialStore> = Arc::new(KeyringAccountStore);
 
     // Plugin system
     let plugins_dir = tempfile::tempdir().expect("plugins dir");
@@ -66,47 +73,89 @@ fn test_appstate_wiring_with_in_memory_db() {
     );
     let plugin_read_repo: Arc<dyn PluginReadRepository> = plugin_loader_impl.registry().clone();
     let plugin_loader: Arc<dyn PluginLoader> = plugin_loader_impl;
+    let account_clock: Arc<dyn Clock> = Arc::new(SystemClock);
+    let account_selector = AccountSelector::new(
+        account_repo.clone(),
+        event_bus.clone(),
+        account_clock.clone(),
+    );
+    let account_rotator = AccountRotator::new(
+        account_selector.clone(),
+        account_repo.clone(),
+        event_bus.clone(),
+        account_clock.clone(),
+    );
+    let account_validator = Arc::new(PluginAccountValidator::new(plugin_loader.clone()));
+    let account_operation_locks = Arc::new(AccountOperationLocks::default());
+    let premium_source_handler = Arc::new(ResolvePremiumSourceHandler::new(
+        account_repo.clone(),
+        account_credential_store.clone(),
+        plugin_loader.clone(),
+        event_bus.clone(),
+        account_clock.clone(),
+        account_operation_locks.clone(),
+        download_repo.clone(),
+        config_store.clone(),
+        account_rotator.clone(),
+    ));
+    let premium_source_resolver: Arc<dyn DownloadSourceResolver> = premium_source_handler.clone();
 
     // Download engine
-    let download_engine: Arc<dyn DownloadEngine> = Arc::new(SegmentedDownloadEngine::new(
-        reqwest_client,
-        file_storage.clone(),
-        event_bus.clone(),
-        4,
-    ));
+    let download_engine: Arc<dyn DownloadEngine> = Arc::new(
+        SegmentedDownloadEngine::new(reqwest_client, file_storage.clone(), event_bus.clone(), 4)
+            .with_source_resolver(premium_source_resolver),
+    );
 
     // Clipboard stub (no Tauri AppHandle in tests)
     let clipboard_observer: Arc<dyn ClipboardObserver> = Arc::new(StubClipboardObserver);
 
     // CQRS buses
-    let command_bus = Arc::new(CommandBus::new(
-        download_repo,
-        download_engine,
-        event_bus,
-        file_storage,
-        http_client,
-        plugin_loader,
-        config_store,
-        credential_store,
-        clipboard_observer,
-        archive_extractor.clone(),
-        history_repo.clone(),
-        None,
-    ));
+    let command_bus = Arc::new(
+        CommandBus::new(
+            download_repo.clone(),
+            download_engine,
+            event_bus,
+            file_storage,
+            http_client,
+            plugin_loader,
+            config_store,
+            credential_store,
+            clipboard_observer,
+            archive_extractor.clone(),
+            history_repo.clone(),
+            None,
+        )
+        .with_account_repo(account_repo.clone())
+        .with_account_credential_store(account_credential_store)
+        .with_account_validator(account_validator)
+        .with_account_selector(account_selector)
+        .with_account_rotator(account_rotator)
+        .with_account_clock(account_clock)
+        .with_account_operation_locks(account_operation_locks),
+    );
 
-    let query_bus = Arc::new(QueryBus::new(
-        download_read_repo,
-        history_repo,
-        stats_repo,
-        plugin_read_repo,
-        archive_extractor,
-    ));
+    let query_bus = Arc::new(
+        QueryBus::new(
+            download_read_repo,
+            history_repo,
+            stats_repo,
+            plugin_read_repo,
+            archive_extractor,
+        )
+        .with_account_repo(account_repo.clone()),
+    );
 
     // Verify command bus is wired (exercise a read through it)
     let _config = command_bus
         .config_store()
         .get_config()
         .expect("config load");
+    assert!(command_bus.account_repo().is_some());
+    assert!(command_bus.account_credential_store().is_some());
+    assert!(command_bus.account_validator().is_some());
+    assert!(command_bus.account_selector().is_some());
+    assert!(command_bus.account_rotator().is_some());
+    assert!(query_bus.account_repo().is_some());
 
     // Verify query bus can execute a read query (empty DB → empty results)
     let downloads = query_bus
@@ -122,6 +171,33 @@ fn test_appstate_wiring_with_in_memory_db() {
         .expect("stats query");
     assert_eq!(stats.total_files, 0);
     assert_eq!(stats.total_downloaded_bytes, 0);
+
+    let account_id = AccountId::new("account-round-trip");
+    let mut account = Account::new(
+        account_id.clone(),
+        "vortex-mod-1fichier".into(),
+        "alice".into(),
+        AccountType::Premium,
+        1,
+    );
+    account.set_status(AccountStatus::Valid);
+    account_repo.save(&account).expect("save account");
+    let download = Download::new(
+        DownloadId(42),
+        Url::new("https://1fichier.com/?abc123").expect("source URL"),
+        "archive.zip".into(),
+        "/tmp/archive.zip".into(),
+    )
+    .with_module_name("vortex-mod-1fichier".into())
+    .with_account_id(account_id.clone());
+    download_repo.save(&download).expect("save download");
+
+    let reloaded = download_repo
+        .find_by_id(download.id())
+        .expect("read download")
+        .expect("stored download");
+    assert_eq!(reloaded.account_id(), Some(&account_id));
+    assert_eq!(reloaded.url().as_str(), "https://1fichier.com/?abc123");
 }
 
 /// Minimal clipboard observer stub for tests without a Tauri runtime.

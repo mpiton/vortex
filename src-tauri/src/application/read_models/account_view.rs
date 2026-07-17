@@ -12,12 +12,9 @@ use crate::domain::model::account::Account;
 
 /// Read model for the Accounts list and detail panels.
 ///
-/// Mirrors the persisted columns of the `accounts` table, including the
-/// non-secret [`Self::credential_ref`] (an opaque keyring URI such as
-/// `keyring://service/user`). The reference itself is never a password
-/// or token — the actual secret is fetched server-side from the OS
-/// keyring when the "test connection" surface needs it. Passwords and
-/// raw credential material never appear on this DTO.
+/// Mirrors the non-secret persisted columns of the `accounts` table.
+/// Passwords, tokens, and backend keyring identifiers never appear on
+/// this DTO.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountViewDto {
@@ -31,10 +28,8 @@ pub struct AccountViewDto {
     pub valid_until: Option<u64>,
     pub last_validated: Option<u64>,
     pub created_at: u64,
-    /// Opaque keyring URI (`keyring://service/user`) — never the
-    /// password itself. Lets the frontend correlate two `AccountView`
-    /// rows that share the same stored credential.
-    pub credential_ref: String,
+    pub status: String,
+    pub exhausted_until: Option<u64>,
 }
 
 impl From<Account> for AccountViewDto {
@@ -50,7 +45,8 @@ impl From<Account> for AccountViewDto {
             valid_until: account.valid_until(),
             last_validated: account.last_validated(),
             created_at: account.created_at(),
-            credential_ref: account.credential_ref(),
+            status: account.status().to_string(),
+            exhausted_until: account.exhausted_until(),
         }
     }
 }
@@ -115,7 +111,9 @@ mod tests {
         assert_eq!(dto.valid_until, Some(2_500_000_000_000));
         assert_eq!(dto.last_validated, Some(1_900_000_000_000));
         assert_eq!(dto.created_at, 1_700_000_000_000);
-        assert_eq!(dto.credential_ref, "keyring://real-debrid/alice");
+        let value = serde_json::to_value(&dto).unwrap();
+        assert_eq!(value["status"], "valid");
+        assert!(value["exhaustedUntil"].is_null());
     }
 
     #[test]
@@ -132,6 +130,10 @@ mod tests {
         assert!(
             !object.contains_key("credential"),
             "AccountViewDto must never expose a raw credential field"
+        );
+        assert!(
+            !object.contains_key("credentialRef"),
+            "AccountViewDto must keep keyring references inside the backend"
         );
     }
 
@@ -151,7 +153,8 @@ mod tests {
             "validUntil",
             "lastValidated",
             "createdAt",
-            "credentialRef",
+            "status",
+            "exhaustedUntil",
         ] {
             assert!(
                 object.contains_key(camel_field),

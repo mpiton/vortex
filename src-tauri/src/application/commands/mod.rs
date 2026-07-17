@@ -37,6 +37,7 @@ mod remove_download;
 mod remove_download_from_package;
 mod report_broken_plugin;
 mod resolve_links;
+pub mod resolve_premium_source;
 mod resume_all;
 mod resume_download;
 mod retry_download;
@@ -59,7 +60,7 @@ mod verify_checksum;
 
 use std::path::PathBuf;
 
-use crate::domain::model::account::{AccountId, AccountType};
+use crate::domain::model::account::{AccountId, AccountStatus, AccountType};
 use crate::domain::model::config::ConfigPatch;
 use crate::domain::model::download::DownloadId;
 use crate::domain::model::package::{PackageId, PackageSourceType};
@@ -76,6 +77,10 @@ pub struct StartDownloadCommand {
     /// `url`. Used when `url` is a CDN URL but we want to display the origin
     /// host (e.g. "youtube.com" instead of "rr1---sn-n4g-cvq6.googlevideo.com").
     pub source_hostname_override: Option<String>,
+    /// Plugin that resolved the direct URL, when applicable.
+    pub module_name: Option<String>,
+    /// Opaque account UUID selected during resolution. Never a credential.
+    pub account_id: Option<AccountId>,
 }
 impl Command for StartDownloadCommand {}
 
@@ -440,6 +445,7 @@ pub struct AccountPatch {
 pub struct UpdateAccountCommand {
     pub id: AccountId,
     pub patch: AccountPatch,
+    pub now_ms: u64,
 }
 impl Command for UpdateAccountCommand {}
 
@@ -469,6 +475,7 @@ impl Command for ValidateAccountCommand {}
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ValidationOutcomeDto {
     pub valid: bool,
+    pub status: AccountStatus,
     pub latency_ms: Option<u64>,
     pub traffic_left: Option<u64>,
     pub traffic_total: Option<u64>,
@@ -479,7 +486,8 @@ pub struct ValidationOutcomeDto {
 impl From<crate::domain::ports::driven::ValidationOutcome> for ValidationOutcomeDto {
     fn from(o: crate::domain::ports::driven::ValidationOutcome) -> Self {
         Self {
-            valid: o.valid,
+            valid: o.is_valid(),
+            status: o.status,
             latency_ms: o.latency_ms,
             traffic_left: o.traffic_left,
             traffic_total: o.traffic_total,

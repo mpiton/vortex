@@ -26,6 +26,7 @@ const mockMediaLink: ResolvedLink = {
   sizeBytes: null,
   status: "online",
   moduleName: "youtube",
+  accountId: null,
   isMedia: true,
   mediaType: "video",
 };

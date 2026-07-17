@@ -13,6 +13,11 @@ use crate::application::command_bus::CommandBus;
 use crate::application::error::AppError;
 use crate::domain::event::DomainEvent;
 use crate::domain::model::account::Account;
+use crate::domain::ports::driven::ValidationOutcome;
+
+use super::validate_account::{
+    apply_validation, publish_validation, validate_credentials_blocking, validation_error_to_app,
+};
 
 impl CommandBus {
     pub async fn handle_update_account(
@@ -25,6 +30,8 @@ impl CommandBus {
         let store = self.account_credential_store().ok_or_else(|| {
             AppError::Validation("account credential store not configured".into())
         })?;
+        let operation_lock = self.account_operation_lock(&cmd.id)?;
+        let _operation_guard = operation_lock.lock().await;
 
         let account = repo
             .find_by_id(&cmd.id)?
@@ -49,7 +56,7 @@ impl CommandBus {
             return Err(AppError::Validation("password must not be empty".into()));
         }
 
-        let next = Account::reconstruct(
+        let mut next = Account::reconstruct_with_status(
             account.id().clone(),
             account.service_name().to_string(),
             username,
@@ -60,6 +67,8 @@ impl CommandBus {
             account.valid_until(),
             account.last_validated(),
             account.created_at(),
+            account.status(),
+            account.exhausted_until(),
         );
         // Capture the previous password BEFORE persisting the new row
         // so a keyring-rotation failure can restore it. The
@@ -73,44 +82,79 @@ impl CommandBus {
             None
         };
 
-        repo.save(&next)?;
-
-        // Apply password rotation after the row is persisted. If the
-        // keyring write fails we roll the row back to the original so
-        // callers never observe a row that says "password rotated" while
-        // the keyring still holds the previous secret.
-        if let Some(pw) = cmd.patch.password
-            && let Err(e) = store.store_password(&cmd.id, &pw)
-        {
-            if let Err(rollback_err) = repo.save(&account) {
-                tracing::warn!(
-                    account_id = %cmd.id.as_str(),
-                    keyring_error = %e,
-                    rollback_error = %rollback_err,
-                    "keyring rotation failed and row rollback also failed; row metadata diverges from keyring"
-                );
-            }
-            // Restore the previous password (or wipe the entry if the
-            // account had none) so a partially-completed write doesn't
-            // leave a half-rotated credential in the keyring.
-            let restore_result = match previous_password {
-                Some(prev) => store.store_password(&cmd.id, &prev),
-                None => store.delete_password(&cmd.id),
+        let validation = if let Some(validator) = self.account_validator_arc() {
+            let password = match cmd.patch.password.as_deref() {
+                Some(password) => Some(password.to_string()),
+                None => store.get_password(&cmd.id)?,
             };
-            if let Err(restore_err) = restore_result {
-                tracing::warn!(
-                    account_id = %cmd.id.as_str(),
-                    keyring_error = %e,
-                    restore_error = %restore_err,
-                    "keyring rotation failed and the password-restore step also failed; keyring may hold a partially rotated secret"
-                );
-            }
-            return Err(e.into());
+            let attempt = match password {
+                Some(password) => {
+                    validate_credentials_blocking(validator, next.clone(), password).await?
+                }
+                None => super::validate_account::AccountValidationAttempt {
+                    outcome: ValidationOutcome::rejected(
+                        crate::domain::model::account::AccountStatus::MissingCredential,
+                        format!("no stored password for account {}", cmd.id.as_str()),
+                    ),
+                    error: None,
+                },
+            };
+            next = apply_validation(&next, &attempt.outcome, cmd.now_ms);
+            Some(attempt)
+        } else {
+            None
+        };
+
+        if let Some(password) = cmd.patch.password.as_deref()
+            && let Err(error) = store.store_password(&cmd.id, password)
+        {
+            restore_password(store, &cmd.id, previous_password.as_deref(), &error);
+            return Err(error.into());
         }
 
+        if let Err(error) = self.save_account_availability(repo, &next) {
+            if cmd.patch.password.is_some() {
+                restore_password(store, &cmd.id, previous_password.as_deref(), &error);
+            }
+            if let Err(rollback_error) = self.save_account_availability(repo, &account) {
+                tracing::warn!(
+                    account_id = %cmd.id.as_str(),
+                    save_error = %error,
+                    rollback_error = %rollback_error,
+                    "account row save failed and rollback also failed"
+                );
+            }
+            return Err(error.into());
+        }
         self.event_bus()
-            .publish(DomainEvent::AccountUpdated { id: cmd.id });
+            .publish(DomainEvent::AccountUpdated { id: cmd.id.clone() });
+        if let Some(attempt) = validation {
+            publish_validation(self, cmd.id, &attempt.outcome);
+            if let Some(error) = attempt.error {
+                return Err(validation_error_to_app(error));
+            }
+        }
         Ok(())
+    }
+}
+
+fn restore_password(
+    store: &dyn crate::domain::ports::driven::AccountCredentialStore,
+    id: &crate::domain::model::account::AccountId,
+    previous_password: Option<&str>,
+    cause: &crate::domain::error::DomainError,
+) {
+    let restored = match previous_password {
+        Some(password) => store.store_password(id, password),
+        None => store.delete_password(id),
+    };
+    if let Err(restore_error) = restored {
+        tracing::warn!(
+            account_id = %id.as_str(),
+            error = %cause,
+            restore_error = %restore_error,
+            "account password restore failed; keyring may be inconsistent"
+        );
     }
 }
 
@@ -120,13 +164,16 @@ mod tests {
 
     use super::super::{AccountPatch, AddAccountCommand, UpdateAccountCommand};
     use crate::application::commands::tests_support::{
-        CapturingEventBus, FakeAccountCredentialStore, InMemoryAccountRepo, build_account_bus,
+        CapturingEventBus, FakeAccountCredentialStore, FakeAccountValidator, InMemoryAccountRepo,
+        ValidatorBehavior, build_account_bus,
     };
     use crate::application::error::AppError;
     use crate::domain::error::DomainError;
     use crate::domain::event::DomainEvent;
-    use crate::domain::model::account::{AccountId, AccountType};
-    use crate::domain::ports::driven::{AccountCredentialStore, AccountRepository};
+    use crate::domain::model::account::{AccountId, AccountStatus, AccountType};
+    use crate::domain::ports::driven::{
+        AccountCredentialStore, AccountRepository, ValidationOutcome,
+    };
 
     fn add_command(service: &str, user: &str, pw: &str) -> AddAccountCommand {
         AddAccountCommand {
@@ -151,6 +198,7 @@ mod tests {
 
         bus.handle_update_account(UpdateAccountCommand {
             id: id.clone(),
+            now_ms: 1_800_000_000_000,
             patch: AccountPatch {
                 enabled: Some(false),
                 ..AccountPatch::default()
@@ -179,6 +227,7 @@ mod tests {
 
         bus.handle_update_account(UpdateAccountCommand {
             id: id.clone(),
+            now_ms: 1_800_000_000_000,
             patch: AccountPatch {
                 password: Some("new-pw".into()),
                 ..AccountPatch::default()
@@ -191,6 +240,83 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_update_account_validates_rotated_secret_and_persists_status() {
+        let repo = Arc::new(InMemoryAccountRepo::new());
+        let creds = Arc::new(FakeAccountCredentialStore::new());
+        let validator = Arc::new(FakeAccountValidator::new());
+        validator.set(
+            "vortex-mod-1fichier",
+            ValidatorBehavior::Ok(ValidationOutcome::ok()),
+        );
+        let events = Arc::new(CapturingEventBus::new());
+        let bus = build_account_bus(repo.clone(), creds, events, Some(validator.clone()), None);
+        let id = bus
+            .handle_add_account(add_command("vortex-mod-1fichier", "alice", "old-key"))
+            .await
+            .expect("add succeeds");
+
+        bus.handle_update_account(UpdateAccountCommand {
+            id: id.clone(),
+            now_ms: 1_800_000_000_000,
+            patch: AccountPatch {
+                password: Some("new-key".into()),
+                ..AccountPatch::default()
+            },
+        })
+        .await
+        .expect("update succeeds");
+
+        let calls = validator.calls();
+        assert_eq!(calls.len(), 2, "add and update must both validate");
+        assert_eq!(calls[1].2, "new-key");
+        let stored = repo.find_by_id(&id).unwrap().expect("account persisted");
+        assert_eq!(stored.status(), AccountStatus::Valid);
+        assert_eq!(stored.last_validated(), Some(1_800_000_000_000));
+    }
+
+    #[tokio::test]
+    async fn test_update_account_returns_validator_infrastructure_error_after_persisting_outcome() {
+        let repo = Arc::new(InMemoryAccountRepo::new());
+        let creds = Arc::new(FakeAccountCredentialStore::new());
+        let validator = Arc::new(FakeAccountValidator::new());
+        validator.set(
+            "vortex-mod-1fichier",
+            ValidatorBehavior::Storage("upstream unavailable".into()),
+        );
+        let events = Arc::new(CapturingEventBus::new());
+        let bus = build_account_bus(repo.clone(), creds, events.clone(), Some(validator), None);
+        let id = bus
+            .handle_add_account(add_command("vortex-mod-1fichier", "alice", "old-key"))
+            .await
+            .expect("account remains configured");
+
+        let error = bus
+            .handle_update_account(UpdateAccountCommand {
+                id: id.clone(),
+                now_ms: 1_800_000_000_000,
+                patch: AccountPatch {
+                    password: Some("new-key".into()),
+                    ..AccountPatch::default()
+                },
+            })
+            .await
+            .expect_err("validator infrastructure failure must surface");
+
+        assert!(matches!(
+            error,
+            AppError::Domain(DomainError::StorageError(_))
+        ));
+        assert_eq!(
+            repo.find_by_id(&id).unwrap().unwrap().status(),
+            AccountStatus::Error
+        );
+        assert!(events.snapshot().iter().any(|event| matches!(
+            event,
+            DomainEvent::AccountValidationFailed { id: event_id, .. } if event_id == &id
+        )));
+    }
+
+    #[tokio::test]
     async fn test_update_account_unknown_id_returns_not_found() {
         let repo = Arc::new(InMemoryAccountRepo::new());
         let creds = Arc::new(FakeAccountCredentialStore::new());
@@ -200,6 +326,7 @@ mod tests {
         let err = bus
             .handle_update_account(UpdateAccountCommand {
                 id: AccountId::new("missing"),
+                now_ms: 1_800_000_000_000,
                 patch: AccountPatch::default(),
             })
             .await
@@ -225,6 +352,7 @@ mod tests {
         let err = bus
             .handle_update_account(UpdateAccountCommand {
                 id: id.clone(),
+                now_ms: 1_800_000_000_000,
                 patch: AccountPatch {
                     password: Some("new-pw".into()),
                     enabled: Some(false),
@@ -273,6 +401,7 @@ mod tests {
         let err = bus
             .handle_update_account(UpdateAccountCommand {
                 id: id.clone(),
+                now_ms: 1_800_000_000_000,
                 patch: AccountPatch {
                     username: Some("   ".into()),
                     ..AccountPatch::default()
@@ -299,6 +428,7 @@ mod tests {
         let err = bus
             .handle_update_account(UpdateAccountCommand {
                 id: id.clone(),
+                now_ms: 1_800_000_000_000,
                 patch: AccountPatch {
                     password: Some("".into()),
                     ..AccountPatch::default()
@@ -324,6 +454,7 @@ mod tests {
 
         bus.handle_update_account(UpdateAccountCommand {
             id: id.clone(),
+            now_ms: 1_800_000_000_000,
             patch: AccountPatch {
                 account_type: Some(AccountType::Debrid),
                 ..AccountPatch::default()
@@ -369,6 +500,7 @@ mod tests {
         let err = bus
             .handle_update_account(UpdateAccountCommand {
                 id: id1,
+                now_ms: 1_800_000_000_000,
                 patch: AccountPatch {
                     username: Some("bob".into()),
                     ..AccountPatch::default()
@@ -380,5 +512,42 @@ mod tests {
             err,
             AppError::Domain(DomainError::AlreadyExists(_))
         ));
+    }
+
+    #[tokio::test]
+    async fn repo_failure_after_password_rotation_restores_the_previous_secret() {
+        let repo = Arc::new(InMemoryAccountRepo::new());
+        let creds = Arc::new(FakeAccountCredentialStore::new());
+        let events = Arc::new(CapturingEventBus::new());
+        let bus = build_account_bus(repo, creds.clone(), events, None, None);
+        let id = bus
+            .handle_add_account(add_command("real-debrid", "alice", "old-pw"))
+            .await
+            .expect("first account");
+        bus.handle_add_account(add_command("real-debrid", "bob", "other-pw"))
+            .await
+            .expect("conflicting account");
+
+        let error = bus
+            .handle_update_account(UpdateAccountCommand {
+                id: id.clone(),
+                now_ms: 1_800_000_000_000,
+                patch: AccountPatch {
+                    username: Some("bob".into()),
+                    password: Some("new-pw".into()),
+                    ..AccountPatch::default()
+                },
+            })
+            .await
+            .expect_err("duplicate username must reject the row");
+
+        assert!(matches!(
+            error,
+            AppError::Domain(DomainError::AlreadyExists(_))
+        ));
+        assert_eq!(creds.get_password(&id).unwrap().as_deref(), Some("old-pw"));
+        let attempts = creds.write_attempts();
+        assert_eq!(attempts[attempts.len() - 2].1, "new-pw");
+        assert_eq!(attempts[attempts.len() - 1].1, "old-pw");
     }
 }

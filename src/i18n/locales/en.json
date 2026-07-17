@@ -661,7 +661,12 @@
       "active": "Active",
       "expired": "Expired",
       "disabled": "Disabled",
-      "unverified": "Unverified"
+      "unverified": "Unverified",
+      "invalidCredentials": "Invalid credentials",
+      "missingCredential": "Credential missing",
+      "quotaExhausted": "Quota exhausted",
+      "cooldown": "Rate limited",
+      "error": "Validation error"
     },
     "traffic": {
       "ariaLabel": "Traffic remaining",

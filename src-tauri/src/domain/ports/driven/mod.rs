@@ -13,10 +13,12 @@ pub mod credential_store;
 pub mod download_engine;
 pub mod download_read_repository;
 pub mod download_repository;
+pub mod download_source_resolver;
 pub mod event_bus;
 pub mod file_opener;
 pub mod file_storage;
 pub mod history_repository;
+pub mod hoster_link;
 pub mod http_client;
 pub mod package_read_repository;
 pub mod package_repository;
@@ -40,10 +42,14 @@ pub use credential_store::CredentialStore;
 pub use download_engine::DownloadEngine;
 pub use download_read_repository::DownloadReadRepository;
 pub use download_repository::DownloadRepository;
+pub use download_source_resolver::{
+    DownloadSourceResolver, ResolutionCancellation, ResolvedDownloadSource,
+};
 pub use event_bus::EventBus;
 pub use file_opener::FileOpener;
 pub use file_storage::FileStorage;
 pub use history_repository::HistoryRepository;
+pub use hoster_link::ExtractedHosterLink;
 pub use http_client::HttpClient;
 pub use package_read_repository::PackageReadRepository;
 pub use package_repository::PackageRepository;

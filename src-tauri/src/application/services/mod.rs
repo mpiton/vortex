@@ -1,5 +1,7 @@
+pub mod account_operation_locks;
 pub mod account_rotator;
 pub mod account_selector;
+pub(crate) mod account_state;
 pub mod checksum_validator;
 pub mod engine_config_bridge;
 pub(crate) mod group_lock;
@@ -12,6 +14,7 @@ pub mod split_archive_grouper;
 pub mod startup_recovery;
 pub mod url_normalizer;
 
+pub use account_operation_locks::AccountOperationLocks;
 pub use account_rotator::AccountRotator;
 pub use account_selector::AccountSelector;
 pub use checksum_validator::{ChecksumOutcome, ChecksumValidatorService};

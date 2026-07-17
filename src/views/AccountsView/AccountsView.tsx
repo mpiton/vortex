@@ -25,6 +25,7 @@ import { AddAccountDialog } from "./AddAccountDialog";
 import { DeleteAccountDialog } from "./DeleteAccountDialog";
 import { EditAccountDialog } from "./EditAccountDialog";
 import { ExportAccountsDialog, ImportAccountsDialog } from "./ImportExportDialog";
+import { persistedAccountStatusToUi } from "./statusUtils";
 
 const FILTER_ORDER: ReadonlyArray<"all" | AccountType> = ["all", "debrid", "premium", "free"];
 const INVALIDATE_KEYS = [accountQueries.all()] as const;
@@ -167,7 +168,7 @@ export function AccountsView() {
         } else {
           toast.error(
             t("accounts.toast.validateInvalid", {
-              reason: outcome.errorMessage ?? "—",
+              reason: t(`accounts.status.${persistedAccountStatusToUi(outcome.status)}`),
             }),
           );
         }

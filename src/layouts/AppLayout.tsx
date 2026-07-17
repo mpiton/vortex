@@ -7,6 +7,7 @@ import { SkipLink } from "@/components/a11y/SkipLink";
 import { ROUTES } from "@/types/layout";
 import { useDownloadProgress } from "@/hooks/useDownloadProgress";
 import { useDownloadEvents } from "@/hooks/useDownloadEvents";
+import { useAccountEvents } from "@/hooks/useAccountEvents";
 import { useAppEffects } from "@/hooks/useAppEffects";
 import { tauriInvoke } from "@/api/client";
 import { useTauriQuery } from "@/api/hooks";
@@ -27,6 +28,7 @@ export function AppLayout() {
   const updateCountByState = useDownloadStore((s) => s.updateCountByState);
   useDownloadProgress();
   useDownloadEvents();
+  useAccountEvents();
   useAppEffects();
 
   const { data: config } = useTauriQuery<AppConfig>("settings_get", undefined, {

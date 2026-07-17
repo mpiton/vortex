@@ -38,6 +38,7 @@ export interface ResolvedLink {
   status: LinkStatus;
   errorMessage?: string;
   moduleName: string;
+  accountId: string | null;
   isMedia: boolean;
   mediaType?: "video" | "audio";
   /**

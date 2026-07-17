@@ -9,8 +9,8 @@ use tauri::Manager;
 use domain::ports::driven::{
     AccountCredentialStore, AccountRepository, ArchiveExtractor, ClipboardObserver, Clock,
     ConfigStore, CredentialStore, DownloadEngine, DownloadReadRepository, DownloadRepository,
-    EventBus, FileStorage, HistoryRepository, HttpClient, PassphraseCodec, PluginLoader,
-    PluginReadRepository, StatsRepository,
+    DownloadSourceResolver, EventBus, FileStorage, HistoryRepository, HttpClient, PassphraseCodec,
+    PluginLoader, PluginReadRepository, StatsRepository,
 };
 
 // Public API — concrete types for app wiring (main.rs, Tauri setup, integration tests)
@@ -39,7 +39,7 @@ pub use adapters::driven::notification::spawn_notification_bridge;
 pub use adapters::driven::plugin::builtin::HttpModule;
 pub use adapters::driven::plugin::capabilities::SharedHostResources;
 pub use adapters::driven::plugin::{
-    ExtismPluginLoader, GithubStoreClient, PluginRegistry, PluginWatcher,
+    ExtismPluginLoader, GithubStoreClient, PluginAccountValidator, PluginRegistry, PluginWatcher,
 };
 pub use adapters::driven::scheduler::{HISTORY_PURGE_STATE_FILE, HistoryPurgeWorker, SystemClock};
 pub use adapters::driven::sqlite::account_repo::SqliteAccountRepo;
@@ -55,6 +55,7 @@ pub use adapters::driven::tray::{
     spawn_tray_animator,
 };
 pub use application::command_bus::CommandBus;
+pub use application::commands::resolve_premium_source::ResolvePremiumSourceHandler;
 pub use application::commands::store_refresh::{read_cache, write_cache};
 pub use application::error::AppError;
 pub use application::query_bus::QueryBus;
@@ -65,8 +66,10 @@ pub use application::read_models::{
     plugin_view::PluginViewDto,
     stats_view::{DailyVolumeDto, HostStatsDto, ModuleStatsDto, StatsViewDto},
 };
-pub use application::services::QueueManager;
 pub use application::services::backfill_history_for_completed_downloads;
+pub use application::services::{
+    AccountOperationLocks, AccountRotator, AccountSelector, QueueManager,
+};
 pub use domain::model::ExtractionConfig;
 
 pub use adapters::driving::tauri_ipc::{
@@ -241,6 +244,36 @@ pub fn run() {
             let plugin_read_repo: Arc<dyn PluginReadRepository> =
                 plugin_loader_impl.registry().clone();
             let plugin_loader: Arc<dyn PluginLoader> = plugin_loader_impl.clone();
+            let account_clock: Arc<dyn Clock> = Arc::new(SystemClock);
+            let account_selector = AccountSelector::new(
+                account_repo.clone(),
+                event_bus.clone(),
+                account_clock.clone(),
+            );
+            let account_rotator = AccountRotator::new(
+                account_selector.clone(),
+                account_repo.clone(),
+                event_bus.clone(),
+                account_clock.clone(),
+            );
+            let account_validator =
+                Arc::new(PluginAccountValidator::new(plugin_loader.clone()));
+            let account_operation_locks = Arc::new(
+                application::services::account_operation_locks::AccountOperationLocks::default(),
+            );
+            let premium_source_handler = Arc::new(ResolvePremiumSourceHandler::new(
+                account_repo.clone(),
+                account_credential_store.clone(),
+                plugin_loader.clone(),
+                event_bus.clone(),
+                account_clock.clone(),
+                account_operation_locks.clone(),
+                download_repo.clone(),
+                config_store.clone(),
+                account_rotator.clone(),
+            ));
+            let premium_source_resolver: Arc<dyn DownloadSourceResolver> =
+                premium_source_handler.clone();
 
             // ── Download engine ─────────────────────────────────────
             let initial_engine_config = config_store
@@ -253,6 +286,7 @@ pub fn run() {
                     event_bus.clone(),
                     4,
                 )
+                .with_source_resolver(premium_source_resolver)
                 .with_dynamic_split(
                     initial_engine_config.dynamic_split_enabled,
                     initial_engine_config.dynamic_split_min_remaining_mb,
@@ -383,6 +417,11 @@ pub fn run() {
                 .with_plugin_config_store(plugin_config_store.clone())
                 .with_account_repo(account_repo.clone())
                 .with_account_credential_store(account_credential_store)
+                .with_account_validator(account_validator)
+                .with_account_selector(account_selector)
+                .with_account_rotator(account_rotator)
+                .with_account_clock(account_clock)
+                .with_account_operation_locks(account_operation_locks)
                 .with_package_repo(package_repo.clone())
                 .with_passphrase_codec(passphrase_codec),
             );

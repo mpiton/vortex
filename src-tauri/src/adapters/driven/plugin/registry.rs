@@ -5,12 +5,47 @@ use std::sync::{Arc, Mutex};
 use dashmap::DashMap;
 
 use crate::domain::error::DomainError;
+use crate::domain::model::credential::Credential;
 use crate::domain::model::plugin::{PluginInfo, PluginManifest};
 use crate::domain::ports::driven::PluginReadRepository;
+
+use super::capabilities::CredentialSlot;
+
+struct CredentialScope {
+    slot: CredentialSlot,
+}
+
+impl CredentialScope {
+    fn new(slot: CredentialSlot, credential: Credential) -> Result<Self, DomainError> {
+        {
+            let mut current = slot.lock().map_err(|_| {
+                DomainError::PluginError("plugin credential slot mutex poisoned".into())
+            })?;
+            if current.is_some() {
+                return Err(DomainError::PluginError(
+                    "plugin credential slot already active".into(),
+                ));
+            }
+            *current = Some(credential);
+            slot.mark_exposed();
+        }
+        Ok(Self { slot })
+    }
+}
+
+impl Drop for CredentialScope {
+    fn drop(&mut self) {
+        match self.slot.lock() {
+            Ok(mut current) => *current = None,
+            Err(poisoned) => *poisoned.into_inner() = None,
+        }
+    }
+}
 
 pub struct LoadedPlugin {
     pub manifest: PluginManifest,
     pub plugin: Arc<Mutex<extism::Plugin>>,
+    pub credential_slot: CredentialSlot,
     pub enabled: bool,
 }
 
@@ -96,7 +131,17 @@ impl PluginRegistry {
     }
 
     pub fn call_plugin(&self, name: &str, func: &str, input: &str) -> Result<String, DomainError> {
-        self.call_plugin_inner(name, func, input)
+        self.call_plugin_inner(name, func, input, None)
+    }
+
+    pub fn call_plugin_with_credential(
+        &self,
+        name: &str,
+        func: &str,
+        input: &str,
+        credential: Credential,
+    ) -> Result<String, DomainError> {
+        self.call_plugin_inner(name, func, input, Some(credential))
     }
 
     /// Container plugins decode binary blobs (DLC / CCF / RSDF / Metalink);
@@ -107,7 +152,7 @@ impl PluginRegistry {
         func: &str,
         input: &[u8],
     ) -> Result<String, DomainError> {
-        self.call_plugin_inner(name, func, input)
+        self.call_plugin_inner(name, func, input, None)
     }
 
     fn call_plugin_inner<'a, I>(
@@ -115,23 +160,50 @@ impl PluginRegistry {
         name: &str,
         func: &str,
         input: I,
+        scoped_credential: Option<Credential>,
     ) -> Result<String, DomainError>
     where
         I: extism::convert::ToBytes<'a>,
     {
-        // Clone the Arc<Mutex<Plugin>> and drop the DashMap shard guard
-        // before locking — holding the shard across a slow WASM call would
-        // block every other plugin lookup behind the same shard.
         let plugin_handle = {
             let entry = self
                 .plugins
                 .get(name)
                 .ok_or_else(|| DomainError::NotFound(name.to_string()))?;
+            if !entry.enabled {
+                return Err(DomainError::NotFound(format!(
+                    "plugin '{name}' is disabled"
+                )));
+            }
             Arc::clone(&entry.plugin)
         };
         let mut plugin = plugin_handle
             .lock()
             .map_err(|_| DomainError::PluginError(format!("plugin '{name}' mutex poisoned")))?;
+        // Re-check after taking the per-plugin lock. The short registry guard
+        // makes enablement and credential injection atomic without pinning a
+        // DashMap shard during the WASM call.
+        let _credential_scope = {
+            let entry = self
+                .plugins
+                .get(name)
+                .ok_or_else(|| DomainError::NotFound(name.to_string()))?;
+            if !Arc::ptr_eq(&entry.plugin, &plugin_handle) {
+                return Err(DomainError::NotFound(format!(
+                    "plugin '{name}' was reloaded"
+                )));
+            }
+            if !entry.enabled {
+                return Err(DomainError::NotFound(format!(
+                    "plugin '{name}' is disabled"
+                )));
+            }
+            scoped_credential
+                .map(|credential| {
+                    CredentialScope::new(Arc::clone(&entry.credential_slot), credential)
+                })
+                .transpose()?
+        };
         let fn_exists = plugin.function_exists(func);
         tracing::debug!(plugin = name, func, fn_exists, "plugin call pre-call");
         let result = plugin.call::<I, &str>(func, input).map_err(|e| {
@@ -157,6 +229,12 @@ impl PluginReadRepository for PluginRegistry {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    use dashmap::try_result::TryResult;
+
     use super::*;
     use crate::domain::model::plugin::{PluginCategory, PluginInfo, PluginManifest};
 
@@ -183,6 +261,7 @@ mod tests {
         LoadedPlugin {
             manifest: make_manifest(name),
             plugin: Arc::new(Mutex::new(make_extism_plugin())),
+            credential_slot: Arc::new(super::super::capabilities::CredentialSlotState::default()),
             enabled: true,
         }
     }
@@ -217,6 +296,124 @@ mod tests {
         assert!(!registry.contains("missing"));
         registry.insert("present".to_string(), make_loaded("present"));
         assert!(registry.contains("present"));
+    }
+
+    #[test]
+    fn test_scoped_credential_is_cleared_when_plugin_call_fails() {
+        use crate::domain::model::credential::Credential;
+
+        let registry = PluginRegistry::new();
+        registry.insert("plug-a".to_string(), make_loaded("plug-a"));
+        let slot = Arc::clone(
+            &registry
+                .plugins
+                .get("plug-a")
+                .expect("loaded plugin")
+                .credential_slot,
+        );
+
+        let error = registry
+            .call_plugin_with_credential(
+                "plug-a",
+                "missing",
+                "",
+                Credential::new("alice", "secret"),
+            )
+            .expect_err("missing export");
+        assert!(matches!(error, DomainError::PluginError(_)));
+        assert!(slot.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn disabled_plugin_is_rejected_before_credential_injection() {
+        let registry = PluginRegistry::new();
+        registry.insert("plug-a".to_string(), make_loaded("plug-a"));
+        let slot = Arc::clone(
+            &registry
+                .plugins
+                .get("plug-a")
+                .expect("loaded plugin")
+                .credential_slot,
+        );
+        registry.set_enabled("plug-a", false).unwrap();
+
+        let error = registry
+            .call_plugin_with_credential(
+                "plug-a",
+                "missing",
+                "",
+                Credential::new("alice", "secret"),
+            )
+            .expect_err("disabled plugin");
+
+        assert!(matches!(error, DomainError::NotFound(message) if message.contains("disabled")));
+        assert!(slot.lock().unwrap().is_none());
+        assert!(!slot.has_been_exposed());
+    }
+
+    #[test]
+    fn disabling_plugin_does_not_wait_for_blocked_plugin_call() {
+        let registry = Arc::new(PluginRegistry::new());
+        registry.insert("plug-a".to_string(), make_loaded("plug-a"));
+        let plugin_handle = Arc::clone(
+            &registry
+                .plugins
+                .get("plug-a")
+                .expect("loaded plugin")
+                .plugin,
+        );
+        let plugin_guard = plugin_handle.lock().unwrap();
+
+        let caller_registry = Arc::clone(&registry);
+        let caller = thread::spawn(move || caller_registry.call_plugin("plug-a", "missing", ""));
+
+        let deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            let registry_guard_held =
+                matches!(registry.plugins.try_get_mut("plug-a"), TryResult::Locked);
+            let plugin_handle_cloned = Arc::strong_count(&plugin_handle) >= 3;
+            if registry_guard_held || plugin_handle_cloned {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "plugin call did not reach the plugin mutex"
+            );
+            thread::yield_now();
+        }
+
+        let (disable_tx, disable_rx) = mpsc::channel();
+        let disabler_registry = Arc::clone(&registry);
+        let disabler = thread::spawn(move || {
+            disable_tx
+                .send(disabler_registry.set_enabled("plug-a", false))
+                .expect("disable receiver remains connected");
+        });
+
+        let prompt_disable = disable_rx.recv_timeout(Duration::from_secs(1));
+        let completed_while_call_blocked = prompt_disable.is_ok();
+        drop(plugin_guard);
+
+        let disable_result = match prompt_disable {
+            Ok(result) => result,
+            Err(_) => disable_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("disable completes after plugin call unblocks"),
+        };
+        disable_result.expect("disable succeeds");
+        disabler.join().expect("disable thread does not panic");
+        let call_error = caller
+            .join()
+            .expect("call thread does not panic")
+            .expect_err("disabled call is rejected");
+
+        assert!(
+            completed_while_call_blocked,
+            "disable must not wait for a blocked plugin call"
+        );
+        assert!(
+            matches!(call_error, DomainError::NotFound(message) if message.contains("disabled"))
+        );
     }
 
     #[test]

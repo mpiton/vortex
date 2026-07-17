@@ -1,8 +1,8 @@
 //! Write repository for the `Account` aggregate (CQRS write side).
 //!
 //! Persists account metadata only. Credentials (passwords / tokens) live
-//! in the OS keyring and are looked up via `Account::credential_ref()` —
-//! never through this port.
+//! in the OS keyring and are looked up by opaque `AccountId` — never
+//! through this port.
 
 use crate::domain::error::DomainError;
 use crate::domain::model::account::{Account, AccountId};

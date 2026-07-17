@@ -8,6 +8,7 @@ use sea_orm::{
 };
 
 use crate::domain::error::DomainError;
+use crate::domain::model::account::AccountId;
 use crate::domain::model::download::{Download, DownloadId, DownloadState};
 use crate::domain::ports::driven::download_repository::DownloadRepository;
 
@@ -74,6 +75,9 @@ async fn persist_download<C: ConnectionTrait>(
         // race with the event-driven write and overwrite a fresh
         // failover position with the cursor at the time the
         // aggregate was loaded.
+        // AccountId excluded: JIT premium rotation owns this column through
+        // compare_and_set_account_reference(), which is UPDATE-only and must not be
+        // reverted by a concurrent aggregate save carrying a stale account.
         .update_columns([
             download::Column::Url,
             download::Column::FileName,
@@ -91,7 +95,6 @@ async fn persist_download<C: ConnectionTrait>(
             download::Column::Protocol,
             download::Column::ResumeSupported,
             download::Column::ModuleName,
-            download::Column::AccountId,
             download::Column::DestinationPath,
             download::Column::MirrorsJson,
         ]);
@@ -181,6 +184,27 @@ impl DownloadRepository for SqliteDownloadRepo {
         })
     }
 
+    fn compare_and_set_account_reference(
+        &self,
+        id: DownloadId,
+        expected: &AccountId,
+        replacement: &AccountId,
+    ) -> Result<bool, DomainError> {
+        block_on(async {
+            let result = download::Entity::update_many()
+                .col_expr(
+                    download::Column::AccountId,
+                    Expr::value(replacement.as_str()),
+                )
+                .filter(download::Column::Id.eq(id.0 as i64))
+                .filter(download::Column::AccountId.eq(expected.as_str()))
+                .exec(&self.db)
+                .await
+                .map_err(map_db_err)?;
+            Ok(result.rows_affected == 1)
+        })
+    }
+
     fn find_by_state(&self, state: DownloadState) -> Result<Vec<Download>, DomainError> {
         block_on(async {
             // Deterministic order so callers (e.g. queue_position
@@ -196,6 +220,17 @@ impl DownloadRepository for SqliteDownloadRepo {
                 .map_err(map_db_err)?;
 
             models.into_iter().map(|m| m.into_domain()).collect()
+        })
+    }
+
+    fn has_account_reference(&self, account_id: &AccountId) -> Result<bool, DomainError> {
+        block_on(async {
+            download::Entity::find()
+                .filter(download::Column::AccountId.eq(account_id.as_str()))
+                .one(&self.db)
+                .await
+                .map(|row| row.is_some())
+                .map_err(map_db_err)
         })
     }
 }
@@ -497,6 +532,74 @@ mod tests {
 
         let found = repo.find_by_id(DownloadId(1)).expect("find_by_id");
         assert!(found.is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn account_reference_query_tracks_persisted_downloads() {
+        let db = setup_test_db().await.expect("test db");
+        let repo = SqliteDownloadRepo::new(db);
+        let account_id = AccountId::new("account-1");
+        let download = make_download(1).with_account_id(account_id.clone());
+        repo.save(&download).expect("save");
+
+        assert!(repo.has_account_reference(&account_id).unwrap());
+        assert!(
+            !repo
+                .has_account_reference(&AccountId::new("other"))
+                .unwrap()
+        );
+        repo.delete(download.id()).expect("delete");
+        assert!(!repo.has_account_reference(&account_id).unwrap());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_update_account_reference_only_updates_an_existing_row() {
+        let db = setup_test_db().await.expect("test db");
+        let repo = SqliteDownloadRepo::new(db);
+        let primary = AccountId::new("primary");
+        let backup = AccountId::new("backup");
+        let mut stale_snapshot = make_download(2).with_account_id(primary);
+        stale_snapshot.start().unwrap();
+        repo.save(&stale_snapshot).expect("save active download");
+
+        assert!(
+            repo.compare_and_set_account_reference(
+                stale_snapshot.id(),
+                &AccountId::new("primary"),
+                &backup
+            )
+            .unwrap()
+        );
+        assert!(
+            !repo
+                .compare_and_set_account_reference(
+                    stale_snapshot.id(),
+                    &AccountId::new("primary"),
+                    &AccountId::new("other"),
+                )
+                .unwrap()
+        );
+        stale_snapshot.pause().unwrap();
+        repo.save(&stale_snapshot).expect("save stale snapshot");
+
+        let persisted = repo
+            .find_by_id(stale_snapshot.id())
+            .unwrap()
+            .expect("download remains persisted");
+        assert_eq!(persisted.state(), DownloadState::Paused);
+        assert_eq!(persisted.account_id(), Some(&backup));
+
+        repo.delete(stale_snapshot.id()).unwrap();
+        assert!(
+            !repo
+                .compare_and_set_account_reference(
+                    stale_snapshot.id(),
+                    &AccountId::new("primary"),
+                    &backup,
+                )
+                .unwrap()
+        );
+        assert!(repo.find_by_id(stale_snapshot.id()).unwrap().is_none());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

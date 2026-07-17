@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **MAT-132 transient premium URLs**: link analysis, IPC, queued downloads, and
+  resume sidecars now retain only the stable source URL plus opaque account id.
+  The engine resolves the direct capability immediately before connecting,
+  pins its public DNS answers, requires credential-free HTTPS, and rejects
+  redirects/private networks. Sensitive network diagnostics and all plugin
+  logs emitted while a credential is scoped are redacted.
+- **MAT-132 credential boundary hardening**: account extraction now calls the
+  exact selected plugin instead of resolving the URL a second time, credential
+  slots are isolated per loaded plugin generation across hot reloads, hoster
+  JSON is parsed at the adapter boundary, contradictory validation states fail
+  closed, and untrusted plugin diagnostics cannot reach events or IPC.
 - Updated compatible Rust and frontend dependencies, including the patched
   `quinn-proto` release. Disabled unused SeaORM migration defaults so the
   MySQL/PostgreSQL drivers and vulnerable `rsa` crate are no longer included.
@@ -42,6 +53,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **MAT-132 PR review hardening**: premium selection now excludes free
+  accounts, serializes persisted cooldowns with rotation, revalidates download
+  associations on every JIT resolution, and lets cancellation win without late
+  writes. Plugin calls enforce enablement at credential injection, retained
+  credential logs and bearer URL diagnostics stay redacted, plugin HTTP is
+  HTTPS-only, legacy numeric account IDs remain unassociated while UUID refs are
+  indexed, validation worker failures roll back the new account and secret, and
+  WASM calls no longer pin registry shards.
+- **MAT-132 final concurrency and quota fixes**: JIT rotation now updates only
+  the existing download's account reference, preserving concurrent state and
+  never recreating a removed row. Cooldown and quota exhaustion remain distinct
+  when no backup exists, zero remaining traffic triggers typed rotation, and
+  account badges wake at subscription expiry without a backend event.
+- **MAT-132 final acceptance coverage**: added contracts for strict
+  JIT-only credential use, runtime account rotation with association updates,
+  referenced-account deletion safety, observable missing credentials, cooldown
+  badge expiry, and operator-prefix NAT64 SSRF rejection.
+- **MAT-132 final review hardening**: link analysis now selects only an opaque
+  account id without reading credentials or creating a one-shot token; the CQRS
+  resolver rotates accounts only when the engine requests the direct source.
+  Account failures persist before typed events, referenced accounts cannot be
+  deleted, cooldown badges wake at their deadline, and restricted HTTP clients
+  ignore system proxies while rejecting special IPv6 and discovered NAT64
+  mappings to private IPv4. The registry now pins the published 1fichier
+  v1.1.0 release assets.
+- **MAT-132 review regressions**: added coverage for fail-closed account state
+  persistence, premium account lifecycle races, account-event refreshes, lock
+  reclamation, and IPv6/proxy SSRF boundaries.
+- **MAT-132 account-state hardening**: validation now derives validity from its
+  typed status, clears stale subscription expiries, bounds temporary failures,
+  and invalidates the rotator cache on recovery. Per-account async locks prevent
+  slow plugin calls from undoing deletes or edits; password rotation writes the
+  keyring first and restores the prior secret on SQLite failure. Cooldown checks
+  use an injected clock, and exhausted premium accounts no longer fall back to
+  anonymous extraction.
 - **Lot 1 install race fixes (MAT-131)**: adaptive downloads atomically reserve
   unique destination files before copying, and failed Store installs clean
   their staging directory before propagating loader or task errors.
@@ -59,6 +105,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **MAT-132 account status contract**: account validation responses now expose
+  their exact typed status to the UI, rejected-validation toasts use its
+  localized label instead of plugin diagnostics, elapsed quota/cooldown markers
+  render as active, and account read models no longer expose backend keyring
+  references.
 - **Task 40 follow-up — `/simplify` cleanup** (scope `download`, sprint task 40): extracted `getHostname` + `getProtocol` to `src/lib/url.ts` and replaced the inlined copies in `MirrorsSection.tsx` + `SourceInfoSection.tsx` with the shared helpers. `run_mirror_attempt` swapped its 13 positional arguments for a `MirrorAttemptParams` struct mirroring the adjacent `SegmentParams` pattern; the `#[allow(clippy::too_many_arguments)]` suppression is gone. `entities/download.rs` + `download_read_repo.rs` use `safe_u32(model.current_mirror_index as i64)` instead of the ad-hoc `u32::try_from(...).unwrap_or(0)` so the cast goes through the SQLite adapter's standard helper. New `MAX_MIRRORS_PER_DOWNLOAD = 64` constant in `domain/model/download.rs`; `Download::set_mirrors` truncates after sorting so a malformed `.metalink` with thousands of entries cannot bloat `mirrors_json` or stall the failover loop. Doc comments on `Download::mirrors` / `current_mirror_index` and the entity's `mirrors_json` / `current_mirror_index` columns trimmed to the WHY clauses (cap rationale, future-extension hook); the persisted cursor's actual behaviour is now spelled out — the engine still drives failover with its in-task cursor, so a crash mid-failover restarts from slot 0, and the column is retained as a hook for the future call site that will mark a failing slot at the domain level. Frontend gates simplified: `DownloadDetailsPanel.tsx` drops the redundant `mirrors && …` (non-optional field in TS), `MirrorsSection.tsx` drops the redundant `!download.mirrors` short-circuit (dead code under the parent gate).
 
 - **Task 39 follow-up — PR #151 review fixes** (scope `download`): `WaitManager::schedule_wait` now aborts the previous `JoinHandle` returned by `guard.insert(id, handle)` instead of just dropping it (dropping a `JoinHandle` only detaches the task — `abort()` is what actually stops the timer), so calling `schedule_wait` twice for the same `DownloadId` no longer leaves a stale task that could fire `expire_wait` against an outdated deadline. `expire_wait` now short-circuits when the handle has already been removed by a peer `cancel_wait` / `skip_wait` (the abort is cooperative: once the sleep wakes and the task is past its last `.await`, it runs to completion regardless of `abort()`), preventing a spurious `resume_aggregate` race against the cancel flow. `download_cancel` IPC now runs the `CancelDownloadCommand` first and only invokes `wait_manager.cancel_wait` on success, so a fallible cancel command no longer strands the download in `Waiting` with no timer to resume it. `download_log_bridge` records `DownloadWaitingEnded { expired_naturally: false }` as `"ended early"` instead of `"skipped"` (the same branch fires for cancel-driven endings, where "skipped" was misleading). `useCountdown` short-circuits before scheduling `setInterval` when `untilUnixMs` is already in the past, dropping one no-op render + interval wakeup cycle for already-expired rows. New regression test `rescheduling_same_id_aborts_previous_timer` proves only the latest timer can fire after a reschedule + new `useCountdown` test asserts `setInterval` is not called for past deadlines.
@@ -68,6 +119,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Task 33 follow-up — review-driven cleanup** (scope `link`, sprint task 33): extracted `application/services/history_paginate::for_each_history_page` + `list_full_history` so the bounded-page loop is no longer copy-pasted between `export_history` and `detect_duplicates`. Hoisted `InMemoryDownloadReadRepo` + `make_history_and_downloads_query_bus` into `application/test_support` (deleted ~120 lines of stub fixtures from the new query test module). Replaced the stringly-typed `DuplicateCheckDto.source: Option<&'static str>` with a proper serde enum `DuplicateSourceDto`. `detect_duplicates` handler now stores existing-ids as `u64` in the index and stringifies only on confirmed hits, plus a `contains_key` pre-check on the history loop avoids allocating a tuple for entries already shadowed by an active match. `url_normalizer` detects the scheme via `eq_ignore_ascii_case` instead of allocating a lowercase copy of the whole URL, and trims WHAT-style block comments down to the load-bearing WHY notes. `LinkGrabberView` extracts an `isStartable` / `startLink` predicate pair so `handleStartSelected` and `handleStartAllOnline` no longer carry the duplicated status / duplicate gates; `duplicateCount` is `useMemo`-wrapped, and the `detectDuplicates` `onSuccess` short-circuits via `===` checks against the previous `duplicate` reference so an all-unique batch does not retrigger downstream re-renders. `LinkRow` swaps the duplicate-source ternary chain for a `duplicateLabelMap` lookup and `data-duplicate` now uses `"none"` (was `"no"`). Test fixtures deduplicated through a `makeDuplicate` helper.
 
 ### Added
+
+- **Premium account runtime wiring (MAT-132)**: validate configured accounts
+  through hoster plugins, keep selected credentials scoped to the plugin call,
+  persist typed account availability, rotate on account failures, and associate
+  premium downloads with their account without exposing secrets to SQLite,
+  logs, or frontend events. SQLite stores only typed status, cooldown deadline,
+  and the opaque account UUID reference; legacy downloads keep their unused
+  numeric account column while new associations use `account_ref` text. Each
+  plugin call receives an isolated, automatically cleared credential slot;
+  existing service-level credentials remain a fallback for legacy plugins.
+  Contract tests pin the exact service/credential handoff and typed plugin
+  authentication failures; the Extism bridge now maps stable account error
+  codes and validation metrics without placing secrets in the plugin ABI.
+  Command-level tests require add/update/explicit validation to persist the
+  resulting typed state, including after password rotation; rejected accounts
+  stay configured but are excluded from premium selection by that state.
+  Selector/rotator tests require persisted cooldowns to survive a restart and
+  distinguish unavailable credentials from temporarily exhausted accounts;
+  selection and rotation now enforce those persisted states.
+  Resolution/start contract tests carry only the stable source URL, selected
+  account UUID, and plugin name, and require JIT rotation to a second account.
+  JIT hoster resolution uses the configured selector/rotator, scopes each
+  keyring secret to its plugin call, persists typed account failures, retries
+  an eligible fallback account, and validates the opaque association before
+  persisting a download.
+  Read-model and Link Grabber contract tests require typed account states,
+  cooldown deadlines, and opaque premium associations across IPC.
+  Account read models now expose non-secret validation state and cooldown
+  deadlines; Accounts renders typed badges, while Link Grabber forwards the
+  selected plugin/account pair when starting the resolved direct URL.
+  Production wiring now composes the Extism-backed account validator with the
+  SQLite selector and persistent quota rotator using one system clock; the
+  AppState integration test verifies both command and query account paths.
+  Premium resolution integration tests now cover missing keyring entries plus
+  invalid, quota, and cooldown failures before rotation to a second account.
 
 - **Task 42 — Link Grabber container import UI** (scope `link`, sprint task 42, PRD-v2 §P1.23 / PRD §6.2.1): drag-and-drop `.dlc` / `.ccf` / `.rsdf` / `.metalink` / `.meta4` files into the Link Grabber paste zone now decrypts the container through the loaded `vortex-mod-containers` plugin (task 41) and feeds the extracted URLs back into the regular resolve / online-check / duplicate-detect / start pipeline. New IPC command `link_import_container(file_name, file_bytes)` wraps `ImportContainerCommand` (`application/commands/import_container.rs`) — validates the extension against an allowlist, caps the payload at `MAX_CONTAINER_BYTES = 1 MiB` (defensive cap mirrored in the Tauri handler so an oversized buffer is rejected before crossing the IPC bridge), calls the new `PluginLoader::decrypt_container(bytes) -> JSON` port, parses the plugin response, and creates a `Package { source_type: Container, name: <file_name> }` so the imported batch is visible as one unit in the Packages view. The default trait impl returns `DomainError::NotFound` so trait-only test loaders stay compatible. The Extism adapter scans the registry for the first enabled `Container`-category plugin that exports `decrypt`, calls it via the new `PluginRegistry::call_plugin_bytes(name, "decrypt", &[u8])` helper (containers are binary blobs — the existing `call_plugin` would have silently corrupted non-UTF-8 bytes), and surfaces a "no container plugin loaded" `NotFound` error that the IPC layer rewrites into a user-friendly "Install vortex-mod-containers to import .dlc/.ccf/.rsdf/.metalink files" toast. `PasteZone.tsx` now exports `CONTAINER_EXTENSIONS` + an `isContainerFile(File)` predicate and forwards container drops through a dedicated `onContainerFiles(File[])` callback instead of synthesising fake `container:<name>` URLs that `LinkGrabberView` then dropped on the floor (the original `LinkGrabberView.tsx:67` TODO). `LinkGrabberView::handleContainerFiles` reads each `File` via `arrayBuffer()`, ships the bytes as a `number[]`, surfaces an "Imported {N} links from {filename}" success toast (i18n keys `linkGrabber.toast.containerImported_one/_other` in `fr.json` + `en.json`), then reuses the existing `resolveLinks({ urls })` mutation so containers and pasted text follow the exact same online-check + dedupe + start path. Container password protection is wired-up in spec but vacuously satisfied today — `vortex-mod-containers` v1.0 uses fixed historic AES keys per ADR-001 and the four supported formats (DLC v1, CCF v1, RSDF, Metalink) have no per-file password layer; CCF v2 keys + DLC v3 service-fetch are explicitly deferred to v1.1, so no `password_required` state can flow through `decrypt_container` until the plugin gains the capability. 16 new tests: 8 backend (`import_container::tests` — golden path with a Metalink response, blank/extension/empty/oversize validation rejections, plugin `NotFound` propagation, zero-link response, malformed JSON), 1 port default (`plugin_loader::tests::test_decrypt_container_default_returns_not_found`), 1 adapter (`extism_loader::tests::test_decrypt_container_returns_not_found_when_no_plugin_loaded`), 4 frontend `PasteZone.test.tsx` cases (drop forwards files via `onContainerFiles`, ignored when callback missing, text-only drops keep extracting URLs, `isContainerFile` accepts every supported extension + uppercase + rejects unrelated), 2 frontend `LinkGrabberView.test.tsx` cases (drop triggers `link_import_container` with the byte array + chains into `link_resolve` on success, IPC failure surfaces `toast.error` and skips `link_resolve`). `cargo test --workspace`: 1493 pass / 7 ignored. `cargo clippy --workspace -- -D warnings` + `cargo fmt --check` clean. `vitest run`: 702 pass. `oxlint` + `tsc -b` clean.
 

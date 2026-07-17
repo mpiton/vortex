@@ -14,6 +14,7 @@ import { useLanguage } from "@/hooks/useLanguage";
 import { formatBytes, formatDate } from "@/lib/format";
 import type { AccountView } from "@/types/account";
 import { deriveAccountStatus, type AccountStatus } from "./statusUtils";
+import { useAccountStatusNow } from "./useAccountStatusNow";
 
 export interface AccountRowActions {
   validate: (account: AccountView) => void;
@@ -33,12 +34,18 @@ const STATUS_VARIANT: Record<AccountStatus, "default" | "secondary" | "destructi
   expired: "destructive",
   disabled: "secondary",
   unverified: "outline",
+  invalidCredentials: "destructive",
+  missingCredential: "destructive",
+  quotaExhausted: "secondary",
+  cooldown: "secondary",
+  error: "destructive",
 };
 
 export function AccountRow({ account, actions, validating }: AccountRowProps) {
   const { t } = useTranslation();
   const { current: language } = useLanguage();
-  const status = deriveAccountStatus(account);
+  const nowMs = useAccountStatusNow(account.status, account.exhaustedUntil, account.validUntil);
+  const status = deriveAccountStatus(account, nowMs);
   const trafficPercent = computeTrafficPercent(account.trafficLeft, account.trafficTotal);
 
   return (

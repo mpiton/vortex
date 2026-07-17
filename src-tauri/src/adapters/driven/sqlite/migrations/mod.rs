@@ -9,6 +9,7 @@ mod m20260428_000006_create_accounts;
 mod m20260429_000007_create_packages;
 mod m20260430_000008_add_package_external_id;
 mod m20260505_000009_add_mirrors;
+mod m20260716_000010_wire_premium_accounts;
 
 pub struct Migrator;
 
@@ -25,6 +26,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260429_000007_create_packages::Migration),
             Box::new(m20260430_000008_add_package_external_id::Migration),
             Box::new(m20260505_000009_add_mirrors::Migration),
+            Box::new(m20260716_000010_wire_premium_accounts::Migration),
         ]
     }
 }

@@ -1,4 +1,13 @@
 export type AccountType = "free" | "premium" | "debrid";
+export type PersistedAccountStatus =
+  | "unverified"
+  | "valid"
+  | "invalid_credentials"
+  | "missing_credential"
+  | "expired"
+  | "quota_exhausted"
+  | "cooldown"
+  | "error";
 
 export interface AccountView {
   id: string;
@@ -11,7 +20,8 @@ export interface AccountView {
   validUntil: number | null;
   lastValidated: number | null;
   createdAt: number;
-  credentialRef: string;
+  status: PersistedAccountStatus;
+  exhaustedUntil: number | null;
 }
 
 export interface AccountTraffic {
@@ -38,6 +48,7 @@ export interface AddAccountInput {
 
 export interface ValidationOutcome {
   valid: boolean;
+  status: PersistedAccountStatus;
   latencyMs: number | null;
   trafficLeft: number | null;
   trafficTotal: number | null;

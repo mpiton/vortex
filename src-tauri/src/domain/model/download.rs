@@ -1,5 +1,6 @@
 use crate::domain::error::DomainError;
 use crate::domain::event::DomainEvent;
+use crate::domain::model::account::AccountId;
 use crate::domain::model::checksum::ChecksumAlgorithm;
 use crate::domain::model::mirror::{Mirror, sort_by_priority as sort_mirrors_by_priority};
 use crate::domain::model::queue::Priority;
@@ -171,7 +172,7 @@ pub struct Download {
     protocol: String,
     resume_supported: bool,
     module_name: Option<String>,
-    account_id: Option<u64>,
+    account_id: Option<AccountId>,
     destination_path: String,
     /// Empty when the download has a single source — in that case
     /// [`Download::active_url`] returns the canonical `url` field instead.
@@ -238,7 +239,7 @@ impl Download {
         protocol: String,
         resume_supported: bool,
         module_name: Option<String>,
-        account_id: Option<u64>,
+        account_id: Option<AccountId>,
         destination_path: String,
         mirrors: Vec<Mirror>,
         current_mirror_index: u32,
@@ -314,7 +315,7 @@ impl Download {
         self
     }
 
-    pub fn with_account_id(mut self, id: u64) -> Self {
+    pub fn with_account_id(mut self, id: AccountId) -> Self {
         self.account_id = Some(id);
         self
     }
@@ -506,8 +507,8 @@ impl Download {
         self.module_name.as_deref()
     }
 
-    pub fn account_id(&self) -> Option<u64> {
-        self.account_id
+    pub fn account_id(&self) -> Option<&AccountId> {
+        self.account_id.as_ref()
     }
 
     pub fn destination_path(&self) -> &str {
@@ -1152,8 +1153,8 @@ mod tests {
     fn test_with_account_id_stores_account_link() {
         let d = make_download();
         assert_eq!(d.account_id(), None);
-        let d = d.with_account_id(42);
-        assert_eq!(d.account_id(), Some(42));
+        let d = d.with_account_id(crate::domain::model::account::AccountId::new("account-42"));
+        assert_eq!(d.account_id().map(|id| id.as_str()), Some("account-42"));
     }
 
     fn mk_mirror(host: &str, priority: u8) -> Mirror {

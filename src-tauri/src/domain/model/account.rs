@@ -55,6 +55,61 @@ impl FromStr for AccountType {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum AccountStatus {
+    #[default]
+    Unverified,
+    Valid,
+    InvalidCredentials,
+    MissingCredential,
+    Expired,
+    QuotaExhausted,
+    Cooldown,
+    Error,
+}
+
+impl AccountStatus {
+    pub fn is_temporary(self) -> bool {
+        matches!(self, Self::QuotaExhausted | Self::Cooldown)
+    }
+}
+
+impl fmt::Display for AccountStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let value = match self {
+            Self::Unverified => "unverified",
+            Self::Valid => "valid",
+            Self::InvalidCredentials => "invalid_credentials",
+            Self::MissingCredential => "missing_credential",
+            Self::Expired => "expired",
+            Self::QuotaExhausted => "quota_exhausted",
+            Self::Cooldown => "cooldown",
+            Self::Error => "error",
+        };
+        f.write_str(value)
+    }
+}
+
+impl FromStr for AccountStatus {
+    type Err = DomainError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "unverified" => Ok(Self::Unverified),
+            "valid" => Ok(Self::Valid),
+            "invalid_credentials" => Ok(Self::InvalidCredentials),
+            "missing_credential" => Ok(Self::MissingCredential),
+            "expired" => Ok(Self::Expired),
+            "quota_exhausted" => Ok(Self::QuotaExhausted),
+            "cooldown" => Ok(Self::Cooldown),
+            "error" => Ok(Self::Error),
+            other => Err(DomainError::ValidationError(format!(
+                "invalid account status: {other}"
+            ))),
+        }
+    }
+}
+
 /// Strategy used by `AccountSelector` to pick the next account when several
 /// exist for the same service. `BestTraffic` is the default.
 ///
@@ -115,11 +170,9 @@ pub struct Account {
     valid_until: Option<u64>,
     last_validated: Option<u64>,
     created_at: u64,
-    /// Transient quota-exhaustion deadline (Unix epoch ms). Set by the
-    /// `AccountRotator` when the upstream signals quota exhaustion
-    /// (HTTP 429, traffic below threshold, …) and cleared when a
-    /// fresh traffic refresh confirms the account is usable again.
-    /// NOT persisted in SQLite — always `None` after `reconstruct`.
+    status: AccountStatus,
+    /// Quota/rate-limit deadline (Unix epoch ms), persisted so the Accounts
+    /// view and a restarted selector observe the same availability state.
     exhausted_until: Option<u64>,
 }
 
@@ -142,6 +195,7 @@ impl Account {
             valid_until: None,
             last_validated: None,
             created_at,
+            status: AccountStatus::Unverified,
             exhausted_until: None,
         }
     }
@@ -159,6 +213,42 @@ impl Account {
         last_validated: Option<u64>,
         created_at: u64,
     ) -> Self {
+        let status = if last_validated.is_some() {
+            AccountStatus::Valid
+        } else {
+            AccountStatus::Unverified
+        };
+        Self::reconstruct_with_status(
+            id,
+            service_name,
+            username,
+            account_type,
+            enabled,
+            traffic_left,
+            traffic_total,
+            valid_until,
+            last_validated,
+            created_at,
+            status,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn reconstruct_with_status(
+        id: AccountId,
+        service_name: String,
+        username: String,
+        account_type: AccountType,
+        enabled: bool,
+        traffic_left: Option<u64>,
+        traffic_total: Option<u64>,
+        valid_until: Option<u64>,
+        last_validated: Option<u64>,
+        created_at: u64,
+        status: AccountStatus,
+        exhausted_until: Option<u64>,
+    ) -> Self {
         Self {
             id,
             service_name,
@@ -170,7 +260,8 @@ impl Account {
             valid_until,
             last_validated,
             created_at,
-            exhausted_until: None,
+            status,
+            exhausted_until,
         }
     }
 
@@ -205,8 +296,45 @@ impl Account {
         self.valid_until = Some(timestamp);
     }
 
+    pub fn replace_valid_until(&mut self, timestamp: Option<u64>) {
+        self.valid_until = timestamp;
+    }
+
     pub fn set_last_validated(&mut self, timestamp: u64) {
         self.last_validated = Some(timestamp);
+    }
+
+    pub fn set_status(&mut self, status: AccountStatus) {
+        self.status = status;
+        if !status.is_temporary() {
+            self.exhausted_until = None;
+        }
+    }
+
+    pub fn status(&self) -> AccountStatus {
+        self.status
+    }
+
+    fn mark_temporarily_unavailable(&mut self, status: AccountStatus, until_ms: u64) {
+        self.status = status;
+        self.exhausted_until = Some(until_ms);
+    }
+
+    pub fn is_selectable(&self, now_ms: u64) -> bool {
+        if !self.enabled || !self.is_premium() || self.is_expired(now_ms) {
+            return false;
+        }
+        match self.status {
+            AccountStatus::Valid => true,
+            AccountStatus::QuotaExhausted | AccountStatus::Cooldown => {
+                self.exhausted_until.is_some_and(|until| now_ms >= until)
+            }
+            AccountStatus::Unverified
+            | AccountStatus::InvalidCredentials
+            | AccountStatus::MissingCredential
+            | AccountStatus::Expired
+            | AccountStatus::Error => false,
+        }
     }
 
     pub fn is_expired(&self, now: u64) -> bool {
@@ -217,15 +345,23 @@ impl Account {
     }
 
     /// Mark this account as quota-exhausted until `until_ms` (Unix epoch
-    /// ms). Transient — never persisted in SQLite.
+    /// ms). Adapters persist the status and deadline with the aggregate.
     pub fn mark_exhausted(&mut self, until_ms: u64) {
-        self.exhausted_until = Some(until_ms);
+        self.mark_temporarily_unavailable(AccountStatus::QuotaExhausted, until_ms);
+    }
+
+    /// Mark this account as rate-limited until `until_ms` (Unix epoch ms).
+    pub fn mark_cooldown(&mut self, until_ms: u64) {
+        self.mark_temporarily_unavailable(AccountStatus::Cooldown, until_ms);
     }
 
     /// Drop any pending quota-exhaustion marker, regardless of the
     /// remaining cooldown.
     pub fn clear_exhausted(&mut self) {
         self.exhausted_until = None;
+        if self.status.is_temporary() {
+            self.status = AccountStatus::Valid;
+        }
     }
 
     /// Active quota-exhaustion deadline (Unix epoch ms) when set, else
@@ -243,18 +379,6 @@ impl Account {
             Some(until) => now < until,
             None => false,
         }
-    }
-
-    /// Reference used to look up the credential in the system keyring.
-    /// Format: `keyring://{service_name}/{username}`. Both segments are
-    /// percent-encoded so reserved characters (`/`, `?`, `#`, `@`...) cannot
-    /// produce ambiguous refs that point at the wrong stored credential.
-    pub fn credential_ref(&self) -> String {
-        format!(
-            "keyring://{}/{}",
-            percent_encode_segment(&self.service_name),
-            percent_encode_segment(&self.username)
-        )
     }
 
     pub fn id(&self) -> &AccountId {
@@ -292,24 +416,6 @@ impl Account {
     pub fn created_at(&self) -> u64 {
         self.created_at
     }
-}
-
-/// Percent-encode a string so it can be safely embedded as a path segment in
-/// `keyring://...` refs. Only RFC 3986 unreserved characters survive
-/// untouched; everything else is rendered as `%XX` per UTF-8 byte.
-fn percent_encode_segment(s: &str) -> String {
-    use std::fmt::Write;
-
-    let mut out = String::with_capacity(s.len());
-    for byte in s.bytes() {
-        let unreserved = byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~');
-        if unreserved {
-            out.push(byte as char);
-        } else {
-            let _ = write!(out, "%{byte:02X}");
-        }
-    }
-    out
 }
 
 #[cfg(test)]
@@ -409,55 +515,6 @@ mod tests {
     }
 
     #[test]
-    fn test_account_credential_ref_uses_keyring_scheme() {
-        let acc = make_account();
-        // `@` in `user@example.com` is reserved → percent-encoded as %40.
-        assert_eq!(
-            acc.credential_ref(),
-            "keyring://ExampleHost/user%40example.com"
-        );
-    }
-
-    #[test]
-    fn test_account_credential_ref_percent_encodes_reserved_chars() {
-        // A `/` in the service or username could otherwise collide with the
-        // path separator and point two distinct accounts at the same ref.
-        let acc = Account::new(
-            AccountId::new("acc-collision"),
-            "real-debrid/eu".to_string(),
-            "alice/admin".to_string(),
-            AccountType::Debrid,
-            0,
-        );
-        assert_eq!(
-            acc.credential_ref(),
-            "keyring://real-debrid%2Feu/alice%2Fadmin"
-        );
-
-        let other = Account::new(
-            AccountId::new("acc-other"),
-            "real-debrid".to_string(),
-            "eu/alice/admin".to_string(),
-            AccountType::Debrid,
-            0,
-        );
-        assert_ne!(acc.credential_ref(), other.credential_ref());
-    }
-
-    #[test]
-    fn test_account_credential_ref_handles_unicode_username() {
-        let acc = Account::new(
-            AccountId::new("acc-utf8"),
-            "host".to_string(),
-            "café".to_string(),
-            AccountType::Free,
-            0,
-        );
-        // `é` is `0xC3 0xA9` in UTF-8.
-        assert_eq!(acc.credential_ref(), "keyring://host/caf%C3%A9");
-    }
-
-    #[test]
     fn test_account_type_round_trip_via_string() {
         for t in [AccountType::Free, AccountType::Premium, AccountType::Debrid] {
             let s = t.to_string();
@@ -504,6 +561,78 @@ mod tests {
     fn test_account_selection_strategy_from_str_rejects_unknown() {
         let result: Result<AccountSelectionStrategy, _> = "best".parse();
         assert!(matches!(result, Err(DomainError::ValidationError(_))));
+    }
+
+    #[test]
+    fn test_account_status_round_trip_via_string() {
+        for status in [
+            AccountStatus::Unverified,
+            AccountStatus::Valid,
+            AccountStatus::InvalidCredentials,
+            AccountStatus::MissingCredential,
+            AccountStatus::Expired,
+            AccountStatus::QuotaExhausted,
+            AccountStatus::Cooldown,
+            AccountStatus::Error,
+        ] {
+            let rendered = status.to_string();
+            let parsed: AccountStatus = rendered.parse().expect("round trip");
+            assert_eq!(parsed, status);
+        }
+    }
+
+    #[test]
+    fn test_only_valid_or_elapsed_cooldown_accounts_are_selectable() {
+        let mut account = Account::new(
+            AccountId::new("premium-1"),
+            "ExampleHost".to_string(),
+            "user@example.com".to_string(),
+            AccountType::Premium,
+            1_700_000_000_000,
+        );
+        assert!(!account.is_selectable(1_000));
+
+        account.set_status(AccountStatus::Valid);
+        assert!(account.is_selectable(1_000));
+
+        account.set_status(AccountStatus::InvalidCredentials);
+        assert!(!account.is_selectable(1_000));
+
+        account.mark_cooldown(2_000);
+        assert!(!account.is_selectable(1_999));
+        assert!(account.is_selectable(2_000));
+
+        account.mark_exhausted(3_000);
+        assert!(!account.is_selectable(2_999));
+        assert!(account.is_selectable(3_000));
+    }
+
+    #[test]
+    fn test_free_account_is_never_selectable_for_premium_resolution() {
+        let mut account = make_account();
+        account.set_status(AccountStatus::Valid);
+
+        assert!(!account.is_selectable(1_000));
+    }
+
+    #[test]
+    fn test_reconstruct_with_status_preserves_operational_state() {
+        let account = Account::reconstruct_with_status(
+            AccountId::new("account-1"),
+            "vortex-mod-1fichier".into(),
+            "alice".into(),
+            AccountType::Premium,
+            true,
+            None,
+            None,
+            None,
+            Some(500),
+            100,
+            AccountStatus::Cooldown,
+            Some(2_000),
+        );
+        assert_eq!(account.status(), AccountStatus::Cooldown);
+        assert_eq!(account.exhausted_until(), Some(2_000));
     }
 
     #[test]

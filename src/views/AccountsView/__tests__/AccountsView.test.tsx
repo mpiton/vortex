@@ -36,7 +36,8 @@ function sampleAccounts(): AccountView[] {
       validUntil: Date.now() + 86_400_000,
       lastValidated: Date.now() - 60_000,
       createdAt: Date.now() - 86_400_000,
-      credentialRef: "keyring://real-debrid/alice",
+      status: "valid",
+      exhaustedUntil: null,
     },
     {
       id: "ad-1",
@@ -49,7 +50,8 @@ function sampleAccounts(): AccountView[] {
       validUntil: null,
       lastValidated: null,
       createdAt: Date.now() - 172_800_000,
-      credentialRef: "keyring://alldebrid/bob",
+      status: "unverified",
+      exhaustedUntil: null,
     },
   ];
 }
@@ -90,6 +92,48 @@ describe("AccountsView", () => {
     });
     expect(screen.queryByText(/coming soon/i)).not.toBeInTheDocument();
     expect(mockInvoke).toHaveBeenCalledWith("account_list", expect.objectContaining({}));
+  });
+
+  it("renders a typed quota status returned by the account read model", async () => {
+    const exhausted = {
+      ...sampleAccounts()[0],
+      status: "quota_exhausted" as const,
+      exhaustedUntil: Date.now() + 60_000,
+    };
+    mockInvoke.mockImplementation(async (command: string) => {
+      if (command === "account_list") return [exhausted];
+      return null;
+    });
+
+    renderView();
+
+    expect(await screen.findByText("Quota exhausted")).toBeInTheDocument();
+  });
+
+  it("surfaces the typed status returned by account validation", async () => {
+    mockInvoke.mockImplementation(async (command: string) => {
+      if (command === "account_list") return sampleAccounts();
+      if (command === "account_validate") {
+        return {
+          valid: false,
+          status: "cooldown",
+          latencyMs: null,
+          trafficLeft: null,
+          trafficTotal: null,
+          validUntil: null,
+          errorMessage: "untrusted plugin detail",
+        };
+      }
+      return null;
+    });
+
+    renderView();
+    const row = await screen.findByTestId("account-row-rd-1");
+    await userEvent.click(within(row).getByText("Validate"));
+
+    await waitFor(() =>
+      expect(mockToastError).toHaveBeenCalledWith("Validation failed: Rate limited"),
+    );
   });
 
   it("renders the empty state when no accounts exist", async () => {

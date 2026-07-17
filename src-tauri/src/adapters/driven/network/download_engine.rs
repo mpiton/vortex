@@ -11,13 +11,16 @@ use crate::domain::error::DomainError;
 use crate::domain::event::DomainEvent;
 use crate::domain::model::download::{Download, DownloadId};
 use crate::domain::model::meta::{DownloadMeta, SegmentMeta};
-use crate::domain::ports::driven::{DownloadEngine, EventBus, FileStorage};
+use crate::domain::ports::driven::{
+    DownloadEngine, DownloadSourceResolver, EventBus, FileStorage, ResolutionCancellation,
+};
 
-use super::format_error_chain;
 use super::segment_worker::{SegmentError, SegmentParams, download_segment};
+use super::{format_error_chain, restricted_download_client};
 
 struct ActiveDownload {
     cancel_token: CancellationToken,
+    resolution_cancellation: ResolutionCancellation,
     pause_sender: watch::Sender<bool>,
 }
 
@@ -171,6 +174,7 @@ pub struct SegmentedDownloadEngine {
     dynamic_split_enabled: Arc<AtomicBool>,
     dynamic_split_min_remaining_bytes: Arc<AtomicU64>,
     active_downloads: Arc<Mutex<HashMap<DownloadId, ActiveDownload>>>,
+    source_resolver: Option<Arc<dyn DownloadSourceResolver>>,
 }
 
 impl SegmentedDownloadEngine {
@@ -189,11 +193,17 @@ impl SegmentedDownloadEngine {
             dynamic_split_enabled: Arc::new(AtomicBool::new(true)),
             dynamic_split_min_remaining_bytes: Arc::new(AtomicU64::new(4 * 1024 * 1024)),
             active_downloads: Arc::new(Mutex::new(HashMap::new())),
+            source_resolver: None,
         }
     }
 
     pub fn with_min_segment_bytes(mut self, min_bytes: u64) -> Self {
         self.min_segment_bytes = min_bytes.max(1);
+        self
+    }
+
+    pub fn with_source_resolver(mut self, resolver: Arc<dyn DownloadSourceResolver>) -> Self {
+        self.source_resolver = Some(resolver);
         self
     }
 
@@ -235,18 +245,13 @@ impl SegmentedDownloadEngine {
             Ok(response) if response.status().is_success() => response,
             Ok(response) => {
                 tracing::warn!(
-                    url,
                     status = %response.status(),
                     "HEAD probe returned non-success status, falling back to GET metadata probe"
                 );
                 client.get(url).send().await?
             }
-            Err(err) => {
-                tracing::warn!(
-                    url,
-                    error = %format_error_chain(&err),
-                    "HEAD probe failed, falling back to GET metadata probe"
-                );
+            Err(_) => {
+                tracing::warn!("HEAD probe failed, falling back to GET metadata probe");
                 client.get(url).send().await?
             }
         };
@@ -281,6 +286,100 @@ enum AttemptOutcome {
     Failed(String),
 }
 
+struct PreparedSources {
+    urls: Vec<String>,
+    initial_index: usize,
+    client: reqwest::Client,
+    resume_url: String,
+    sensitive: bool,
+}
+
+async fn prepare_sources(
+    download: Download,
+    resolver: Option<Arc<dyn DownloadSourceResolver>>,
+    client: reqwest::Client,
+    cancel_token: CancellationToken,
+    resolution_cancellation: ResolutionCancellation,
+) -> Result<PreparedSources, DomainError> {
+    if cancel_token.is_cancelled() {
+        return Err(DomainError::PluginError(
+            "premium source resolution cancelled".into(),
+        ));
+    }
+    let resume_url = download.url().as_str().to_string();
+    if download.account_id().is_some() {
+        let resolver = resolver.ok_or_else(|| {
+            DomainError::PluginError("premium source resolver is not configured".into())
+        })?;
+        let mut resolve_task = tokio::task::spawn_blocking(move || {
+            resolver.resolve_cancellable(&download, &resolution_cancellation)
+        });
+        let source = tokio::select! {
+            biased;
+            _ = cancel_token.cancelled() => {
+                return Err(DomainError::PluginError("premium source resolution cancelled".into()));
+            }
+            result = &mut resolve_task => {
+                result
+                    .map_err(|_| DomainError::PluginError("premium source resolver stopped".into()))??
+            }
+        };
+        let request_url = source.request_url().to_string();
+        let mut safety_task = tokio::task::spawn_blocking(move || {
+            let parsed = reqwest::Url::parse(&request_url)
+                .map_err(|_| DomainError::NetworkError("plugin returned an invalid URL".into()))?;
+            let client = restricted_download_client(&parsed)?;
+            Ok::<_, DomainError>((request_url, client))
+        });
+        let (request_url, client) = tokio::select! {
+            biased;
+            _ = cancel_token.cancelled() => {
+                return Err(DomainError::PluginError("premium source resolution cancelled".into()));
+            }
+            result = &mut safety_task => {
+                result
+                    .map_err(|_| DomainError::NetworkError("URL safety check stopped".into()))??
+            }
+        };
+        return Ok(PreparedSources {
+            urls: vec![request_url],
+            initial_index: 0,
+            client,
+            resume_url,
+            sensitive: true,
+        });
+    }
+    let urls = if download.mirrors().is_empty() {
+        vec![resume_url.clone()]
+    } else {
+        download
+            .mirrors()
+            .iter()
+            .map(|mirror| mirror.url().as_str().to_string())
+            .collect::<Vec<_>>()
+    };
+    let initial_index =
+        (download.current_mirror_index() as usize).min(urls.len().saturating_sub(1));
+    Ok(PreparedSources {
+        urls,
+        initial_index,
+        client,
+        resume_url,
+        sensitive: false,
+    })
+}
+
+fn source_failure_message(error: &DomainError) -> String {
+    match error {
+        DomainError::AccountInvalidCredentials => "Account credentials were rejected",
+        DomainError::AccountExpired => "Account is expired",
+        DomainError::AccountCooldown => "Account is temporarily rate-limited",
+        DomainError::AccountQuotaExceeded => "Account quota is exhausted",
+        _ => "Premium download source could not be resolved",
+    }
+    .to_string()
+}
+
 impl DownloadEngine for SegmentedDownloadEngine {
     fn start(&self, download: &Download) -> Result<(), DomainError> {
         let download_id = download.id();
@@ -293,23 +392,8 @@ impl DownloadEngine for SegmentedDownloadEngine {
             download.segments_count()
         };
 
-        // Snapshot the candidate URLs ahead of `tokio::spawn` so the
-        // failover loop owns them. An empty mirror list collapses to the
-        // canonical URL — single-source downloads keep their pre-mirror
-        // behaviour and never observe `MirrorSwitched`.
-        let mirror_urls: Vec<String> = if download.mirrors().is_empty() {
-            vec![download.url().as_str().to_string()]
-        } else {
-            download
-                .mirrors()
-                .iter()
-                .map(|m| m.url().as_str().to_string())
-                .collect()
-        };
-        let initial_mirror_idx =
-            (download.current_mirror_index() as usize).min(mirror_urls.len().saturating_sub(1));
-
         let cancel_token = CancellationToken::new();
+        let resolution_cancellation = ResolutionCancellation::default();
         let (pause_tx, pause_rx) = watch::channel(false);
 
         {
@@ -327,6 +411,7 @@ impl DownloadEngine for SegmentedDownloadEngine {
                 download_id,
                 ActiveDownload {
                     cancel_token: cancel_token.clone(),
+                    resolution_cancellation: resolution_cancellation.clone(),
                     pause_sender: pause_tx,
                 },
             );
@@ -339,9 +424,50 @@ impl DownloadEngine for SegmentedDownloadEngine {
         let min_segment_bytes = self.min_segment_bytes;
         let dynamic_split_enabled = self.dynamic_split_enabled.clone();
         let dynamic_split_min_remaining_bytes = self.dynamic_split_min_remaining_bytes.clone();
+        let source_resolver = self.source_resolver.clone();
+        let download = download.clone();
 
         tokio::spawn(async move {
-            let mut mirror_idx = initial_mirror_idx;
+            let prepared = match prepare_sources(
+                download,
+                source_resolver,
+                client,
+                cancel_token.clone(),
+                resolution_cancellation,
+            )
+            .await
+            {
+                Ok(prepared) => prepared,
+                Err(error) => {
+                    let event = if cancel_token.is_cancelled() {
+                        DomainEvent::DownloadCancelled { id: download_id }
+                    } else {
+                        DomainEvent::DownloadFailed {
+                            id: download_id,
+                            error: source_failure_message(&error),
+                        }
+                    };
+                    event_bus.publish(event);
+                    active_downloads
+                        .lock()
+                        .expect("active_downloads lock poisoned")
+                        .remove(&download_id);
+                    return;
+                }
+            };
+            let client = prepared.client;
+            let mirror_urls = prepared.urls;
+            let resume_url = prepared.resume_url;
+            let sensitive_url = prepared.sensitive;
+            if cancel_token.is_cancelled() {
+                event_bus.publish(DomainEvent::DownloadCancelled { id: download_id });
+                active_downloads
+                    .lock()
+                    .expect("active_downloads lock poisoned")
+                    .remove(&download_id);
+                return;
+            }
+            let mut mirror_idx = prepared.initial_index;
             loop {
                 let url = mirror_urls[mirror_idx].clone();
                 // Each attempt gets a fresh attempt-scoped child token so
@@ -364,6 +490,8 @@ impl DownloadEngine for SegmentedDownloadEngine {
                     min_segment_bytes,
                     dynamic_split_enabled: dynamic_split_enabled.clone(),
                     dynamic_split_min_remaining_bytes: dynamic_split_min_remaining_bytes.clone(),
+                    resume_url: resume_url.clone(),
+                    sensitive_url,
                 })
                 .await;
 
@@ -392,13 +520,21 @@ impl DownloadEngine for SegmentedDownloadEngine {
                                 break;
                             }
                             mirror_idx = next;
-                            tracing::info!(
-                                download_id = download_id.0,
-                                new_mirror_index = mirror_idx,
-                                new_url = %mirror_urls[mirror_idx],
-                                previous_error = %err,
-                                "switching to next mirror after failure"
-                            );
+                            if sensitive_url {
+                                tracing::info!(
+                                    download_id = download_id.0,
+                                    new_mirror_index = mirror_idx,
+                                    "switching sensitive source after failure"
+                                );
+                            } else {
+                                tracing::info!(
+                                    download_id = download_id.0,
+                                    new_mirror_index = mirror_idx,
+                                    new_url = %mirror_urls[mirror_idx],
+                                    previous_error = %err,
+                                    "switching to next mirror after failure"
+                                );
+                            }
                             // Wipe the previous mirror's partial file + meta so
                             // the next attempt starts clean. The pre-allocation
                             // step uses `create_new(true)` and would otherwise
@@ -438,7 +574,11 @@ impl DownloadEngine for SegmentedDownloadEngine {
                             event_bus.publish(DomainEvent::MirrorSwitched {
                                 id: download_id,
                                 new_mirror_index: mirror_idx as u32,
-                                new_url: mirror_urls[mirror_idx].clone(),
+                                new_url: if sensitive_url {
+                                    resume_url.clone()
+                                } else {
+                                    mirror_urls[mirror_idx].clone()
+                                },
                             });
                             continue;
                         }
@@ -509,6 +649,7 @@ impl DownloadEngine for SegmentedDownloadEngine {
         let active = map
             .get(&id)
             .ok_or_else(|| DomainError::NotFound(format!("download {}", id.0)))?;
+        active.resolution_cancellation.cancel();
         active.cancel_token.cancel();
         Ok(())
     }
@@ -531,6 +672,8 @@ struct MirrorAttemptParams {
     min_segment_bytes: u64,
     dynamic_split_enabled: Arc<AtomicBool>,
     dynamic_split_min_remaining_bytes: Arc<AtomicU64>,
+    resume_url: String,
+    sensitive_url: bool,
 }
 
 async fn run_mirror_attempt(params: MirrorAttemptParams) -> AttemptOutcome {
@@ -548,24 +691,31 @@ async fn run_mirror_attempt(params: MirrorAttemptParams) -> AttemptOutcome {
         min_segment_bytes,
         dynamic_split_enabled,
         dynamic_split_min_remaining_bytes,
+        resume_url,
+        sensitive_url,
     } = params;
     let (total_size, supports_range) =
         match SegmentedDownloadEngine::probe_remote_metadata(&client, &url).await {
             Ok(metadata) => metadata,
             Err(e) => {
-                tracing::warn!(
-                    download_id = download_id.0,
-                    url = %url,
-                    error = %format_error_chain(&e),
-                    "metadata probe failed (mirror attempt)"
-                );
+                if sensitive_url {
+                    tracing::warn!(download_id = download_id.0, "metadata probe failed");
+                } else {
+                    tracing::warn!(
+                        download_id = download_id.0,
+                        url = %url,
+                        error = %format_error_chain(&e),
+                        "metadata probe failed (mirror attempt)"
+                    );
+                }
                 if user_cancel_token.is_cancelled() {
                     return AttemptOutcome::Cancelled;
                 }
-                return AttemptOutcome::Failed(format!(
-                    "metadata probe failed: {}",
-                    format_error_chain(&e)
-                ));
+                return AttemptOutcome::Failed(if sensitive_url {
+                    "metadata probe failed".into()
+                } else {
+                    format!("metadata probe failed: {}", format_error_chain(&e))
+                });
             }
         };
 
@@ -676,6 +826,7 @@ async fn run_mirror_attempt(params: MirrorAttemptParams) -> AttemptOutcome {
             cancel_token: attempt_token.clone(),
             shared_downloaded: shared_downloaded.clone(),
             segment_progress: progress,
+            sensitive_url,
         };
         let slot_idx = index;
         join_set.spawn(async move { (slot_idx, download_segment(params).await) });
@@ -739,6 +890,7 @@ async fn run_mirror_attempt(params: MirrorAttemptParams) -> AttemptOutcome {
                         cancel_token: attempt_token.clone(),
                         shared_downloaded: shared_downloaded.clone(),
                         segment_progress: new_progress.clone(),
+                        sensitive_url,
                     };
                     join_set.spawn(async move { (new_slot_idx, download_segment(params).await) });
                     active_segments.push(SegmentRuntimeState {
@@ -754,7 +906,7 @@ async fn run_mirror_attempt(params: MirrorAttemptParams) -> AttemptOutcome {
                         &file_storage,
                         &dest_path,
                         download_id,
-                        &url,
+                        &resume_url,
                         total_size,
                         &active_segments,
                     )
@@ -806,15 +958,19 @@ mod tests {
     use super::*;
 
     use std::path::Path;
-    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
+    use std::sync::{Condvar, Mutex};
     use std::time::Duration;
 
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
+    use crate::domain::model::account::AccountId;
     use crate::domain::model::download::{Download, DownloadId, Url};
     use crate::domain::model::meta::DownloadMeta;
-    use crate::domain::ports::driven::{EventBus, FileStorage};
+    use crate::domain::ports::driven::{
+        DownloadSourceResolver, EventBus, FileStorage, ResolvedDownloadSource,
+    };
 
     // --- Mock types ---
 
@@ -916,6 +1072,131 @@ mod tests {
         bus: Arc<dyn EventBus>,
     ) -> SegmentedDownloadEngine {
         SegmentedDownloadEngine::new(reqwest::Client::new(), storage, bus, 4)
+    }
+
+    struct LoopbackSourceResolver {
+        calls: AtomicUsize,
+    }
+
+    struct BlockingSourceResolver {
+        entered: Mutex<Option<std::sync::mpsc::Sender<()>>>,
+        release: Arc<(Mutex<bool>, Condvar)>,
+        committed: AtomicBool,
+        finished: AtomicBool,
+    }
+
+    impl DownloadSourceResolver for BlockingSourceResolver {
+        fn resolve(&self, _: &Download) -> Result<ResolvedDownloadSource, DomainError> {
+            Err(DomainError::PluginError(
+                "cancellable path was not used".into(),
+            ))
+        }
+
+        fn resolve_cancellable(
+            &self,
+            _: &Download,
+            cancellation: &ResolutionCancellation,
+        ) -> Result<ResolvedDownloadSource, DomainError> {
+            if let Some(entered) = self.entered.lock().unwrap().take() {
+                entered.send(()).unwrap();
+            }
+            let (released, condition) = &*self.release;
+            let mut released = released.lock().unwrap();
+            while !*released {
+                released = condition.wait(released).unwrap();
+            }
+            let result = cancellation.run_if_active(|| {
+                self.committed.store(true, AtomicOrdering::SeqCst);
+                Ok(ResolvedDownloadSource::sensitive(
+                    "https://1.1.1.1/late-token".into(),
+                ))
+            });
+            self.finished.store(true, AtomicOrdering::SeqCst);
+            result
+        }
+    }
+
+    impl DownloadSourceResolver for LoopbackSourceResolver {
+        fn resolve(&self, _: &Download) -> Result<ResolvedDownloadSource, DomainError> {
+            self.calls.fetch_add(1, AtomicOrdering::SeqCst);
+            Ok(ResolvedDownloadSource::sensitive(
+                "https://127.0.0.1/secret-token".into(),
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn premium_source_is_resolved_jit_and_blocked_before_private_network_access() {
+        let storage = Arc::new(MockFileStorage::new());
+        let bus = Arc::new(CollectingEventBus::new());
+        let resolver = Arc::new(LoopbackSourceResolver {
+            calls: AtomicUsize::new(0),
+        });
+        let engine = make_engine(storage, bus.clone()).with_source_resolver(resolver.clone());
+        let download = make_download(99, "https://1fichier.com/?abc123")
+            .with_module_name("vortex-mod-1fichier".into())
+            .with_account_id(AccountId::new("account-1"));
+
+        engine.start(&download).expect("spawn download");
+
+        assert!(
+            bus.wait_for_event_async(
+                |event| matches!(event, DomainEvent::DownloadFailed { id, .. } if id.0 == 99),
+                Duration::from_secs(2),
+            )
+            .await
+        );
+        assert_eq!(resolver.calls.load(AtomicOrdering::SeqCst), 1);
+        let serialized = format!("{:?}", bus.collected());
+        assert!(!serialized.contains("secret-token"));
+        assert_eq!(download.url().as_str(), "https://1fichier.com/?abc123");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancellation_wins_against_blocked_jit_resolution_without_late_commit() {
+        let storage = Arc::new(MockFileStorage::new());
+        let bus = Arc::new(CollectingEventBus::new());
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let release = Arc::new((Mutex::new(false), Condvar::new()));
+        let resolver = Arc::new(BlockingSourceResolver {
+            entered: Mutex::new(Some(entered_tx)),
+            release: release.clone(),
+            committed: AtomicBool::new(false),
+            finished: AtomicBool::new(false),
+        });
+        let engine = make_engine(storage, bus.clone()).with_source_resolver(resolver.clone());
+        let download = make_download(98, "https://1fichier.com/?abc123")
+            .with_module_name("vortex-mod-1fichier".into())
+            .with_account_id(AccountId::new("account-1"));
+        engine.start(&download).expect("spawn download");
+        tokio::task::spawn_blocking(move || entered_rx.recv_timeout(Duration::from_secs(1)))
+            .await
+            .unwrap()
+            .expect("resolver entered");
+
+        engine
+            .cancel(download.id())
+            .expect("cancel active download");
+        assert!(
+            bus.wait_for_event_async(
+                |event| matches!(event, DomainEvent::DownloadCancelled { id } if id.0 == 98),
+                Duration::from_millis(300),
+            )
+            .await,
+            "cancellation must not wait for the blocking resolver"
+        );
+
+        let (released, condition) = &*release;
+        *released.lock().unwrap() = true;
+        condition.notify_all();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+        while !resolver.finished.load(AtomicOrdering::SeqCst)
+            && tokio::time::Instant::now() < deadline
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(resolver.finished.load(AtomicOrdering::SeqCst));
+        assert!(!resolver.committed.load(AtomicOrdering::SeqCst));
     }
 
     // --- Tests ---

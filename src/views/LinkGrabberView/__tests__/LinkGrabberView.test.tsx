@@ -182,6 +182,64 @@ describe("LinkGrabberView", () => {
     });
   });
 
+  it("passes the source URL and premium account association to download_start", async () => {
+    const sourceUrl = "ftp://1fichier.com/file.zip";
+    const directUrl = "https://download.1fichier.com/token/file.zip";
+    mockInvoke.mockImplementation((command) => {
+      if (command === "link_resolve") {
+        return Promise.resolve([
+          {
+            id: "premium-link",
+            originalUrl: sourceUrl,
+            resolvedUrl: directUrl,
+            filename: "file.zip",
+            sizeBytes: 42,
+            status: "online",
+            moduleName: "vortex-mod-1fichier",
+            accountId: "account-uuid",
+            isMedia: false,
+          },
+        ]);
+      }
+      if (command === "link_detect_duplicates") {
+        return Promise.resolve([
+          {
+            url: directUrl,
+            isDuplicate: false,
+            source: null,
+            existingId: null,
+            existingFilename: null,
+          },
+        ]);
+      }
+      return Promise.resolve(null);
+    });
+
+    const user = userEvent.setup();
+    renderWithProviders();
+    await user.type(screen.getByRole("textbox"), sourceUrl);
+    await user.click(screen.getByRole("button", { name: "Analyze Links" }));
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith("link_detect_duplicates", {
+        urls: [directUrl],
+      });
+    });
+
+    await user.click(screen.getByRole("button", { name: "Start All Online" }));
+
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith("download_start", {
+        url: sourceUrl,
+        moduleName: "vortex-mod-1fichier",
+        accountId: "account-uuid",
+      });
+    });
+    const downloadStartCalls = mockInvoke.mock.calls.filter(
+      ([command]) => command === "download_start",
+    );
+    expect(JSON.stringify(downloadStartCalls)).not.toContain(directUrl);
+  });
+
   it("should surface error toast on failure and success toast on retry", async () => {
     mockInvoke.mockRejectedValueOnce(new Error("AppState not registered")).mockResolvedValueOnce([
       {

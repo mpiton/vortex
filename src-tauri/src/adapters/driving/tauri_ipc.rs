@@ -94,12 +94,16 @@ pub async fn download_start(
     state: State<'_, AppState>,
     url: String,
     destination: Option<String>,
+    module_name: Option<String>,
+    account_id: Option<String>,
 ) -> Result<u64, String> {
     let cmd = StartDownloadCommand {
         url,
         destination: destination.map(PathBuf::from),
         filename: None,
         source_hostname_override: None,
+        module_name,
+        account_id: account_id.map(AccountId::new),
     };
     state
         .command_bus
@@ -1750,6 +1754,8 @@ async fn start_media_download_for_url(
                 destination: None,
                 filename,
                 source_hostname_override,
+                module_name: None,
+                account_id: None,
             };
             command_bus
                 .handle_start_download(cmd)
@@ -3009,6 +3015,7 @@ impl AccountPatchDto {
 #[serde(rename_all = "camelCase")]
 pub struct ValidationOutcomeView {
     pub valid: bool,
+    pub status: String,
     pub latency_ms: Option<u64>,
     pub traffic_left: Option<u64>,
     pub traffic_total: Option<u64>,
@@ -3020,6 +3027,7 @@ impl From<ValidationOutcomeDto> for ValidationOutcomeView {
     fn from(o: ValidationOutcomeDto) -> Self {
         Self {
             valid: o.valid,
+            status: o.status.to_string(),
             latency_ms: o.latency_ms,
             traffic_left: o.traffic_left,
             traffic_total: o.traffic_total,
@@ -3098,6 +3106,7 @@ pub async fn account_update(
         .handle_update_account(UpdateAccountCommand {
             id: AccountId::new(id),
             patch,
+            now_ms: now_unix_ms(),
         })
         .await
         .map_err(|e| e.to_string())
@@ -3488,15 +3497,17 @@ pub async fn package_find_by_external_id(
 #[cfg(test)]
 mod tests {
     use super::{
-        DEFAULT_DOWNLOAD_LOG_LIMIT, StreamResolution, configured_download_destination,
-        configured_status_bar_path, extract_hostname_from_url, load_plugin_media_metadata,
-        parse_plugin_video_metadata, parse_soundcloud_metadata, parse_soundcloud_playlist_targets,
-        parse_stats_period, read_available_space, resolve_download_log_limit,
-        resolve_existing_disk_path, resolve_media_stream, sanitize_extension, sanitize_filename,
-        soundcloud_track_download_title, unique_destination,
+        DEFAULT_DOWNLOAD_LOG_LIMIT, StreamResolution, ValidationOutcomeView,
+        configured_download_destination, configured_status_bar_path, extract_hostname_from_url,
+        load_plugin_media_metadata, parse_plugin_video_metadata, parse_soundcloud_metadata,
+        parse_soundcloud_playlist_targets, parse_stats_period, read_available_space,
+        resolve_download_log_limit, resolve_existing_disk_path, resolve_media_stream,
+        sanitize_extension, sanitize_filename, soundcloud_track_download_title, unique_destination,
     };
     use crate::adapters::driven::logging::download_log_store::DownloadLogStore;
+    use crate::application::commands::ValidationOutcomeDto;
     use crate::domain::error::DomainError;
+    use crate::domain::model::account::AccountStatus;
     use crate::domain::model::plugin::{PluginCategory, PluginInfo, PluginManifest};
     use crate::domain::model::views::StatsPeriod;
     use crate::domain::ports::driven::PluginLoader;
@@ -3505,6 +3516,19 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Barrier};
+
+    #[test]
+    fn validation_outcome_view_serializes_typed_status() {
+        let view = ValidationOutcomeView::from(ValidationOutcomeDto {
+            status: AccountStatus::QuotaExhausted,
+            error_message: Some("quota exhausted".to_string()),
+            ..ValidationOutcomeDto::default()
+        });
+
+        let value = serde_json::to_value(view).expect("validation outcome serializes");
+        assert_eq!(value["status"], "quota_exhausted");
+        assert_eq!(value["valid"], false);
+    }
 
     #[derive(Clone)]
     struct MetadataPluginLoader {
