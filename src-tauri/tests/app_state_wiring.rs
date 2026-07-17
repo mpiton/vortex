@@ -14,7 +14,7 @@ use vortex_lib::domain::ports::driven::{
 use vortex_lib::{
     AccountOperationLocks, AccountRotator, AccountSelector, CommandBus, ExtismPluginLoader,
     ExtractionConfig, FsFileStorage, KeyringAccountStore, NoopCredentialStore,
-    PluginAccountValidator, QueryBus, ReqwestHttpClient, ResolvePremiumSourceHandler,
+    PluginAccountValidator, QueryBus, ReqwestHttpClient, ResolveHosterSourceHandler,
     SegmentedDownloadEngine, SharedHostResources, SqliteAccountRepo, SqliteDownloadReadRepo,
     SqliteDownloadRepo, SqliteHistoryRepo, SqliteStatsRepo, SystemClock, TokioEventBus,
     TomlConfigStore, VortexArchiveExtractor, connection,
@@ -87,7 +87,7 @@ fn test_appstate_wiring_with_in_memory_db() {
     );
     let account_validator = Arc::new(PluginAccountValidator::new(plugin_loader.clone()));
     let account_operation_locks = Arc::new(AccountOperationLocks::default());
-    let premium_source_handler = Arc::new(ResolvePremiumSourceHandler::new(
+    let premium_source_handler = Arc::new(ResolveHosterSourceHandler::new(
         account_repo.clone(),
         account_credential_store.clone(),
         plugin_loader.clone(),

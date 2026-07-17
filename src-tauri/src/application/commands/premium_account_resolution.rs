@@ -5,9 +5,9 @@ use crate::domain::model::account::{Account, AccountStatus};
 use crate::domain::model::credential::Credential;
 use crate::domain::ports::driven::{ExtractedHosterLink, ResolutionCancellation};
 
-use super::{ResolvePremiumSourceCommand, ResolvePremiumSourceHandler};
+use super::{ResolveHosterSourceHandler, ResolvePremiumSourceCommand};
 
-impl ResolvePremiumSourceHandler {
+impl ResolveHosterSourceHandler {
     pub(super) fn resolve_locked(
         &self,
         command: ResolvePremiumSourceCommand,
@@ -94,10 +94,12 @@ impl ResolvePremiumSourceHandler {
         link: &ExtractedHosterLink,
         cancellation: &ResolutionCancellation,
     ) -> Result<(), DomainError> {
-        if link.direct_url.is_none() {
-            return Err(DomainError::PluginError(
-                "premium plugin returned no direct URL".into(),
-            ));
+        if link
+            .direct_url
+            .as_deref()
+            .is_none_or(|url| url.trim().is_empty())
+        {
+            return Err(DomainError::HosterNoFile);
         }
         if let Some(total) = link.traffic_total_bytes {
             account.set_traffic_total(total);

@@ -76,3 +76,29 @@ describe("LinkRow duplicate badge", () => {
     expect(row.dataset.duplicate).toBe("none");
   });
 });
+
+describe("LinkRow hoster errors", () => {
+  it("renders the typed plugin error message without replacing its status", () => {
+    renderRow({
+      ...baseLink,
+      status: "error",
+      errorKind: "noFile",
+      errorMessage: "No downloadable file was found",
+    });
+
+    expect(screen.getByText("No downloadable file was found")).toBeInTheDocument();
+    expect(screen.getByTestId(`link-row-${baseLink.originalUrl}`).dataset.status).toBe("error");
+  });
+
+  it("clears a stale analysis error after a live probe recovers", () => {
+    useLinkGrabberStore.getState().setStatus(baseLink.originalUrl, { kind: "online" });
+    renderRow({
+      ...baseLink,
+      status: "error",
+      errorMessage: "Network request failed",
+    });
+
+    expect(screen.queryByText("Network request failed")).not.toBeInTheDocument();
+    expect(screen.getByTestId(`link-row-${baseLink.originalUrl}`).dataset.status).toBe("online");
+  });
+});

@@ -9,14 +9,26 @@ use uuid::Uuid;
 use crate::application::command_bus::CommandBus;
 use crate::application::error::AppError;
 use crate::application::services::account_rotator::NextAccountOutcome;
+use crate::application::services::download_source_policy::is_protected_plugin_category;
 use crate::domain::error::DomainError;
 use crate::domain::model::http::HttpResponse;
-use crate::domain::model::plugin::PluginCategory;
 use crate::domain::ports::driven::ExtractedHosterLink;
 
 use super::ResolveLinksCommand;
 
 /// Resolution metadata for a single URL.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LinkResolutionErrorKind {
+    InvalidUrl,
+    NoFile,
+    AuthenticationRequired,
+    Expired,
+    AccountUnavailable,
+    Plugin,
+    Network,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ResolvedLinkDto {
@@ -25,19 +37,24 @@ pub struct ResolvedLinkDto {
     pub resolved_url: Option<String>,
     pub filename: Option<String>,
     pub size_bytes: Option<u64>,
+    pub resumable: Option<bool>,
     /// "checking" | "online" | "offline" | "error"
     pub status: String,
     pub error_message: Option<String>,
+    pub error_kind: Option<LinkResolutionErrorKind>,
     pub module_name: String,
     pub account_id: Option<String>,
     pub is_media: bool,
     pub media_type: Option<String>,
+    /// Whether the frontend should ask the backend for a live HTTP probe.
+    pub requires_online_probe: bool,
 }
 
 struct HosterResolution {
-    resolved_url: String,
-    filename: Option<String>,
+    stable_url: String,
+    filename: String,
     size_bytes: Option<u64>,
+    resumable: Option<bool>,
     account_id: Option<String>,
 }
 
@@ -47,11 +64,17 @@ impl CommandBus {
         cmd: ResolveLinksCommand,
     ) -> Result<Vec<ResolvedLinkDto>, AppError> {
         const MAX_URLS: usize = 500;
+        const MAX_URL_BYTES: usize = 8 * 1024;
         if cmd.urls.len() > MAX_URLS {
             return Err(AppError::Validation(format!(
                 "Too many URLs: {} (max {})",
                 cmd.urls.len(),
                 MAX_URLS
+            )));
+        }
+        if cmd.urls.iter().any(|url| url.len() > MAX_URL_BYTES) {
+            return Err(AppError::Validation(format!(
+                "URL exceeds the {MAX_URL_BYTES}-byte limit"
             )));
         }
 
@@ -64,36 +87,50 @@ impl CommandBus {
             let id = Uuid::new_v4().to_string();
 
             if !is_allowed_scheme(url) {
-                results.push(ResolvedLinkDto {
-                    id,
-                    original_url: url.clone(),
-                    resolved_url: None,
-                    filename: None,
-                    size_bytes: None,
-                    status: "error".to_string(),
-                    error_message: Some("URL scheme not allowed".to_string()),
-                    module_name: "core-http".to_string(),
-                    account_id: None,
-                    is_media: false,
-                    media_type: None,
-                });
+                push_bounded_result(
+                    &mut results,
+                    ResolvedLinkDto {
+                        id,
+                        original_url: url.clone(),
+                        resolved_url: None,
+                        filename: None,
+                        size_bytes: None,
+                        resumable: None,
+                        status: "error".to_string(),
+                        error_message: Some("URL scheme not allowed".to_string()),
+                        error_kind: Some(LinkResolutionErrorKind::InvalidUrl),
+                        module_name: "core-http".to_string(),
+                        account_id: None,
+                        is_media: false,
+                        media_type: None,
+                        requires_online_probe: false,
+                    },
+                    MAX_URLS,
+                )?;
                 continue;
             }
 
             if url.to_lowercase().starts_with("magnet:") {
-                results.push(ResolvedLinkDto {
-                    id,
-                    original_url: url.clone(),
-                    resolved_url: Some(url.clone()),
-                    filename: None,
-                    size_bytes: None,
-                    status: "online".to_string(),
-                    error_message: None,
-                    module_name: "magnet".to_string(),
-                    account_id: None,
-                    is_media: false,
-                    media_type: None,
-                });
+                push_bounded_result(
+                    &mut results,
+                    ResolvedLinkDto {
+                        id,
+                        original_url: url.clone(),
+                        resolved_url: Some(url.clone()),
+                        filename: None,
+                        size_bytes: None,
+                        resumable: None,
+                        status: "online".to_string(),
+                        error_message: None,
+                        error_kind: None,
+                        module_name: "magnet".to_string(),
+                        account_id: None,
+                        is_media: false,
+                        media_type: None,
+                        requires_online_probe: false,
+                    },
+                    MAX_URLS,
+                )?;
                 continue;
             }
 
@@ -105,39 +142,57 @@ impl CommandBus {
 
             let is_hoster = matches!(
                 plugin_info.as_ref().ok().and_then(Option::as_ref),
-                Some(info)
-                    if matches!(info.category(), PluginCategory::Hoster | PluginCategory::Debrid)
+                Some(info) if is_protected_plugin_category(info.category())
             );
             if is_hoster {
-                match self.resolve_hoster_link(url, &module_name).await {
-                    Ok(resolved) => results.push(ResolvedLinkDto {
-                        id,
-                        original_url: url.clone(),
-                        resolved_url: Some(resolved.resolved_url),
-                        filename: resolved.filename,
-                        size_bytes: resolved.size_bytes,
-                        status: "online".to_string(),
-                        error_message: None,
-                        module_name,
-                        account_id: resolved.account_id,
-                        is_media: false,
-                        media_type: None,
-                    }),
+                match self.resolve_hoster_links(url, &module_name).await {
+                    Ok(resolutions) => {
+                        for resolved in resolutions {
+                            push_bounded_result(
+                                &mut results,
+                                ResolvedLinkDto {
+                                    id: Uuid::new_v4().to_string(),
+                                    original_url: resolved.stable_url.clone(),
+                                    resolved_url: Some(resolved.stable_url),
+                                    filename: Some(resolved.filename),
+                                    size_bytes: resolved.size_bytes,
+                                    resumable: resolved.resumable,
+                                    status: "online".to_string(),
+                                    error_message: None,
+                                    error_kind: None,
+                                    module_name: module_name.clone(),
+                                    account_id: resolved.account_id,
+                                    is_media: false,
+                                    media_type: None,
+                                    requires_online_probe: false,
+                                },
+                                MAX_URLS,
+                            )?;
+                        }
+                    }
                     Err(error) => {
                         tracing::debug!(module_name, "hoster link resolution failed");
-                        results.push(ResolvedLinkDto {
-                            id,
-                            original_url: url.clone(),
-                            resolved_url: None,
-                            filename: None,
-                            size_bytes: None,
-                            status: "error".to_string(),
-                            error_message: Some(sanitize_hoster_error(&error)),
-                            module_name,
-                            account_id: None,
-                            is_media: false,
-                            media_type: None,
-                        });
+                        let (error_kind, error_message) = hoster_error_details(&error);
+                        push_bounded_result(
+                            &mut results,
+                            ResolvedLinkDto {
+                                id,
+                                original_url: url.clone(),
+                                resolved_url: None,
+                                filename: None,
+                                size_bytes: None,
+                                resumable: None,
+                                status: "error".to_string(),
+                                error_message: Some(error_message),
+                                error_kind: Some(error_kind),
+                                module_name,
+                                account_id: None,
+                                is_media: false,
+                                media_type: None,
+                                requires_online_probe: false,
+                            },
+                            MAX_URLS,
+                        )?;
                     }
                 }
                 continue;
@@ -154,50 +209,71 @@ impl CommandBus {
                 Ok(response) if response.is_success() => {
                     let filename = extract_filename_from_url(url);
                     let size = extract_content_length(&response);
-                    results.push(ResolvedLinkDto {
-                        id,
-                        original_url: url.clone(),
-                        resolved_url: Some(url.clone()),
-                        filename,
-                        size_bytes: size,
-                        status: "online".to_string(),
-                        error_message: None,
-                        module_name,
-                        account_id: None,
-                        is_media,
-                        media_type,
-                    });
+                    push_bounded_result(
+                        &mut results,
+                        ResolvedLinkDto {
+                            id,
+                            original_url: url.clone(),
+                            resolved_url: Some(url.clone()),
+                            filename,
+                            size_bytes: size,
+                            resumable: None,
+                            status: "online".to_string(),
+                            error_message: None,
+                            error_kind: None,
+                            module_name,
+                            account_id: None,
+                            is_media,
+                            media_type,
+                            requires_online_probe: true,
+                        },
+                        MAX_URLS,
+                    )?;
                 }
                 Ok(_) => {
-                    results.push(ResolvedLinkDto {
-                        id,
-                        original_url: url.clone(),
-                        resolved_url: None,
-                        filename: None,
-                        size_bytes: None,
-                        status: "offline".to_string(),
-                        error_message: None,
-                        module_name,
-                        account_id: None,
-                        is_media,
-                        media_type,
-                    });
+                    push_bounded_result(
+                        &mut results,
+                        ResolvedLinkDto {
+                            id,
+                            original_url: url.clone(),
+                            resolved_url: None,
+                            filename: None,
+                            size_bytes: None,
+                            resumable: None,
+                            status: "offline".to_string(),
+                            error_message: None,
+                            error_kind: None,
+                            module_name,
+                            account_id: None,
+                            is_media,
+                            media_type,
+                            requires_online_probe: true,
+                        },
+                        MAX_URLS,
+                    )?;
                 }
                 Err(e) => {
                     tracing::debug!(error = %e, "link resolution failed");
-                    results.push(ResolvedLinkDto {
-                        id,
-                        original_url: url.clone(),
-                        resolved_url: None,
-                        filename: None,
-                        size_bytes: None,
-                        status: "error".to_string(),
-                        error_message: Some(sanitize_resolve_error(&e)),
-                        module_name,
-                        account_id: None,
-                        is_media,
-                        media_type,
-                    });
+                    push_bounded_result(
+                        &mut results,
+                        ResolvedLinkDto {
+                            id,
+                            original_url: url.clone(),
+                            resolved_url: None,
+                            filename: None,
+                            size_bytes: None,
+                            resumable: None,
+                            status: "error".to_string(),
+                            error_message: Some(sanitize_resolve_error(&e)),
+                            error_kind: Some(LinkResolutionErrorKind::Network),
+                            module_name,
+                            account_id: None,
+                            is_media,
+                            media_type,
+                            requires_online_probe: true,
+                        },
+                        MAX_URLS,
+                    )?;
                 }
             }
         }
@@ -205,20 +281,25 @@ impl CommandBus {
         Ok(results)
     }
 
-    async fn resolve_hoster_link(
+    async fn resolve_hoster_links(
         &self,
         url: &str,
         service_name: &str,
-    ) -> Result<HosterResolution, AppError> {
+    ) -> Result<Vec<HosterResolution>, AppError> {
+        if service_name == "vortex-mod-gofile" {
+            validate_gofile_requested_origin(url)?;
+        }
         if self.account_repo().is_some() {
             match self.next_hoster_account(service_name)? {
                 NextAccountOutcome::Picked(account) => {
-                    return Ok(HosterResolution {
-                        resolved_url: url.to_string(),
-                        filename: extract_filename_from_url(url),
+                    return Ok(vec![HosterResolution {
+                        stable_url: url.to_string(),
+                        filename: extract_filename_from_url(url)
+                            .unwrap_or_else(|| "download".into()),
                         size_bytes: None,
+                        resumable: None,
                         account_id: Some(account.id().as_str().to_string()),
-                    });
+                    }]);
                 }
                 NextAccountOutcome::AllExhausted { reason, .. } => {
                     return Err(reason.into_domain_error().into());
@@ -227,10 +308,17 @@ impl CommandBus {
             }
         }
 
-        let link = self
+        let links = self
             .plugin_loader()
-            .extract_hoster_link(service_name, url, None)?;
-        Ok(into_hoster_resolution(link, url))
+            .extract_hoster_links(service_name, url, None)?;
+        if links.is_empty() {
+            return Err(DomainError::HosterNoFile.into());
+        }
+        links
+            .into_iter()
+            .map(|link| into_hoster_resolution(link, url, service_name))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(Into::into)
     }
 
     fn next_hoster_account(&self, service_name: &str) -> Result<NextAccountOutcome, AppError> {
@@ -245,28 +333,167 @@ impl CommandBus {
     }
 }
 
-fn into_hoster_resolution(link: ExtractedHosterLink, stable_url: &str) -> HosterResolution {
-    HosterResolution {
-        resolved_url: stable_url.to_string(),
-        filename: link.filename,
-        size_bytes: link.size_bytes,
-        account_id: None,
+fn push_bounded_result(
+    results: &mut Vec<ResolvedLinkDto>,
+    result: ResolvedLinkDto,
+    max_results: usize,
+) -> Result<(), AppError> {
+    if results.len() >= max_results {
+        return Err(AppError::Validation(format!(
+            "Resolved link output exceeds the {max_results}-item limit"
+        )));
     }
+    results.push(result);
+    Ok(())
 }
 
-fn sanitize_hoster_error(error: &AppError) -> String {
+fn into_hoster_resolution(
+    link: ExtractedHosterLink,
+    requested_url: &str,
+    service_name: &str,
+) -> Result<HosterResolution, DomainError> {
+    if link.source_url.trim().is_empty()
+        || link
+            .direct_url
+            .as_deref()
+            .is_none_or(|url| url.trim().is_empty())
+    {
+        return Err(DomainError::HosterNoFile);
+    }
+    if service_name == "vortex-mod-gofile" {
+        validate_gofile_requested_origin(requested_url)?;
+    }
+    let stable_url = if link.source_url.trim() == requested_url {
+        requested_url.to_string()
+    } else if service_name == "vortex-mod-gofile" {
+        validated_gofile_child_source(requested_url, &link.source_url)?
+    } else {
+        requested_url.to_string()
+    };
+    let filename = link
+        .filename
+        .filter(|name| !name.trim().is_empty())
+        .or_else(|| extract_filename_from_url(&stable_url))
+        .unwrap_or_else(|| "download".into());
+    Ok(HosterResolution {
+        stable_url,
+        filename,
+        size_bytes: link.size_bytes,
+        resumable: link.resumable,
+        account_id: None,
+    })
+}
+
+fn validate_gofile_requested_origin(requested_url: &str) -> Result<(), DomainError> {
+    let requested = reqwest::Url::parse(requested_url)
+        .map_err(|_| DomainError::PluginError("hoster received an invalid source URL".into()))?;
+    if !is_supported_gofile_origin(&requested, false)
+        || !requested.username().is_empty()
+        || requested.password().is_some()
+    {
+        return Err(DomainError::PluginError(
+            "hoster received an unsafe source URL".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validated_gofile_child_source(
+    requested_url: &str,
+    candidate_url: &str,
+) -> Result<String, DomainError> {
+    let requested = reqwest::Url::parse(requested_url)
+        .map_err(|_| DomainError::PluginError("hoster returned an invalid source URL".into()))?;
+    let candidate = reqwest::Url::parse(candidate_url.trim())
+        .map_err(|_| DomainError::PluginError("hoster returned an invalid source URL".into()))?;
+    let requested_segments = path_segments(&requested);
+    let candidate_segments = path_segments(&candidate);
+    let canonical_child = matches!(
+        (requested_segments.as_slice(), candidate_segments.as_slice()),
+        (["d", folder], ["d", candidate_folder, child])
+            if folder == candidate_folder && is_gofile_id(folder, false) && is_gofile_id(child, true)
+    );
+    if !is_supported_gofile_origin(&requested, false)
+        || !is_supported_gofile_origin(&candidate, true)
+        || !candidate.username().is_empty()
+        || candidate.password().is_some()
+        || candidate.query().is_some()
+        || candidate.fragment().is_some()
+        || !canonical_child
+    {
+        return Err(DomainError::PluginError(
+            "hoster returned an unsafe source URL".into(),
+        ));
+    }
+    Ok(candidate.to_string())
+}
+
+fn is_supported_gofile_origin(url: &reqwest::Url, require_https: bool) -> bool {
+    let scheme_allowed = if require_https {
+        url.scheme() == "https"
+    } else {
+        matches!(url.scheme(), "http" | "https")
+    };
+    let default_port = match url.scheme() {
+        "http" => url.port_or_known_default() == Some(80),
+        "https" => url.port_or_known_default() == Some(443),
+        _ => false,
+    };
+    scheme_allowed && default_port && matches!(url.host_str(), Some("gofile.io" | "www.gofile.io"))
+}
+
+fn path_segments(url: &reqwest::Url) -> Vec<&str> {
+    url.path()
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect()
+}
+
+fn is_gofile_id(value: &str, allow_separator: bool) -> bool {
+    value.len() >= 6
+        && value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || (allow_separator && matches!(byte, b'_' | b'-'))
+        })
+}
+
+fn hoster_error_details(error: &AppError) -> (LinkResolutionErrorKind, String) {
     match error {
-        AppError::Domain(DomainError::AccountInvalidCredentials) => {
-            "Account credentials were rejected".to_string()
-        }
-        AppError::Domain(DomainError::AccountExpired) => "Account is expired".to_string(),
-        AppError::Domain(DomainError::AccountCooldown) => {
-            "Account is temporarily rate-limited".to_string()
-        }
-        AppError::Domain(DomainError::AccountQuotaExceeded) => {
-            "Account quota is exhausted".to_string()
-        }
-        _ => "Could not resolve hoster link".to_string(),
+        AppError::Domain(DomainError::AccountInvalidCredentials) => (
+            LinkResolutionErrorKind::AuthenticationRequired,
+            "Account credentials were rejected".to_string(),
+        ),
+        AppError::Domain(DomainError::HosterAuthenticationRequired) => (
+            LinkResolutionErrorKind::AuthenticationRequired,
+            "Hoster authentication is required".to_string(),
+        ),
+        AppError::Domain(DomainError::AccountExpired) => (
+            LinkResolutionErrorKind::Expired,
+            "Account is expired".to_string(),
+        ),
+        AppError::Domain(DomainError::HosterDirectUrlExpired) => (
+            LinkResolutionErrorKind::Expired,
+            "The direct download URL has expired".to_string(),
+        ),
+        AppError::Domain(DomainError::HosterNoFile) => (
+            LinkResolutionErrorKind::NoFile,
+            "No downloadable file was found".to_string(),
+        ),
+        AppError::Domain(DomainError::AccountCooldown) => (
+            LinkResolutionErrorKind::AccountUnavailable,
+            "Account is temporarily rate-limited".to_string(),
+        ),
+        AppError::Domain(DomainError::AccountQuotaExceeded) => (
+            LinkResolutionErrorKind::AccountUnavailable,
+            "Account quota is exhausted".to_string(),
+        ),
+        AppError::Domain(DomainError::NetworkError(_)) => (
+            LinkResolutionErrorKind::Network,
+            "Could not reach the hoster".to_string(),
+        ),
+        _ => (
+            LinkResolutionErrorKind::Plugin,
+            "Could not resolve hoster link".to_string(),
+        ),
     }
 }
 
@@ -355,397 +582,9 @@ fn detect_media_type(url: &str) -> Option<String> {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::collections::HashMap;
-    use std::sync::{Arc, Mutex};
+#[path = "resolve_links_hoster_tests.rs"]
+mod hoster_tests;
 
-    use super::*;
-    use crate::application::commands::tests_support::{
-        CapturingEventBus, FakeAccountCredentialStore, InMemoryAccountRepo,
-        build_account_bus_with_plugin_loader,
-    };
-    use crate::application::services::{AccountRotator, AccountSelector};
-    use crate::domain::error::DomainError;
-    use crate::domain::model::account::{Account, AccountId, AccountStatus, AccountType};
-    use crate::domain::model::credential::Credential;
-    use crate::domain::model::plugin::{PluginCategory, PluginInfo, PluginManifest};
-    use crate::domain::ports::driven::{
-        AccountCredentialStore, AccountRepository, Clock, PluginLoader,
-    };
-
-    struct FixedClock;
-
-    impl Clock for FixedClock {
-        fn now_unix_secs(&self) -> u64 {
-            1_700_000_000
-        }
-    }
-
-    struct PremiumPluginLoader {
-        credentials: Mutex<Vec<String>>,
-        services: Mutex<Vec<String>>,
-    }
-
-    impl PremiumPluginLoader {
-        fn new() -> Self {
-            Self {
-                credentials: Mutex::new(Vec::new()),
-                services: Mutex::new(Vec::new()),
-            }
-        }
-
-        fn plugin_info() -> PluginInfo {
-            PluginInfo::new(
-                "vortex-mod-1fichier".into(),
-                "1.1.0".into(),
-                "1fichier".into(),
-                "vortex".into(),
-                PluginCategory::Hoster,
-            )
-        }
-    }
-
-    impl PluginLoader for PremiumPluginLoader {
-        fn load(&self, _: &PluginManifest) -> Result<(), DomainError> {
-            Ok(())
-        }
-
-        fn unload(&self, _: &str) -> Result<(), DomainError> {
-            Ok(())
-        }
-
-        fn resolve_url(&self, _: &str) -> Result<Option<PluginInfo>, DomainError> {
-            Ok(Some(Self::plugin_info()))
-        }
-
-        fn list_loaded(&self) -> Result<Vec<PluginInfo>, DomainError> {
-            Ok(vec![Self::plugin_info()])
-        }
-
-        fn set_enabled(&self, _: &str, _: bool) -> Result<(), DomainError> {
-            Ok(())
-        }
-
-        fn extract_hoster_link(
-            &self,
-            service_name: &str,
-            _: &str,
-            credential: Option<&Credential>,
-        ) -> Result<ExtractedHosterLink, DomainError> {
-            self.services.lock().unwrap().push(service_name.to_string());
-            let credential = credential.ok_or_else(|| {
-                DomainError::NotFound("free hoster extraction is not configured".into())
-            })?;
-            self.credentials
-                .lock()
-                .unwrap()
-                .push(credential.password().to_string());
-            match credential.password() {
-                "expired-key" => return Err(DomainError::AccountExpired),
-                "invalid-key" => return Err(DomainError::AccountInvalidCredentials),
-                "quota-key" => return Err(DomainError::AccountQuotaExceeded),
-                "cooldown-key" => return Err(DomainError::AccountCooldown),
-                _ => {}
-            }
-            Ok(ExtractedHosterLink {
-                source_url: "https://1fichier.com/?abc123".into(),
-                filename: Some("file.zip".into()),
-                size_bytes: Some(42),
-                direct_url: Some("https://download.1fichier.com/token/file.zip".into()),
-                traffic_used_bytes: Some(1),
-                traffic_total_bytes: Some(100),
-            })
-        }
-    }
-
-    fn premium_account(id: &str, traffic_left: u64) -> Account {
-        Account::reconstruct_with_status(
-            AccountId::new(id),
-            "vortex-mod-1fichier".into(),
-            format!("user-{id}"),
-            AccountType::Premium,
-            true,
-            Some(traffic_left),
-            Some(100),
-            Some(u64::MAX),
-            Some(1),
-            0,
-            AccountStatus::Valid,
-            None,
-        )
-    }
-
-    async fn resolve_with_primary_credential(
-        primary_password: Option<&str>,
-        include_backup: bool,
-        temporary_status: Option<AccountStatus>,
-    ) -> (
-        Vec<ResolvedLinkDto>,
-        Arc<InMemoryAccountRepo>,
-        Arc<PremiumPluginLoader>,
-        Account,
-    ) {
-        let repo = Arc::new(InMemoryAccountRepo::new());
-        let credentials = Arc::new(FakeAccountCredentialStore::new());
-        let events = Arc::new(CapturingEventBus::new());
-        let plugin = Arc::new(PremiumPluginLoader::new());
-        let mut primary = premium_account("primary", 100);
-        let backup = premium_account("backup", 50);
-        match temporary_status {
-            Some(AccountStatus::QuotaExhausted) => primary.mark_exhausted(1_700_000_060_000),
-            Some(AccountStatus::Cooldown) => primary.mark_cooldown(1_700_000_060_000),
-            _ => {}
-        }
-        repo.save(&primary).unwrap();
-        if include_backup {
-            repo.save(&backup).unwrap();
-        }
-        if let Some(password) = primary_password {
-            credentials.store_password(primary.id(), password).unwrap();
-        }
-        if include_backup {
-            credentials
-                .store_password(backup.id(), "working-key")
-                .unwrap();
-        }
-        let clock: Arc<dyn Clock> = Arc::new(FixedClock);
-        let selector = AccountSelector::new(repo.clone(), events.clone(), clock.clone());
-        let rotator = AccountRotator::new(selector.clone(), repo.clone(), events.clone(), clock);
-        let bus = build_account_bus_with_plugin_loader(
-            repo.clone(),
-            credentials,
-            events,
-            None,
-            None,
-            plugin.clone(),
-        )
-        .with_account_selector(selector)
-        .with_account_rotator(rotator);
-
-        let result = bus
-            .handle_resolve_links(ResolveLinksCommand {
-                urls: vec!["https://1fichier.com/?abc123".into()],
-            })
-            .await
-            .expect("resolve succeeds");
-        (result, repo, plugin, primary)
-    }
-
-    #[tokio::test]
-    async fn resolve_hoster_selects_account_without_reading_secret_or_issuing_token() {
-        let (result, repo, plugin, primary) =
-            resolve_with_primary_credential(Some("working-key"), true, None).await;
-
-        assert_eq!(
-            result[0].resolved_url.as_deref(),
-            Some("https://1fichier.com/?abc123")
-        );
-        assert!(
-            !serde_json::to_string(&result)
-                .expect("serialize resolved links")
-                .contains("download.1fichier.com/token"),
-            "short-lived direct capabilities must not cross IPC"
-        );
-        assert_eq!(result[0].account_id.as_deref(), Some("primary"));
-        assert_eq!(result[0].module_name, "vortex-mod-1fichier");
-        assert_eq!(
-            repo.find_by_id(primary.id()).unwrap().unwrap().status(),
-            AccountStatus::Valid
-        );
-        assert!(plugin.credentials.lock().unwrap().is_empty());
-        assert!(plugin.services.lock().unwrap().is_empty());
-    }
-
-    #[tokio::test]
-    async fn resolve_hoster_surfaces_persisted_exhaustion_without_free_fallback() {
-        let (result, _, plugin, _) = resolve_with_primary_credential(
-            Some("quota-key"),
-            false,
-            Some(AccountStatus::QuotaExhausted),
-        )
-        .await;
-
-        assert_eq!(result[0].status, "error");
-        assert_eq!(
-            result[0].error_message.as_deref(),
-            Some("Account quota is exhausted")
-        );
-        assert!(plugin.credentials.lock().unwrap().is_empty());
-        assert!(plugin.services.lock().unwrap().is_empty());
-    }
-
-    #[tokio::test]
-    async fn resolve_hoster_preserves_persisted_cooldown_without_free_fallback() {
-        let (result, _, plugin, _) = resolve_with_primary_credential(
-            Some("cooldown-key"),
-            false,
-            Some(AccountStatus::Cooldown),
-        )
-        .await;
-
-        assert_eq!(result[0].status, "error");
-        assert_eq!(
-            result[0].error_message.as_deref(),
-            Some("Account is temporarily rate-limited")
-        );
-        assert!(plugin.credentials.lock().unwrap().is_empty());
-        assert!(plugin.services.lock().unwrap().is_empty());
-    }
-
-    #[test]
-    fn test_extract_filename_from_url_returns_last_path_segment() {
-        assert_eq!(
-            extract_filename_from_url("https://example.com/files/archive.zip"),
-            Some("archive.zip".to_string())
-        );
-    }
-
-    #[test]
-    fn test_extract_filename_from_url_strips_query_string() {
-        assert_eq!(
-            extract_filename_from_url("https://example.com/file.pdf?token=abc"),
-            Some("file.pdf".to_string())
-        );
-    }
-
-    #[test]
-    fn test_extract_filename_from_url_returns_none_for_bare_host() {
-        assert_eq!(extract_filename_from_url("https://example.com/"), None);
-    }
-
-    #[test]
-    fn test_is_media_url_detects_youtube() {
-        assert!(is_media_url("https://www.youtube.com/watch?v=abc"));
-    }
-
-    #[test]
-    fn test_is_media_url_detects_vimeo() {
-        assert!(is_media_url("https://vimeo.com/12345678"));
-    }
-
-    #[test]
-    fn test_is_media_url_detects_soundcloud() {
-        assert!(is_media_url("https://soundcloud.com/artist/track"));
-    }
-
-    #[test]
-    fn test_is_media_url_detects_soundcloud_artist_profile() {
-        assert!(is_media_url("https://soundcloud.com/forss"));
-    }
-
-    #[test]
-    fn test_is_media_url_detects_soundcloud_playlist() {
-        assert!(is_media_url("https://soundcloud.com/forss/sets/soulhack"));
-    }
-
-    #[test]
-    fn test_is_media_url_returns_false_for_regular_url() {
-        assert!(!is_media_url("https://example.com/file.zip"));
-    }
-
-    #[test]
-    fn test_detect_media_type_returns_video_for_youtube() {
-        assert_eq!(
-            detect_media_type("https://www.youtube.com/watch?v=abc"),
-            Some("video".to_string())
-        );
-    }
-
-    #[test]
-    fn test_detect_media_type_returns_audio_for_soundcloud() {
-        assert_eq!(
-            detect_media_type("https://soundcloud.com/artist/track"),
-            Some("audio".to_string())
-        );
-    }
-
-    #[test]
-    fn test_detect_media_type_returns_audio_for_soundcloud_artist_profile() {
-        assert_eq!(
-            detect_media_type("https://soundcloud.com/forss"),
-            Some("audio".to_string())
-        );
-    }
-
-    #[test]
-    fn test_detect_media_type_returns_audio_for_soundcloud_playlist() {
-        assert_eq!(
-            detect_media_type("https://soundcloud.com/forss/sets/soulhack"),
-            Some("audio".to_string())
-        );
-    }
-
-    #[test]
-    fn test_detect_media_type_returns_none_for_non_media() {
-        assert_eq!(detect_media_type("https://example.com/file.zip"), None);
-    }
-
-    #[test]
-    fn test_extract_content_length_reads_header() {
-        let mut headers = HashMap::new();
-        headers.insert("content-length".to_string(), vec!["1024".to_string()]);
-        let response = HttpResponse {
-            status_code: 200,
-            headers,
-            body: vec![],
-        };
-        assert_eq!(extract_content_length(&response), Some(1024));
-    }
-
-    #[test]
-    fn test_extract_content_length_returns_none_when_absent() {
-        let response = HttpResponse {
-            status_code: 200,
-            headers: HashMap::new(),
-            body: vec![],
-        };
-        assert_eq!(extract_content_length(&response), None);
-    }
-
-    #[test]
-    fn test_is_allowed_scheme_accepts_http() {
-        assert!(is_allowed_scheme("http://example.com/file.zip"));
-    }
-
-    #[test]
-    fn test_is_allowed_scheme_accepts_https() {
-        assert!(is_allowed_scheme("https://example.com/file.zip"));
-    }
-
-    #[test]
-    fn test_is_allowed_scheme_accepts_ftp() {
-        assert!(is_allowed_scheme("ftp://example.com/file.zip"));
-    }
-
-    #[test]
-    fn test_is_allowed_scheme_accepts_magnet() {
-        assert!(is_allowed_scheme(
-            "magnet:?xt=urn:btih:c12fe1c06bba254a9dc9f519b335aa7c1367a88a"
-        ));
-    }
-
-    #[test]
-    fn test_is_allowed_scheme_rejects_file() {
-        assert!(!is_allowed_scheme("file:///etc/passwd"));
-    }
-
-    #[test]
-    fn test_is_allowed_scheme_rejects_javascript() {
-        assert!(!is_allowed_scheme("javascript:alert(1)"));
-    }
-
-    #[test]
-    fn test_is_allowed_scheme_rejects_container() {
-        assert!(!is_allowed_scheme("container://some-image"));
-    }
-
-    #[test]
-    fn test_is_media_url_detects_subdomain_youtube() {
-        assert!(is_media_url("https://www.youtube.com/watch?v=abc"));
-    }
-
-    #[test]
-    fn test_is_media_url_rejects_fake_youtube_domain() {
-        assert!(!is_media_url("https://not-youtube.com/watch?v=abc"));
-    }
-}
+#[cfg(test)]
+#[path = "resolve_links_tests.rs"]
+mod tests;

@@ -1,4 +1,4 @@
-//! Command handler for one credential-scoped premium hoster resolution.
+//! Command handler and just-in-time resolver for protected hoster sources.
 
 use std::sync::Arc;
 
@@ -6,11 +6,9 @@ use crate::application::services::AccountRotator;
 use crate::application::services::account_operation_locks::AccountOperationLocks;
 use crate::domain::error::DomainError;
 use crate::domain::model::account::AccountId;
-use crate::domain::model::download::Download;
 use crate::domain::ports::driven::{
-    AccountCredentialStore, AccountRepository, Clock, ConfigStore, DownloadRepository,
-    DownloadSourceResolver, EventBus, ExtractedHosterLink, PluginLoader, ResolutionCancellation,
-    ResolvedDownloadSource,
+    AccountCredentialStore, AccountRepository, Clock, ConfigStore, DownloadRepository, EventBus,
+    ExtractedHosterLink, PluginLoader, ResolutionCancellation,
 };
 use crate::domain::ports::driving::Command;
 
@@ -18,6 +16,8 @@ use crate::domain::ports::driving::Command;
 mod resolution;
 #[path = "premium_account_rotation.rs"]
 mod rotation;
+#[path = "hoster_download_source.rs"]
+mod source;
 
 #[derive(Debug)]
 pub struct ResolvePremiumSourceCommand {
@@ -39,7 +39,7 @@ impl ResolvePremiumSourceCommand {
 impl Command for ResolvePremiumSourceCommand {}
 
 #[derive(Clone)]
-pub struct ResolvePremiumSourceHandler {
+pub struct ResolveHosterSourceHandler {
     repo: Arc<dyn AccountRepository>,
     credentials: Arc<dyn AccountCredentialStore>,
     plugins: Arc<dyn PluginLoader>,
@@ -51,7 +51,7 @@ pub struct ResolvePremiumSourceHandler {
     rotator: Arc<AccountRotator>,
 }
 
-impl ResolvePremiumSourceHandler {
+impl ResolveHosterSourceHandler {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         repo: Arc<dyn AccountRepository>,
@@ -99,20 +99,6 @@ impl ResolvePremiumSourceHandler {
         self.locks
             .lock_for(id)
             .map_err(|_| DomainError::StorageError("account lock unavailable".into()))
-    }
-}
-
-impl DownloadSourceResolver for ResolvePremiumSourceHandler {
-    fn resolve(&self, download: &Download) -> Result<ResolvedDownloadSource, DomainError> {
-        self.resolve_download(download, &ResolutionCancellation::default())
-    }
-
-    fn resolve_cancellable(
-        &self,
-        download: &Download,
-        cancellation: &ResolutionCancellation,
-    ) -> Result<ResolvedDownloadSource, DomainError> {
-        self.resolve_download(download, cancellation)
     }
 }
 

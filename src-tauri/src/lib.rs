@@ -55,7 +55,7 @@ pub use adapters::driven::tray::{
     spawn_tray_animator,
 };
 pub use application::command_bus::CommandBus;
-pub use application::commands::resolve_premium_source::ResolvePremiumSourceHandler;
+pub use application::commands::resolve_premium_source::ResolveHosterSourceHandler;
 pub use application::commands::store_refresh::{read_cache, write_cache};
 pub use application::error::AppError;
 pub use application::query_bus::QueryBus;
@@ -261,7 +261,7 @@ pub fn run() {
             let account_operation_locks = Arc::new(
                 application::services::account_operation_locks::AccountOperationLocks::default(),
             );
-            let premium_source_handler = Arc::new(ResolvePremiumSourceHandler::new(
+            let download_source_handler = Arc::new(ResolveHosterSourceHandler::new(
                 account_repo.clone(),
                 account_credential_store.clone(),
                 plugin_loader.clone(),
@@ -272,8 +272,8 @@ pub fn run() {
                 config_store.clone(),
                 account_rotator.clone(),
             ));
-            let premium_source_resolver: Arc<dyn DownloadSourceResolver> =
-                premium_source_handler.clone();
+            let download_source_resolver: Arc<dyn DownloadSourceResolver> =
+                download_source_handler.clone();
 
             // ── Download engine ─────────────────────────────────────
             let initial_engine_config = config_store
@@ -286,7 +286,7 @@ pub fn run() {
                     event_bus.clone(),
                     4,
                 )
-                .with_source_resolver(premium_source_resolver)
+                .with_source_resolver(download_source_resolver)
                 .with_dynamic_split(
                     initial_engine_config.dynamic_split_enabled,
                     initial_engine_config.dynamic_split_min_remaining_mb,

@@ -194,6 +194,7 @@ describe("LinkGrabberView", () => {
             resolvedUrl: directUrl,
             filename: "file.zip",
             sizeBytes: 42,
+            resumable: true,
             status: "online",
             moduleName: "vortex-mod-1fichier",
             accountId: "account-uuid",
@@ -230,6 +231,11 @@ describe("LinkGrabberView", () => {
     await waitFor(() => {
       expect(mockInvoke).toHaveBeenCalledWith("download_start", {
         url: sourceUrl,
+        metadata: {
+          filename: "file.zip",
+          sizeBytes: 42,
+          resumeSupported: true,
+        },
         moduleName: "vortex-mod-1fichier",
         accountId: "account-uuid",
       });
@@ -238,6 +244,137 @@ describe("LinkGrabberView", () => {
       ([command]) => command === "download_start",
     );
     expect(JSON.stringify(downloadStartCalls)).not.toContain(directUrl);
+  });
+
+  it("keeps plugin statuses authoritative instead of probing hoster page URLs", async () => {
+    mockInvoke.mockImplementation((command) => {
+      if (command === "link_resolve") {
+        return Promise.resolve([
+          {
+            id: "mediafire-link",
+            originalUrl: "https://www.mediafire.com/file/abc/file.zip/file",
+            resolvedUrl: "https://www.mediafire.com/file/abc/file.zip/file",
+            filename: "file.zip",
+            sizeBytes: 42,
+            resumable: true,
+            status: "online",
+            errorKind: null,
+            errorMessage: null,
+            moduleName: "vortex-mod-mediafire",
+            accountId: null,
+            isMedia: false,
+            requiresOnlineProbe: false,
+          },
+          {
+            id: "gofile-error",
+            originalUrl: "https://gofile.io/d/missing",
+            resolvedUrl: null,
+            filename: null,
+            sizeBytes: null,
+            resumable: null,
+            status: "error",
+            errorKind: "noFile",
+            errorMessage: "No downloadable file was found",
+            moduleName: "vortex-mod-gofile",
+            accountId: null,
+            isMedia: false,
+            requiresOnlineProbe: false,
+          },
+        ]);
+      }
+      if (command === "link_detect_duplicates") return Promise.resolve([]);
+      return Promise.resolve(null);
+    });
+
+    const user = userEvent.setup();
+    renderWithProviders();
+    await user.type(screen.getByRole("textbox"), "https://www.mediafire.com/file/abc");
+    await user.click(screen.getByRole("button", { name: "Analyze Links" }));
+
+    await waitFor(() => {
+      expect(screen.getByText("No downloadable file was found")).toBeInTheDocument();
+    });
+    expect(mockInvoke.mock.calls.some(([command]) => command === "link_check_online")).toBe(false);
+  });
+
+  it("still probes links handled by the built-in HTTP module", async () => {
+    const url = "https://example.com/file.zip";
+    mockInvoke.mockImplementation((command) => {
+      if (command === "link_resolve") {
+        return Promise.resolve([
+          {
+            id: "builtin-link",
+            originalUrl: url,
+            resolvedUrl: url,
+            filename: "file.zip",
+            sizeBytes: 42,
+            status: "online",
+            moduleName: "builtin-http",
+            accountId: null,
+            isMedia: false,
+          },
+        ]);
+      }
+      if (command === "link_detect_duplicates") return Promise.resolve([]);
+      return Promise.resolve(null);
+    });
+
+    const user = userEvent.setup();
+    renderWithProviders();
+    await user.type(screen.getByRole("textbox"), url);
+    await user.click(screen.getByRole("button", { name: "Analyze Links" }));
+
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith("link_check_online", { urls: [url] });
+    });
+  });
+
+  it("retries live probes after transient core and crawler analysis errors", async () => {
+    const coreUrl = "https://example.com/transient.zip";
+    const crawlerUrl = "https://gallery.example/album";
+    mockInvoke.mockImplementation((command) => {
+      if (command === "link_resolve") {
+        return Promise.resolve([
+          {
+            id: "core-error",
+            originalUrl: coreUrl,
+            resolvedUrl: null,
+            filename: null,
+            sizeBytes: null,
+            status: "error",
+            errorMessage: "Network request failed",
+            moduleName: "builtin-http",
+            accountId: null,
+            isMedia: false,
+          },
+          {
+            id: "crawler-error",
+            originalUrl: crawlerUrl,
+            resolvedUrl: null,
+            filename: null,
+            sizeBytes: null,
+            status: "error",
+            errorMessage: "Network request failed",
+            moduleName: "vortex-mod-gallery",
+            accountId: null,
+            isMedia: false,
+          },
+        ]);
+      }
+      if (command === "link_detect_duplicates") return Promise.resolve([]);
+      return Promise.resolve(null);
+    });
+
+    const user = userEvent.setup();
+    renderWithProviders();
+    await user.type(screen.getByRole("textbox"), `${coreUrl}\n${crawlerUrl}`);
+    await user.click(screen.getByRole("button", { name: "Analyze Links" }));
+
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith("link_check_online", {
+        urls: [coreUrl, crawlerUrl],
+      });
+    });
   });
 
   it("should surface error toast on failure and success toast on retry", async () => {

@@ -15,7 +15,7 @@ use crate::domain::ports::driven::{ExtractedHosterLink, PluginLoader, Validation
 
 use super::builtin::HttpModule;
 use super::capabilities::{SharedHostResources, build_host_functions_for_instance};
-use super::hoster_contract::parse_hoster_link;
+use super::hoster_contract::parse_hoster_links;
 use super::manifest::{
     find_wasm_file, parse_manifest, parse_manifest_metadata, parse_manifest_metadata_bytes,
 };
@@ -497,6 +497,18 @@ impl PluginLoader for ExtismPluginLoader {
         url: &str,
         credential: Option<&Credential>,
     ) -> Result<ExtractedHosterLink, DomainError> {
+        self.extract_hoster_links(service_name, url, credential)?
+            .into_iter()
+            .next()
+            .ok_or(DomainError::HosterNoFile)
+    }
+
+    fn extract_hoster_links(
+        &self,
+        service_name: &str,
+        url: &str,
+        credential: Option<&Credential>,
+    ) -> Result<Vec<ExtractedHosterLink>, DomainError> {
         let info = self
             .registry
             .list_info()
@@ -520,12 +532,15 @@ impl PluginLoader for ExtismPluginLoader {
             Some(credential) => self
                 .registry
                 .call_plugin_with_credential(service_name, "extract_links", url, credential.clone())
-                .map_err(|error| classify_account_plugin_error(&error.to_string()))?,
+                .map_err(|error| {
+                    classify_plugin_call_error(error, classify_credentialed_hoster_plugin_error)
+                })?,
             None => self
                 .registry
-                .call_plugin(service_name, "extract_links", url)?,
+                .call_plugin(service_name, "extract_links", url)
+                .map_err(|error| classify_plugin_call_error(error, classify_hoster_plugin_error))?,
         };
-        parse_hoster_link(&output)
+        parse_hoster_links(&output)
     }
 
     fn validate_account(
@@ -760,22 +775,94 @@ fn is_adaptive_stream_error(msg: &str) -> bool {
 }
 
 fn classify_account_plugin_error(message: &str) -> DomainError {
-    let has_code = |expected: &str| {
-        message
-            .split(|character: char| !(character.is_ascii_uppercase() || character == '_'))
-            .any(|token| token == expected)
-    };
-    if has_code("ACCOUNT_INVALID_CREDENTIALS") {
+    if has_error_code(message, "ACCOUNT_INVALID_CREDENTIALS") {
         DomainError::AccountInvalidCredentials
-    } else if has_code("ACCOUNT_EXPIRED") {
+    } else if has_error_code(message, "ACCOUNT_EXPIRED") {
         DomainError::AccountExpired
-    } else if has_code("ACCOUNT_COOLDOWN") {
+    } else if has_error_code(message, "ACCOUNT_COOLDOWN") {
         DomainError::AccountCooldown
-    } else if has_code("ACCOUNT_QUOTA_EXCEEDED") {
+    } else if has_error_code(message, "ACCOUNT_QUOTA_EXCEEDED") {
         DomainError::AccountQuotaExceeded
     } else {
         DomainError::PluginError("plugin account operation failed".into())
     }
+}
+
+fn classify_plugin_call_error(
+    error: DomainError,
+    classify: fn(&str) -> DomainError,
+) -> DomainError {
+    match error {
+        DomainError::NetworkError(_) => error,
+        error => classify(&error.to_string()),
+    }
+}
+
+fn classify_credentialed_hoster_plugin_error(message: &str) -> DomainError {
+    let account_error = classify_account_plugin_error(message);
+    if matches!(account_error, DomainError::PluginError(_)) {
+        classify_hoster_plugin_error(message)
+    } else {
+        account_error
+    }
+}
+
+fn classify_hoster_plugin_error(message: &str) -> DomainError {
+    let normalized = message.to_ascii_lowercase();
+    if normalized.starts_with("network error:")
+        || normalized.contains("http_request: network error:")
+        || normalized.contains("http_request: request failed:")
+    {
+        DomainError::NetworkError("hoster network request failed".into())
+    } else if has_error_code(message, "HOSTER_DIRECT_URL_EXPIRED") {
+        DomainError::HosterDirectUrlExpired
+    } else if has_error_code(message, "HOSTER_AUTHENTICATION_REQUIRED") {
+        DomainError::HosterAuthenticationRequired
+    } else if has_error_code(message, "HOSTER_NO_FILE") {
+        DomainError::HosterNoFile
+    } else {
+        classify_legacy_hoster_error(message)
+    }
+}
+
+fn has_error_code(message: &str, expected: &str) -> bool {
+    message
+        .split(|character: char| !(character.is_ascii_uppercase() || character == '_'))
+        .any(|token| token == expected)
+}
+
+/// Compatibility for the three Lot 1 plugins until their WASM ABI exposes
+/// structured error codes. Keep these matches tied to their exact diagnostics;
+/// generic prose must never become a trusted typed error.
+fn classify_legacy_hoster_error(message: &str) -> DomainError {
+    let message = message.to_ascii_lowercase();
+    if message.contains("error-passwordrequired")
+        || message.contains(
+            "no direct download link found in mediafire page (file may be private or password-protected)",
+        )
+        || has_official_hoster_http_status(&message, 401)
+        || has_official_hoster_http_status(&message, 403)
+    {
+        DomainError::HosterAuthenticationRequired
+    } else if has_official_hoster_http_status(&message, 410) {
+        DomainError::HosterDirectUrlExpired
+    } else if message.contains("mediafire file is offline or removed:")
+        || message.contains("pixeldrain file is offline or removed:")
+        || message.contains("gofile content is offline or removed:")
+        || message.contains("gofile folder is empty (no children)")
+        || (message.contains("gofile file id ") && message.ends_with(" not found in folder"))
+        || has_official_hoster_http_status(&message, 404)
+    {
+        DomainError::HosterNoFile
+    } else {
+        DomainError::PluginError("hoster plugin operation failed".into())
+    }
+}
+
+fn has_official_hoster_http_status(message: &str, status: u16) -> bool {
+    ["mediafire", "pixeldrain", "gofile", "hoster"]
+        .into_iter()
+        .any(|service| message.contains(&format!("{service} http returned status {status}:")))
 }
 
 #[derive(serde::Deserialize)]
@@ -887,6 +974,88 @@ mod tests {
             DomainError::PluginError("plugin account operation failed".into())
         );
         assert!(!error.to_string().contains("super-secret-key"));
+    }
+
+    #[test]
+    fn hoster_plugin_errors_map_to_safe_typed_errors() {
+        assert_eq!(
+            classify_hoster_plugin_error("MediaFire file is offline or removed: missing"),
+            DomainError::HosterNoFile
+        );
+        assert_eq!(
+            classify_hoster_plugin_error(
+                "no direct download link found in MediaFire page (file may be private or password-protected)"
+            ),
+            DomainError::HosterAuthenticationRequired
+        );
+        assert_eq!(
+            classify_hoster_plugin_error("hoster HTTP returned status 410: gone"),
+            DomainError::HosterDirectUrlExpired
+        );
+        for service in ["MediaFire", "Pixeldrain", "Gofile"] {
+            assert_eq!(
+                classify_hoster_plugin_error(&format!(
+                    "{service} HTTP returned status 403: forbidden"
+                )),
+                DomainError::HosterAuthenticationRequired
+            );
+        }
+        assert_eq!(
+            classify_hoster_plugin_error(
+                "Gofile content is offline or removed: error-passwordRequired"
+            ),
+            DomainError::HosterAuthenticationRequired
+        );
+        assert_eq!(
+            classify_hoster_plugin_error(
+                "Plugin error: plugin call failed: http_request: Network error: connection refused"
+            ),
+            DomainError::NetworkError("hoster network request failed".into())
+        );
+        assert_eq!(
+            classify_plugin_call_error(
+                DomainError::NetworkError("connection refused".into()),
+                classify_hoster_plugin_error,
+            ),
+            DomainError::NetworkError("connection refused".into())
+        );
+    }
+
+    #[test]
+    fn credentialed_hoster_errors_preserve_account_and_hoster_codes() {
+        assert_eq!(
+            classify_credentialed_hoster_plugin_error("ACCOUNT_EXPIRED: subscription ended"),
+            DomainError::AccountExpired
+        );
+        assert_eq!(
+            classify_credentialed_hoster_plugin_error("HOSTER_NO_FILE: removed"),
+            DomainError::HosterNoFile
+        );
+        assert_eq!(
+            classify_credentialed_hoster_plugin_error("hoster HTTP returned status 410: gone"),
+            DomainError::HosterDirectUrlExpired
+        );
+    }
+
+    #[test]
+    fn unknown_hoster_plugin_error_does_not_expose_plugin_diagnostics() {
+        let error =
+            classify_hoster_plugin_error("upstream echoed Authorization: Bearer super-secret-key");
+        assert_eq!(
+            error,
+            DomainError::PluginError("hoster plugin operation failed".into())
+        );
+        assert!(!error.to_string().contains("super-secret-key"));
+    }
+
+    #[test]
+    fn unrelated_hoster_prose_does_not_become_a_typed_error() {
+        assert_eq!(
+            classify_hoster_plugin_error(
+                "private network policy expired while authenticating diagnostics"
+            ),
+            DomainError::PluginError("hoster plugin operation failed".into())
+        );
     }
 
     #[test]

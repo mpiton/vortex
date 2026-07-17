@@ -11,12 +11,12 @@ use crate::domain::model::account::{Account, AccountId, AccountStatus, AccountTy
 use crate::domain::model::config::{AppConfig, ConfigPatch};
 use crate::domain::model::credential::Credential;
 use crate::domain::model::download::{Download, DownloadId, Url};
-use crate::domain::model::plugin::{PluginInfo, PluginManifest};
+use crate::domain::model::plugin::{PluginCategory, PluginInfo, PluginManifest};
 use crate::domain::ports::driven::{
     AccountRepository, Clock, ConfigStore, DownloadRepository, ExtractedHosterLink, PluginLoader,
 };
 
-use super::ResolvePremiumSourceHandler;
+use super::ResolveHosterSourceHandler;
 
 pub(super) struct FixedClock;
 
@@ -49,7 +49,13 @@ impl PluginLoader for DirectUrlPlugin {
         Ok(None)
     }
     fn list_loaded(&self) -> Result<Vec<PluginInfo>, DomainError> {
-        Ok(Vec::new())
+        Ok(vec![PluginInfo::new(
+            "vortex-mod-1fichier".into(),
+            "1.1.0".into(),
+            "1fichier".into(),
+            "vortex".into(),
+            PluginCategory::Hoster,
+        )])
     }
     fn set_enabled(&self, _: &str, _: bool) -> Result<(), DomainError> {
         Ok(())
@@ -60,22 +66,22 @@ impl PluginLoader for DirectUrlPlugin {
         url: &str,
         credential: Option<&Credential>,
     ) -> Result<ExtractedHosterLink, DomainError> {
-        let credential = credential.expect("premium credential");
+        let password = credential.map(Credential::password).unwrap_or_default();
         self.calls.lock().unwrap().push((
             service.to_string(),
             url.to_string(),
-            credential.password().to_string(),
+            password.to_string(),
         ));
-        if credential.password() == "quota-key" {
+        if password == "quota-key" {
             return Err(DomainError::AccountQuotaExceeded);
         }
-        if credential.password() == "expired-key" {
+        if password == "expired-key" {
             return Err(DomainError::AccountExpired);
         }
-        if credential.password() == "cooldown-key" {
+        if password == "cooldown-key" {
             return Err(DomainError::AccountCooldown);
         }
-        let traffic_used_bytes = if credential.password() == "zero-traffic-key" {
+        let traffic_used_bytes = if password == "zero-traffic-key" {
             Some(100)
         } else {
             Some(10)
@@ -84,7 +90,10 @@ impl PluginLoader for DirectUrlPlugin {
             source_url: url.to_string(),
             filename: Some("file.zip".into()),
             size_bytes: Some(42),
-            direct_url: Some("https://1.1.1.1/short-lived-token".into()),
+            direct_url: (password != "missing-url")
+                .then(|| "https://1.1.1.1/short-lived-token".into()),
+            resumable: Some(true),
+            request_headers: vec![("Referer".into(), "https://1fichier.com/".into())],
             traffic_used_bytes,
             traffic_total_bytes: Some(100),
         })
@@ -166,7 +175,7 @@ pub(super) fn handler(
     credentials: Arc<FakeAccountCredentialStore>,
     plugin: Arc<DirectUrlPlugin>,
     events: Arc<CapturingEventBus>,
-) -> Arc<ResolvePremiumSourceHandler> {
+) -> Arc<ResolveHosterSourceHandler> {
     handler_with_downloads(
         repo,
         credentials,
@@ -182,11 +191,11 @@ pub(super) fn handler_with_downloads(
     plugin: Arc<DirectUrlPlugin>,
     events: Arc<CapturingEventBus>,
     downloads: Arc<dyn DownloadRepository>,
-) -> Arc<ResolvePremiumSourceHandler> {
+) -> Arc<ResolveHosterSourceHandler> {
     let clock: Arc<dyn Clock> = Arc::new(FixedClock);
     let selector = AccountSelector::new(repo.clone(), events.clone(), clock.clone());
     let rotator = AccountRotator::new(selector, repo.clone(), events.clone(), clock.clone());
-    Arc::new(ResolvePremiumSourceHandler::new(
+    Arc::new(ResolveHosterSourceHandler::new(
         repo,
         credentials,
         plugin,

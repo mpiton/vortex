@@ -100,6 +100,20 @@ pub trait PluginLoader: Send + Sync {
         )))
     }
 
+    /// Extract every hoster link from the exact named plugin.
+    ///
+    /// The default preserves source compatibility for loaders that only
+    /// support one file. Adapters with multi-file hosters should override it.
+    fn extract_hoster_links(
+        &self,
+        service_name: &str,
+        url: &str,
+        credential: Option<&Credential>,
+    ) -> Result<Vec<ExtractedHosterLink>, DomainError> {
+        self.extract_hoster_link(service_name, url, credential)
+            .map(|link| vec![link])
+    }
+
     /// Validate an account through the plugin matching `service_name`.
     fn validate_account(
         &self,

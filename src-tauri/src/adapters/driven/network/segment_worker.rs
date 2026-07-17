@@ -10,7 +10,7 @@ use crate::domain::event::DomainEvent;
 use crate::domain::model::download::DownloadId;
 use crate::domain::ports::driven::{EventBus, FileStorage};
 
-use super::format_error_chain;
+use super::{BodyPrefixDecision, SourcePolicy, format_error_chain, safe_source_failure};
 
 /// Typed error for segment download failures.
 #[derive(Debug, PartialEq)]
@@ -53,8 +53,8 @@ pub(crate) struct SegmentParams {
     /// Per-segment downloaded counter, observable by the engine to estimate
     /// throughput when picking a split target.
     pub segment_progress: Arc<AtomicU64>,
-    /// Suppress request diagnostics that may contain a short-lived capability.
-    pub sensitive_url: bool,
+    /// Controls capability redaction and response validation.
+    pub source_policy: SourcePolicy,
 }
 
 /// Downloads a single byte range and writes it to disk.
@@ -78,7 +78,7 @@ pub(crate) async fn download_segment(params: SegmentParams) -> Result<u64, Segme
         cancel_token,
         shared_downloaded,
         segment_progress,
-        sensitive_url,
+        source_policy,
     } = params;
     let initial_end = *end_byte_rx.borrow();
     event_bus.publish(DomainEvent::SegmentStarted {
@@ -118,7 +118,7 @@ pub(crate) async fn download_segment(params: SegmentParams) -> Result<u64, Segme
     }
 
     let response = req.send().await.map_err(|e| {
-        let msg = if sensitive_url {
+        let msg = if source_policy.is_protected() {
             "HTTP request failed for protected source".to_string()
         } else {
             format!("HTTP request failed: {}", format_error_chain(&e))
@@ -132,6 +132,19 @@ pub(crate) async fn download_segment(params: SegmentParams) -> Result<u64, Segme
     })?;
 
     let status = response.status();
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .and_then(|value| value.to_str().ok());
+    if let Some(error) = source_policy.response_error(status, content_type) {
+        let msg = safe_source_failure(&error);
+        event_bus.publish(DomainEvent::SegmentFailed {
+            download_id,
+            segment_id: segment_index,
+            error: msg.clone(),
+        });
+        return Err(SegmentError::Http(msg));
+    }
     if !status.is_success() {
         let msg = format!("HTTP error status: {status}");
         event_bus.publish(DomainEvent::SegmentFailed {
@@ -141,7 +154,6 @@ pub(crate) async fn download_segment(params: SegmentParams) -> Result<u64, Segme
         });
         return Err(SegmentError::Http(msg));
     }
-
     // If we requested a range but got 200 (not 206), the server ignored our Range header
     if effective_start > 0 && status == reqwest::StatusCode::OK {
         let msg = "server returned 200 instead of 206 for ranged request".to_string();
@@ -157,6 +169,7 @@ pub(crate) async fn download_segment(params: SegmentParams) -> Result<u64, Segme
     let mut bytes_downloaded: u64 = 0;
     let mut last_progress = Instant::now();
     let mut response = response;
+    let mut protected_prefix = Vec::new();
 
     loop {
         if cancel_token.is_cancelled() {
@@ -202,7 +215,7 @@ pub(crate) async fn download_segment(params: SegmentParams) -> Result<u64, Segme
                 SegmentError::Http(msg)
             })?
             .map_err(|e| {
-                let msg = if sensitive_url {
+                let msg = if source_policy.is_protected() {
                     "chunk read failed for protected source".to_string()
                 } else {
                     format!("chunk read error: {}", format_error_chain(&e))
@@ -215,14 +228,32 @@ pub(crate) async fn download_segment(params: SegmentParams) -> Result<u64, Segme
                 SegmentError::Http(msg)
             })?;
 
-        let Some(chunk) = chunk else {
-            // Stream ended
-            break;
-        };
-
+        let stream_ended = chunk.is_none();
         let storage = file_storage.clone();
         let path = dest_path.clone();
-        let mut data = chunk.to_vec();
+        let mut data = chunk.map_or_else(Vec::new, |chunk| chunk.to_vec());
+        if stream_ended && protected_prefix.is_empty() {
+            break;
+        }
+        if bytes_downloaded == 0 {
+            protected_prefix.extend_from_slice(&data);
+            match source_policy.body_prefix_decision(&protected_prefix, stream_ended) {
+                BodyPrefixDecision::Reject => {
+                    let msg = safe_source_failure(
+                        &crate::domain::error::DomainError::HosterUnexpectedHtml,
+                    );
+                    event_bus.publish(DomainEvent::SegmentFailed {
+                        download_id,
+                        segment_id: segment_index,
+                        error: msg.clone(),
+                    });
+                    return Err(SegmentError::Http(msg));
+                }
+                BodyPrefixDecision::NeedMore => continue,
+                BodyPrefixDecision::Accept => {}
+            }
+            data = std::mem::take(&mut protected_prefix);
+        }
         let mut chunk_len = data.len() as u64;
 
         // Re-read end_byte AFTER chunk fetch so an engine-driven mid-flight
@@ -242,18 +273,24 @@ pub(crate) async fn download_segment(params: SegmentParams) -> Result<u64, Segme
             }
         }
 
-        tokio::task::spawn_blocking(move || storage.write_segment(&path, offset, &data))
-            .await
-            .map_err(|e| SegmentError::Storage(e.to_string()))?
-            .map_err(|e| {
-                let msg = e.to_string();
-                event_bus.publish(DomainEvent::SegmentFailed {
-                    download_id,
-                    segment_id: segment_index,
-                    error: msg.clone(),
-                });
-                SegmentError::Storage(msg)
-            })?;
+        tokio::task::spawn_blocking(move || {
+            if total_file_size == 0 {
+                storage.write_growing_segment(&path, offset, &data)
+            } else {
+                storage.write_segment(&path, offset, &data)
+            }
+        })
+        .await
+        .map_err(|error| error.to_string())
+        .and_then(|result| result.map_err(|error| error.to_string()))
+        .map_err(|msg| {
+            event_bus.publish(DomainEvent::SegmentFailed {
+                download_id,
+                segment_id: segment_index,
+                error: msg.clone(),
+            });
+            SegmentError::Storage(msg)
+        })?;
 
         offset += chunk_len;
         bytes_downloaded += chunk_len;
@@ -269,16 +306,26 @@ pub(crate) async fn download_segment(params: SegmentParams) -> Result<u64, Segme
             });
             last_progress = Instant::now();
         }
+        if stream_ended {
+            break;
+        }
     }
 
     // Verify we received the expected number of bytes (for ranged segments).
     // Compare against the *current* end_byte so mid-flight shrinks don't
     // trigger spurious truncation errors.
     let final_end = *end_byte_rx.borrow();
-    let expected_bytes = final_end
-        .saturating_sub(start_byte)
-        .saturating_sub(already_downloaded);
-    if final_end != u64::MAX && bytes_downloaded < expected_bytes {
+    let expected_bytes = if final_end == u64::MAX {
+        (total_file_size > 0).then(|| total_file_size.saturating_sub(effective_start))
+    } else {
+        Some(
+            final_end
+                .saturating_sub(start_byte)
+                .saturating_sub(already_downloaded),
+        )
+    };
+    if expected_bytes.is_some_and(|expected| bytes_downloaded != expected) {
+        let expected_bytes = expected_bytes.unwrap_or_default();
         let msg =
             format!("truncated response: got {bytes_downloaded} bytes, expected {expected_bytes}");
         event_bus.publish(DomainEvent::SegmentFailed {
@@ -334,12 +381,21 @@ mod tests {
 
     struct MockFileStorage {
         writes: Arc<Mutex<Vec<WriteRecord>>>,
+        fail_growth: bool,
     }
 
     impl MockFileStorage {
         fn new() -> Self {
             Self {
                 writes: Arc::new(Mutex::new(Vec::new())),
+                fail_growth: false,
+            }
+        }
+
+        fn failing_growth() -> Self {
+            Self {
+                writes: Arc::new(Mutex::new(Vec::new())),
+                fail_growth: true,
             }
         }
     }
@@ -355,6 +411,14 @@ mod tests {
                 .unwrap()
                 .push((path.to_path_buf(), offset, data.to_vec()));
             Ok(())
+        }
+
+        fn grow_file(&self, _path: &Path, _minimum_size: u64) -> Result<(), DomainError> {
+            if self.fail_growth {
+                Err(DomainError::StorageError("disk full".into()))
+            } else {
+                Ok(())
+            }
         }
 
         fn read_meta(&self, _path: &Path) -> Result<Option<DownloadMeta>, DomainError> {
@@ -403,6 +467,48 @@ mod tests {
     // --- Tests ---
 
     #[tokio::test]
+    async fn unknown_length_growth_failure_publishes_segment_failed() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/file"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"data"))
+            .mount(&server)
+            .await;
+        let storage = Arc::new(MockFileStorage::failing_growth());
+        let bus = Arc::new(CollectingEventBus::new());
+
+        let result = download_segment(SegmentParams {
+            client: make_client(),
+            file_storage: storage,
+            event_bus: bus.clone(),
+            download_id: DownloadId(100),
+            segment_index: 0,
+            url: format!("{}/file", server.uri()),
+            start_byte: 0,
+            end_byte_rx: watch::channel(u64::MAX).1,
+            already_downloaded: 0,
+            total_file_size: 0,
+            dest_path: PathBuf::from("/tmp/growth_failure.bin"),
+            pause_rx: watch::channel(false).1,
+            cancel_token: CancellationToken::new(),
+            shared_downloaded: Arc::new(AtomicU64::new(0)),
+            segment_progress: Arc::new(AtomicU64::new(0)),
+            source_policy: SourcePolicy::Direct,
+        })
+        .await;
+
+        assert!(matches!(result, Err(SegmentError::Storage(_))));
+        assert!(bus.collected().iter().any(|event| matches!(
+            event,
+            DomainEvent::SegmentFailed {
+                download_id: DownloadId(100),
+                segment_id: 0,
+                ..
+            }
+        )));
+    }
+
+    #[tokio::test]
     async fn test_segment_downloads_and_writes_to_file() {
         let server = MockServer::start().await;
         let body = vec![b'a'; 1000];
@@ -437,7 +543,7 @@ mod tests {
             cancel_token: cancel,
             shared_downloaded: Arc::new(AtomicU64::new(0)),
             segment_progress: Arc::new(AtomicU64::new(0)),
-            sensitive_url: false,
+            source_policy: SourcePolicy::Direct,
         })
         .await;
 
@@ -491,7 +597,7 @@ mod tests {
             cancel_token: cancel,
             shared_downloaded: Arc::new(AtomicU64::new(0)),
             segment_progress: Arc::new(AtomicU64::new(0)),
-            sensitive_url: false,
+            source_policy: SourcePolicy::Direct,
         })
         .await;
 
@@ -545,7 +651,7 @@ mod tests {
             cancel_token: cancel,
             shared_downloaded: Arc::new(AtomicU64::new(0)),
             segment_progress: Arc::new(AtomicU64::new(0)),
-            sensitive_url: false,
+            source_policy: SourcePolicy::Direct,
         })
         .await;
 
@@ -591,7 +697,7 @@ mod tests {
             cancel_token: cancel,
             shared_downloaded: Arc::new(AtomicU64::new(0)),
             segment_progress: Arc::new(AtomicU64::new(0)),
-            sensitive_url: false,
+            source_policy: SourcePolicy::Direct,
         })
         .await;
 
@@ -654,7 +760,7 @@ mod tests {
             cancel_token: cancel,
             shared_downloaded: Arc::new(AtomicU64::new(0)),
             segment_progress: Arc::new(AtomicU64::new(0)),
-            sensitive_url: false,
+            source_policy: SourcePolicy::Direct,
         })
         .await;
 
@@ -710,7 +816,7 @@ mod tests {
             cancel_token: cancel,
             shared_downloaded: Arc::new(AtomicU64::new(0)),
             segment_progress: Arc::new(AtomicU64::new(0)),
-            sensitive_url: false,
+            source_policy: SourcePolicy::Direct,
         })
         .await;
 
@@ -794,7 +900,7 @@ mod tests {
             cancel_token: cancel,
             shared_downloaded: Arc::new(AtomicU64::new(0)),
             segment_progress: segment_progress.clone(),
-            sensitive_url: false,
+            source_policy: SourcePolicy::Direct,
         })
         .await;
 
@@ -849,7 +955,7 @@ mod tests {
             cancel_token: cancel,
             shared_downloaded: shared_downloaded.clone(),
             segment_progress: Arc::new(AtomicU64::new(0)),
-            sensitive_url: false,
+            source_policy: SourcePolicy::Direct,
         })
         .await;
 

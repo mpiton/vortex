@@ -10,6 +10,15 @@
  */
 export type LinkStatus = "checking" | "online" | "offline" | "error" | "premiumOnly" | "unknown";
 
+export type LinkResolutionErrorKind =
+  | "invalidUrl"
+  | "noFile"
+  | "authenticationRequired"
+  | "expired"
+  | "accountUnavailable"
+  | "plugin"
+  | "network";
+
 /**
  * Where a duplicate of the URL was already found:
  *  - `active` — an entry already lives in the downloads list
@@ -35,12 +44,16 @@ export interface ResolvedLink {
   resolvedUrl: string | null;
   filename: string | null;
   sizeBytes: number | null;
+  resumable?: boolean | null;
   status: LinkStatus;
-  errorMessage?: string;
+  errorMessage?: string | null;
+  errorKind?: LinkResolutionErrorKind | null;
   moduleName: string;
   accountId: string | null;
   isMedia: boolean;
   mediaType?: "video" | "audio";
+  /** Backend-owned policy: hoster pages are never probed as file URLs. */
+  requiresOnlineProbe?: boolean;
   /**
    * Result of the duplicate-detection pass. `null` until the backend
    * has answered; `{ source: null, … }` once the probe has confirmed

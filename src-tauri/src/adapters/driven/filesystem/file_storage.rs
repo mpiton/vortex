@@ -7,18 +7,15 @@ use std::fs::{self, File, OpenOptions};
 use std::io;
 use std::io::{Read as _, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use tracing::{debug, warn};
+use uuid::Uuid;
 
 use crate::domain::error::DomainError;
 use crate::domain::model::meta::DownloadMeta;
 use crate::domain::ports::driven::FileStorage;
 
 use super::meta_storage;
-
-/// Counter for unique temporary file names during atomic writes.
-static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Filesystem-backed implementation of [`FileStorage`].
 ///
@@ -41,6 +38,104 @@ fn meta_path(download_path: &Path) -> PathBuf {
     let mut meta_name = file_name;
     meta_name.push(".vortex-meta");
     download_path.with_file_name(meta_name)
+}
+
+fn unique_sibling_path(path: &Path, marker: &str, suffix: &str) -> PathBuf {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(format!(".{marker}.{}.{suffix}", Uuid::new_v4()));
+    path.with_file_name(name)
+}
+
+fn staged_meta_paths(download_path: &Path) -> Result<Vec<PathBuf>, DomainError> {
+    let mp = meta_path(download_path);
+    let parent = mp.parent().unwrap_or_else(|| Path::new("."));
+    let canonical_name = mp.file_name().unwrap_or_default().to_string_lossy();
+    let prefix = format!("{canonical_name}.");
+    let entries = match fs::read_dir(parent) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => {
+            return Err(DomainError::StorageError(format!(
+                "failed to inspect staged metadata in {}: {error}",
+                parent.display()
+            )));
+        }
+    };
+    let mut paths = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|error| {
+            DomainError::StorageError(format!(
+                "failed to inspect staged metadata in {}: {error}",
+                parent.display()
+            ))
+        })?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let Some(staging_id) = name
+            .strip_prefix(&prefix)
+            .and_then(|suffix| suffix.strip_suffix(".delete"))
+        else {
+            continue;
+        };
+        let staging_id = staging_id
+            .strip_prefix("vortex-meta.")
+            .unwrap_or(staging_id);
+        if Uuid::parse_str(staging_id).is_ok()
+            || (!staging_id.is_empty() && staging_id.bytes().all(|byte| byte.is_ascii_digit()))
+        {
+            paths.push(entry.path());
+        }
+    }
+    paths.sort();
+    Ok(paths)
+}
+
+fn recover_staged_meta(download_path: &Path) -> Result<(), DomainError> {
+    let mp = meta_path(download_path);
+    if mp.try_exists().map_err(|error| {
+        DomainError::StorageError(format!("failed to inspect {}: {error}", mp.display()))
+    })? {
+        return Ok(());
+    }
+    for staged in staged_meta_paths(download_path)? {
+        let staged_guard = match OpenOptions::new().read(true).open(&staged) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(DomainError::StorageError(format!(
+                    "failed to open staged metadata {}: {error}",
+                    staged.display()
+                )));
+            }
+        };
+        staged_guard.lock().map_err(|error| {
+            DomainError::StorageError(format!(
+                "failed to lock staged metadata {}: {error}",
+                staged.display()
+            ))
+        })?;
+        match fs::hard_link(&staged, &mp) {
+            Ok(()) => {
+                if let Err(error) = fs::remove_file(&staged) {
+                    warn!(
+                        path = %staged.display(),
+                        error = %error,
+                        "recovered staged metadata but could not remove its tombstone"
+                    );
+                }
+                return Ok(());
+            }
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => return Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(DomainError::StorageError(format!(
+                    "failed to recover staged metadata {}: {error}",
+                    staged.display()
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 impl FileStorage for FsFileStorage {
@@ -67,12 +162,33 @@ impl FileStorage for FsFileStorage {
             })?;
         // set_len creates a sparse file — the OS only allocates blocks
         // as data is actually written, so a 1 GB file uses ~0 bytes on disk.
-        file.set_len(size).map_err(|e| {
-            DomainError::StorageError(format!(
-                "failed to pre-allocate {} ({size} bytes): {e}",
+        if let Err(error) = file.set_len(size) {
+            let staged_path = unique_sibling_path(path, "vortex-preallocation", "delete");
+            match fs::rename(path, &staged_path) {
+                Ok(()) => {
+                    drop(file);
+                    if let Err(cleanup_error) = fs::remove_file(&staged_path) {
+                        warn!(
+                            path = %staged_path.display(),
+                            error = %cleanup_error,
+                            "failed to delete an isolated unsuccessful file reservation"
+                        );
+                    }
+                }
+                Err(stage_error) => {
+                    drop(file);
+                    warn!(
+                        path = %path.display(),
+                        error = %stage_error,
+                        "failed to isolate an unsuccessful file reservation; leaving it in place"
+                    );
+                }
+            }
+            return Err(DomainError::StorageError(format!(
+                "failed to pre-allocate {} ({size} bytes): {error}",
                 path.display()
-            ))
-        })?;
+            )));
+        }
         debug!(path = %path.display(), size, "pre-allocated download file");
         Ok(())
     }
@@ -121,7 +237,59 @@ impl FileStorage for FsFileStorage {
         Ok(())
     }
 
+    fn write_growing_segment(
+        &self,
+        path: &Path,
+        offset: u64,
+        data: &[u8],
+    ) -> Result<(), DomainError> {
+        let mut file = OpenOptions::new().write(true).open(path).map_err(|error| {
+            DomainError::StorageError(format!(
+                "failed to open {} for writing: {error}",
+                path.display()
+            ))
+        })?;
+        file.seek(SeekFrom::Start(offset)).map_err(|error| {
+            DomainError::StorageError(format!(
+                "failed to seek to offset {offset} in {}: {error}",
+                path.display()
+            ))
+        })?;
+        file.write_all(data).map_err(|error| {
+            DomainError::StorageError(format!(
+                "failed to write {} bytes at offset {offset} in {}: {error}",
+                data.len(),
+                path.display()
+            ))
+        })
+    }
+
+    fn grow_file(&self, path: &Path, minimum_size: u64) -> Result<(), DomainError> {
+        let file = OpenOptions::new().write(true).open(path).map_err(|e| {
+            DomainError::StorageError(format!("failed to open {} for growth: {e}", path.display()))
+        })?;
+        let current_size = file
+            .metadata()
+            .map(|metadata| metadata.len())
+            .map_err(|e| {
+                DomainError::StorageError(format!(
+                    "failed to read metadata for {}: {e}",
+                    path.display()
+                ))
+            })?;
+        if current_size < minimum_size {
+            file.set_len(minimum_size).map_err(|e| {
+                DomainError::StorageError(format!(
+                    "failed to grow {} to {minimum_size} bytes: {e}",
+                    path.display()
+                ))
+            })?;
+        }
+        Ok(())
+    }
+
     fn read_meta(&self, path: &Path) -> Result<Option<DownloadMeta>, DomainError> {
+        recover_staged_meta(path)?;
         let mp = meta_path(path);
         // Open directly and handle NotFound — avoids TOCTOU race with delete_meta.
         let mut file = match File::open(&mp) {
@@ -170,14 +338,14 @@ impl FileStorage for FsFileStorage {
     }
 
     fn write_meta(&self, path: &Path, meta: &DownloadMeta) -> Result<(), DomainError> {
+        recover_staged_meta(path)?;
         let mp = meta_path(path);
         let data = meta_storage::serialize_meta(meta)?;
 
         // Atomic write: write to a uniquely-named temporary file then rename,
         // so a crash during write never leaves a half-written .vortex-meta,
         // and concurrent writers don't clobber each other's temp files.
-        let n = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let tmp = mp.with_extension(format!("vortex-meta.{n}.tmp"));
+        let tmp = unique_sibling_path(&mp, "vortex-meta", "tmp");
         fs::write(&tmp, &data).map_err(|e| {
             let _ = fs::remove_file(&tmp);
             DomainError::StorageError(format!("failed to write {}: {e}", tmp.display()))
@@ -194,6 +362,7 @@ impl FileStorage for FsFileStorage {
     }
 
     fn delete_meta(&self, path: &Path) -> Result<(), DomainError> {
+        recover_staged_meta(path)?;
         let mp = meta_path(path);
         match fs::remove_file(&mp) {
             Ok(()) => {
@@ -206,6 +375,70 @@ impl FileStorage for FsFileStorage {
                 mp.display()
             ))),
         }
+    }
+
+    fn delete_download_artifacts(&self, path: &Path) -> Result<(), DomainError> {
+        recover_staged_meta(path)?;
+        let mp = meta_path(path);
+        let staged_meta = unique_sibling_path(&mp, "vortex-meta", "delete");
+        let metadata_guard = match OpenOptions::new().read(true).open(&mp) {
+            Ok(file) => {
+                file.lock().map_err(|error| {
+                    DomainError::StorageError(format!(
+                        "failed to lock {} for deletion: {error}",
+                        mp.display()
+                    ))
+                })?;
+                Some(file)
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+            Err(error) => {
+                return Err(DomainError::StorageError(format!(
+                    "failed to open {} for deletion: {error}",
+                    mp.display()
+                )));
+            }
+        };
+        let metadata_staged = if metadata_guard.is_some() {
+            match fs::rename(&mp, &staged_meta) {
+                Ok(()) => true,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+                Err(error) => {
+                    return Err(DomainError::StorageError(format!(
+                        "failed to stage {} for deletion: {error}",
+                        mp.display()
+                    )));
+                }
+            }
+        } else {
+            false
+        };
+        match fs::remove_file(path) {
+            Ok(()) => debug!(path = %path.display(), "deleted download body"),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => {
+                if metadata_staged && let Err(restore_error) = fs::rename(&staged_meta, &mp) {
+                    return Err(DomainError::StorageError(format!(
+                        "failed to delete {}: {error}; failed to restore {}: {restore_error}",
+                        path.display(),
+                        mp.display()
+                    )));
+                }
+                return Err(DomainError::StorageError(format!(
+                    "failed to delete {}: {error}",
+                    path.display()
+                )));
+            }
+        }
+        if metadata_staged {
+            fs::remove_file(&staged_meta).map_err(|error| {
+                DomainError::StorageError(format!(
+                    "failed to delete staged metadata {}: {error}",
+                    staged_meta.display()
+                ))
+            })?;
+        }
+        Ok(())
     }
 
     fn move_file(&self, from: &Path, to: &Path) -> Result<(), DomainError> {
@@ -477,6 +710,19 @@ mod tests {
     }
 
     #[test]
+    fn test_create_file_rolls_back_when_preallocation_fails() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file_path = dir.path().join("too-large.bin");
+        let storage = FsFileStorage::new();
+
+        let result = storage.create_file(&file_path, u64::MAX);
+
+        assert!(result.is_err());
+        assert!(!file_path.exists());
+        assert_eq!(dir.path().read_dir().unwrap().count(), 0);
+    }
+
+    #[test]
     fn test_write_segment_at_offset() {
         let dir = tempfile::tempdir().expect("tempdir");
         let file_path = dir.path().join("download.bin");
@@ -534,6 +780,69 @@ mod tests {
     }
 
     #[test]
+    fn test_read_meta_recovers_metadata_staged_by_interrupted_cleanup() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file_path = dir.path().join("download.bin");
+        let storage = FsFileStorage::new();
+        let original = make_meta();
+        storage.create_file(&file_path, 4).expect("create body");
+        storage
+            .write_meta(&file_path, &original)
+            .expect("write metadata");
+        let mp = meta_path(&file_path);
+        let staged = unique_sibling_path(&mp, "vortex-meta", "delete");
+        fs::rename(&mp, &staged).expect("simulate crash after staging metadata");
+
+        let restored = storage
+            .read_meta(&file_path)
+            .expect("read staged metadata")
+            .expect("metadata must remain recoverable");
+
+        assert_eq!(restored, original);
+        assert!(mp.exists(), "ownership metadata must be canonical again");
+        assert!(!staged.exists(), "recovered tombstone must be consumed");
+
+        storage
+            .delete_download_artifacts(&file_path)
+            .expect("cleanup retry must remove recovered artifacts");
+        assert!(!file_path.exists());
+        assert!(!mp.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_only_metadata_can_be_recovered_and_deleted() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file_path = dir.path().join("download.bin");
+        let storage = FsFileStorage::new();
+        let original = make_meta();
+        storage.create_file(&file_path, 4).expect("create body");
+        storage
+            .write_meta(&file_path, &original)
+            .expect("write metadata");
+
+        let mp = meta_path(&file_path);
+        let staged = unique_sibling_path(&mp, "vortex-meta", "delete");
+        fs::rename(&mp, &staged).expect("simulate crash after staging metadata");
+        fs::set_permissions(&staged, fs::Permissions::from_mode(0o444))
+            .expect("make staged metadata read-only");
+
+        let restored = storage
+            .read_meta(&file_path)
+            .expect("recover read-only staged metadata")
+            .expect("metadata must remain recoverable");
+        assert_eq!(restored, original);
+
+        storage
+            .delete_download_artifacts(&file_path)
+            .expect("delete artifacts with read-only metadata");
+        assert!(!file_path.exists());
+        assert!(!mp.exists());
+    }
+
+    #[test]
     fn test_delete_meta_removes_file() {
         let dir = tempfile::tempdir().expect("tempdir");
         let file_path = dir.path().join("download.bin");
@@ -578,6 +887,94 @@ mod tests {
     }
 
     #[test]
+    fn test_delete_download_artifacts_removes_body_and_metadata_idempotently() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file_path = dir.path().join("download.bin");
+        let storage = FsFileStorage::new();
+        storage.create_file(&file_path, 4).expect("create body");
+        storage
+            .write_meta(&file_path, &make_meta())
+            .expect("create metadata");
+        let stale_tombstone = meta_path(&file_path).with_extension("vortex-meta.42.delete");
+        fs::copy(meta_path(&file_path), &stale_tombstone).expect("seed stale tombstone");
+
+        storage
+            .delete_download_artifacts(&file_path)
+            .expect("delete artifacts");
+        storage
+            .delete_download_artifacts(&file_path)
+            .expect("repeated deletion remains safe");
+
+        assert!(!file_path.exists());
+        assert!(!meta_path(&file_path).exists());
+        assert!(!stale_tombstone.exists());
+    }
+
+    #[test]
+    fn test_delete_download_artifacts_preserves_metadata_when_body_removal_fails() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let body_path = dir.path().join("body-directory");
+        fs::create_dir(&body_path).expect("create body directory");
+        let storage = FsFileStorage::new();
+        storage
+            .write_meta(&body_path, &make_meta())
+            .expect("create ownership metadata");
+
+        assert!(storage.delete_download_artifacts(&body_path).is_err());
+        assert!(meta_path(&body_path).exists());
+    }
+
+    #[test]
+    fn staged_metadata_is_not_recovered_while_cleanup_holds_its_lock() {
+        use std::sync::mpsc::{self, RecvTimeoutError};
+        use std::time::Duration;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file_path = dir.path().join("download.bin");
+        let storage = FsFileStorage::new();
+        storage.create_file(&file_path, 4).expect("create body");
+        storage
+            .write_meta(&file_path, &make_meta())
+            .expect("create metadata");
+
+        let mp = meta_path(&file_path);
+        let staged = unique_sibling_path(&mp, "vortex-meta", "delete");
+        let guard = OpenOptions::new()
+            .read(true)
+            .open(&mp)
+            .expect("open metadata guard");
+        guard.lock().expect("lock metadata guard");
+        fs::rename(&mp, &staged).expect("stage metadata");
+
+        let read_path = file_path.clone();
+        let (sender, receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            sender
+                .send(FsFileStorage::new().read_meta(&read_path))
+                .expect("send recovery result");
+        });
+
+        assert_eq!(
+            receiver.recv_timeout(Duration::from_millis(100)),
+            Err(RecvTimeoutError::Timeout),
+            "recovery must wait for the active cleanup"
+        );
+
+        fs::remove_file(&file_path).expect("delete body");
+        fs::remove_file(&staged).expect("delete staged metadata");
+        drop(guard);
+
+        assert!(
+            receiver
+                .recv_timeout(Duration::from_secs(1))
+                .expect("recovery finishes")
+                .expect("recovery succeeds")
+                .is_none()
+        );
+        assert!(!mp.exists(), "active cleanup metadata must not be revived");
+    }
+
+    #[test]
     fn test_write_segment_multiple_offsets() {
         let dir = tempfile::tempdir().expect("tempdir");
         let file_path = dir.path().join("download.bin");
@@ -599,6 +996,20 @@ mod tests {
         assert_eq!(&data[0..100], &[0xAA; 100]);
         assert_eq!(&data[100..200], &[0xBB; 100]);
         assert_eq!(&data[200..300], &[0xCC; 100]);
+    }
+
+    #[test]
+    fn test_write_growing_segment_extends_an_unknown_length_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file_path = dir.path().join("unknown.bin");
+        let storage = FsFileStorage::new();
+        storage.create_file(&file_path, 0).expect("reserve file");
+
+        storage
+            .write_growing_segment(&file_path, 0, b"data")
+            .expect("write unknown-length chunk");
+
+        assert_eq!(fs::read(file_path).unwrap(), b"data");
     }
 
     #[test]

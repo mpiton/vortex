@@ -49,6 +49,7 @@ export function LinkRow({ link, selected, onSelect, onMediaClick, onRetry }: Lin
   const liveStatus = useLinkGrabberStore((s) => s.statuses[link.originalUrl]);
   const effectiveStatus: LinkStatus = liveStatus?.kind ?? link.status;
   const showRetry = effectiveStatus === "unknown" && onRetry !== undefined;
+  const errorMessage = effectiveStatus === "error" ? link.errorMessage : null;
 
   const duplicate = link.duplicate?.isDuplicate ? link.duplicate : null;
   const duplicateLabel = duplicate?.source ? t(duplicateLabelKeyMap[duplicate.source]) : null;
@@ -72,7 +73,7 @@ export function LinkRow({ link, selected, onSelect, onMediaClick, onRetry }: Lin
       <Checkbox checked={selected} onCheckedChange={onSelect} aria-label="Select link" />
       <span
         className={`flex h-5 items-center gap-1 rounded px-1.5 text-xs font-medium ${statusBadgeColor[effectiveStatus]}`}
-        title={effectiveStatus}
+        title={errorMessage ?? effectiveStatus}
       >
         {statusIconMap[effectiveStatus]}
       </span>
@@ -101,6 +102,15 @@ export function LinkRow({ link, selected, onSelect, onMediaClick, onRetry }: Lin
         </TooltipTrigger>
         <TooltipContent>{link.originalUrl}</TooltipContent>
       </Tooltip>
+      {errorMessage && (
+        <span
+          role="alert"
+          className="max-w-64 shrink truncate text-xs text-destructive"
+          title={errorMessage}
+        >
+          {errorMessage}
+        </span>
+      )}
       <span className="shrink-0 text-xs text-muted-foreground">{link.moduleName}</span>
       {link.sizeBytes !== null && (
         <span className="shrink-0 text-xs text-muted-foreground">

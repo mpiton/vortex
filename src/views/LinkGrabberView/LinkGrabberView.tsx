@@ -151,9 +151,11 @@ export function LinkGrabberView() {
     // badge from an earlier paste does not bleed onto a new URL.
     resetLinkStatuses();
     const eligibleUrls = resolved
+      .filter((link) => link.requiresOnlineProbe ?? true)
       .map((link) => link.originalUrl)
       .filter(
-        (u) => u.toLowerCase().startsWith("http://") || u.toLowerCase().startsWith("https://"),
+        (url) =>
+          url.toLowerCase().startsWith("http://") || url.toLowerCase().startsWith("https://"),
       );
     if (eligibleUrls.length > 0) {
       // Pre-seed every row with `checking` so the spinner appears
@@ -197,7 +199,16 @@ export function LinkGrabberView() {
 
   const { mutate: startDownload } = useTauriMutation<
     unknown,
-    { url: string; moduleName: string; accountId: string | null }
+    {
+      url: string;
+      metadata: {
+        filename: string | null;
+        sizeBytes: number | null;
+        resumeSupported: boolean | null;
+      };
+      moduleName: string;
+      accountId: string | null;
+    }
   >("download_start");
 
   const { mutateAsync: startMediaDownloadAsync } = useTauriMutation<
@@ -343,6 +354,11 @@ export function LinkGrabberView() {
       started.add(duplicateKey);
       startDownload({
         url: link.originalUrl,
+        metadata: {
+          filename: link.filename,
+          sizeBytes: link.sizeBytes,
+          resumeSupported: link.resumable ?? null,
+        },
         moduleName: link.moduleName,
         accountId: link.accountId,
       });

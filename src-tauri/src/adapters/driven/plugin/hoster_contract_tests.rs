@@ -2,7 +2,8 @@ use std::sync::Arc;
 
 use super::ExtismPluginLoader;
 use super::capabilities::SharedHostResources;
-use super::hoster_contract::parse_hoster_link;
+use super::hoster_contract::{parse_hoster_link, parse_hoster_links};
+use crate::domain::error::DomainError;
 use crate::domain::model::credential::Credential;
 use crate::domain::model::plugin::{PluginCategory, PluginInfo, PluginManifest};
 use crate::domain::ports::driven::PluginLoader;
@@ -10,19 +11,68 @@ use crate::domain::ports::driven::PluginLoader;
 #[test]
 fn test_parse_hoster_link_maps_wire_fields() {
     let parsed = parse_hoster_link(
-        r#"{"files":[{"url":"https://1fichier.com/?a","filename":"a.zip","size_bytes":42,"direct_url":"https://cdn.example/a","traffic_used_bytes":1,"traffic_total_bytes":100}]}"#,
+        r#"{"files":[{"url":"https://1fichier.com/?a","filename":"a.zip","size_bytes":42,"direct_url":"https://cdn.example/a","resumable":true,"headers":{"Referer":"https://1fichier.com/"},"traffic_used_bytes":1,"traffic_total_bytes":100}]}"#,
     )
     .expect("valid hoster response");
 
     assert_eq!(parsed.source_url, "https://1fichier.com/?a");
     assert_eq!(parsed.filename.as_deref(), Some("a.zip"));
     assert_eq!(parsed.direct_url.as_deref(), Some("https://cdn.example/a"));
+    assert_eq!(parsed.resumable, Some(true));
+    assert_eq!(
+        parsed.request_headers,
+        vec![("Referer".to_string(), "https://1fichier.com/".to_string())]
+    );
     assert_eq!(parsed.traffic_total_bytes, Some(100));
 }
 
 #[test]
 fn test_parse_hoster_link_rejects_empty_file_list() {
-    assert!(parse_hoster_link(r#"{"files":[]}"#).is_err());
+    assert_eq!(
+        parse_hoster_link(r#"{"files":[]}"#),
+        Err(DomainError::HosterNoFile)
+    );
+}
+
+#[test]
+fn test_parse_hoster_links_preserves_every_gofile_entry() {
+    let parsed = parse_hoster_links(
+        r#"{"files":[{"url":"https://gofile.io/d/folder/file-a","filename":"a.zip","size_bytes":10,"direct_url":"https://store.example/a","resumable":true},{"url":"https://gofile.io/d/folder/file-b","filename":"b.zip","size_bytes":20,"direct_url":"https://store.example/b","resumable":false}]}"#,
+    )
+    .expect("valid multi-file hoster response");
+
+    assert_eq!(parsed.len(), 2);
+    assert_eq!(parsed[0].filename.as_deref(), Some("a.zip"));
+    assert_eq!(parsed[1].source_url, "https://gofile.io/d/folder/file-b");
+    assert_eq!(parsed[1].resumable, Some(false));
+}
+
+#[test]
+fn test_parse_hoster_links_rejects_blank_source_or_direct_urls() {
+    for payload in [
+        r#"{"files":[{"url":"   ","direct_url":"https://cdn.example/file"}]}"#,
+        r#"{"files":[{"url":"https://hoster.example/file","direct_url":"  "}]}"#,
+    ] {
+        assert_eq!(parse_hoster_links(payload), Err(DomainError::HosterNoFile));
+    }
+}
+
+#[test]
+fn test_parse_hoster_links_caps_plugin_fan_out() {
+    let files = (0..501)
+        .map(|index| {
+            serde_json::json!({
+                "url": format!("https://gofile.io/d/folder/file-{index}"),
+                "direct_url": format!("https://store.example/file-{index}")
+            })
+        })
+        .collect::<Vec<_>>();
+    let payload = serde_json::json!({ "files": files }).to_string();
+
+    assert!(matches!(
+        parse_hoster_links(&payload),
+        Err(DomainError::PluginError(_))
+    ));
 }
 
 #[test]

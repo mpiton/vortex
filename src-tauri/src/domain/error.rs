@@ -26,6 +26,10 @@ pub enum DomainError {
     AccountExpired,
     AccountCooldown,
     AccountQuotaExceeded,
+    HosterNoFile,
+    HosterAuthenticationRequired,
+    HosterDirectUrlExpired,
+    HosterUnexpectedHtml,
     AdaptiveStreamOnly,
     /// Computed checksum did not match the expected value.
     ChecksumMismatch {
@@ -79,6 +83,16 @@ impl std::fmt::Display for DomainError {
             DomainError::AccountExpired => write!(f, "Account is expired"),
             DomainError::AccountCooldown => write!(f, "Account is temporarily rate-limited"),
             DomainError::AccountQuotaExceeded => write!(f, "Account quota is exhausted"),
+            DomainError::HosterNoFile => write!(f, "No downloadable file was found"),
+            DomainError::HosterAuthenticationRequired => {
+                write!(f, "Hoster authentication is required")
+            }
+            DomainError::HosterDirectUrlExpired => {
+                write!(f, "The direct download URL has expired")
+            }
+            DomainError::HosterUnexpectedHtml => {
+                write!(f, "Hoster returned an HTML page instead of file content")
+            }
             DomainError::AdaptiveStreamOnly => write!(
                 f,
                 "Video is only available as adaptive stream (DASH/HLS); use download_to_file"

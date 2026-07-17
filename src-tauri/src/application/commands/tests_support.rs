@@ -794,6 +794,45 @@ impl CredentialStore for InMemoryCredentialStore {
     }
 }
 
+/// Build a [`CommandBus`] for download-command tests while allowing the
+/// HTTP and plugin behaviors under test to be injected.
+pub(crate) fn build_download_bus(
+    http_client: Arc<dyn HttpClient>,
+) -> (
+    CommandBus,
+    Arc<InMemoryDownloadRepo>,
+    Arc<CapturingEventBus>,
+) {
+    build_download_bus_with_plugin_loader(http_client, Arc::new(StubPluginLoader))
+}
+
+pub(crate) fn build_download_bus_with_plugin_loader(
+    http_client: Arc<dyn HttpClient>,
+    plugin_loader: Arc<dyn PluginLoader>,
+) -> (
+    CommandBus,
+    Arc<InMemoryDownloadRepo>,
+    Arc<CapturingEventBus>,
+) {
+    let repo = Arc::new(InMemoryDownloadRepo::new());
+    let event_bus = Arc::new(CapturingEventBus::new());
+    let bus = CommandBus::new(
+        repo.clone(),
+        Arc::new(StubDownloadEngine),
+        event_bus.clone(),
+        Arc::new(StubFileStorage),
+        http_client,
+        plugin_loader,
+        Arc::new(StubConfigStore),
+        Arc::new(StubCredentialStore),
+        Arc::new(StubClipboardObserver),
+        Arc::new(StubArchiveExtractor),
+        Arc::new(NoopHistoryRepo),
+        None,
+    );
+    (bus, repo, event_bus)
+}
+
 /// Build a [`CommandBus`] wired with the supplied account ports plus
 /// stubs for everything else.
 pub(crate) fn build_account_bus(

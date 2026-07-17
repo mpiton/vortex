@@ -73,6 +73,10 @@ pub struct StartDownloadCommand {
     /// Pre-computed filename (e.g. "Rick Astley - Never Gonna Give You Up.mp4").
     /// When set, skips the HEAD probe and URL-fallback derivation.
     pub filename: Option<String>,
+    /// File size reported by the source plugin, if known.
+    pub size_bytes: Option<u64>,
+    /// Whether the source plugin declares byte-range resume support.
+    pub resume_supported: Option<bool>,
     /// Hostname to store in `source_hostname` instead of the one derived from
     /// `url`. Used when `url` is a CDN URL but we want to display the origin
     /// host (e.g. "youtube.com" instead of "rr1---sn-n4g-cvq6.googlevideo.com").

@@ -11,6 +11,9 @@ pub struct ExtractedHosterLink {
     pub size_bytes: Option<u64>,
     /// Ephemeral bearer URL produced for the selected account.
     pub direct_url: Option<String>,
+    pub resumable: Option<bool>,
+    /// Ephemeral request headers required by the direct URL.
+    pub request_headers: Vec<(String, String)>,
     pub traffic_used_bytes: Option<u64>,
     pub traffic_total_bytes: Option<u64>,
 }
@@ -24,6 +27,8 @@ impl std::fmt::Debug for ExtractedHosterLink {
             .field("filename", &self.filename)
             .field("size_bytes", &self.size_bytes)
             .field("direct_url", &direct_url)
+            .field("resumable", &self.resumable)
+            .field("request_headers", &"<redacted>")
             .field("traffic_used_bytes", &self.traffic_used_bytes)
             .field("traffic_total_bytes", &self.traffic_total_bytes)
             .finish()
@@ -41,6 +46,8 @@ mod tests {
             filename: Some("file.zip".into()),
             size_bytes: Some(42),
             direct_url: Some("https://cdn.example/secret-token".into()),
+            resumable: Some(true),
+            request_headers: vec![("Authorization".into(), "Bearer secret".into())],
             traffic_used_bytes: None,
             traffic_total_bytes: None,
         };
@@ -49,5 +56,6 @@ mod tests {
         assert!(debug.contains("source_url"));
         assert!(debug.contains("<redacted>"));
         assert!(!debug.contains("secret-token"));
+        assert!(!debug.contains("Bearer secret"));
     }
 }

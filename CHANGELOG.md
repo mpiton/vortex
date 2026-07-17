@@ -53,6 +53,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **MAT-133 cleanup observability**: engine tests now record artifact deletion
+  requests so pre-download failures cannot silently exercise a cleanup path.
+- **MAT-133 review portability**: resume metadata locks preserve read-only
+  sidecars, huge-file segment limits cannot wrap, and interruption coverage is
+  synchronized with persisted progress.
+- **MAT-133 final review hardening**: protected ranged responses are inspected
+  independently, interrupted segments resume from persisted offsets, and
+  metadata cleanup cannot race tombstone recovery.
+- **MAT-133 final PR feedback**: cleanup tombstones survive restarts, credentialed
+  capabilities always use the restricted HTTP policy, XML-declared HTML is
+  rejected, and unknown-size retries cannot retain stale trailing bytes.
+- **MAT-133 XML response validation**: non-HTML doctypes are consumed before
+  inspecting the document root, so XML-declared HTML error pages are rejected.
+- **MAT-133 hoster download planning**: MediaFire, PixelDrain, and Gofile page
+  URLs are resolved through their hoster plugins before transfer; stable source
+  URLs and plugin metadata reach the queue while ephemeral direct URLs and
+  request headers stay backend-only and are refreshed on retry. Unexpected HTML
+  responses and typed hoster failures no longer appear as successful files.
+- **MAT-133 review hardening**: built-in HTTP downloads keep their normal online
+  probe, while current hoster plugin failures map to safe typed errors without
+  exposing upstream diagnostics.
+- **MAT-133 review follow-up**: protected capabilities now refresh once during
+  an active failed transfer, preserve plugin headers and file metadata, reject
+  ambiguous HTML and size mismatches, and clean up only Vortex-owned artifacts.
+- **MAT-133 adversarial coverage**: added regressions for hostile stable URLs,
+  blank capabilities, response fan-out, disguised HTML, destination collisions,
+  exact error classification, and recoverable online probes.
+- **MAT-133 protected-source hardening**: plugin payloads and per-file metadata
+  are bounded, mono-file hosters retain the user-supplied stable URL, Gofile
+  child identifiers stay on validated official origins, and protected transfers
+  now reject disguised HTML without deleting or overwriting unowned destinations.
 - **MAT-132 PR review hardening**: premium selection now excludes free
   accounts, serializes persisted cooldowns with rotation, revalidates download
   associations on every JIT resolution, and lets cancellation win without late

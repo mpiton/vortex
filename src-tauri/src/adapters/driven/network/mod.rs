@@ -1,6 +1,9 @@
 mod checksum;
+mod download_artifact_lifecycle;
 mod download_engine;
+mod download_source_preparation;
 mod nat64;
+mod protected_source;
 mod reqwest_client;
 mod safe_url;
 mod segment_worker;
@@ -8,6 +11,9 @@ mod wait_manager;
 
 pub use checksum::StreamingChecksumComputer;
 pub use download_engine::SegmentedDownloadEngine;
+pub(crate) use protected_source::{
+    BodyPrefixDecision, SourcePolicy, allows_html_filename, safe_source_failure,
+};
 pub use reqwest_client::ReqwestHttpClient;
 pub(crate) use safe_url::{restricted_download_client, validate_public_url};
 pub use wait_manager::WaitManager;

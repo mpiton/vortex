@@ -19,6 +19,29 @@ pub trait FileStorage: Send + Sync {
     /// Write segment data at the specified byte offset.
     fn write_segment(&self, path: &Path, offset: u64, data: &[u8]) -> Result<(), DomainError>;
 
+    /// Write a chunk for a response whose final length is unknown, extending
+    /// the reserved file as needed.
+    fn write_growing_segment(
+        &self,
+        path: &Path,
+        offset: u64,
+        data: &[u8],
+    ) -> Result<(), DomainError> {
+        let minimum_size = offset.checked_add(data.len() as u64).ok_or_else(|| {
+            DomainError::StorageError("unknown-length write would overflow u64".into())
+        })?;
+        self.grow_file(path, minimum_size)?;
+        self.write_segment(path, offset, data)
+    }
+
+    /// Grow an already reserved file to at least `minimum_size` bytes.
+    /// Used only when the remote server did not advertise a content length.
+    fn grow_file(&self, _path: &Path, _minimum_size: u64) -> Result<(), DomainError> {
+        Err(DomainError::StorageError(
+            "FileStorage::grow_file is not implemented for this adapter".into(),
+        ))
+    }
+
     /// Read the `.vortex-meta` resume metadata for a download.
     fn read_meta(&self, path: &Path) -> Result<Option<DownloadMeta>, DomainError>;
 
@@ -27,6 +50,16 @@ pub trait FileStorage: Send + Sync {
 
     /// Delete the `.vortex-meta` file (called after successful completion).
     fn delete_meta(&self, path: &Path) -> Result<(), DomainError>;
+
+    /// Delete a download body and its resume metadata as one idempotent
+    /// adapter operation. Ownership metadata must remain recoverable until the
+    /// body is removed, and cleanup must never delete a newer sidecar created
+    /// after the destination path becomes available again.
+    fn delete_download_artifacts(&self, _path: &Path) -> Result<(), DomainError> {
+        Err(DomainError::StorageError(
+            "FileStorage::delete_download_artifacts is not implemented for this adapter".into(),
+        ))
+    }
 
     /// Return `Ok(true)` when `path` points to an existing file or directory.
     /// Used by the `change_directory` handler to decide whether to skip the

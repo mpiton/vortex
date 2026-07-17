@@ -3,6 +3,7 @@ pub mod account_rotator;
 pub mod account_selector;
 pub(crate) mod account_state;
 pub mod checksum_validator;
+pub(crate) mod download_source_policy;
 pub mod engine_config_bridge;
 pub(crate) mod group_lock;
 pub mod history_backfill;
