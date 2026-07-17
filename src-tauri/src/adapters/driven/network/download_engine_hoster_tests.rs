@@ -181,7 +181,7 @@ async fn premium_source_is_resolved_jit_and_blocked_before_private_network_acces
         calls: AtomicUsize::new(0),
         url: private_url,
     });
-    let engine = make_engine(storage, bus.clone()).with_source_resolver(resolver.clone());
+    let engine = make_engine(storage.clone(), bus.clone()).with_source_resolver(resolver.clone());
     let download = make_download(99, "https://1fichier.com/?abc123")
         .with_module_name("vortex-mod-1fichier".into())
         .with_account_id(AccountId::new("account-1"));
@@ -205,6 +205,10 @@ async fn premium_source_is_resolved_jit_and_blocked_before_private_network_acces
     let serialized = format!("{:?}", bus.collected());
     assert!(!serialized.contains("secret-token"));
     assert_eq!(download.url().as_str(), "https://1fichier.com/?abc123");
+    assert!(
+        storage.artifact_deletions().is_empty(),
+        "source preparation must not clean up an artifact it never created"
+    );
 }
 
 #[tokio::test]

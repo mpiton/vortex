@@ -14,13 +14,19 @@ pub(super) type WriteRecord = (PathBuf, u64, Vec<u8>);
 
 pub(super) struct MockFileStorage {
     pub(super) writes: Arc<Mutex<Vec<WriteRecord>>>,
+    artifact_deletions: Arc<Mutex<Vec<PathBuf>>>,
 }
 
 impl MockFileStorage {
     pub(super) fn new() -> Self {
         Self {
             writes: Arc::new(Mutex::new(Vec::new())),
+            artifact_deletions: Arc::new(Mutex::new(Vec::new())),
         }
+    }
+
+    pub(super) fn artifact_deletions(&self) -> Vec<PathBuf> {
+        self.artifact_deletions.lock().unwrap().clone()
     }
 }
 
@@ -53,7 +59,11 @@ impl FileStorage for MockFileStorage {
         Ok(())
     }
 
-    fn delete_download_artifacts(&self, _path: &Path) -> Result<(), DomainError> {
+    fn delete_download_artifacts(&self, path: &Path) -> Result<(), DomainError> {
+        self.artifact_deletions
+            .lock()
+            .unwrap()
+            .push(path.to_path_buf());
         Ok(())
     }
 
