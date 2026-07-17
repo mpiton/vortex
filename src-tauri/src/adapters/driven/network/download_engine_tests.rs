@@ -13,6 +13,65 @@ use crate::domain::ports::driven::FileStorage;
 use super::test_support::*;
 use super::*;
 
+async fn start_staggered_range_server(total_size: u64) -> (String, tokio::task::JoinHandle<()>) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let task = tokio::spawn(async move {
+        while let Ok((mut stream, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                let mut request = vec![0; 4096];
+                let Ok(read) = stream.read(&mut request).await else {
+                    return;
+                };
+                let request = String::from_utf8_lossy(&request[..read]);
+                if request.starts_with("HEAD ") {
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {total_size}\r\nAccept-Ranges: bytes\r\nConnection: close\r\n\r\n"
+                    );
+                    let _ = stream.write_all(response.as_bytes()).await;
+                    return;
+                }
+                let Some(range) = request
+                    .lines()
+                    .find(|line| line.to_ascii_lowercase().starts_with("range:"))
+                    .and_then(|line| line.split_once(':'))
+                    .map(|(_, value)| value.trim())
+                    .and_then(|value| value.strip_prefix("bytes="))
+                    .and_then(|value| value.split_once('-'))
+                else {
+                    return;
+                };
+                let (Ok(start), Ok(end)) = (range.0.parse::<u64>(), range.1.parse::<u64>()) else {
+                    return;
+                };
+                let body = vec![b'x'; (end - start + 1) as usize];
+                let response = format!(
+                    "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {start}-{end}/{total_size}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                if stream.write_all(response.as_bytes()).await.is_err() {
+                    return;
+                }
+                if start == 0 {
+                    tokio::time::sleep(Duration::from_millis(750)).await;
+                    let _ = stream.write_all(&body).await;
+                    return;
+                }
+                let chunk_size = body.len().div_ceil(4).max(1);
+                for chunk in body.chunks(chunk_size) {
+                    if stream.write_all(chunk).await.is_err() || stream.flush().await.is_err() {
+                        return;
+                    }
+                    tokio::time::sleep(Duration::from_millis(300)).await;
+                }
+            });
+        }
+    });
+    (format!("http://{address}/file"), task)
+}
+
 #[tokio::test]
 async fn test_start_spawns_download_and_completes() {
     let server = MockServer::start().await;
@@ -36,7 +95,7 @@ async fn test_start_spawns_download_and_completes() {
 
     let storage = Arc::new(MockFileStorage::new());
     let bus = Arc::new(CollectingEventBus::new());
-    let engine = make_engine(storage, bus.clone());
+    let engine = make_engine(storage.clone(), bus.clone());
 
     let url = format!("{}/file", server.uri());
     let download = make_download(1, &url);
@@ -77,13 +136,13 @@ async fn test_start_fallback_single_segment_no_range() {
 
     Mock::given(method("GET"))
         .and(path("/norange"))
-        .respond_with(ResponseTemplate::new(206).set_body_bytes(body))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(body.clone()))
         .mount(&server)
         .await;
 
     let storage = Arc::new(MockFileStorage::new());
     let bus = Arc::new(CollectingEventBus::new());
-    let engine = make_engine(storage, bus.clone());
+    let engine = make_engine(storage.clone(), bus.clone());
 
     let url = format!("{}/norange", server.uri());
     let download = make_download(2, &url);
@@ -111,6 +170,22 @@ async fn test_start_fallback_single_segment_no_range() {
             .iter()
             .any(|e| matches!(e, DomainEvent::DownloadCompleted { id } if id.0 == 2)),
         "expected DownloadCompleted, events: {events:?}"
+    );
+    let requests = server.received_requests().await.unwrap();
+    assert!(
+        requests
+            .iter()
+            .filter(|request| request.method.as_str() == "GET")
+            .all(|request| !request.headers.contains_key("range")),
+        "no-range fallback must issue a full GET"
+    );
+    let writes = storage.writes.lock().unwrap();
+    assert_eq!(
+        writes
+            .iter()
+            .flat_map(|(_, _, bytes)| bytes.iter().copied())
+            .collect::<Vec<_>>(),
+        body
     );
 }
 
@@ -231,7 +306,7 @@ async fn test_cancel_stops_download() {
         .respond_with(
             ResponseTemplate::new(206)
                 .set_body_bytes(body)
-                .set_delay(Duration::from_secs(10)),
+                .set_delay(Duration::from_millis(500)),
         )
         .mount(&server)
         .await;
@@ -254,36 +329,56 @@ async fn test_cancel_stops_download() {
 
     let cancel_result = engine.cancel(DownloadId(4));
     assert!(cancel_result.is_ok(), "cancel should succeed");
-
-    // Cancel is idempotent — second call succeeds (task removes itself on exit)
-    let cancel_again = engine.cancel(DownloadId(4));
     assert!(
-        cancel_again.is_ok(),
-        "second cancel should succeed (idempotent)"
+        bus.wait_for_event_async(
+            |event| matches!(event, DomainEvent::DownloadCancelled { id } if id.0 == 4),
+            Duration::from_secs(3),
+        )
+        .await,
+        "DownloadCancelled not received"
+    );
+}
+
+#[tokio::test]
+async fn terminal_destination_failure_does_not_emit_mirror_exhaustion() {
+    let server = MockServer::start().await;
+    Mock::given(method("HEAD"))
+        .and(path("/file"))
+        .respond_with(ResponseTemplate::new(200).insert_header("content-length", "4"))
+        .mount(&server)
+        .await;
+    let temp = tempfile::tempdir().unwrap();
+    let destination = temp.path().join("occupied");
+    std::fs::create_dir(&destination).unwrap();
+    let storage = Arc::new(FsFileStorage::new());
+    let bus = Arc::new(CollectingEventBus::new());
+    let engine = make_engine(storage, bus.clone());
+    let download = Download::new(
+        DownloadId(309),
+        Url::new(&format!("{}/file", server.uri())).unwrap(),
+        "occupied".into(),
+        destination.to_string_lossy().into_owned(),
+    );
+
+    engine.start(&download).unwrap();
+    assert!(
+        bus.wait_for_event_async(
+            |event| matches!(event, DomainEvent::DownloadFailed { id, .. } if id.0 == 309),
+            Duration::from_secs(3),
+        )
+        .await
+    );
+    assert!(
+        !bus.collected()
+            .iter()
+            .any(|event| matches!(event, DomainEvent::AllMirrorsExhausted { id } if id.0 == 309))
     );
 }
 
 #[tokio::test]
 async fn test_dynamic_split_skipped_when_remaining_too_small() {
     // 2 KiB total, 4 segments, min_remaining 4 MiB → split must NOT trigger.
-    let server = MockServer::start().await;
-    let body = vec![b'a'; 2048];
-
-    Mock::given(method("HEAD"))
-        .and(path("/small"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .insert_header("content-length", "2048")
-                .insert_header("accept-ranges", "bytes"),
-        )
-        .mount(&server)
-        .await;
-
-    Mock::given(method("GET"))
-        .and(path("/small"))
-        .respond_with(ResponseTemplate::new(206).set_body_bytes(body))
-        .mount(&server)
-        .await;
+    let (url, server) = start_staggered_range_server(2048).await;
 
     let storage = Arc::new(MockFileStorage::new());
     let bus = Arc::new(CollectingEventBus::new());
@@ -291,8 +386,7 @@ async fn test_dynamic_split_skipped_when_remaining_too_small() {
         .with_min_segment_bytes(256)
         .with_dynamic_split(true, 4); // 4 MiB threshold blocks 2 KiB file
 
-    let url = format!("{}/small", server.uri());
-    let download = make_download(70, &url);
+    let download = make_download(70, &url).with_segments_count(4);
     engine.start(&download).unwrap();
 
     let found = bus
@@ -304,33 +398,26 @@ async fn test_dynamic_split_skipped_when_remaining_too_small() {
     assert!(found, "download did not complete");
 
     let events = bus.collected();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, DomainEvent::SegmentStarted { .. }))
+            .count(),
+        4,
+        "threshold coverage must exercise a multi-segment attempt"
+    );
     assert!(
         !events
             .iter()
             .any(|e| matches!(e, DomainEvent::SegmentSplit { .. })),
         "no split should fire when remaining < threshold; got {events:?}"
     );
+    server.abort();
 }
 
 #[tokio::test]
 async fn test_dynamic_split_disabled_via_config_does_not_split() {
-    let server = MockServer::start().await;
-    let body = vec![b'x'; 64 * 1024];
-
-    Mock::given(method("HEAD"))
-        .and(path("/disabled"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .insert_header("content-length", "65536")
-                .insert_header("accept-ranges", "bytes"),
-        )
-        .mount(&server)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/disabled"))
-        .respond_with(ResponseTemplate::new(206).set_body_bytes(body))
-        .mount(&server)
-        .await;
+    let (url, server) = start_staggered_range_server(64 * 1024).await;
 
     let storage = Arc::new(MockFileStorage::new());
     let bus = Arc::new(CollectingEventBus::new());
@@ -338,8 +425,7 @@ async fn test_dynamic_split_disabled_via_config_does_not_split() {
         .with_min_segment_bytes(1024)
         .with_dynamic_split(false, 0);
 
-    let url = format!("{}/disabled", server.uri());
-    let download = make_download(71, &url);
+    let download = make_download(71, &url).with_segments_count(4);
     engine.start(&download).unwrap();
 
     let found = bus
@@ -350,12 +436,21 @@ async fn test_dynamic_split_disabled_via_config_does_not_split() {
         .await;
     assert!(found);
     let events = bus.collected();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, DomainEvent::SegmentStarted { .. }))
+            .count(),
+        4,
+        "disabled-split coverage must exercise a multi-segment attempt"
+    );
     assert!(
         !events
             .iter()
             .any(|e| matches!(e, DomainEvent::SegmentSplit { .. })),
         "split must not fire when disabled"
     );
+    server.abort();
 }
 
 #[test]

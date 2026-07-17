@@ -345,11 +345,11 @@ impl DownloadEngine for SegmentedDownloadEngine {
 
         tokio::spawn(async move {
             let prepared = match prepare_sources(
-                download,
-                source_resolver,
-                client,
+                download.clone(),
+                source_resolver.clone(),
+                client.clone(),
                 cancel_token.clone(),
-                resolution_cancellation,
+                resolution_cancellation.clone(),
             )
             .await
             {
@@ -371,11 +371,13 @@ impl DownloadEngine for SegmentedDownloadEngine {
                     return;
                 }
             };
-            let client = prepared.client;
-            let mirror_urls = prepared.urls;
-            let resume_url = prepared.resume_url;
-            let source_policy = prepared.policy;
-            let size_hint = prepared.size_hint;
+            let mut download_client = prepared.client;
+            let mut mirror_urls = prepared.urls;
+            let mut resume_url = prepared.resume_url;
+            let mut source_policy = prepared.policy;
+            let mut size_hint = prepared.size_hint;
+            let mut resume_supported = prepared.resume_supported;
+            let mut resolved_source = prepared.resolved;
             if cancel_token.is_cancelled() {
                 event_bus.publish(DomainEvent::DownloadCancelled { id: download_id });
                 active_downloads
@@ -385,6 +387,7 @@ impl DownloadEngine for SegmentedDownloadEngine {
                 return;
             }
             let mut mirror_idx = prepared.initial_index;
+            let mut source_refreshes = 0;
             loop {
                 let url = mirror_urls[mirror_idx].clone();
                 // Each attempt gets a fresh attempt-scoped child token so
@@ -397,7 +400,7 @@ impl DownloadEngine for SegmentedDownloadEngine {
                     url,
                     download_id,
                     segments_count,
-                    client: client.clone(),
+                    client: download_client.clone(),
                     file_storage: file_storage.clone(),
                     event_bus: event_bus.clone(),
                     dest_path: dest_path.clone(),
@@ -410,6 +413,7 @@ impl DownloadEngine for SegmentedDownloadEngine {
                     resume_url: resume_url.clone(),
                     source_policy,
                     size_hint,
+                    resume_supported,
                 })
                 .await;
 
@@ -423,6 +427,64 @@ impl DownloadEngine for SegmentedDownloadEngine {
                         break;
                     }
                     AttemptOutcome::Failed(failure) => {
+                        if failure.retryable_with_mirror && resolved_source && source_refreshes == 0
+                        {
+                            if cancel_token.is_cancelled() {
+                                event_bus
+                                    .publish(DomainEvent::DownloadCancelled { id: download_id });
+                                break;
+                            }
+                            if failure.owns_artifacts
+                                && let Err(error) =
+                                    cleanup_download_artifacts(&file_storage, &dest_path).await
+                            {
+                                tracing::warn!(
+                                    download_id = download_id.0,
+                                    error = %error,
+                                    "failed to reset download artifacts before source refresh"
+                                );
+                                event_bus.publish(DomainEvent::DownloadFailed {
+                                    id: download_id,
+                                    error:
+                                        "failed to reset the partial download before source refresh"
+                                            .into(),
+                                });
+                                break;
+                            }
+                            let refreshed = match prepare_sources(
+                                download.clone(),
+                                source_resolver.clone(),
+                                client.clone(),
+                                cancel_token.clone(),
+                                resolution_cancellation.clone(),
+                            )
+                            .await
+                            {
+                                Ok(refreshed) => refreshed,
+                                Err(error) => {
+                                    let event = if cancel_token.is_cancelled() {
+                                        DomainEvent::DownloadCancelled { id: download_id }
+                                    } else {
+                                        DomainEvent::DownloadFailed {
+                                            id: download_id,
+                                            error: safe_source_failure(&error),
+                                        }
+                                    };
+                                    event_bus.publish(event);
+                                    break;
+                                }
+                            };
+                            download_client = refreshed.client;
+                            mirror_urls = refreshed.urls;
+                            mirror_idx = refreshed.initial_index;
+                            resume_url = refreshed.resume_url;
+                            source_policy = refreshed.policy;
+                            size_hint = refreshed.size_hint;
+                            resume_supported = refreshed.resume_supported;
+                            resolved_source = refreshed.resolved;
+                            source_refreshes += 1;
+                            continue;
+                        }
                         let next = mirror_idx + 1;
                         if failure.retryable_with_mirror && next < mirror_urls.len() {
                             // A user-cancel that landed after the attempt
@@ -501,7 +563,9 @@ impl DownloadEngine for SegmentedDownloadEngine {
                         // mirror-driven failure from post-download failures
                         // (extract / verify / domain `fail()`) and reset the
                         // cursor only on this signal.
-                        event_bus.publish(DomainEvent::AllMirrorsExhausted { id: download_id });
+                        if failure.retryable_with_mirror {
+                            event_bus.publish(DomainEvent::AllMirrorsExhausted { id: download_id });
+                        }
                         event_bus.publish(DomainEvent::DownloadFailed {
                             id: download_id,
                             error: failure.message,
@@ -589,6 +653,7 @@ struct MirrorAttemptParams {
     resume_url: String,
     source_policy: SourcePolicy,
     size_hint: Option<u64>,
+    resume_supported: Option<bool>,
 }
 
 async fn run_mirror_attempt(params: MirrorAttemptParams) -> AttemptOutcome {
@@ -609,6 +674,7 @@ async fn run_mirror_attempt(params: MirrorAttemptParams) -> AttemptOutcome {
         resume_url,
         source_policy,
         size_hint,
+        resume_supported,
     } = params;
     let metadata = match SegmentedDownloadEngine::probe_remote_metadata(&client, &url).await {
         Ok(metadata) => metadata,
@@ -645,12 +711,20 @@ async fn run_mirror_attempt(params: MirrorAttemptParams) -> AttemptOutcome {
             false,
         ));
     }
+    if metadata.content_length > 0
+        && size_hint.is_some_and(|hint| hint > 0 && hint != metadata.content_length)
+    {
+        return AttemptOutcome::Failed(AttemptFailure::retryable(
+            "remote size conflicts with resolved download metadata".into(),
+            false,
+        ));
+    }
     let total_size = if metadata.content_length > 0 {
         metadata.content_length
     } else {
         size_hint.unwrap_or(0)
     };
-    let supports_range = metadata.accepts_ranges;
+    let supports_range = metadata.accepts_ranges && resume_supported != Some(false);
 
     if user_cancel_token.is_cancelled() {
         return AttemptOutcome::Cancelled;
@@ -674,17 +748,17 @@ async fn run_mirror_attempt(params: MirrorAttemptParams) -> AttemptOutcome {
                     {
                         return Ok(false);
                     }
-                    Some(_) => {
+                    Some(metadata) if metadata.download_id != download_id => {
                         return Err(DomainError::AlreadyExists(
                             "destination belongs to another Vortex download".into(),
                         ));
                     }
-                    None if source_policy.is_protected() => {
+                    Some(_) => storage.delete_download_artifacts(&path)?,
+                    None => {
                         return Err(DomainError::AlreadyExists(
                             "destination file has no Vortex resume metadata".into(),
                         ));
                     }
-                    None => storage.delete_download_artifacts(&path)?,
                 }
             }
             storage.create_file(&path, total_size)?;

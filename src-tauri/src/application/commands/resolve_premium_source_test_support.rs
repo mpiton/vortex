@@ -90,7 +90,8 @@ impl PluginLoader for DirectUrlPlugin {
             source_url: url.to_string(),
             filename: Some("file.zip".into()),
             size_bytes: Some(42),
-            direct_url: Some("https://1.1.1.1/short-lived-token".into()),
+            direct_url: (password != "missing-url")
+                .then(|| "https://1.1.1.1/short-lived-token".into()),
             resumable: Some(true),
             request_headers: vec![("Referer".into(), "https://1fichier.com/".into())],
             traffic_used_bytes,

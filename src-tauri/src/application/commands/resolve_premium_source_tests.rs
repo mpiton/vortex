@@ -43,6 +43,10 @@ async fn resolves_the_direct_url_only_when_the_engine_requests_it() {
         .unwrap();
 
     assert_eq!(source.request_url(), "https://1.1.1.1/short-lived-token");
+    assert!(source.is_protected());
+    assert_eq!(source.filename(), Some("file.zip"));
+    assert_eq!(source.size_bytes(), Some(42));
+    assert_eq!(source.resumable(), Some(true));
     assert_eq!(plugin.calls.lock().unwrap()[0].2, "api-key");
     assert_eq!(
         repo.find_by_id(account.id())
@@ -467,6 +471,31 @@ async fn test_jit_resolution_preserves_cooldown_when_no_backup_exists() {
         .expect_err("the typed cooldown must reach the engine");
 
     assert!(matches!(error, DomainError::AccountCooldown));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn missing_premium_direct_url_is_a_typed_hoster_no_file_error() {
+    let repo = Arc::new(InMemoryAccountRepo::new());
+    let credentials = Arc::new(FakeAccountCredentialStore::new());
+    let account = valid_account("primary");
+    repo.save(&account).unwrap();
+    credentials
+        .store_password(account.id(), "missing-url")
+        .unwrap();
+    let resolver = handler(
+        repo,
+        credentials,
+        Arc::new(DirectUrlPlugin::new()),
+        Arc::new(CapturingEventBus::new()),
+    );
+    let download = download(account.id().clone());
+
+    let error = tokio::task::spawn_blocking(move || resolver.resolve(&download))
+        .await
+        .unwrap()
+        .expect_err("missing direct URL must remain a typed hoster failure");
+
+    assert_eq!(error, DomainError::HosterNoFile);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -61,6 +61,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **MAT-133 review hardening**: built-in HTTP downloads keep their normal online
   probe, while current hoster plugin failures map to safe typed errors without
   exposing upstream diagnostics.
+- **MAT-133 review follow-up**: protected capabilities now refresh once during
+  an active failed transfer, preserve plugin headers and file metadata, reject
+  ambiguous HTML and size mismatches, and clean up only Vortex-owned artifacts.
 - **MAT-133 adversarial coverage**: added regressions for hostile stable URLs,
   blank capabilities, response fan-out, disguised HTML, destination collisions,
   exact error classification, and recoverable online probes.

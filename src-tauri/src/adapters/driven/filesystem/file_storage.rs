@@ -68,13 +68,27 @@ impl FileStorage for FsFileStorage {
         // set_len creates a sparse file — the OS only allocates blocks
         // as data is actually written, so a 1 GB file uses ~0 bytes on disk.
         if let Err(error) = file.set_len(size) {
-            drop(file);
-            if let Err(cleanup_error) = fs::remove_file(path) {
-                warn!(
-                    path = %path.display(),
-                    error = %cleanup_error,
-                    "failed to roll back an unsuccessful file reservation"
-                );
+            let n = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+            let staged_path = path.with_extension(format!("vortex-preallocation.{n}.delete"));
+            match fs::rename(path, &staged_path) {
+                Ok(()) => {
+                    drop(file);
+                    if let Err(cleanup_error) = fs::remove_file(&staged_path) {
+                        warn!(
+                            path = %staged_path.display(),
+                            error = %cleanup_error,
+                            "failed to delete an isolated unsuccessful file reservation"
+                        );
+                    }
+                }
+                Err(stage_error) => {
+                    drop(file);
+                    warn!(
+                        path = %path.display(),
+                        error = %stage_error,
+                        "failed to isolate an unsuccessful file reservation; leaving it in place"
+                    );
+                }
             }
             return Err(DomainError::StorageError(format!(
                 "failed to pre-allocate {} ({size} bytes): {error}",
@@ -127,6 +141,33 @@ impl FileStorage for FsFileStorage {
             ))
         })?;
         Ok(())
+    }
+
+    fn write_growing_segment(
+        &self,
+        path: &Path,
+        offset: u64,
+        data: &[u8],
+    ) -> Result<(), DomainError> {
+        let mut file = OpenOptions::new().write(true).open(path).map_err(|error| {
+            DomainError::StorageError(format!(
+                "failed to open {} for writing: {error}",
+                path.display()
+            ))
+        })?;
+        file.seek(SeekFrom::Start(offset)).map_err(|error| {
+            DomainError::StorageError(format!(
+                "failed to seek to offset {offset} in {}: {error}",
+                path.display()
+            ))
+        })?;
+        file.write_all(data).map_err(|error| {
+            DomainError::StorageError(format!(
+                "failed to write {} bytes at offset {offset} in {}: {error}",
+                data.len(),
+                path.display()
+            ))
+        })
     }
 
     fn grow_file(&self, path: &Path, minimum_size: u64) -> Result<(), DomainError> {
@@ -241,17 +282,45 @@ impl FileStorage for FsFileStorage {
     }
 
     fn delete_download_artifacts(&self, path: &Path) -> Result<(), DomainError> {
+        let mp = meta_path(path);
+        let n = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let staged_meta = mp.with_extension(format!("vortex-meta.{n}.delete"));
+        let metadata_staged = match fs::rename(&mp, &staged_meta) {
+            Ok(()) => true,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+            Err(error) => {
+                return Err(DomainError::StorageError(format!(
+                    "failed to stage {} for deletion: {error}",
+                    mp.display()
+                )));
+            }
+        };
         match fs::remove_file(path) {
             Ok(()) => debug!(path = %path.display(), "deleted download body"),
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => {
+                if metadata_staged && let Err(restore_error) = fs::rename(&staged_meta, &mp) {
+                    return Err(DomainError::StorageError(format!(
+                        "failed to delete {}: {error}; failed to restore {}: {restore_error}",
+                        path.display(),
+                        mp.display()
+                    )));
+                }
                 return Err(DomainError::StorageError(format!(
                     "failed to delete {}: {error}",
                     path.display()
                 )));
             }
         }
-        self.delete_meta(path)
+        if metadata_staged {
+            fs::remove_file(&staged_meta).map_err(|error| {
+                DomainError::StorageError(format!(
+                    "failed to delete staged metadata {}: {error}",
+                    staged_meta.display()
+                ))
+            })?;
+        }
+        Ok(())
     }
 
     fn move_file(&self, from: &Path, to: &Path) -> Result<(), DomainError> {
@@ -532,6 +601,7 @@ mod tests {
 
         assert!(result.is_err());
         assert!(!file_path.exists());
+        assert_eq!(dir.path().read_dir().unwrap().count(), 0);
     }
 
     #[test]
@@ -692,6 +762,20 @@ mod tests {
         assert_eq!(&data[0..100], &[0xAA; 100]);
         assert_eq!(&data[100..200], &[0xBB; 100]);
         assert_eq!(&data[200..300], &[0xCC; 100]);
+    }
+
+    #[test]
+    fn test_write_growing_segment_extends_an_unknown_length_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file_path = dir.path().join("unknown.bin");
+        let storage = FsFileStorage::new();
+        storage.create_file(&file_path, 0).expect("reserve file");
+
+        storage
+            .write_growing_segment(&file_path, 0, b"data")
+            .expect("write unknown-length chunk");
+
+        assert_eq!(fs::read(file_path).unwrap(), b"data");
     }
 
     #[test]

@@ -532,7 +532,7 @@ impl PluginLoader for ExtismPluginLoader {
             Some(credential) => self
                 .registry
                 .call_plugin_with_credential(service_name, "extract_links", url, credential.clone())
-                .map_err(|error| classify_account_plugin_error(&error.to_string()))?,
+                .map_err(|error| classify_credentialed_hoster_plugin_error(&error.to_string()))?,
             None => self
                 .registry
                 .call_plugin(service_name, "extract_links", url)
@@ -786,6 +786,22 @@ fn classify_account_plugin_error(message: &str) -> DomainError {
     }
 }
 
+fn classify_credentialed_hoster_plugin_error(message: &str) -> DomainError {
+    if [
+        "ACCOUNT_INVALID_CREDENTIALS",
+        "ACCOUNT_EXPIRED",
+        "ACCOUNT_COOLDOWN",
+        "ACCOUNT_QUOTA_EXCEEDED",
+    ]
+    .into_iter()
+    .any(|code| has_error_code(message, code))
+    {
+        classify_account_plugin_error(message)
+    } else {
+        classify_hoster_plugin_error(message)
+    }
+}
+
 fn classify_hoster_plugin_error(message: &str) -> DomainError {
     if has_error_code(message, "HOSTER_DIRECT_URL_EXPIRED") {
         DomainError::HosterDirectUrlExpired
@@ -978,6 +994,22 @@ mod tests {
                 "Gofile content is offline or removed: error-passwordRequired"
             ),
             DomainError::HosterAuthenticationRequired
+        );
+    }
+
+    #[test]
+    fn credentialed_hoster_errors_preserve_account_and_hoster_codes() {
+        assert_eq!(
+            classify_credentialed_hoster_plugin_error("ACCOUNT_EXPIRED: subscription ended"),
+            DomainError::AccountExpired
+        );
+        assert_eq!(
+            classify_credentialed_hoster_plugin_error("HOSTER_NO_FILE: removed"),
+            DomainError::HosterNoFile
+        );
+        assert_eq!(
+            classify_credentialed_hoster_plugin_error("hoster HTTP returned status 410: gone"),
+            DomainError::HosterDirectUrlExpired
         );
     }
 

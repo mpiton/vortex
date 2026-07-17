@@ -50,9 +50,8 @@ impl ResolveHosterSourceHandler {
             .direct_url
             .filter(|url| !url.trim().is_empty())
             .ok_or(DomainError::HosterNoFile)?;
-        Ok(
-            ResolvedDownloadSource::protected(direct_url)
-                .with_request_headers(link.request_headers),
-        )
+        Ok(ResolvedDownloadSource::protected(direct_url)
+            .with_request_headers(link.request_headers)
+            .with_metadata(link.filename, link.size_bytes, link.resumable))
     }
 }

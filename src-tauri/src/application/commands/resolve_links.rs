@@ -286,6 +286,9 @@ impl CommandBus {
         url: &str,
         service_name: &str,
     ) -> Result<Vec<HosterResolution>, AppError> {
+        if service_name == "vortex-mod-gofile" {
+            validate_gofile_requested_origin(url)?;
+        }
         if self.account_repo().is_some() {
             match self.next_hoster_account(service_name)? {
                 NextAccountOutcome::Picked(account) => {
@@ -308,6 +311,9 @@ impl CommandBus {
         let links = self
             .plugin_loader()
             .extract_hoster_links(service_name, url, None)?;
+        if links.is_empty() {
+            return Err(DomainError::HosterNoFile.into());
+        }
         links
             .into_iter()
             .map(|link| into_hoster_resolution(link, url, service_name))
@@ -479,6 +485,10 @@ fn hoster_error_details(error: &AppError) -> (LinkResolutionErrorKind, String) {
         AppError::Domain(DomainError::AccountQuotaExceeded) => (
             LinkResolutionErrorKind::AccountUnavailable,
             "Account quota is exhausted".to_string(),
+        ),
+        AppError::Domain(DomainError::NetworkError(_)) => (
+            LinkResolutionErrorKind::Network,
+            "Could not reach the hoster".to_string(),
         ),
         _ => (
             LinkResolutionErrorKind::Plugin,

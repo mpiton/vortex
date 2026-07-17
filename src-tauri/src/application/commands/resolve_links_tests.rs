@@ -211,6 +211,10 @@ async fn resolve_hoster_surfaces_persisted_exhaustion_without_free_fallback() {
 
     assert_eq!(result[0].status, "error");
     assert_eq!(
+        result[0].error_kind,
+        Some(LinkResolutionErrorKind::AccountUnavailable)
+    );
+    assert_eq!(
         result[0].error_message.as_deref(),
         Some("Account quota is exhausted")
     );
@@ -225,6 +229,10 @@ async fn resolve_hoster_preserves_persisted_cooldown_without_free_fallback() {
             .await;
 
     assert_eq!(result[0].status, "error");
+    assert_eq!(
+        result[0].error_kind,
+        Some(LinkResolutionErrorKind::AccountUnavailable)
+    );
     assert_eq!(
         result[0].error_message.as_deref(),
         Some("Account is temporarily rate-limited")
@@ -382,7 +390,17 @@ fn test_is_allowed_scheme_rejects_container() {
 
 #[test]
 fn test_is_media_url_detects_subdomain_youtube() {
-    assert!(is_media_url("https://www.youtube.com/watch?v=abc"));
+    assert!(is_media_url("https://music.youtube.com/watch?v=abc"));
+}
+
+#[test]
+fn hoster_network_failures_keep_the_network_error_kind() {
+    let (kind, message) = hoster_error_details(&AppError::Domain(DomainError::NetworkError(
+        "connection refused".into(),
+    )));
+
+    assert_eq!(kind, LinkResolutionErrorKind::Network);
+    assert_eq!(message, "Could not reach the hoster");
 }
 
 #[test]

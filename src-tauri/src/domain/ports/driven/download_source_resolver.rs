@@ -9,6 +9,10 @@ use crate::domain::model::download::Download;
 pub struct ResolvedDownloadSource {
     request_url: String,
     request_headers: Vec<(String, String)>,
+    protected: bool,
+    filename: Option<String>,
+    size_bytes: Option<u64>,
+    resumable: Option<bool>,
 }
 
 impl std::fmt::Debug for ResolvedDownloadSource {
@@ -22,11 +26,34 @@ impl ResolvedDownloadSource {
         Self {
             request_url,
             request_headers: Vec::new(),
+            protected: true,
+            filename: None,
+            size_bytes: None,
+            resumable: None,
+        }
+    }
+
+    pub fn direct(request_url: String) -> Self {
+        Self {
+            protected: false,
+            ..Self::protected(request_url)
         }
     }
 
     pub fn with_request_headers(mut self, request_headers: Vec<(String, String)>) -> Self {
         self.request_headers = request_headers;
+        self
+    }
+
+    pub fn with_metadata(
+        mut self,
+        filename: Option<String>,
+        size_bytes: Option<u64>,
+        resumable: Option<bool>,
+    ) -> Self {
+        self.filename = filename;
+        self.size_bytes = size_bytes;
+        self.resumable = resumable;
         self
     }
 
@@ -36,6 +63,22 @@ impl ResolvedDownloadSource {
 
     pub fn request_headers(&self) -> &[(String, String)] {
         &self.request_headers
+    }
+
+    pub fn is_protected(&self) -> bool {
+        self.protected
+    }
+
+    pub fn filename(&self) -> Option<&str> {
+        self.filename.as_deref()
+    }
+
+    pub fn size_bytes(&self) -> Option<u64> {
+        self.size_bytes
+    }
+
+    pub fn resumable(&self) -> Option<bool> {
+        self.resumable
     }
 }
 

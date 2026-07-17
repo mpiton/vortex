@@ -66,7 +66,7 @@ impl SourcePolicy {
             return if can_read_more {
                 BodyPrefixDecision::NeedMore
             } else {
-                BodyPrefixDecision::Accept
+                BodyPrefixDecision::Reject
             };
         }
         html_prefix_decision(&prefix, can_read_more)
@@ -115,25 +115,82 @@ fn normalized_prefix(bytes: &[u8]) -> Option<Vec<u8>> {
 }
 
 fn html_prefix_decision(prefix: &[u8], can_read_more: bool) -> BodyPrefixDecision {
-    const HTML_SIGNATURES: [&[u8]; 4] = [b"<!doctype html", b"<html", b"<head", b"<body"];
-    let mut may_be_html = false;
-    for signature in HTML_SIGNATURES {
-        if prefix.starts_with(signature) {
-            return match prefix.get(signature.len()) {
-                Some(byte) if byte.is_ascii_whitespace() || matches!(byte, b'>' | b'/') => {
-                    BodyPrefixDecision::Reject
-                }
-                None if can_read_more => BodyPrefixDecision::NeedMore,
-                None => BodyPrefixDecision::Reject,
-                Some(_) => continue,
+    const COMMENT: &[u8] = b"<!--";
+    const DOCTYPE: &[u8] = b"<!doctype";
+
+    if prefix.starts_with(COMMENT) {
+        return BodyPrefixDecision::Reject;
+    }
+    if COMMENT.starts_with(prefix) {
+        return incomplete_html_decision(can_read_more);
+    }
+    if DOCTYPE.starts_with(prefix) {
+        return incomplete_html_decision(can_read_more);
+    }
+    if let Some(rest) = prefix.strip_prefix(DOCTYPE) {
+        let Some(first) = rest.first() else {
+            return incomplete_html_decision(can_read_more);
+        };
+        if !first.is_ascii_whitespace() {
+            return BodyPrefixDecision::Accept;
+        }
+        let first_non_whitespace = rest
+            .iter()
+            .position(|byte| !byte.is_ascii_whitespace())
+            .unwrap_or(rest.len());
+        let rest = &rest[first_non_whitespace..];
+        if b"html".starts_with(rest) {
+            return if rest.len() == 4 {
+                BodyPrefixDecision::Reject
+            } else {
+                incomplete_html_decision(can_read_more)
             };
         }
-        may_be_html |= signature.starts_with(prefix);
+        if let Some(boundary) = rest.get(4)
+            && rest.starts_with(b"html")
+            && (boundary.is_ascii_whitespace() || matches!(boundary, b'>' | b'/'))
+        {
+            return BodyPrefixDecision::Reject;
+        }
+        return BodyPrefixDecision::Accept;
     }
-    if may_be_html && can_read_more {
+
+    let Some(mut tag) = prefix.strip_prefix(b"<") else {
+        return BodyPrefixDecision::Accept;
+    };
+    if tag.is_empty() {
+        return incomplete_html_decision(can_read_more);
+    }
+    if tag.starts_with(b"?") {
+        return BodyPrefixDecision::Accept;
+    }
+    tag = tag.strip_prefix(b"/").unwrap_or(tag);
+    let name_len = tag
+        .iter()
+        .position(|byte| !(byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b':')))
+        .unwrap_or(tag.len());
+    if name_len == 0 {
+        return BodyPrefixDecision::Accept;
+    }
+    if name_len == tag.len() && can_read_more {
+        return BodyPrefixDecision::NeedMore;
+    }
+    if let Some(boundary) = tag.get(name_len)
+        && !(boundary.is_ascii_whitespace() || matches!(boundary, b'>' | b'/'))
+    {
+        return BodyPrefixDecision::Accept;
+    }
+    match &tag[..name_len] {
+        b"svg" | b"rss" => BodyPrefixDecision::Accept,
+        _ => BodyPrefixDecision::Reject,
+    }
+}
+
+fn incomplete_html_decision(can_read_more: bool) -> BodyPrefixDecision {
+    if can_read_more {
         BodyPrefixDecision::NeedMore
     } else {
-        BodyPrefixDecision::Accept
+        BodyPrefixDecision::Reject
     }
 }
 
@@ -171,6 +228,47 @@ mod tests {
             policy.body_prefix_decision(0, b"<!doctype html>", false),
             BodyPrefixDecision::Reject
         );
+        for body in [
+            b"<!doctype\thtml><html>expired".as_slice(),
+            b"<!doctype\nhtml><html>expired".as_slice(),
+            b"<!-- expired --><p>login required</p>".as_slice(),
+            b"<meta charset=\"utf-8\"><p>expired</p>".as_slice(),
+            b"<p>expired</p>".as_slice(),
+        ] {
+            assert_eq!(
+                policy.body_prefix_decision(0, body, false),
+                BodyPrefixDecision::Reject,
+                "{body:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn protected_binary_fails_closed_on_whitespace_only_prefix_at_limit() {
+        let policy = SourcePolicy::Protected { allow_html: false };
+        let prefix = vec![b' '; MAX_PROTECTED_PREFIX_BYTES];
+
+        assert_eq!(
+            policy.body_prefix_decision(0, &prefix, false),
+            BodyPrefixDecision::Reject
+        );
+    }
+
+    #[test]
+    fn protected_binary_fails_closed_on_incomplete_html_at_end_of_stream() {
+        let policy = SourcePolicy::Protected { allow_html: false };
+
+        for body in [
+            b"<".as_slice(),
+            b"<!doct".as_slice(),
+            b"<!doctype ".as_slice(),
+        ] {
+            assert_eq!(
+                policy.body_prefix_decision(0, body, true),
+                BodyPrefixDecision::Reject,
+                "{body:?}"
+            );
+        }
     }
 
     #[test]

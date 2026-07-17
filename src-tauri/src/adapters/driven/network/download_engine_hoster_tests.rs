@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering as AtomicOr
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
-use wiremock::matchers::{method, path};
+use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use crate::adapters::driven::filesystem::FsFileStorage;
@@ -19,11 +19,15 @@ use super::*;
 
 struct LoopbackSourceResolver {
     calls: AtomicUsize,
+    url: String,
 }
 
 struct RotatingHosterSourceResolver {
     calls: AtomicUsize,
+    base_url: String,
 }
+
+struct DirectSourceResolver;
 
 struct BlockingSourceResolver {
     entered: Mutex<Option<std::sync::mpsc::Sender<()>>>,
@@ -66,9 +70,7 @@ impl DownloadSourceResolver for BlockingSourceResolver {
 impl DownloadSourceResolver for LoopbackSourceResolver {
     fn resolve(&self, _: &Download) -> Result<ResolvedDownloadSource, DomainError> {
         self.calls.fetch_add(1, AtomicOrdering::SeqCst);
-        Ok(ResolvedDownloadSource::protected(
-            "https://127.0.0.1/secret-token".into(),
-        ))
+        Ok(ResolvedDownloadSource::protected(self.url.clone()))
     }
 }
 
@@ -79,22 +81,54 @@ impl DownloadSourceResolver for RotatingHosterSourceResolver {
 
     fn resolve(&self, _: &Download) -> Result<ResolvedDownloadSource, DomainError> {
         let call = self.calls.fetch_add(1, AtomicOrdering::SeqCst) + 1;
-        Ok(
-            ResolvedDownloadSource::protected(format!("https://1.1.1.1/file?capability={call}"))
-                .with_request_headers(vec![(
-                    "Authorization".into(),
-                    format!("Bearer token-{call}"),
-                )]),
-        )
+        Ok(ResolvedDownloadSource::direct(format!(
+            "{}/{}",
+            self.base_url,
+            if call == 1 { "expired" } else { "fresh" }
+        ))
+        .with_request_headers(vec![(
+            "Authorization".into(),
+            format!("Bearer token-{call}"),
+        )]))
+    }
+}
+
+impl DownloadSourceResolver for DirectSourceResolver {
+    fn requires_resolution(&self, _: &Download) -> Result<bool, DomainError> {
+        Ok(true)
+    }
+
+    fn resolve(&self, _: &Download) -> Result<ResolvedDownloadSource, DomainError> {
+        Ok(ResolvedDownloadSource::direct(
+            "https://example.com/file.bin".into(),
+        ))
     }
 }
 
 #[tokio::test]
+async fn resolved_direct_source_keeps_direct_policy() {
+    let prepared = prepare_sources(
+        make_download(197, "https://example.com/file.bin"),
+        Some(Arc::new(DirectSourceResolver)),
+        reqwest::Client::new(),
+        CancellationToken::new(),
+        ResolutionCancellation::default(),
+    )
+    .await
+    .expect("direct source prepares");
+
+    assert_eq!(prepared.policy, SourcePolicy::Direct);
+}
+
+#[tokio::test]
 async fn premium_source_is_resolved_jit_and_blocked_before_private_network_access() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let private_url = format!("https://{}/secret-token", listener.local_addr().unwrap());
     let storage = Arc::new(MockFileStorage::new());
     let bus = Arc::new(CollectingEventBus::new());
     let resolver = Arc::new(LoopbackSourceResolver {
         calls: AtomicUsize::new(0),
+        url: private_url,
     });
     let engine = make_engine(storage, bus.clone()).with_source_resolver(resolver.clone());
     let download = make_download(99, "https://1fichier.com/?abc123")
@@ -111,6 +145,12 @@ async fn premium_source_is_resolved_jit_and_blocked_before_private_network_acces
         .await
     );
     assert_eq!(resolver.calls.load(AtomicOrdering::SeqCst), 1);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), listener.accept())
+            .await
+            .is_err(),
+        "private listener must not receive a connection"
+    );
     let serialized = format!("{:?}", bus.collected());
     assert!(!serialized.contains("secret-token"));
     assert_eq!(download.url().as_str(), "https://1fichier.com/?abc123");
@@ -126,37 +166,60 @@ async fn every_hoster_engine_start_resolves_a_fresh_download_capability() {
     .into_iter()
     .enumerate()
     {
+        let server = MockServer::start().await;
+        Mock::given(method("HEAD"))
+            .and(path("/expired"))
+            .respond_with(ResponseTemplate::new(410))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/expired"))
+            .respond_with(ResponseTemplate::new(410))
+            .mount(&server)
+            .await;
+        Mock::given(method("HEAD"))
+            .and(path("/fresh"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "application/octet-stream")
+                    .insert_header("content-length", "4"),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/fresh"))
+            .and(header("authorization", "Bearer token-2"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"data"))
+            .mount(&server)
+            .await;
         let resolver = Arc::new(RotatingHosterSourceResolver {
             calls: AtomicUsize::new(0),
+            base_url: server.uri(),
         });
-        let download = make_download(200 + index as u64, "https://hoster.example/page")
-            .with_module_name(service.into())
-            .with_remote_metadata(Some(42), Some(true));
-
-        let first = prepare_sources(
-            download.clone(),
-            Some(resolver.clone()),
-            reqwest::Client::new(),
-            CancellationToken::new(),
-            ResolutionCancellation::default(),
+        let temp = tempfile::tempdir().unwrap();
+        let destination = temp.path().join(format!("hoster-{index}.bin"));
+        let bus = Arc::new(CollectingEventBus::new());
+        let engine = make_engine(Arc::new(FsFileStorage::new()), bus.clone())
+            .with_source_resolver(resolver.clone());
+        let download = Download::new(
+            DownloadId(200 + index as u64),
+            crate::domain::model::download::Url::new("https://hoster.example/page").unwrap(),
+            format!("hoster-{index}.bin"),
+            destination.to_string_lossy().into_owned(),
         )
-        .await
-        .expect("first start resolves");
-        let retry = prepare_sources(
-            download,
-            Some(resolver.clone()),
-            reqwest::Client::new(),
-            CancellationToken::new(),
-            ResolutionCancellation::default(),
-        )
-        .await
-        .expect("retry resolves again");
+        .with_module_name(service.into());
 
+        engine.start(&download).expect("engine start");
+        assert!(
+            bus.wait_for_event_async(
+                |event| matches!(event, DomainEvent::DownloadCompleted { id } if id == &download.id()),
+                Duration::from_secs(3),
+            )
+            .await,
+            "{service} did not complete"
+        );
         assert_eq!(resolver.calls.load(AtomicOrdering::SeqCst), 2, "{service}");
-        assert_ne!(first.urls, retry.urls, "{service}");
-        assert!(first.policy.is_protected());
-        assert!(retry.policy.is_protected());
-        assert_eq!(first.size_hint, Some(42));
+        assert_eq!(std::fs::read(destination).unwrap(), b"data", "{service}");
     }
 }
 
@@ -201,6 +264,7 @@ async fn protected_hoster_attempt_rejects_an_unexpected_html_page() {
         resume_url: "https://hoster.example/page".into(),
         source_policy: SourcePolicy::Protected { allow_html: false },
         size_hint: None,
+        resume_supported: None,
     })
     .await;
 
@@ -254,6 +318,7 @@ async fn protected_hoster_attempt_rejects_html_disguised_as_binary() {
         resume_url: "https://hoster.example/page".into(),
         source_policy: SourcePolicy::Protected { allow_html: false },
         size_hint: None,
+        resume_supported: None,
     })
     .await;
 
@@ -301,6 +366,7 @@ async fn protected_hoster_attempt_grows_an_atomically_reserved_unknown_length_fi
         resume_url: "https://hoster.example/page".into(),
         source_policy: SourcePolicy::Protected { allow_html: false },
         size_hint: None,
+        resume_supported: None,
     })
     .await;
 
@@ -332,7 +398,7 @@ async fn protected_hoster_attempt_never_deletes_an_unowned_destination() {
         download_id: DownloadId(301),
         segments_count: 1,
         client: reqwest::Client::new(),
-        file_storage: Arc::new(MockFileStorage::new()),
+        file_storage: Arc::new(FsFileStorage::new()),
         event_bus: Arc::new(CollectingEventBus::new()),
         dest_path: destination.clone(),
         pause_rx: watch::channel(false).1,
@@ -344,6 +410,48 @@ async fn protected_hoster_attempt_never_deletes_an_unowned_destination() {
         resume_url: "https://hoster.example/page".into(),
         source_policy: SourcePolicy::Protected { allow_html: false },
         size_hint: None,
+        resume_supported: None,
+    })
+    .await;
+
+    assert!(matches!(outcome, AttemptOutcome::Failed(_)));
+    assert_eq!(std::fs::read(destination).unwrap(), b"user-owned");
+}
+
+#[tokio::test]
+async fn direct_attempt_never_deletes_an_unowned_destination() {
+    let server = MockServer::start().await;
+    Mock::given(method("HEAD"))
+        .and(path("/download"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/octet-stream")
+                .insert_header("content-length", "4"),
+        )
+        .mount(&server)
+        .await;
+    let temp = tempfile::tempdir().unwrap();
+    let destination = temp.path().join("existing-direct.bin");
+    std::fs::write(&destination, b"user-owned").unwrap();
+
+    let outcome = run_mirror_attempt(MirrorAttemptParams {
+        url: format!("{}/download", server.uri()),
+        download_id: DownloadId(306),
+        segments_count: 1,
+        client: reqwest::Client::new(),
+        file_storage: Arc::new(FsFileStorage::new()),
+        event_bus: Arc::new(CollectingEventBus::new()),
+        dest_path: destination.clone(),
+        pause_rx: watch::channel(false).1,
+        user_cancel_token: CancellationToken::new(),
+        attempt_token: CancellationToken::new(),
+        min_segment_bytes: 1,
+        dynamic_split_enabled: Arc::new(AtomicBool::new(false)),
+        dynamic_split_min_remaining_bytes: Arc::new(AtomicU64::new(1)),
+        resume_url: "https://example.com/file.bin".into(),
+        source_policy: SourcePolicy::Direct,
+        size_hint: None,
+        resume_supported: None,
     })
     .await;
 
@@ -405,6 +513,7 @@ async fn protected_hoster_attempt_rejects_resume_metadata_owned_by_another_downl
         resume_url: "https://hoster.example/page".into(),
         source_policy: SourcePolicy::Protected { allow_html: false },
         size_hint: None,
+        resume_supported: None,
     })
     .await;
 
@@ -447,11 +556,119 @@ async fn protected_hoster_attempt_rejects_a_body_shorter_than_the_plugin_size_hi
         resume_url: "https://hoster.example/page".into(),
         source_policy: SourcePolicy::Protected { allow_html: false },
         size_hint: Some(8),
+        resume_supported: None,
     })
     .await;
 
     assert!(matches!(outcome, AttemptOutcome::Failed(_)));
     assert!(!destination.exists());
+}
+
+#[tokio::test]
+async fn protected_hoster_attempt_rejects_content_length_conflicting_with_size_hint() {
+    let server = MockServer::start().await;
+    Mock::given(method("HEAD"))
+        .and(path("/download"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/octet-stream")
+                .insert_header("content-length", "4"),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/download"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"data"))
+        .mount(&server)
+        .await;
+    let temp = tempfile::tempdir().unwrap();
+    let destination = temp.path().join("size-conflict.bin");
+
+    let outcome = run_mirror_attempt(MirrorAttemptParams {
+        url: format!("{}/download", server.uri()),
+        download_id: DownloadId(307),
+        segments_count: 1,
+        client: reqwest::Client::new(),
+        file_storage: Arc::new(FsFileStorage::new()),
+        event_bus: Arc::new(CollectingEventBus::new()),
+        dest_path: destination.clone(),
+        pause_rx: watch::channel(false).1,
+        user_cancel_token: CancellationToken::new(),
+        attempt_token: CancellationToken::new(),
+        min_segment_bytes: 1,
+        dynamic_split_enabled: Arc::new(AtomicBool::new(false)),
+        dynamic_split_min_remaining_bytes: Arc::new(AtomicU64::new(1)),
+        resume_url: "https://hoster.example/page".into(),
+        source_policy: SourcePolicy::Protected { allow_html: false },
+        size_hint: Some(8),
+        resume_supported: None,
+    })
+    .await;
+
+    assert!(matches!(outcome, AttemptOutcome::Failed(_)));
+    assert!(!destination.exists());
+}
+
+#[tokio::test]
+async fn same_download_replaces_incompatible_owned_artifacts() {
+    let server = MockServer::start().await;
+    Mock::given(method("HEAD"))
+        .and(path("/download"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/octet-stream")
+                .insert_header("content-length", "4"),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/download"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"data"))
+        .mount(&server)
+        .await;
+    let temp = tempfile::tempdir().unwrap();
+    let destination = temp.path().join("owned.bin");
+    std::fs::write(&destination, b"stale-data").unwrap();
+    let storage = Arc::new(FsFileStorage::new());
+    storage
+        .write_meta(
+            &destination,
+            &DownloadMeta {
+                download_id: DownloadId(308),
+                url: "https://hoster.example/page".into(),
+                file_name: "owned.bin".into(),
+                total_bytes: Some(10),
+                segments: Vec::new(),
+                checksum_expected: None,
+                created_at: 0,
+                updated_at: 0,
+            },
+        )
+        .unwrap();
+
+    let outcome = run_mirror_attempt(MirrorAttemptParams {
+        url: format!("{}/download", server.uri()),
+        download_id: DownloadId(308),
+        segments_count: 1,
+        client: reqwest::Client::new(),
+        file_storage: storage,
+        event_bus: Arc::new(CollectingEventBus::new()),
+        dest_path: destination.clone(),
+        pause_rx: watch::channel(false).1,
+        user_cancel_token: CancellationToken::new(),
+        attempt_token: CancellationToken::new(),
+        min_segment_bytes: 1,
+        dynamic_split_enabled: Arc::new(AtomicBool::new(false)),
+        dynamic_split_min_remaining_bytes: Arc::new(AtomicU64::new(1)),
+        resume_url: "https://hoster.example/page".into(),
+        source_policy: SourcePolicy::Protected { allow_html: false },
+        size_hint: None,
+        resume_supported: None,
+    })
+    .await;
+
+    assert!(matches!(outcome, AttemptOutcome::Completed));
+    assert_eq!(std::fs::read(destination).unwrap(), b"data");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

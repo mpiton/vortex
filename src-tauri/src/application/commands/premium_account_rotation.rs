@@ -112,8 +112,10 @@ fn protected_source(link: ExtractedHosterLink) -> Result<ResolvedDownloadSource,
     let direct_url = link
         .direct_url
         .filter(|url| !url.trim().is_empty())
-        .ok_or_else(|| DomainError::PluginError("premium plugin returned no direct URL".into()))?;
-    Ok(ResolvedDownloadSource::protected(direct_url).with_request_headers(link.request_headers))
+        .ok_or(DomainError::HosterNoFile)?;
+    Ok(ResolvedDownloadSource::protected(direct_url)
+        .with_request_headers(link.request_headers)
+        .with_metadata(link.filename, link.size_bytes, link.resumable))
 }
 
 fn is_rotatable(error: &DomainError) -> bool {

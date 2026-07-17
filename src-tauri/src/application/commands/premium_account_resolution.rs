@@ -99,9 +99,7 @@ impl ResolveHosterSourceHandler {
             .as_deref()
             .is_none_or(|url| url.trim().is_empty())
         {
-            return Err(DomainError::PluginError(
-                "premium plugin returned no direct URL".into(),
-            ));
+            return Err(DomainError::HosterNoFile);
         }
         if let Some(total) = link.traffic_total_bytes {
             account.set_traffic_total(total);

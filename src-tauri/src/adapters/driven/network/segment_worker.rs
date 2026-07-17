@@ -273,28 +273,24 @@ pub(crate) async fn download_segment(params: SegmentParams) -> Result<u64, Segme
             }
         }
 
-        if total_file_size == 0 {
-            let storage = storage.clone();
-            let path = path.clone();
-            let minimum_size = offset.saturating_add(chunk_len);
-            tokio::task::spawn_blocking(move || storage.grow_file(&path, minimum_size))
-                .await
-                .map_err(|e| SegmentError::Storage(e.to_string()))?
-                .map_err(|e| SegmentError::Storage(e.to_string()))?;
-        }
-
-        tokio::task::spawn_blocking(move || storage.write_segment(&path, offset, &data))
-            .await
-            .map_err(|e| SegmentError::Storage(e.to_string()))?
-            .map_err(|e| {
-                let msg = e.to_string();
-                event_bus.publish(DomainEvent::SegmentFailed {
-                    download_id,
-                    segment_id: segment_index,
-                    error: msg.clone(),
-                });
-                SegmentError::Storage(msg)
-            })?;
+        tokio::task::spawn_blocking(move || {
+            if total_file_size == 0 {
+                storage.write_growing_segment(&path, offset, &data)
+            } else {
+                storage.write_segment(&path, offset, &data)
+            }
+        })
+        .await
+        .map_err(|error| error.to_string())
+        .and_then(|result| result.map_err(|error| error.to_string()))
+        .map_err(|msg| {
+            event_bus.publish(DomainEvent::SegmentFailed {
+                download_id,
+                segment_id: segment_index,
+                error: msg.clone(),
+            });
+            SegmentError::Storage(msg)
+        })?;
 
         offset += chunk_len;
         bytes_downloaded += chunk_len;
@@ -385,12 +381,21 @@ mod tests {
 
     struct MockFileStorage {
         writes: Arc<Mutex<Vec<WriteRecord>>>,
+        fail_growth: bool,
     }
 
     impl MockFileStorage {
         fn new() -> Self {
             Self {
                 writes: Arc::new(Mutex::new(Vec::new())),
+                fail_growth: false,
+            }
+        }
+
+        fn failing_growth() -> Self {
+            Self {
+                writes: Arc::new(Mutex::new(Vec::new())),
+                fail_growth: true,
             }
         }
     }
@@ -409,7 +414,11 @@ mod tests {
         }
 
         fn grow_file(&self, _path: &Path, _minimum_size: u64) -> Result<(), DomainError> {
-            Ok(())
+            if self.fail_growth {
+                Err(DomainError::StorageError("disk full".into()))
+            } else {
+                Ok(())
+            }
         }
 
         fn read_meta(&self, _path: &Path) -> Result<Option<DownloadMeta>, DomainError> {
@@ -456,6 +465,48 @@ mod tests {
     }
 
     // --- Tests ---
+
+    #[tokio::test]
+    async fn unknown_length_growth_failure_publishes_segment_failed() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/file"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"data"))
+            .mount(&server)
+            .await;
+        let storage = Arc::new(MockFileStorage::failing_growth());
+        let bus = Arc::new(CollectingEventBus::new());
+
+        let result = download_segment(SegmentParams {
+            client: make_client(),
+            file_storage: storage,
+            event_bus: bus.clone(),
+            download_id: DownloadId(100),
+            segment_index: 0,
+            url: format!("{}/file", server.uri()),
+            start_byte: 0,
+            end_byte_rx: watch::channel(u64::MAX).1,
+            already_downloaded: 0,
+            total_file_size: 0,
+            dest_path: PathBuf::from("/tmp/growth_failure.bin"),
+            pause_rx: watch::channel(false).1,
+            cancel_token: CancellationToken::new(),
+            shared_downloaded: Arc::new(AtomicU64::new(0)),
+            segment_progress: Arc::new(AtomicU64::new(0)),
+            source_policy: SourcePolicy::Direct,
+        })
+        .await;
+
+        assert!(matches!(result, Err(SegmentError::Storage(_))));
+        assert!(bus.collected().iter().any(|event| matches!(
+            event,
+            DomainEvent::SegmentFailed {
+                download_id: DownloadId(100),
+                segment_id: 0,
+                ..
+            }
+        )));
+    }
 
     #[tokio::test]
     async fn test_segment_downloads_and_writes_to_file() {

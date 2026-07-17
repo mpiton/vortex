@@ -81,6 +81,9 @@ impl PluginLoader for FreeHosterPluginLoader {
         if url.contains("missing") {
             return Err(DomainError::HosterNoFile);
         }
+        if url.contains("empty") {
+            return Ok(Vec::new());
+        }
         if service_name == "vortex-mod-gofile" && url.contains("fanout500") {
             return Ok((0..500)
                 .map(|index| ExtractedHosterLink {
@@ -233,7 +236,7 @@ async fn gofile_child_identity_rejects_unsafe_requested_origins() {
         "https://user:pass@gofile.io/d/folder",
         "https://gofile.io:444/d/folder",
     ] {
-        let (result, _) = resolve_free_hoster(folder).await;
+        let (result, plugin) = resolve_free_hoster(folder).await;
 
         assert_eq!(result.len(), 1, "{folder}");
         assert_eq!(result[0].status, "error", "{folder}");
@@ -243,7 +246,20 @@ async fn gofile_child_identity_rejects_unsafe_requested_origins() {
             "{folder}"
         );
         assert!(result[0].resolved_url.is_none(), "{folder}");
+        assert!(
+            plugin.services.lock().unwrap().is_empty(),
+            "unsafe Gofile origins must be rejected before plugin invocation"
+        );
     }
+}
+
+#[tokio::test]
+async fn empty_hoster_result_is_reported_as_no_file() {
+    let (result, _) = resolve_free_hoster("https://gofile.io/d/empty-folder").await;
+
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0].status, "error");
+    assert_eq!(result[0].error_kind, Some(LinkResolutionErrorKind::NoFile));
 }
 
 #[tokio::test]

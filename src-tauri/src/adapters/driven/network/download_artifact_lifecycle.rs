@@ -47,11 +47,7 @@ pub(super) fn resume_metadata_matches(
         .file_name()
         .and_then(|name| name.to_str())
         .is_some_and(|filename| metadata.file_name == filename);
-    let size_matches = if total_size > 0 {
-        metadata.total_bytes == Some(total_size)
-    } else {
-        matches!(metadata.total_bytes, None | Some(0))
-    };
+    let size_matches = total_size == 0 || metadata.total_bytes == Some(total_size);
     metadata.download_id == download_id
         && metadata.url == stable_url
         && filename_matches
@@ -93,4 +89,33 @@ pub(super) async fn cleanup_download_artifacts(
     tokio::task::spawn_blocking(move || storage.delete_download_artifacts(&path))
         .await
         .map_err(|_| DomainError::StorageError("download artifact cleanup stopped".into()))?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn metadata(total_bytes: Option<u64>) -> DownloadMeta {
+        DownloadMeta {
+            download_id: DownloadId(7),
+            url: "https://example.com/file.bin".into(),
+            file_name: "file.bin".into(),
+            total_bytes,
+            segments: Vec::new(),
+            checksum_expected: None,
+            created_at: 0,
+            updated_at: 0,
+        }
+    }
+
+    #[test]
+    fn unknown_remote_size_does_not_invalidate_same_owner_metadata() {
+        assert!(resume_metadata_matches(
+            &metadata(Some(42)),
+            DownloadId(7),
+            "https://example.com/file.bin",
+            Path::new("/tmp/file.bin"),
+            0,
+        ));
+    }
 }

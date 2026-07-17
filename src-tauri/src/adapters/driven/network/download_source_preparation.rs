@@ -6,6 +6,7 @@ use crate::domain::error::DomainError;
 use crate::domain::model::download::Download;
 use crate::domain::ports::driven::{DownloadSourceResolver, ResolutionCancellation};
 
+use super::safe_url::validated_plugin_headers;
 use super::{SourcePolicy, allows_html_filename, restricted_download_client};
 
 pub(super) struct PreparedSources {
@@ -15,6 +16,8 @@ pub(super) struct PreparedSources {
     pub(super) resume_url: String,
     pub(super) policy: SourcePolicy,
     pub(super) size_hint: Option<u64>,
+    pub(super) resume_supported: Option<bool>,
+    pub(super) resolved: bool,
 }
 
 pub(super) async fn prepare_sources(
@@ -53,12 +56,32 @@ pub(super) async fn prepare_sources(
                     .map_err(|_| DomainError::PluginError("download source resolver stopped".into()))??
             }
         };
+        let policy = if source.is_protected() {
+            SourcePolicy::Protected {
+                allow_html: source.filename().map_or(allow_html, allows_html_filename),
+            }
+        } else {
+            SourcePolicy::Direct
+        };
+        let size_hint = source.size_bytes().or(size_hint);
+        let resume_supported = source.resumable();
+        let protected = source.is_protected();
         let request_url = source.request_url().to_string();
         let request_headers = source.request_headers().to_vec();
+        let direct_client = client.clone();
         let mut safety_task = tokio::task::spawn_blocking(move || {
             let parsed = reqwest::Url::parse(&request_url)
                 .map_err(|_| DomainError::NetworkError("plugin returned an invalid URL".into()))?;
-            let client = restricted_download_client(&parsed, &request_headers)?;
+            let client = if protected {
+                restricted_download_client(&parsed, &request_headers)?
+            } else if request_headers.is_empty() {
+                direct_client
+            } else {
+                reqwest::Client::builder()
+                    .default_headers(validated_plugin_headers(&request_headers)?)
+                    .build()
+                    .map_err(|_| DomainError::NetworkError("HTTP client creation failed".into()))?
+            };
             Ok::<_, DomainError>((request_url, client))
         });
         let (request_url, client) = tokio::select! {
@@ -76,8 +99,10 @@ pub(super) async fn prepare_sources(
             initial_index: 0,
             client,
             resume_url,
-            policy: SourcePolicy::Protected { allow_html },
+            policy,
             size_hint,
+            resume_supported,
+            resolved: true,
         });
     }
     let urls = if download.mirrors().is_empty() {
@@ -98,5 +123,7 @@ pub(super) async fn prepare_sources(
         resume_url,
         policy: SourcePolicy::Direct,
         size_hint,
+        resume_supported: None,
+        resolved: false,
     })
 }
