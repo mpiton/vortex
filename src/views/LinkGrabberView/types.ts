@@ -10,6 +10,15 @@
  */
 export type LinkStatus = "checking" | "online" | "offline" | "error" | "premiumOnly" | "unknown";
 
+export type LinkResolutionErrorKind =
+  | "invalidUrl"
+  | "noFile"
+  | "authenticationRequired"
+  | "expired"
+  | "accountUnavailable"
+  | "plugin"
+  | "network";
+
 /**
  * Where a duplicate of the URL was already found:
  *  - `active` — an entry already lives in the downloads list
@@ -35,8 +44,10 @@ export interface ResolvedLink {
   resolvedUrl: string | null;
   filename: string | null;
   sizeBytes: number | null;
+  resumable?: boolean | null;
   status: LinkStatus;
-  errorMessage?: string;
+  errorMessage?: string | null;
+  errorKind?: LinkResolutionErrorKind | null;
   moduleName: string;
   accountId: string | null;
   isMedia: boolean;

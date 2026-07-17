@@ -17,6 +17,18 @@ use crate::domain::ports::driven::ExtractedHosterLink;
 use super::ResolveLinksCommand;
 
 /// Resolution metadata for a single URL.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LinkResolutionErrorKind {
+    InvalidUrl,
+    NoFile,
+    AuthenticationRequired,
+    Expired,
+    AccountUnavailable,
+    Plugin,
+    Network,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ResolvedLinkDto {
@@ -25,9 +37,11 @@ pub struct ResolvedLinkDto {
     pub resolved_url: Option<String>,
     pub filename: Option<String>,
     pub size_bytes: Option<u64>,
+    pub resumable: Option<bool>,
     /// "checking" | "online" | "offline" | "error"
     pub status: String,
     pub error_message: Option<String>,
+    pub error_kind: Option<LinkResolutionErrorKind>,
     pub module_name: String,
     pub account_id: Option<String>,
     pub is_media: bool,
@@ -35,9 +49,10 @@ pub struct ResolvedLinkDto {
 }
 
 struct HosterResolution {
-    resolved_url: String,
+    stable_url: String,
     filename: Option<String>,
     size_bytes: Option<u64>,
+    resumable: Option<bool>,
     account_id: Option<String>,
 }
 
@@ -70,8 +85,10 @@ impl CommandBus {
                     resolved_url: None,
                     filename: None,
                     size_bytes: None,
+                    resumable: None,
                     status: "error".to_string(),
                     error_message: Some("URL scheme not allowed".to_string()),
+                    error_kind: Some(LinkResolutionErrorKind::InvalidUrl),
                     module_name: "core-http".to_string(),
                     account_id: None,
                     is_media: false,
@@ -87,8 +104,10 @@ impl CommandBus {
                     resolved_url: Some(url.clone()),
                     filename: None,
                     size_bytes: None,
+                    resumable: None,
                     status: "online".to_string(),
                     error_message: None,
+                    error_kind: None,
                     module_name: "magnet".to_string(),
                     account_id: None,
                     is_media: false,
@@ -109,30 +128,39 @@ impl CommandBus {
                     if matches!(info.category(), PluginCategory::Hoster | PluginCategory::Debrid)
             );
             if is_hoster {
-                match self.resolve_hoster_link(url, &module_name).await {
-                    Ok(resolved) => results.push(ResolvedLinkDto {
-                        id,
-                        original_url: url.clone(),
-                        resolved_url: Some(resolved.resolved_url),
-                        filename: resolved.filename,
-                        size_bytes: resolved.size_bytes,
-                        status: "online".to_string(),
-                        error_message: None,
-                        module_name,
-                        account_id: resolved.account_id,
-                        is_media: false,
-                        media_type: None,
-                    }),
+                match self.resolve_hoster_links(url, &module_name).await {
+                    Ok(resolutions) => {
+                        for resolved in resolutions {
+                            results.push(ResolvedLinkDto {
+                                id: Uuid::new_v4().to_string(),
+                                original_url: resolved.stable_url.clone(),
+                                resolved_url: Some(resolved.stable_url),
+                                filename: resolved.filename,
+                                size_bytes: resolved.size_bytes,
+                                resumable: resolved.resumable,
+                                status: "online".to_string(),
+                                error_message: None,
+                                error_kind: None,
+                                module_name: module_name.clone(),
+                                account_id: resolved.account_id,
+                                is_media: false,
+                                media_type: None,
+                            });
+                        }
+                    }
                     Err(error) => {
                         tracing::debug!(module_name, "hoster link resolution failed");
+                        let (error_kind, error_message) = hoster_error_details(&error);
                         results.push(ResolvedLinkDto {
                             id,
                             original_url: url.clone(),
                             resolved_url: None,
                             filename: None,
                             size_bytes: None,
+                            resumable: None,
                             status: "error".to_string(),
-                            error_message: Some(sanitize_hoster_error(&error)),
+                            error_message: Some(error_message),
+                            error_kind: Some(error_kind),
                             module_name,
                             account_id: None,
                             is_media: false,
@@ -160,8 +188,10 @@ impl CommandBus {
                         resolved_url: Some(url.clone()),
                         filename,
                         size_bytes: size,
+                        resumable: None,
                         status: "online".to_string(),
                         error_message: None,
+                        error_kind: None,
                         module_name,
                         account_id: None,
                         is_media,
@@ -175,8 +205,10 @@ impl CommandBus {
                         resolved_url: None,
                         filename: None,
                         size_bytes: None,
+                        resumable: None,
                         status: "offline".to_string(),
                         error_message: None,
+                        error_kind: None,
                         module_name,
                         account_id: None,
                         is_media,
@@ -191,8 +223,10 @@ impl CommandBus {
                         resolved_url: None,
                         filename: None,
                         size_bytes: None,
+                        resumable: None,
                         status: "error".to_string(),
                         error_message: Some(sanitize_resolve_error(&e)),
+                        error_kind: Some(LinkResolutionErrorKind::Network),
                         module_name,
                         account_id: None,
                         is_media,
@@ -205,20 +239,21 @@ impl CommandBus {
         Ok(results)
     }
 
-    async fn resolve_hoster_link(
+    async fn resolve_hoster_links(
         &self,
         url: &str,
         service_name: &str,
-    ) -> Result<HosterResolution, AppError> {
+    ) -> Result<Vec<HosterResolution>, AppError> {
         if self.account_repo().is_some() {
             match self.next_hoster_account(service_name)? {
                 NextAccountOutcome::Picked(account) => {
-                    return Ok(HosterResolution {
-                        resolved_url: url.to_string(),
+                    return Ok(vec![HosterResolution {
+                        stable_url: url.to_string(),
                         filename: extract_filename_from_url(url),
                         size_bytes: None,
+                        resumable: None,
                         account_id: Some(account.id().as_str().to_string()),
-                    });
+                    }]);
                 }
                 NextAccountOutcome::AllExhausted { reason, .. } => {
                     return Err(reason.into_domain_error().into());
@@ -227,10 +262,14 @@ impl CommandBus {
             }
         }
 
-        let link = self
+        let links = self
             .plugin_loader()
-            .extract_hoster_link(service_name, url, None)?;
-        Ok(into_hoster_resolution(link, url))
+            .extract_hoster_links(service_name, url, None)?;
+        links
+            .into_iter()
+            .map(into_hoster_resolution)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(Into::into)
     }
 
     fn next_hoster_account(&self, service_name: &str) -> Result<NextAccountOutcome, AppError> {
@@ -245,28 +284,53 @@ impl CommandBus {
     }
 }
 
-fn into_hoster_resolution(link: ExtractedHosterLink, stable_url: &str) -> HosterResolution {
-    HosterResolution {
-        resolved_url: stable_url.to_string(),
+fn into_hoster_resolution(link: ExtractedHosterLink) -> Result<HosterResolution, DomainError> {
+    if link.source_url.is_empty() || link.direct_url.is_none() {
+        return Err(DomainError::HosterNoFile);
+    }
+    Ok(HosterResolution {
+        stable_url: link.source_url,
         filename: link.filename,
         size_bytes: link.size_bytes,
+        resumable: link.resumable,
         account_id: None,
-    }
+    })
 }
 
-fn sanitize_hoster_error(error: &AppError) -> String {
+fn hoster_error_details(error: &AppError) -> (LinkResolutionErrorKind, String) {
     match error {
-        AppError::Domain(DomainError::AccountInvalidCredentials) => {
-            "Account credentials were rejected".to_string()
-        }
-        AppError::Domain(DomainError::AccountExpired) => "Account is expired".to_string(),
-        AppError::Domain(DomainError::AccountCooldown) => {
-            "Account is temporarily rate-limited".to_string()
-        }
-        AppError::Domain(DomainError::AccountQuotaExceeded) => {
-            "Account quota is exhausted".to_string()
-        }
-        _ => "Could not resolve hoster link".to_string(),
+        AppError::Domain(DomainError::AccountInvalidCredentials) => (
+            LinkResolutionErrorKind::AuthenticationRequired,
+            "Account credentials were rejected".to_string(),
+        ),
+        AppError::Domain(DomainError::HosterAuthenticationRequired) => (
+            LinkResolutionErrorKind::AuthenticationRequired,
+            "Hoster authentication is required".to_string(),
+        ),
+        AppError::Domain(DomainError::AccountExpired) => (
+            LinkResolutionErrorKind::Expired,
+            "Account is expired".to_string(),
+        ),
+        AppError::Domain(DomainError::HosterDirectUrlExpired) => (
+            LinkResolutionErrorKind::Expired,
+            "The direct download URL has expired".to_string(),
+        ),
+        AppError::Domain(DomainError::HosterNoFile) => (
+            LinkResolutionErrorKind::NoFile,
+            "No downloadable file was found".to_string(),
+        ),
+        AppError::Domain(DomainError::AccountCooldown) => (
+            LinkResolutionErrorKind::AccountUnavailable,
+            "Account is temporarily rate-limited".to_string(),
+        ),
+        AppError::Domain(DomainError::AccountQuotaExceeded) => (
+            LinkResolutionErrorKind::AccountUnavailable,
+            "Account quota is exhausted".to_string(),
+        ),
+        _ => (
+            LinkResolutionErrorKind::Plugin,
+            "Could not resolve hoster link".to_string(),
+        ),
     }
 }
 
@@ -452,6 +516,8 @@ mod tests {
                 filename: Some("file.zip".into()),
                 size_bytes: Some(42),
                 direct_url: Some("https://download.1fichier.com/token/file.zip".into()),
+                resumable: Some(true),
+                request_headers: Vec::new(),
                 traffic_used_bytes: Some(1),
                 traffic_total_bytes: Some(100),
             })

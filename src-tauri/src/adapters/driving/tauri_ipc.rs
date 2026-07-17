@@ -89,18 +89,30 @@ pub struct AppState {
     pub wait_manager: Arc<WaitManager>,
 }
 
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DownloadStartMetadata {
+    filename: Option<String>,
+    size_bytes: Option<u64>,
+    resume_supported: Option<bool>,
+}
+
 #[tauri::command]
 pub async fn download_start(
     state: State<'_, AppState>,
     url: String,
     destination: Option<String>,
+    metadata: Option<DownloadStartMetadata>,
     module_name: Option<String>,
     account_id: Option<String>,
 ) -> Result<u64, String> {
+    let metadata = metadata.unwrap_or_default();
     let cmd = StartDownloadCommand {
         url,
         destination: destination.map(PathBuf::from),
-        filename: None,
+        filename: metadata.filename,
+        size_bytes: metadata.size_bytes,
+        resume_supported: metadata.resume_supported,
         source_hostname_override: None,
         module_name,
         account_id: account_id.map(AccountId::new),
@@ -1753,6 +1765,8 @@ async fn start_media_download_for_url(
                 url: stream_url,
                 destination: None,
                 filename,
+                size_bytes: None,
+                resume_supported: None,
                 source_hostname_override,
                 module_name: None,
                 account_id: None,

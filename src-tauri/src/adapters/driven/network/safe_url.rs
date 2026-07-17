@@ -3,6 +3,8 @@
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::time::Duration;
 
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
+
 use crate::domain::error::DomainError;
 
 use super::nat64::{Nat64Prefix, discovered_prefixes};
@@ -43,6 +45,7 @@ pub(crate) fn validate_public_url(
 
 pub(crate) fn restricted_download_client(
     url: &reqwest::Url,
+    request_headers: &[(String, String)],
 ) -> Result<reqwest::Client, DomainError> {
     if !url.username().is_empty() || url.password().is_some() {
         return Err(DomainError::NetworkError(
@@ -50,18 +53,54 @@ pub(crate) fn restricted_download_client(
         ));
     }
     let addresses = validate_public_url(url)?;
+    let headers = validated_plugin_headers(request_headers)?;
     let mut builder = reqwest::Client::builder()
         .no_proxy()
         .user_agent("Vortex/0.1")
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(Duration::from_secs(30))
-        .timeout(Duration::from_secs(3600));
+        .timeout(Duration::from_secs(3600))
+        .default_headers(headers);
     if let (Some(host), Some(addresses)) = (url.host_str(), addresses.as_deref()) {
         builder = builder.resolve_to_addrs(host, addresses);
     }
     builder
         .build()
         .map_err(|_| DomainError::NetworkError("restricted HTTP client creation failed".into()))
+}
+
+pub(crate) fn validated_plugin_headers(
+    request_headers: &[(String, String)],
+) -> Result<HeaderMap, DomainError> {
+    let mut headers = HeaderMap::new();
+    for (name, value) in request_headers {
+        let name = HeaderName::from_bytes(name.as_bytes())
+            .map_err(|_| DomainError::NetworkError("plugin returned an invalid header".into()))?;
+        if !matches!(
+            name.as_str(),
+            "accept"
+                | "accept-language"
+                | "authorization"
+                | "cookie"
+                | "origin"
+                | "referer"
+                | "user-agent"
+        ) {
+            return Err(DomainError::NetworkError(
+                "plugin returned a disallowed download header".into(),
+            ));
+        }
+        let value = HeaderValue::from_str(value)
+            .map_err(|_| DomainError::NetworkError("plugin returned an invalid header".into()))?;
+        headers.insert(name, value);
+    }
+    Ok(headers)
+}
+
+pub(crate) fn is_html_content_type(content_type: &str) -> bool {
+    let media_type = content_type.split(';').next().unwrap_or_default().trim();
+    media_type.eq_ignore_ascii_case("text/html")
+        || media_type.eq_ignore_ascii_case("application/xhtml+xml")
 }
 
 fn blocked() -> DomainError {

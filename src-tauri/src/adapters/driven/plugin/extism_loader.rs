@@ -15,7 +15,7 @@ use crate::domain::ports::driven::{ExtractedHosterLink, PluginLoader, Validation
 
 use super::builtin::HttpModule;
 use super::capabilities::{SharedHostResources, build_host_functions_for_instance};
-use super::hoster_contract::parse_hoster_link;
+use super::hoster_contract::parse_hoster_links;
 use super::manifest::{
     find_wasm_file, parse_manifest, parse_manifest_metadata, parse_manifest_metadata_bytes,
 };
@@ -497,6 +497,18 @@ impl PluginLoader for ExtismPluginLoader {
         url: &str,
         credential: Option<&Credential>,
     ) -> Result<ExtractedHosterLink, DomainError> {
+        self.extract_hoster_links(service_name, url, credential)?
+            .into_iter()
+            .next()
+            .ok_or(DomainError::HosterNoFile)
+    }
+
+    fn extract_hoster_links(
+        &self,
+        service_name: &str,
+        url: &str,
+        credential: Option<&Credential>,
+    ) -> Result<Vec<ExtractedHosterLink>, DomainError> {
         let info = self
             .registry
             .list_info()
@@ -523,9 +535,10 @@ impl PluginLoader for ExtismPluginLoader {
                 .map_err(|error| classify_account_plugin_error(&error.to_string()))?,
             None => self
                 .registry
-                .call_plugin(service_name, "extract_links", url)?,
+                .call_plugin(service_name, "extract_links", url)
+                .map_err(|error| classify_hoster_plugin_error(&error.to_string()))?,
         };
-        parse_hoster_link(&output)
+        parse_hoster_links(&output)
     }
 
     fn validate_account(
@@ -778,6 +791,35 @@ fn classify_account_plugin_error(message: &str) -> DomainError {
     }
 }
 
+fn classify_hoster_plugin_error(message: &str) -> DomainError {
+    let message = message.to_ascii_lowercase();
+    if message.contains("hoster_direct_url_expired")
+        || message.contains("status 410")
+        || message.contains("expired")
+    {
+        DomainError::HosterDirectUrlExpired
+    } else if message.contains("hoster_authentication_required")
+        || message.contains("status 401")
+        || message.contains("status 403")
+        || message.contains("authentication")
+        || message.contains("invalid credentials")
+        || message.contains("password-protected")
+        || message.contains("private")
+    {
+        DomainError::HosterAuthenticationRequired
+    } else if message.contains("hoster_no_file")
+        || message.contains("status 404")
+        || message.contains("offline or removed")
+        || message.contains("folder is empty")
+        || message.contains("not found in folder")
+        || message.contains("no direct download link")
+    {
+        DomainError::HosterNoFile
+    } else {
+        DomainError::PluginError("hoster plugin operation failed".into())
+    }
+}
+
 #[derive(serde::Deserialize)]
 struct PluginValidationOutcome {
     valid: bool,
@@ -885,6 +927,35 @@ mod tests {
         assert_eq!(
             error,
             DomainError::PluginError("plugin account operation failed".into())
+        );
+        assert!(!error.to_string().contains("super-secret-key"));
+    }
+
+    #[test]
+    fn hoster_plugin_errors_map_to_safe_typed_errors() {
+        assert_eq!(
+            classify_hoster_plugin_error("MediaFire file is offline or removed: missing"),
+            DomainError::HosterNoFile
+        );
+        assert_eq!(
+            classify_hoster_plugin_error(
+                "no direct download link found in MediaFire page (file may be private or password-protected)"
+            ),
+            DomainError::HosterAuthenticationRequired
+        );
+        assert_eq!(
+            classify_hoster_plugin_error("hoster HTTP returned status 410: gone"),
+            DomainError::HosterDirectUrlExpired
+        );
+    }
+
+    #[test]
+    fn unknown_hoster_plugin_error_does_not_expose_plugin_diagnostics() {
+        let error =
+            classify_hoster_plugin_error("upstream echoed Authorization: Bearer super-secret-key");
+        assert_eq!(
+            error,
+            DomainError::PluginError("hoster plugin operation failed".into())
         );
         assert!(!error.to_string().contains("super-secret-key"));
     }

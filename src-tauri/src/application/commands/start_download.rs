@@ -84,7 +84,8 @@ impl CommandBus {
         let queue_position = super::move_queue::next_queue_position(self.download_repo())?;
 
         let mut download = Download::new(id, url, file_name, dest.to_string_lossy().to_string())
-            .with_queue_position(queue_position);
+            .with_queue_position(queue_position)
+            .with_remote_metadata(cmd.size_bytes, cmd.resume_supported);
 
         if let Some(hostname) = cmd.source_hostname_override {
             download = download.with_source_hostname(hostname);
@@ -535,6 +536,8 @@ mod tests {
             url: "https://example.com/files/report.pdf".to_string(),
             destination: Some(PathBuf::from("/tmp/downloads")),
             filename: None,
+            size_bytes: None,
+            resume_supported: None,
             source_hostname_override: None,
             module_name: None,
             account_id: None,
@@ -585,6 +588,8 @@ mod tests {
                 url: "https://download.1fichier.com/token/file.zip".into(),
                 destination: Some(PathBuf::from("/tmp")),
                 filename: Some("file.zip".into()),
+                size_bytes: None,
+                resume_supported: None,
                 source_hostname_override: Some("1fichier.com".into()),
                 module_name: Some("vortex-mod-1fichier".into()),
                 account_id: Some(account_id.clone()),
@@ -629,6 +634,8 @@ mod tests {
                     url: "https://1fichier.com/?abc123".into(),
                     destination: Some(PathBuf::from("/tmp")),
                     filename: Some("file.zip".into()),
+                    size_bytes: None,
+                    resume_supported: None,
                     source_hostname_override: None,
                     module_name: Some("vortex-mod-1fichier".into()),
                     account_id: Some(start_account),
@@ -689,6 +696,8 @@ mod tests {
                 url: "https://download.1fichier.com/token/file.zip".into(),
                 destination: Some(PathBuf::from("/tmp")),
                 filename: Some("file.zip".into()),
+                size_bytes: None,
+                resume_supported: None,
                 source_hostname_override: Some("1fichier.com".into()),
                 module_name: Some("vortex-mod-1fichier".into()),
                 account_id: Some(account_id.clone()),
@@ -735,6 +744,8 @@ mod tests {
                 url: "https://download.1fichier.com/token/file.zip".into(),
                 destination: Some(PathBuf::from("/tmp")),
                 filename: Some("file.zip".into()),
+                size_bytes: None,
+                resume_supported: None,
                 source_hostname_override: Some("1fichier.com".into()),
                 module_name: Some("vortex-mod-1fichier".into()),
                 account_id: Some(account_id),
@@ -753,6 +764,8 @@ mod tests {
             url: "not-a-valid-url".to_string(),
             destination: None,
             filename: None,
+            size_bytes: None,
+            resume_supported: None,
             source_hostname_override: None,
             module_name: None,
             account_id: None,
@@ -770,6 +783,8 @@ mod tests {
             url: "https://example.com/path/archive.tar.gz".to_string(),
             destination: Some(PathBuf::from("/tmp")),
             filename: None,
+            size_bytes: None,
+            resume_supported: None,
             source_hostname_override: None,
             module_name: None,
             account_id: None,
@@ -821,6 +836,8 @@ mod tests {
             url: "https://rr1---sn-n4g-cvq6.googlevideo.com/videoplayback?expire=123".to_string(),
             destination: Some(PathBuf::from("/tmp")),
             filename: Some("Rick Astley - Never Gonna Give You Up.mp4".to_string()),
+            size_bytes: None,
+            resume_supported: None,
             source_hostname_override: None,
             module_name: None,
             account_id: None,
@@ -856,6 +873,8 @@ mod tests {
             url: "https://example.com/b.zip".to_string(),
             destination: Some(PathBuf::from("/tmp")),
             filename: Some("b.zip".to_string()),
+            size_bytes: None,
+            resume_supported: None,
             source_hostname_override: None,
             module_name: None,
             account_id: None,
@@ -880,6 +899,8 @@ mod tests {
             url: "https://rr1---sn-n4g-cvq6.googlevideo.com/videoplayback?expire=123".to_string(),
             destination: Some(PathBuf::from("/tmp")),
             filename: Some("video.mp4".to_string()),
+            size_bytes: None,
+            resume_supported: None,
             source_hostname_override: Some("www.youtube.com".to_string()),
             module_name: None,
             account_id: None,

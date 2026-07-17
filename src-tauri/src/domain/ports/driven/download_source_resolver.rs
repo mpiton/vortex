@@ -8,6 +8,7 @@ use crate::domain::model::download::Download;
 #[derive(Clone, PartialEq, Eq)]
 pub struct ResolvedDownloadSource {
     request_url: String,
+    request_headers: Vec<(String, String)>,
 }
 
 impl std::fmt::Debug for ResolvedDownloadSource {
@@ -18,11 +19,23 @@ impl std::fmt::Debug for ResolvedDownloadSource {
 
 impl ResolvedDownloadSource {
     pub fn sensitive(request_url: String) -> Self {
-        Self { request_url }
+        Self {
+            request_url,
+            request_headers: Vec::new(),
+        }
+    }
+
+    pub fn with_request_headers(mut self, request_headers: Vec<(String, String)>) -> Self {
+        self.request_headers = request_headers;
+        self
     }
 
     pub fn request_url(&self) -> &str {
         &self.request_url
+    }
+
+    pub fn request_headers(&self) -> &[(String, String)] {
+        &self.request_headers
     }
 }
 
@@ -64,7 +77,7 @@ impl ResolutionCancellation {
         operation: impl FnOnce() -> Result<T, DomainError>,
     ) -> Result<T, DomainError> {
         let cancelled = self.cancelled.lock().map_err(|_| {
-            DomainError::PluginError("premium source cancellation state unavailable".into())
+            DomainError::PluginError("download source cancellation state unavailable".into())
         })?;
         if *cancelled {
             return Err(cancelled_error());
@@ -74,12 +87,16 @@ impl ResolutionCancellation {
 }
 
 fn cancelled_error() -> DomainError {
-    DomainError::PluginError("premium source resolution cancelled".into())
+    DomainError::PluginError("download source resolution cancelled".into())
 }
 
 /// Called by the download engine immediately before opening the connection.
 /// Implementations must never persist or log the returned URL.
 pub trait DownloadSourceResolver: Send + Sync {
+    fn requires_resolution(&self, download: &Download) -> Result<bool, DomainError> {
+        Ok(download.account_id().is_some())
+    }
+
     fn resolve(&self, download: &Download) -> Result<ResolvedDownloadSource, DomainError>;
 
     fn resolve_cancellable(

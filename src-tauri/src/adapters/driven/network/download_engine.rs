@@ -16,12 +16,19 @@ use crate::domain::ports::driven::{
 };
 
 use super::segment_worker::{SegmentError, SegmentParams, download_segment};
-use super::{format_error_chain, restricted_download_client};
+use super::{format_error_chain, is_html_content_type, restricted_download_client};
 
 struct ActiveDownload {
     cancel_token: CancellationToken,
     resolution_cancellation: ResolutionCancellation,
     pause_sender: watch::Sender<bool>,
+}
+
+struct RemoteMetadata {
+    content_length: u64,
+    accepts_ranges: bool,
+    content_type: Option<String>,
+    status: reqwest::StatusCode,
 }
 
 /// Minimum age and downloaded bytes a segment must have before it is
@@ -240,7 +247,7 @@ impl SegmentedDownloadEngine {
     async fn probe_remote_metadata(
         client: &reqwest::Client,
         url: &str,
-    ) -> Result<(u64, bool), reqwest::Error> {
+    ) -> Result<RemoteMetadata, reqwest::Error> {
         let response = match client.head(url).send().await {
             Ok(response) if response.status().is_success() => response,
             Ok(response) => {
@@ -268,8 +275,19 @@ impl SegmentedDownloadEngine {
             .and_then(|v| v.to_str().ok())
             .map(|v| v.eq_ignore_ascii_case("bytes"))
             .unwrap_or(false);
+        let content_type = response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
+        let status = response.status();
 
-        Ok((content_length, accepts_ranges))
+        Ok(RemoteMetadata {
+            content_length,
+            accepts_ranges,
+            content_type,
+            status,
+        })
     }
 }
 
@@ -303,13 +321,17 @@ async fn prepare_sources(
 ) -> Result<PreparedSources, DomainError> {
     if cancel_token.is_cancelled() {
         return Err(DomainError::PluginError(
-            "premium source resolution cancelled".into(),
+            "download source resolution cancelled".into(),
         ));
     }
     let resume_url = download.url().as_str().to_string();
-    if download.account_id().is_some() {
+    let requires_resolution = match resolver.as_ref() {
+        Some(resolver) => resolver.requires_resolution(&download)?,
+        None => download.account_id().is_some(),
+    };
+    if requires_resolution {
         let resolver = resolver.ok_or_else(|| {
-            DomainError::PluginError("premium source resolver is not configured".into())
+            DomainError::PluginError("download source resolver is not configured".into())
         })?;
         let mut resolve_task = tokio::task::spawn_blocking(move || {
             resolver.resolve_cancellable(&download, &resolution_cancellation)
@@ -317,24 +339,25 @@ async fn prepare_sources(
         let source = tokio::select! {
             biased;
             _ = cancel_token.cancelled() => {
-                return Err(DomainError::PluginError("premium source resolution cancelled".into()));
+                return Err(DomainError::PluginError("download source resolution cancelled".into()));
             }
             result = &mut resolve_task => {
                 result
-                    .map_err(|_| DomainError::PluginError("premium source resolver stopped".into()))??
+                    .map_err(|_| DomainError::PluginError("download source resolver stopped".into()))??
             }
         };
         let request_url = source.request_url().to_string();
+        let request_headers = source.request_headers().to_vec();
         let mut safety_task = tokio::task::spawn_blocking(move || {
             let parsed = reqwest::Url::parse(&request_url)
                 .map_err(|_| DomainError::NetworkError("plugin returned an invalid URL".into()))?;
-            let client = restricted_download_client(&parsed)?;
+            let client = restricted_download_client(&parsed, &request_headers)?;
             Ok::<_, DomainError>((request_url, client))
         });
         let (request_url, client) = tokio::select! {
             biased;
             _ = cancel_token.cancelled() => {
-                return Err(DomainError::PluginError("premium source resolution cancelled".into()));
+                return Err(DomainError::PluginError("download source resolution cancelled".into()));
             }
             result = &mut safety_task => {
                 result
@@ -375,7 +398,11 @@ fn source_failure_message(error: &DomainError) -> String {
         DomainError::AccountExpired => "Account is expired",
         DomainError::AccountCooldown => "Account is temporarily rate-limited",
         DomainError::AccountQuotaExceeded => "Account quota is exhausted",
-        _ => "Premium download source could not be resolved",
+        DomainError::HosterNoFile => "No downloadable file was found",
+        DomainError::HosterAuthenticationRequired => "Hoster authentication is required",
+        DomainError::HosterDirectUrlExpired => "The direct download URL has expired",
+        DomainError::HosterUnexpectedHtml => "Hoster returned an HTML page instead of file content",
+        _ => "Download source could not be resolved",
     }
     .to_string()
 }
@@ -694,30 +721,54 @@ async fn run_mirror_attempt(params: MirrorAttemptParams) -> AttemptOutcome {
         resume_url,
         sensitive_url,
     } = params;
-    let (total_size, supports_range) =
-        match SegmentedDownloadEngine::probe_remote_metadata(&client, &url).await {
-            Ok(metadata) => metadata,
-            Err(e) => {
-                if sensitive_url {
-                    tracing::warn!(download_id = download_id.0, "metadata probe failed");
-                } else {
-                    tracing::warn!(
-                        download_id = download_id.0,
-                        url = %url,
-                        error = %format_error_chain(&e),
-                        "metadata probe failed (mirror attempt)"
-                    );
-                }
-                if user_cancel_token.is_cancelled() {
-                    return AttemptOutcome::Cancelled;
-                }
-                return AttemptOutcome::Failed(if sensitive_url {
-                    "metadata probe failed".into()
-                } else {
-                    format!("metadata probe failed: {}", format_error_chain(&e))
-                });
+    let metadata = match SegmentedDownloadEngine::probe_remote_metadata(&client, &url).await {
+        Ok(metadata) => metadata,
+        Err(e) => {
+            if sensitive_url {
+                tracing::warn!(download_id = download_id.0, "metadata probe failed");
+            } else {
+                tracing::warn!(
+                    download_id = download_id.0,
+                    url = %url,
+                    error = %format_error_chain(&e),
+                    "metadata probe failed (mirror attempt)"
+                );
             }
+            if user_cancel_token.is_cancelled() {
+                return AttemptOutcome::Cancelled;
+            }
+            return AttemptOutcome::Failed(if sensitive_url {
+                "metadata probe failed".into()
+            } else {
+                format!("metadata probe failed: {}", format_error_chain(&e))
+            });
+        }
+    };
+
+    if sensitive_url {
+        let source_error = match metadata.status {
+            reqwest::StatusCode::UNAUTHORIZED => Some(DomainError::HosterAuthenticationRequired),
+            reqwest::StatusCode::FORBIDDEN | reqwest::StatusCode::GONE => {
+                Some(DomainError::HosterDirectUrlExpired)
+            }
+            status if !status.is_success() => Some(DomainError::NetworkError(
+                "hoster direct URL returned an unsuccessful status".into(),
+            )),
+            _ if metadata
+                .content_type
+                .as_deref()
+                .is_some_and(is_html_content_type) =>
+            {
+                Some(DomainError::HosterUnexpectedHtml)
+            }
+            _ => None,
         };
+        if let Some(error) = source_error {
+            return AttemptOutcome::Failed(source_failure_message(&error));
+        }
+    }
+    let total_size = metadata.content_length;
+    let supports_range = metadata.accepts_ranges;
 
     if user_cancel_token.is_cancelled() {
         return AttemptOutcome::Cancelled;

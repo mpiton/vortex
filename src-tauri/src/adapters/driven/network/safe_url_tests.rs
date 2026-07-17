@@ -34,8 +34,8 @@ fn accepts_globally_routable_ipv6_address() {
 fn restricted_client_requires_https_and_public_destination() {
     let http = reqwest::Url::parse("http://1.1.1.1/file").unwrap();
     let local = reqwest::Url::parse("https://127.0.0.1/file").unwrap();
-    assert!(restricted_download_client(&http).is_err());
-    assert!(restricted_download_client(&local).is_err());
+    assert!(restricted_download_client(&http, &[]).is_err());
+    assert!(restricted_download_client(&local, &[]).is_err());
 }
 
 #[test]

@@ -10,7 +10,7 @@ use crate::domain::event::DomainEvent;
 use crate::domain::model::download::DownloadId;
 use crate::domain::ports::driven::{EventBus, FileStorage};
 
-use super::format_error_chain;
+use super::{format_error_chain, is_html_content_type};
 
 /// Typed error for segment download failures.
 #[derive(Debug, PartialEq)]
@@ -134,6 +134,21 @@ pub(crate) async fn download_segment(params: SegmentParams) -> Result<u64, Segme
     let status = response.status();
     if !status.is_success() {
         let msg = format!("HTTP error status: {status}");
+        event_bus.publish(DomainEvent::SegmentFailed {
+            download_id,
+            segment_id: segment_index,
+            error: msg.clone(),
+        });
+        return Err(SegmentError::Http(msg));
+    }
+    if sensitive_url
+        && response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(is_html_content_type)
+    {
+        let msg = "Hoster returned an HTML page instead of file content".to_string();
         event_bus.publish(DomainEvent::SegmentFailed {
             download_id,
             segment_id: segment_index,

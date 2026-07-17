@@ -7,6 +7,7 @@ use crate::application::services::account_operation_locks::AccountOperationLocks
 use crate::domain::error::DomainError;
 use crate::domain::model::account::AccountId;
 use crate::domain::model::download::Download;
+use crate::domain::model::plugin::PluginCategory;
 use crate::domain::ports::driven::{
     AccountCredentialStore, AccountRepository, Clock, ConfigStore, DownloadRepository,
     DownloadSourceResolver, EventBus, ExtractedHosterLink, PluginLoader, ResolutionCancellation,
@@ -103,8 +104,39 @@ impl ResolvePremiumSourceHandler {
 }
 
 impl DownloadSourceResolver for ResolvePremiumSourceHandler {
+    fn requires_resolution(&self, download: &Download) -> Result<bool, DomainError> {
+        if download.account_id().is_some() {
+            return Ok(true);
+        }
+        let Some(service_name) = download.module_name() else {
+            return Ok(false);
+        };
+        if matches!(
+            service_name,
+            "builtin-http" | "core-http" | "http" | "magnet"
+        ) {
+            return Ok(false);
+        }
+        let loaded = self
+            .plugins
+            .list_loaded()?
+            .into_iter()
+            .find(|info| info.name() == service_name);
+        let info = match loaded {
+            Some(info) => Some(info),
+            None => self.plugins.find_installed_manifest(service_name)?,
+        };
+        let info = info.ok_or_else(|| {
+            DomainError::NotFound(format!("download plugin '{service_name}' is unavailable"))
+        })?;
+        Ok(matches!(
+            info.category(),
+            PluginCategory::Hoster | PluginCategory::Debrid
+        ))
+    }
+
     fn resolve(&self, download: &Download) -> Result<ResolvedDownloadSource, DomainError> {
-        self.resolve_download(download, &ResolutionCancellation::default())
+        self.resolve_source(download, &ResolutionCancellation::default())
     }
 
     fn resolve_cancellable(
@@ -112,7 +144,32 @@ impl DownloadSourceResolver for ResolvePremiumSourceHandler {
         download: &Download,
         cancellation: &ResolutionCancellation,
     ) -> Result<ResolvedDownloadSource, DomainError> {
-        self.resolve_download(download, cancellation)
+        self.resolve_source(download, cancellation)
+    }
+}
+
+impl ResolvePremiumSourceHandler {
+    fn resolve_source(
+        &self,
+        download: &Download,
+        cancellation: &ResolutionCancellation,
+    ) -> Result<ResolvedDownloadSource, DomainError> {
+        if download.account_id().is_some() {
+            return self.resolve_download(download, cancellation);
+        }
+        cancellation.ensure_active()?;
+        let service_name = download.module_name().ok_or_else(|| {
+            DomainError::ValidationError("hoster download has no plugin association".into())
+        })?;
+        let link = self
+            .plugins
+            .extract_hoster_link(service_name, download.url().as_str(), None)?;
+        cancellation.ensure_active()?;
+        let direct_url = link.direct_url.ok_or(DomainError::HosterNoFile)?;
+        Ok(
+            ResolvedDownloadSource::sensitive(direct_url)
+                .with_request_headers(link.request_headers),
+        )
     }
 }
 

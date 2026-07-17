@@ -58,6 +58,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   URLs and plugin metadata reach the queue while ephemeral direct URLs and
   request headers stay backend-only and are refreshed on retry. Unexpected HTML
   responses and typed hoster failures no longer appear as successful files.
+- **MAT-133 review hardening**: built-in HTTP downloads keep their normal online
+  probe, while current hoster plugin failures map to safe typed errors without
+  exposing upstream diagnostics.
 - **MAT-132 PR review hardening**: premium selection now excludes free
   accounts, serializes persisted cooldowns with rotation, revalidates download
   associations on every JIT resolution, and lets cancellation win without late

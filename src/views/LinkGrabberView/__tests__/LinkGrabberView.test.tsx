@@ -231,9 +231,11 @@ describe("LinkGrabberView", () => {
     await waitFor(() => {
       expect(mockInvoke).toHaveBeenCalledWith("download_start", {
         url: sourceUrl,
-        filename: "file.zip",
-        sizeBytes: 42,
-        resumeSupported: true,
+        metadata: {
+          filename: "file.zip",
+          sizeBytes: 42,
+          resumeSupported: true,
+        },
         moduleName: "vortex-mod-1fichier",
         accountId: "account-uuid",
       });
@@ -291,6 +293,38 @@ describe("LinkGrabberView", () => {
       expect(screen.getByText("No downloadable file was found")).toBeInTheDocument();
     });
     expect(mockInvoke.mock.calls.some(([command]) => command === "link_check_online")).toBe(false);
+  });
+
+  it("still probes links handled by the built-in HTTP module", async () => {
+    const url = "https://example.com/file.zip";
+    mockInvoke.mockImplementation((command) => {
+      if (command === "link_resolve") {
+        return Promise.resolve([
+          {
+            id: "builtin-link",
+            originalUrl: url,
+            resolvedUrl: url,
+            filename: "file.zip",
+            sizeBytes: 42,
+            status: "online",
+            moduleName: "builtin-http",
+            accountId: null,
+            isMedia: false,
+          },
+        ]);
+      }
+      if (command === "link_detect_duplicates") return Promise.resolve([]);
+      return Promise.resolve(null);
+    });
+
+    const user = userEvent.setup();
+    renderWithProviders();
+    await user.type(screen.getByRole("textbox"), url);
+    await user.click(screen.getByRole("button", { name: "Analyze Links" }));
+
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith("link_check_online", { urls: [url] });
+    });
   });
 
   it("should surface error toast on failure and success toast on retry", async () => {

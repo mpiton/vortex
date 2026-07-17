@@ -8,6 +8,7 @@ use crate::application::commands::tests_support::{
 };
 use crate::domain::event::DomainEvent;
 use crate::domain::model::account::AccountStatus;
+use crate::domain::model::download::{DownloadId, Url};
 use crate::domain::ports::driven::{
     AccountCredentialStore, AccountRepository, DownloadRepository, DownloadSourceResolver,
 };
@@ -56,6 +57,53 @@ async fn resolves_the_direct_url_only_when_the_engine_requests_it() {
             .iter()
             .any(|event| matches!(event, DomainEvent::AccountUpdated { id } if id == account.id()))
     );
+}
+
+#[test]
+fn free_hoster_download_is_resolved_jit_with_backend_only_headers() {
+    let plugin = Arc::new(DirectUrlPlugin::new());
+    let resolver = handler(
+        Arc::new(InMemoryAccountRepo::new()),
+        Arc::new(FakeAccountCredentialStore::new()),
+        plugin.clone(),
+        Arc::new(CapturingEventBus::new()),
+    );
+    let download = Download::new(
+        DownloadId(2),
+        Url::new("https://1fichier.com/?free").unwrap(),
+        "file.zip".into(),
+        "/tmp/file.zip".into(),
+    )
+    .with_module_name("vortex-mod-1fichier".into());
+
+    assert!(resolver.requires_resolution(&download).unwrap());
+    let source = resolver.resolve(&download).expect("free hoster resolves");
+
+    assert_eq!(source.request_url(), "https://1.1.1.1/short-lived-token");
+    assert_eq!(
+        source.request_headers(),
+        &[("Referer".into(), "https://1fichier.com/".into())]
+    );
+    assert_eq!(plugin.calls.lock().unwrap()[0].2, "");
+}
+
+#[test]
+fn builtin_http_download_does_not_require_plugin_resolution() {
+    let resolver = handler(
+        Arc::new(InMemoryAccountRepo::new()),
+        Arc::new(FakeAccountCredentialStore::new()),
+        Arc::new(DirectUrlPlugin::new()),
+        Arc::new(CapturingEventBus::new()),
+    );
+    let download = Download::new(
+        DownloadId(3),
+        Url::new("https://example.com/file.zip").unwrap(),
+        "file.zip".into(),
+        "/tmp/file.zip".into(),
+    )
+    .with_module_name("builtin-http".into());
+
+    assert!(!resolver.requires_resolution(&download).unwrap());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

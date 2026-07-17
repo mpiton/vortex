@@ -112,7 +112,7 @@ fn sensitive_source(link: ExtractedHosterLink) -> Result<ResolvedDownloadSource,
     let direct_url = link
         .direct_url
         .ok_or_else(|| DomainError::PluginError("premium plugin returned no direct URL".into()))?;
-    Ok(ResolvedDownloadSource::sensitive(direct_url))
+    Ok(ResolvedDownloadSource::sensitive(direct_url).with_request_headers(link.request_headers))
 }
 
 fn is_rotatable(error: &DomainError) -> bool {

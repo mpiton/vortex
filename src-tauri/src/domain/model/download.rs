@@ -310,6 +310,18 @@ impl Download {
         self
     }
 
+    pub fn with_remote_metadata(
+        mut self,
+        file_size: Option<u64>,
+        resume_supported: Option<bool>,
+    ) -> Self {
+        self.file_size = file_size.map(FileSize);
+        if let Some(resume_supported) = resume_supported {
+            self.resume_supported = resume_supported;
+        }
+        self
+    }
+
     pub fn with_module_name(mut self, name: String) -> Self {
         self.module_name = Some(name);
         self
