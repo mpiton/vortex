@@ -217,7 +217,14 @@ fn xml_root_decision(prefix: &[u8], can_read_more: bool) -> BodyPrefixDecision {
         return xml_document_decision(prefix, can_read_more);
     }
     if tag.starts_with(b"!doctype") {
-        return html_prefix_decision(prefix, can_read_more);
+        let decision = html_prefix_decision(prefix, can_read_more);
+        if decision != BodyPrefixDecision::Accept {
+            return decision;
+        }
+        let Some(end) = prefix.iter().position(|byte| *byte == b'>') else {
+            return incomplete_html_decision(can_read_more);
+        };
+        return xml_root_decision(&prefix[end + 1..], can_read_more);
     }
     if tag.is_empty() {
         return incomplete_html_decision(can_read_more);
@@ -291,6 +298,14 @@ mod tests {
             policy.body_prefix_decision(
                 0,
                 b"<?xml version=\"1.0\"?><!-- response --><html>expired",
+                false,
+            ),
+            BodyPrefixDecision::Reject
+        );
+        assert_eq!(
+            policy.body_prefix_decision(
+                0,
+                b"<?xml version=\"1.0\"?><!doctype svg><html>expired",
                 false,
             ),
             BodyPrefixDecision::Reject

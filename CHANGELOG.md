@@ -56,6 +56,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **MAT-133 final PR feedback**: cleanup tombstones survive restarts, credentialed
   capabilities always use the restricted HTTP policy, XML-declared HTML is
   rejected, and unknown-size retries cannot retain stale trailing bytes.
+- **MAT-133 XML response validation**: non-HTML doctypes are consumed before
+  inspecting the document root, so XML-declared HTML error pages are rejected.
 - **MAT-133 hoster download planning**: MediaFire, PixelDrain, and Gofile page
   URLs are resolved through their hoster plugins before transfer; stable source
   URLs and plugin metadata reach the queue while ephemeral direct URLs and
