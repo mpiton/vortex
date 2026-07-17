@@ -12,6 +12,7 @@ use crate::application::services::account_rotator::NextAccountOutcome;
 use crate::application::services::download_source_policy::is_protected_plugin_category;
 use crate::domain::error::DomainError;
 use crate::domain::model::http::HttpResponse;
+use crate::domain::model::plugin::PluginCategory;
 use crate::domain::ports::driven::ExtractedHosterLink;
 
 use super::ResolveLinksCommand;
@@ -194,6 +195,24 @@ impl CommandBus {
                             MAX_URLS,
                         )?;
                     }
+                }
+                continue;
+            }
+
+            // Crawler galleries expand into one row per image. Gated on
+            // `!is_media_url` so yt-dlp-backed crawlers (YouTube, Vimeo,
+            // SoundCloud…) keep the cheap probe path — calling
+            // `extract_links` on them would shell out per pasted URL.
+            let is_crawler = matches!(
+                plugin_info.as_ref().ok().and_then(Option::as_ref),
+                Some(info) if matches!(info.category(), PluginCategory::Crawler)
+            );
+            if is_crawler
+                && !is_media_url(url)
+                && let Some(rows) = self.try_resolve_gallery_links(url, &module_name)
+            {
+                for row in rows {
+                    push_bounded_result(&mut results, row, MAX_URLS)?;
                 }
                 continue;
             }
@@ -511,7 +530,7 @@ fn sanitize_resolve_error(_e: &crate::domain::DomainError) -> String {
     "Could not check link status".to_string()
 }
 
-fn extract_filename_from_url(url: &str) -> Option<String> {
+pub(super) fn extract_filename_from_url(url: &str) -> Option<String> {
     // Strip query string and fragment
     let path = url.split('?').next().unwrap_or(url);
     let path = path.split('#').next().unwrap_or(path);
