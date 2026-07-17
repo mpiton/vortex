@@ -15,7 +15,7 @@ use super::resolve_links::{LinkResolutionErrorKind, ResolvedLinkDto, extract_fil
 
 #[derive(Deserialize)]
 struct GalleryResponse {
-    kind: String,
+    kind: Option<String>,
     #[serde(default)]
     images: Vec<GalleryImage>,
 }
@@ -33,12 +33,16 @@ struct GalleryImage {
 impl CommandBus {
     /// Expand a crawler gallery URL into per-image resolved links.
     ///
-    /// Returns `None` when the plugin response is not a gallery payload,
-    /// so the caller can fall through to the generic HEAD probe.
+    /// Returns `None` when the payload parses but is not a gallery, so the
+    /// caller can fall through to the generic HEAD probe; an unparseable
+    /// payload becomes a single error row instead. At most `max_rows`
+    /// images are expanded — extras are dropped (and logged) so one
+    /// oversized gallery cannot fail the whole resolve.
     pub(super) fn try_resolve_gallery_links(
         &self,
         url: &str,
         module_name: &str,
+        max_rows: usize,
     ) -> Option<Vec<ResolvedLinkDto>> {
         let raw = match self.plugin_loader().extract_links(url) {
             Ok(raw) => raw,
@@ -52,8 +56,19 @@ impl CommandBus {
                 )]);
             }
         };
-        let parsed: GalleryResponse = serde_json::from_str(&raw).ok()?;
-        if parsed.kind != "gallery" {
+        let parsed: GalleryResponse = match serde_json::from_str(&raw) {
+            Ok(parsed) => parsed,
+            Err(e) => {
+                tracing::debug!(module_name, error = %e, "gallery payload is not valid JSON");
+                return Some(vec![gallery_error_row(
+                    url,
+                    module_name,
+                    LinkResolutionErrorKind::Plugin,
+                    "Gallery plugin returned an invalid response",
+                )]);
+            }
+        };
+        if parsed.kind.as_deref() != Some("gallery") {
             return None;
         }
         if parsed.images.is_empty() {
@@ -64,10 +79,19 @@ impl CommandBus {
                 "Gallery contains no downloadable images",
             )]);
         }
+        if parsed.images.len() > max_rows {
+            tracing::warn!(
+                module_name,
+                total = parsed.images.len(),
+                kept = max_rows,
+                "gallery exceeds the resolve output limit; extra images dropped"
+            );
+        }
         Some(
             parsed
                 .images
                 .iter()
+                .take(max_rows)
                 .enumerate()
                 .map(|(index, image)| gallery_image_row(url, module_name, index, image))
                 .collect(),
@@ -82,7 +106,7 @@ fn gallery_image_row(
     image: &GalleryImage,
 ) -> ResolvedLinkDto {
     let image_url = image.url.trim();
-    if !image_url.starts_with("http://") && !image_url.starts_with("https://") {
+    if !is_http_image_url(image_url) {
         let label = image
             .title
             .as_deref()
@@ -119,6 +143,12 @@ fn gallery_image_row(
         // probing every image would fire one HEAD per row for nothing.
         requires_online_probe: false,
     }
+}
+
+/// `Url::parse` lowercases the scheme, so `HTTPS://…` passes; a bare
+/// `https://` fails on the missing host.
+fn is_http_image_url(raw: &str) -> bool {
+    url::Url::parse(raw).is_ok_and(|u| matches!(u.scheme(), "http" | "https") && u.has_host())
 }
 
 fn gallery_error_row(

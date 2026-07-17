@@ -209,7 +209,11 @@ impl CommandBus {
             );
             if is_crawler
                 && !is_media_url(url)
-                && let Some(rows) = self.try_resolve_gallery_links(url, &module_name)
+                && let Some(rows) = self.try_resolve_gallery_links(
+                    url,
+                    &module_name,
+                    MAX_URLS.saturating_sub(results.len()),
+                )
             {
                 for row in rows {
                     push_bounded_result(&mut results, row, MAX_URLS)?;

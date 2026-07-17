@@ -170,6 +170,65 @@ async fn test_resolve_partially_invalid_gallery_keeps_valid_images_and_flags_bad
 }
 
 #[tokio::test]
+async fn test_resolve_gallery_malformed_payload_reports_plugin_error() {
+    let loader = CrawlerLoader::new(
+        "vortex-mod-gallery",
+        Some(r#"{"kind":"gallery","images":[{"#),
+    );
+    let rows = resolve_with(loader, GALLERY_URL).await;
+
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].status, "error");
+    assert_eq!(rows[0].error_kind, Some(LinkResolutionErrorKind::Plugin));
+    assert_eq!(
+        rows[0].original_url, GALLERY_URL,
+        "garbled JSON must surface as an error, not fall through to a HEAD probe"
+    );
+}
+
+#[tokio::test]
+async fn test_resolve_oversized_gallery_truncates_instead_of_failing() {
+    let images = (0..501)
+        .map(|i| format!(r#"{{"url":"https://i.imgur.com/img{i}.png"}}"#))
+        .collect::<Vec<_>>()
+        .join(",");
+    let payload = String::leak(format!(r#"{{"kind":"gallery","images":[{images}]}}"#));
+    let loader = CrawlerLoader::new("vortex-mod-gallery", Some(payload));
+    let rows = resolve_with(loader, GALLERY_URL).await;
+
+    assert_eq!(
+        rows.len(),
+        500,
+        "expansion stops at the resolve output limit"
+    );
+    assert_eq!(rows[0].original_url, "https://i.imgur.com/img0.png");
+    assert_eq!(rows[499].original_url, "https://i.imgur.com/img499.png");
+}
+
+#[tokio::test]
+async fn test_resolve_gallery_rejects_host_less_and_non_http_image_urls() {
+    let loader = CrawlerLoader::new(
+        "vortex-mod-gallery",
+        Some(
+            r#"{"kind":"gallery","images":[
+                {"url":"https://"},
+                {"url":"ftp://i.imgur.com/a.jpg"},
+                {"url":"HTTPS://I.IMGUR.COM/ok.png"}
+            ]}"#,
+        ),
+    );
+    let rows = resolve_with(loader, GALLERY_URL).await;
+
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows[0].status, "error", "scheme-only URL has no host");
+    assert_eq!(rows[1].status, "error", "non-http scheme is rejected");
+    assert_eq!(
+        rows[2].status, "online",
+        "scheme matching is case-insensitive"
+    );
+}
+
+#[tokio::test]
 async fn test_resolve_gallery_extraction_failure_reports_single_plugin_error() {
     let loader = CrawlerLoader::new("vortex-mod-gallery", None);
     let rows = resolve_with(loader.clone(), GALLERY_URL).await;

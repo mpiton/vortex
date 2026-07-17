@@ -159,6 +159,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   clear "no downloadable images" error. Selected images start downloads
   through the existing Tauri commands. yt-dlp-backed crawlers (YouTube,
   Vimeo, SoundCloud) keep their cheap probe path and are never expanded.
+  A garbled plugin response reports a plugin error instead of probing the
+  gallery page, image URLs must parse as http(s) with a host, and expansion
+  is capped at the resolve output limit so an oversized gallery truncates
+  instead of failing the whole request.
 - **Premium account runtime wiring (MAT-132)**: validate configured accounts
   through hoster plugins, keep selected credentials scoped to the plugin call,
   persist typed account availability, rotate on account failures, and associate
