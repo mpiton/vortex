@@ -22,9 +22,20 @@ async fn start_staggered_range_server(total_size: u64) -> (String, tokio::task::
         while let Ok((mut stream, _)) = listener.accept().await {
             tokio::spawn(async move {
                 let mut request = vec![0; 4096];
-                let Ok(read) = stream.read(&mut request).await else {
-                    return;
-                };
+                let mut read = 0;
+                while read < request.len()
+                    && !request[..read]
+                        .windows(4)
+                        .any(|window| window == b"\r\n\r\n")
+                {
+                    let Ok(bytes_read) = stream.read(&mut request[read..]).await else {
+                        return;
+                    };
+                    if bytes_read == 0 {
+                        return;
+                    }
+                    read += bytes_read;
+                }
                 let request = String::from_utf8_lossy(&request[..read]);
                 if request.starts_with("HEAD ") {
                     let response = format!(

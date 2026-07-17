@@ -6,8 +6,10 @@ use crate::domain::error::DomainError;
 use crate::domain::model::download::Download;
 use crate::domain::ports::driven::{DownloadSourceResolver, ResolutionCancellation};
 
-use super::safe_url::validated_plugin_headers;
-use super::{SourcePolicy, allows_html_filename, restricted_download_client};
+use super::{SourcePolicy, allows_html_filename};
+
+pub(super) type ResolvedClientFactory =
+    fn(&reqwest::Url, &[(String, String)]) -> Result<reqwest::Client, DomainError>;
 
 pub(super) struct PreparedSources {
     pub(super) urls: Vec<String>,
@@ -26,6 +28,7 @@ pub(super) async fn prepare_sources(
     client: reqwest::Client,
     cancel_token: CancellationToken,
     resolution_cancellation: ResolutionCancellation,
+    resolved_client_factory: ResolvedClientFactory,
 ) -> Result<PreparedSources, DomainError> {
     if cancel_token.is_cancelled() {
         return Err(DomainError::PluginError(
@@ -72,15 +75,10 @@ pub(super) async fn prepare_sources(
         let mut safety_task = tokio::task::spawn_blocking(move || {
             let parsed = reqwest::Url::parse(&request_url)
                 .map_err(|_| DomainError::NetworkError("plugin returned an invalid URL".into()))?;
-            let client = if protected {
-                restricted_download_client(&parsed, &request_headers)?
-            } else if request_headers.is_empty() {
-                direct_client
+            let client = if protected || !request_headers.is_empty() {
+                resolved_client_factory(&parsed, &request_headers)?
             } else {
-                reqwest::Client::builder()
-                    .default_headers(validated_plugin_headers(&request_headers)?)
-                    .build()
-                    .map_err(|_| DomainError::NetworkError("HTTP client creation failed".into()))?
+                direct_client
             };
             Ok::<_, DomainError>((request_url, client))
         });

@@ -7,18 +7,15 @@ use std::fs::{self, File, OpenOptions};
 use std::io;
 use std::io::{Read as _, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use tracing::{debug, warn};
+use uuid::Uuid;
 
 use crate::domain::error::DomainError;
 use crate::domain::model::meta::DownloadMeta;
 use crate::domain::ports::driven::FileStorage;
 
 use super::meta_storage;
-
-/// Counter for unique temporary file names during atomic writes.
-static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Filesystem-backed implementation of [`FileStorage`].
 ///
@@ -41,6 +38,88 @@ fn meta_path(download_path: &Path) -> PathBuf {
     let mut meta_name = file_name;
     meta_name.push(".vortex-meta");
     download_path.with_file_name(meta_name)
+}
+
+fn unique_sibling_path(path: &Path, marker: &str, suffix: &str) -> PathBuf {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(format!(".{marker}.{}.{suffix}", Uuid::new_v4()));
+    path.with_file_name(name)
+}
+
+fn staged_meta_paths(download_path: &Path) -> Result<Vec<PathBuf>, DomainError> {
+    let mp = meta_path(download_path);
+    let parent = mp.parent().unwrap_or_else(|| Path::new("."));
+    let canonical_name = mp.file_name().unwrap_or_default().to_string_lossy();
+    let prefix = format!("{canonical_name}.");
+    let entries = match fs::read_dir(parent) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => {
+            return Err(DomainError::StorageError(format!(
+                "failed to inspect staged metadata in {}: {error}",
+                parent.display()
+            )));
+        }
+    };
+    let mut paths = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|error| {
+            DomainError::StorageError(format!(
+                "failed to inspect staged metadata in {}: {error}",
+                parent.display()
+            ))
+        })?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let Some(staging_id) = name
+            .strip_prefix(&prefix)
+            .and_then(|suffix| suffix.strip_suffix(".delete"))
+        else {
+            continue;
+        };
+        let staging_id = staging_id
+            .strip_prefix("vortex-meta.")
+            .unwrap_or(staging_id);
+        if Uuid::parse_str(staging_id).is_ok()
+            || (!staging_id.is_empty() && staging_id.bytes().all(|byte| byte.is_ascii_digit()))
+        {
+            paths.push(entry.path());
+        }
+    }
+    paths.sort();
+    Ok(paths)
+}
+
+fn recover_staged_meta(download_path: &Path) -> Result<(), DomainError> {
+    let mp = meta_path(download_path);
+    if mp.try_exists().map_err(|error| {
+        DomainError::StorageError(format!("failed to inspect {}: {error}", mp.display()))
+    })? {
+        return Ok(());
+    }
+    for staged in staged_meta_paths(download_path)? {
+        match fs::hard_link(&staged, &mp) {
+            Ok(()) => {
+                if let Err(error) = fs::remove_file(&staged) {
+                    warn!(
+                        path = %staged.display(),
+                        error = %error,
+                        "recovered staged metadata but could not remove its tombstone"
+                    );
+                }
+                return Ok(());
+            }
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => return Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(DomainError::StorageError(format!(
+                    "failed to recover staged metadata {}: {error}",
+                    staged.display()
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 impl FileStorage for FsFileStorage {
@@ -68,8 +147,7 @@ impl FileStorage for FsFileStorage {
         // set_len creates a sparse file — the OS only allocates blocks
         // as data is actually written, so a 1 GB file uses ~0 bytes on disk.
         if let Err(error) = file.set_len(size) {
-            let n = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-            let staged_path = path.with_extension(format!("vortex-preallocation.{n}.delete"));
+            let staged_path = unique_sibling_path(path, "vortex-preallocation", "delete");
             match fs::rename(path, &staged_path) {
                 Ok(()) => {
                     drop(file);
@@ -195,6 +273,7 @@ impl FileStorage for FsFileStorage {
     }
 
     fn read_meta(&self, path: &Path) -> Result<Option<DownloadMeta>, DomainError> {
+        recover_staged_meta(path)?;
         let mp = meta_path(path);
         // Open directly and handle NotFound — avoids TOCTOU race with delete_meta.
         let mut file = match File::open(&mp) {
@@ -243,14 +322,14 @@ impl FileStorage for FsFileStorage {
     }
 
     fn write_meta(&self, path: &Path, meta: &DownloadMeta) -> Result<(), DomainError> {
+        recover_staged_meta(path)?;
         let mp = meta_path(path);
         let data = meta_storage::serialize_meta(meta)?;
 
         // Atomic write: write to a uniquely-named temporary file then rename,
         // so a crash during write never leaves a half-written .vortex-meta,
         // and concurrent writers don't clobber each other's temp files.
-        let n = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let tmp = mp.with_extension(format!("vortex-meta.{n}.tmp"));
+        let tmp = unique_sibling_path(&mp, "vortex-meta", "tmp");
         fs::write(&tmp, &data).map_err(|e| {
             let _ = fs::remove_file(&tmp);
             DomainError::StorageError(format!("failed to write {}: {e}", tmp.display()))
@@ -267,6 +346,7 @@ impl FileStorage for FsFileStorage {
     }
 
     fn delete_meta(&self, path: &Path) -> Result<(), DomainError> {
+        recover_staged_meta(path)?;
         let mp = meta_path(path);
         match fs::remove_file(&mp) {
             Ok(()) => {
@@ -282,9 +362,9 @@ impl FileStorage for FsFileStorage {
     }
 
     fn delete_download_artifacts(&self, path: &Path) -> Result<(), DomainError> {
+        recover_staged_meta(path)?;
         let mp = meta_path(path);
-        let n = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let staged_meta = mp.with_extension(format!("vortex-meta.{n}.delete"));
+        let staged_meta = unique_sibling_path(&mp, "vortex-meta", "delete");
         let metadata_staged = match fs::rename(&mp, &staged_meta) {
             Ok(()) => true,
             Err(error) if error.kind() == io::ErrorKind::NotFound => false,
@@ -662,6 +742,36 @@ mod tests {
     }
 
     #[test]
+    fn test_read_meta_recovers_metadata_staged_by_interrupted_cleanup() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file_path = dir.path().join("download.bin");
+        let storage = FsFileStorage::new();
+        let original = make_meta();
+        storage.create_file(&file_path, 4).expect("create body");
+        storage
+            .write_meta(&file_path, &original)
+            .expect("write metadata");
+        let mp = meta_path(&file_path);
+        let staged = unique_sibling_path(&mp, "vortex-meta", "delete");
+        fs::rename(&mp, &staged).expect("simulate crash after staging metadata");
+
+        let restored = storage
+            .read_meta(&file_path)
+            .expect("read staged metadata")
+            .expect("metadata must remain recoverable");
+
+        assert_eq!(restored, original);
+        assert!(mp.exists(), "ownership metadata must be canonical again");
+        assert!(!staged.exists(), "recovered tombstone must be consumed");
+
+        storage
+            .delete_download_artifacts(&file_path)
+            .expect("cleanup retry must remove recovered artifacts");
+        assert!(!file_path.exists());
+        assert!(!mp.exists());
+    }
+
+    #[test]
     fn test_delete_meta_removes_file() {
         let dir = tempfile::tempdir().expect("tempdir");
         let file_path = dir.path().join("download.bin");
@@ -714,6 +824,8 @@ mod tests {
         storage
             .write_meta(&file_path, &make_meta())
             .expect("create metadata");
+        let stale_tombstone = meta_path(&file_path).with_extension("vortex-meta.42.delete");
+        fs::copy(meta_path(&file_path), &stale_tombstone).expect("seed stale tombstone");
 
         storage
             .delete_download_artifacts(&file_path)
@@ -724,6 +836,7 @@ mod tests {
 
         assert!(!file_path.exists());
         assert!(!meta_path(&file_path).exists());
+        assert!(!stale_tombstone.exists());
     }
 
     #[test]

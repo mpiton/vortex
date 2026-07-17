@@ -19,7 +19,7 @@ use super::download_artifact_lifecycle::{
     AttemptFailure, AttemptOutcome, cleanup_download_artifacts, ownership_metadata,
     resume_metadata_matches,
 };
-use super::download_source_preparation::prepare_sources;
+use super::download_source_preparation::{ResolvedClientFactory, prepare_sources};
 use super::segment_worker::{SegmentError, SegmentParams, download_segment};
 use super::{SourcePolicy, format_error_chain, safe_source_failure};
 
@@ -187,6 +187,7 @@ pub struct SegmentedDownloadEngine {
     dynamic_split_min_remaining_bytes: Arc<AtomicU64>,
     active_downloads: Arc<Mutex<HashMap<DownloadId, ActiveDownload>>>,
     source_resolver: Option<Arc<dyn DownloadSourceResolver>>,
+    resolved_client_factory: ResolvedClientFactory,
 }
 
 impl SegmentedDownloadEngine {
@@ -206,6 +207,7 @@ impl SegmentedDownloadEngine {
             dynamic_split_min_remaining_bytes: Arc::new(AtomicU64::new(4 * 1024 * 1024)),
             active_downloads: Arc::new(Mutex::new(HashMap::new())),
             source_resolver: None,
+            resolved_client_factory: super::restricted_download_client,
         }
     }
 
@@ -216,6 +218,12 @@ impl SegmentedDownloadEngine {
 
     pub fn with_source_resolver(mut self, resolver: Arc<dyn DownloadSourceResolver>) -> Self {
         self.source_resolver = Some(resolver);
+        self
+    }
+
+    #[cfg(test)]
+    fn with_resolved_client_factory_for_testing(mut self, factory: ResolvedClientFactory) -> Self {
+        self.resolved_client_factory = factory;
         self
     }
 
@@ -341,6 +349,7 @@ impl DownloadEngine for SegmentedDownloadEngine {
         let dynamic_split_enabled = self.dynamic_split_enabled.clone();
         let dynamic_split_min_remaining_bytes = self.dynamic_split_min_remaining_bytes.clone();
         let source_resolver = self.source_resolver.clone();
+        let resolved_client_factory = self.resolved_client_factory;
         let download = download.clone();
 
         tokio::spawn(async move {
@@ -350,6 +359,7 @@ impl DownloadEngine for SegmentedDownloadEngine {
                 client.clone(),
                 cancel_token.clone(),
                 resolution_cancellation.clone(),
+                resolved_client_factory,
             )
             .await
             {
@@ -457,6 +467,7 @@ impl DownloadEngine for SegmentedDownloadEngine {
                                 client.clone(),
                                 cancel_token.clone(),
                                 resolution_cancellation.clone(),
+                                resolved_client_factory,
                             )
                             .await
                             {

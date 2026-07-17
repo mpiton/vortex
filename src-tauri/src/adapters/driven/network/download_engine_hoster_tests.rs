@@ -7,6 +7,7 @@ use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use crate::adapters::driven::filesystem::FsFileStorage;
+use crate::adapters::driven::network::restricted_download_client;
 use crate::domain::model::account::AccountId;
 use crate::domain::model::download::{Download, DownloadId};
 use crate::domain::model::meta::DownloadMeta;
@@ -28,6 +29,23 @@ struct RotatingHosterSourceResolver {
 }
 
 struct DirectSourceResolver;
+
+struct HeaderedDirectSourceResolver {
+    url: String,
+}
+
+fn loopback_source_client(
+    _: &reqwest::Url,
+    request_headers: &[(String, String)],
+) -> Result<reqwest::Client, DomainError> {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .default_headers(
+            crate::adapters::driven::network::safe_url::validated_plugin_headers(request_headers)?,
+        )
+        .build()
+        .map_err(|_| DomainError::NetworkError("test HTTP client creation failed".into()))
+}
 
 struct BlockingSourceResolver {
     entered: Mutex<Option<std::sync::mpsc::Sender<()>>>,
@@ -81,7 +99,7 @@ impl DownloadSourceResolver for RotatingHosterSourceResolver {
 
     fn resolve(&self, _: &Download) -> Result<ResolvedDownloadSource, DomainError> {
         let call = self.calls.fetch_add(1, AtomicOrdering::SeqCst) + 1;
-        Ok(ResolvedDownloadSource::direct(format!(
+        Ok(ResolvedDownloadSource::protected(format!(
             "{}/{}",
             self.base_url,
             if call == 1 { "expired" } else { "fresh" }
@@ -105,6 +123,17 @@ impl DownloadSourceResolver for DirectSourceResolver {
     }
 }
 
+impl DownloadSourceResolver for HeaderedDirectSourceResolver {
+    fn requires_resolution(&self, _: &Download) -> Result<bool, DomainError> {
+        Ok(true)
+    }
+
+    fn resolve(&self, _: &Download) -> Result<ResolvedDownloadSource, DomainError> {
+        Ok(ResolvedDownloadSource::direct(self.url.clone())
+            .with_request_headers(vec![("Authorization".into(), "Bearer secret".into())]))
+    }
+}
+
 #[tokio::test]
 async fn resolved_direct_source_keeps_direct_policy() {
     let prepared = prepare_sources(
@@ -113,11 +142,33 @@ async fn resolved_direct_source_keeps_direct_policy() {
         reqwest::Client::new(),
         CancellationToken::new(),
         ResolutionCancellation::default(),
+        restricted_download_client,
     )
     .await
     .expect("direct source prepares");
 
     assert_eq!(prepared.policy, SourcePolicy::Direct);
+}
+
+#[tokio::test]
+async fn credential_bearing_direct_source_uses_restricted_network_policy() {
+    let error = match prepare_sources(
+        make_download(198, "https://example.com/file.bin"),
+        Some(Arc::new(HeaderedDirectSourceResolver {
+            url: "http://127.0.0.1/private".into(),
+        })),
+        reqwest::Client::new(),
+        CancellationToken::new(),
+        ResolutionCancellation::default(),
+        restricted_download_client,
+    )
+    .await
+    {
+        Ok(_) => panic!("credential-bearing direct source must reject private cleartext URLs"),
+        Err(error) => error,
+    };
+
+    assert!(matches!(error, DomainError::NetworkError(_)));
 }
 
 #[tokio::test]
@@ -179,6 +230,7 @@ async fn every_hoster_engine_start_resolves_a_fresh_download_capability() {
             .await;
         Mock::given(method("HEAD"))
             .and(path("/fresh"))
+            .and(header("authorization", "Bearer token-2"))
             .respond_with(
                 ResponseTemplate::new(200)
                     .insert_header("content-type", "application/octet-stream")
@@ -200,7 +252,8 @@ async fn every_hoster_engine_start_resolves_a_fresh_download_capability() {
         let destination = temp.path().join(format!("hoster-{index}.bin"));
         let bus = Arc::new(CollectingEventBus::new());
         let engine = make_engine(Arc::new(FsFileStorage::new()), bus.clone())
-            .with_source_resolver(resolver.clone());
+            .with_source_resolver(resolver.clone())
+            .with_resolved_client_factory_for_testing(loopback_source_client);
         let download = Download::new(
             DownloadId(200 + index as u64),
             crate::domain::model::download::Url::new("https://hoster.example/page").unwrap(),
@@ -610,14 +663,12 @@ async fn protected_hoster_attempt_rejects_content_length_conflicting_with_size_h
 }
 
 #[tokio::test]
-async fn same_download_replaces_incompatible_owned_artifacts() {
+async fn unknown_remote_size_replaces_a_known_size_owned_artifact() {
     let server = MockServer::start().await;
     Mock::given(method("HEAD"))
         .and(path("/download"))
         .respond_with(
-            ResponseTemplate::new(200)
-                .insert_header("content-type", "application/octet-stream")
-                .insert_header("content-length", "4"),
+            ResponseTemplate::new(200).insert_header("content-type", "application/octet-stream"),
         )
         .mount(&server)
         .await;

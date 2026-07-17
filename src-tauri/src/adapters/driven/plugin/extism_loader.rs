@@ -532,11 +532,13 @@ impl PluginLoader for ExtismPluginLoader {
             Some(credential) => self
                 .registry
                 .call_plugin_with_credential(service_name, "extract_links", url, credential.clone())
-                .map_err(|error| classify_credentialed_hoster_plugin_error(&error.to_string()))?,
+                .map_err(|error| {
+                    classify_plugin_call_error(error, classify_credentialed_hoster_plugin_error)
+                })?,
             None => self
                 .registry
                 .call_plugin(service_name, "extract_links", url)
-                .map_err(|error| classify_hoster_plugin_error(&error.to_string()))?,
+                .map_err(|error| classify_plugin_call_error(error, classify_hoster_plugin_error))?,
         };
         parse_hoster_links(&output)
     }
@@ -786,24 +788,33 @@ fn classify_account_plugin_error(message: &str) -> DomainError {
     }
 }
 
+fn classify_plugin_call_error(
+    error: DomainError,
+    classify: fn(&str) -> DomainError,
+) -> DomainError {
+    match error {
+        DomainError::NetworkError(_) => error,
+        error => classify(&error.to_string()),
+    }
+}
+
 fn classify_credentialed_hoster_plugin_error(message: &str) -> DomainError {
-    if [
-        "ACCOUNT_INVALID_CREDENTIALS",
-        "ACCOUNT_EXPIRED",
-        "ACCOUNT_COOLDOWN",
-        "ACCOUNT_QUOTA_EXCEEDED",
-    ]
-    .into_iter()
-    .any(|code| has_error_code(message, code))
-    {
-        classify_account_plugin_error(message)
-    } else {
+    let account_error = classify_account_plugin_error(message);
+    if matches!(account_error, DomainError::PluginError(_)) {
         classify_hoster_plugin_error(message)
+    } else {
+        account_error
     }
 }
 
 fn classify_hoster_plugin_error(message: &str) -> DomainError {
-    if has_error_code(message, "HOSTER_DIRECT_URL_EXPIRED") {
+    let normalized = message.to_ascii_lowercase();
+    if normalized.starts_with("network error:")
+        || normalized.contains("http_request: network error:")
+        || normalized.contains("http_request: request failed:")
+    {
+        DomainError::NetworkError("hoster network request failed".into())
+    } else if has_error_code(message, "HOSTER_DIRECT_URL_EXPIRED") {
         DomainError::HosterDirectUrlExpired
     } else if has_error_code(message, "HOSTER_AUTHENTICATION_REQUIRED") {
         DomainError::HosterAuthenticationRequired
@@ -994,6 +1005,19 @@ mod tests {
                 "Gofile content is offline or removed: error-passwordRequired"
             ),
             DomainError::HosterAuthenticationRequired
+        );
+        assert_eq!(
+            classify_hoster_plugin_error(
+                "Plugin error: plugin call failed: http_request: Network error: connection refused"
+            ),
+            DomainError::NetworkError("hoster network request failed".into())
+        );
+        assert_eq!(
+            classify_plugin_call_error(
+                DomainError::NetworkError("connection refused".into()),
+                classify_hoster_plugin_error,
+            ),
+            DomainError::NetworkError("connection refused".into())
         );
     }
 

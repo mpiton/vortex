@@ -162,7 +162,7 @@ fn html_prefix_decision(prefix: &[u8], can_read_more: bool) -> BodyPrefixDecisio
         return incomplete_html_decision(can_read_more);
     }
     if tag.starts_with(b"?") {
-        return BodyPrefixDecision::Accept;
+        return xml_document_decision(prefix, can_read_more);
     }
     tag = tag.strip_prefix(b"/").unwrap_or(tag);
     let name_len = tag
@@ -184,6 +184,65 @@ fn html_prefix_decision(prefix: &[u8], can_read_more: bool) -> BodyPrefixDecisio
         b"svg" | b"rss" => BodyPrefixDecision::Accept,
         _ => BodyPrefixDecision::Reject,
     }
+}
+
+fn xml_document_decision(prefix: &[u8], can_read_more: bool) -> BodyPrefixDecision {
+    let Some(end) = prefix.windows(2).position(|window| window == b"?>") else {
+        return incomplete_html_decision(can_read_more);
+    };
+    xml_root_decision(trim_ascii_start(&prefix[end + 2..]), can_read_more)
+}
+
+fn xml_root_decision(prefix: &[u8], can_read_more: bool) -> BodyPrefixDecision {
+    const COMMENT_START: &[u8] = b"<!--";
+    const COMMENT_END: &[u8] = b"-->";
+
+    let prefix = trim_ascii_start(prefix);
+    if prefix.starts_with(COMMENT_START) {
+        let Some(end) = prefix
+            .windows(COMMENT_END.len())
+            .position(|window| window == COMMENT_END)
+        else {
+            return incomplete_html_decision(can_read_more);
+        };
+        return xml_root_decision(&prefix[end + COMMENT_END.len()..], can_read_more);
+    }
+    if prefix.is_empty() {
+        return incomplete_html_decision(can_read_more);
+    }
+    let Some(tag) = prefix.strip_prefix(b"<") else {
+        return BodyPrefixDecision::Accept;
+    };
+    if tag.starts_with(b"?") {
+        return xml_document_decision(prefix, can_read_more);
+    }
+    if tag.starts_with(b"!doctype") {
+        return html_prefix_decision(prefix, can_read_more);
+    }
+    if tag.is_empty() {
+        return incomplete_html_decision(can_read_more);
+    }
+    let name_len = tag
+        .iter()
+        .position(|byte| !(byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b':')))
+        .unwrap_or(tag.len());
+    if name_len == tag.len() {
+        return incomplete_html_decision(can_read_more);
+    }
+    let name = &tag[..name_len];
+    if name == b"html" || name.ends_with(b":html") {
+        BodyPrefixDecision::Reject
+    } else {
+        BodyPrefixDecision::Accept
+    }
+}
+
+fn trim_ascii_start(bytes: &[u8]) -> &[u8] {
+    let start = bytes
+        .iter()
+        .position(|byte| !byte.is_ascii_whitespace())
+        .unwrap_or(bytes.len());
+    &bytes[start..]
 }
 
 fn incomplete_html_decision(can_read_more: bool) -> BodyPrefixDecision {
@@ -220,6 +279,22 @@ mod tests {
                 BodyPrefixDecision::Accept
             );
         }
+        assert_eq!(
+            policy.body_prefix_decision(
+                0,
+                b"<?xml version=\"1.0\"?><html xmlns=\"http://www.w3.org/1999/xhtml\">expired",
+                false,
+            ),
+            BodyPrefixDecision::Reject
+        );
+        assert_eq!(
+            policy.body_prefix_decision(
+                0,
+                b"<?xml version=\"1.0\"?><!-- response --><html>expired",
+                false,
+            ),
+            BodyPrefixDecision::Reject
+        );
         assert_eq!(
             policy.body_prefix_decision(0, b"<", false),
             BodyPrefixDecision::NeedMore
@@ -262,6 +337,7 @@ mod tests {
             b"<".as_slice(),
             b"<!doct".as_slice(),
             b"<!doctype ".as_slice(),
+            b"<?xml version=\"1.0\"?><htm".as_slice(),
         ] {
             assert_eq!(
                 policy.body_prefix_decision(0, body, true),

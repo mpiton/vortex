@@ -47,7 +47,11 @@ pub(super) fn resume_metadata_matches(
         .file_name()
         .and_then(|name| name.to_str())
         .is_some_and(|filename| metadata.file_name == filename);
-    let size_matches = total_size == 0 || metadata.total_bytes == Some(total_size);
+    let size_matches = if total_size > 0 {
+        metadata.total_bytes == Some(total_size)
+    } else {
+        matches!(metadata.total_bytes, None | Some(0))
+    };
     metadata.download_id == download_id
         && metadata.url == stable_url
         && filename_matches
@@ -109,8 +113,8 @@ mod tests {
     }
 
     #[test]
-    fn unknown_remote_size_does_not_invalidate_same_owner_metadata() {
-        assert!(resume_metadata_matches(
+    fn unknown_remote_size_rejects_a_known_size_artifact() {
+        assert!(!resume_metadata_matches(
             &metadata(Some(42)),
             DownloadId(7),
             "https://example.com/file.bin",
