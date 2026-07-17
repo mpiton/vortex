@@ -53,6 +53,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **MAT-133 final review hardening**: protected ranged responses are inspected
+  independently, interrupted segments resume from persisted offsets, and
+  metadata cleanup cannot race tombstone recovery.
 - **MAT-133 final PR feedback**: cleanup tombstones survive restarts, credentialed
   capabilities always use the restricted HTTP policy, XML-declared HTML is
   rejected, and unknown-size retries cannot retain stale trailing bytes.

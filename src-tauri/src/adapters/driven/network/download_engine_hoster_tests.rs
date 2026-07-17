@@ -385,6 +385,75 @@ async fn protected_hoster_attempt_rejects_html_disguised_as_binary() {
 }
 
 #[tokio::test]
+async fn protected_hoster_attempt_rejects_html_in_a_later_range() {
+    let server = MockServer::start().await;
+    Mock::given(method("HEAD"))
+        .and(path("/download"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/octet-stream")
+                .insert_header("content-length", "32")
+                .insert_header("accept-ranges", "bytes"),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/download"))
+        .and(header("range", "bytes=0-15"))
+        .respond_with(
+            ResponseTemplate::new(206)
+                .insert_header("content-type", "application/octet-stream")
+                .insert_header("content-length", "16")
+                .insert_header("content-range", "bytes 0-15/32")
+                .set_body_bytes(vec![0; 16]),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/download"))
+        .and(header("range", "bytes=16-31"))
+        .respond_with(
+            ResponseTemplate::new(206)
+                .insert_header("content-type", "application/octet-stream")
+                .insert_header("content-length", "16")
+                .insert_header("content-range", "bytes 16-31/32")
+                .set_body_string("<html>bad</html>"),
+        )
+        .mount(&server)
+        .await;
+
+    let temp = tempfile::tempdir().unwrap();
+    let destination = temp.path().join("later-range-html.bin");
+    let outcome = run_mirror_attempt(MirrorAttemptParams {
+        url: format!("{}/download", server.uri()),
+        download_id: DownloadId(311),
+        segments_count: 2,
+        client: reqwest::Client::new(),
+        file_storage: Arc::new(FsFileStorage::new()),
+        event_bus: Arc::new(CollectingEventBus::new()),
+        dest_path: destination,
+        pause_rx: watch::channel(false).1,
+        user_cancel_token: CancellationToken::new(),
+        attempt_token: CancellationToken::new(),
+        min_segment_bytes: 1,
+        dynamic_split_enabled: Arc::new(AtomicBool::new(false)),
+        dynamic_split_min_remaining_bytes: Arc::new(AtomicU64::new(1)),
+        resume_url: "https://hoster.example/page".into(),
+        source_policy: SourcePolicy::Protected { allow_html: false },
+        size_hint: Some(32),
+        resume_supported: Some(true),
+    })
+    .await;
+
+    match outcome {
+        AttemptOutcome::Failed(failure) => {
+            assert!(failure.message.contains("HTML"), "{}", failure.message)
+        }
+        _ => panic!("HTML returned for a later range must be rejected"),
+    }
+}
+
+#[tokio::test]
 async fn protected_hoster_attempt_grows_an_atomically_reserved_unknown_length_file() {
     let server = MockServer::start().await;
     Mock::given(method("HEAD"))

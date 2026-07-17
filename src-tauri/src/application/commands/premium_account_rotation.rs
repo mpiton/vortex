@@ -7,6 +7,7 @@ use crate::domain::ports::driven::{
     ExtractedHosterLink, ResolutionCancellation, ResolvedDownloadSource,
 };
 
+use super::source::resolved_protected_source;
 use super::{ResolveHosterSourceHandler, ResolvePremiumSourceCommand};
 
 impl ResolveHosterSourceHandler {
@@ -30,7 +31,7 @@ impl ResolveHosterSourceHandler {
             match self.resolve_once(download, service, &account_id, cancellation) {
                 Ok(link) => {
                     cancellation.ensure_active()?;
-                    return protected_source(link);
+                    return resolved_protected_source(link);
                 }
                 Err(error) if is_rotatable(&error) => last_error = Some(error),
                 Err(error) => return Err(error),
@@ -106,16 +107,6 @@ impl ResolveHosterSourceHandler {
             .next_account(service, strategy)
             .map_err(app_error_to_domain)
     }
-}
-
-fn protected_source(link: ExtractedHosterLink) -> Result<ResolvedDownloadSource, DomainError> {
-    let direct_url = link
-        .direct_url
-        .filter(|url| !url.trim().is_empty())
-        .ok_or(DomainError::HosterNoFile)?;
-    Ok(ResolvedDownloadSource::protected(direct_url)
-        .with_request_headers(link.request_headers)
-        .with_metadata(link.filename, link.size_bytes, link.resumable))
 }
 
 fn is_rotatable(error: &DomainError) -> bool {

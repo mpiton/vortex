@@ -235,9 +235,13 @@ pub(crate) async fn download_segment(params: SegmentParams) -> Result<u64, Segme
         if stream_ended && protected_prefix.is_empty() {
             break;
         }
-        if offset == 0 && bytes_downloaded == 0 {
+        if bytes_downloaded == 0 {
             protected_prefix.extend_from_slice(&data);
-            match source_policy.body_prefix_decision(0, &protected_prefix, stream_ended) {
+            match source_policy.body_prefix_decision(
+                effective_start,
+                &protected_prefix,
+                stream_ended,
+            ) {
                 BodyPrefixDecision::Reject => {
                     let msg = safe_source_failure(
                         &crate::domain::error::DomainError::HosterUnexpectedHtml,

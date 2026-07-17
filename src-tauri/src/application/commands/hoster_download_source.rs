@@ -5,8 +5,20 @@ use crate::application::services::download_source_policy::classify_download_modu
 use crate::domain::error::DomainError;
 use crate::domain::model::download::Download;
 use crate::domain::ports::driven::{
-    DownloadSourceResolver, ResolutionCancellation, ResolvedDownloadSource,
+    DownloadSourceResolver, ExtractedHosterLink, ResolutionCancellation, ResolvedDownloadSource,
 };
+
+pub(super) fn resolved_protected_source(
+    link: ExtractedHosterLink,
+) -> Result<ResolvedDownloadSource, DomainError> {
+    let direct_url = link
+        .direct_url
+        .filter(|url| !url.trim().is_empty())
+        .ok_or(DomainError::HosterNoFile)?;
+    Ok(ResolvedDownloadSource::protected(direct_url)
+        .with_request_headers(link.request_headers)
+        .with_metadata(link.filename, link.size_bytes, link.resumable))
+}
 
 impl DownloadSourceResolver for ResolveHosterSourceHandler {
     fn requires_resolution(&self, download: &Download) -> Result<bool, DomainError> {
@@ -46,12 +58,6 @@ impl ResolveHosterSourceHandler {
             .plugins
             .extract_hoster_link(service_name, download.url().as_str(), None)?;
         cancellation.ensure_active()?;
-        let direct_url = link
-            .direct_url
-            .filter(|url| !url.trim().is_empty())
-            .ok_or(DomainError::HosterNoFile)?;
-        Ok(ResolvedDownloadSource::protected(direct_url)
-            .with_request_headers(link.request_headers)
-            .with_metadata(link.filename, link.size_bytes, link.resumable))
+        resolved_protected_source(link)
     }
 }

@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use crate::domain::error::DomainError;
 use crate::domain::model::download::DownloadId;
-use crate::domain::model::meta::DownloadMeta;
+use crate::domain::model::meta::{DownloadMeta, SegmentMeta};
 use crate::domain::ports::driven::FileStorage;
 
 pub(super) struct AttemptFailure {
@@ -63,6 +63,7 @@ pub(super) fn ownership_metadata(
     stable_url: String,
     destination: &Path,
     total_size: u64,
+    segments: Vec<SegmentMeta>,
 ) -> DownloadMeta {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -77,7 +78,7 @@ pub(super) fn ownership_metadata(
             .unwrap_or_default()
             .to_string(),
         total_bytes: (total_size > 0).then_some(total_size),
-        segments: Vec::new(),
+        segments,
         checksum_expected: None,
         created_at: now,
         updated_at: now,

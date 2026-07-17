@@ -47,11 +47,11 @@ impl SourcePolicy {
 
     pub(crate) fn body_prefix_decision(
         self,
-        start_byte: u64,
+        _start_byte: u64,
         bytes: &[u8],
         end_of_stream: bool,
     ) -> BodyPrefixDecision {
-        if !matches!(self, Self::Protected { allow_html: false }) || start_byte != 0 {
+        if !matches!(self, Self::Protected { allow_html: false }) {
             return BodyPrefixDecision::Accept;
         }
         let can_read_more = !end_of_stream && bytes.len() < MAX_PROTECTED_PREFIX_BYTES;
@@ -273,7 +273,7 @@ mod tests {
         );
         assert_eq!(
             policy.body_prefix_decision(1, b"<!doctype html>", false),
-            BodyPrefixDecision::Accept
+            BodyPrefixDecision::Reject
         );
         for body in [
             b"PK\x03\x04archive".as_slice(),

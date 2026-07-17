@@ -84,10 +84,14 @@ fn free_hoster_download_is_resolved_jit_with_backend_only_headers() {
     let source = resolver.resolve(&download).expect("free hoster resolves");
 
     assert_eq!(source.request_url(), "https://1.1.1.1/short-lived-token");
+    assert!(source.is_protected());
     assert_eq!(
         source.request_headers(),
         &[("Referer".into(), "https://1fichier.com/".into())]
     );
+    assert_eq!(source.filename(), Some("file.zip"));
+    assert_eq!(source.size_bytes(), Some(42));
+    assert_eq!(source.resumable(), Some(true));
     assert_eq!(plugin.calls.lock().unwrap()[0].2, "");
 }
 

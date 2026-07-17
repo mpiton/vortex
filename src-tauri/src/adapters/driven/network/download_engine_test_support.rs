@@ -56,6 +56,10 @@ impl FileStorage for MockFileStorage {
     fn delete_download_artifacts(&self, _path: &Path) -> Result<(), DomainError> {
         Ok(())
     }
+
+    fn file_exists(&self, _path: &Path) -> Result<bool, DomainError> {
+        Ok(false)
+    }
 }
 
 pub(super) struct CollectingEventBus {

@@ -1,14 +1,58 @@
 use std::sync::{Arc, Mutex};
 
 use super::*;
+use crate::application::commands::StartDownloadCommand;
+use crate::application::commands::resolve_premium_source::ResolveHosterSourceHandler;
 use crate::application::commands::tests_support::{
     CapturingEventBus, FakeAccountCredentialStore, InMemoryAccountRepo,
-    build_account_bus_with_plugin_loader,
+    build_account_bus_with_plugin_loader, build_download_bus_with_plugin_loader,
 };
+use crate::application::services::account_operation_locks::AccountOperationLocks;
+use crate::application::services::{AccountRotator, AccountSelector};
 use crate::domain::error::DomainError;
+use crate::domain::model::config::{AppConfig, ConfigPatch};
 use crate::domain::model::credential::Credential;
+use crate::domain::model::http::HttpResponse;
 use crate::domain::model::plugin::{PluginCategory, PluginInfo, PluginManifest};
-use crate::domain::ports::driven::PluginLoader;
+use crate::domain::ports::driven::{
+    Clock, ConfigStore, DownloadRepository, DownloadSourceResolver, HttpClient, PluginLoader,
+};
+
+struct FixedClock;
+
+impl Clock for FixedClock {
+    fn now_unix_secs(&self) -> u64 {
+        1_700_000_000
+    }
+}
+
+struct DefaultConfigStore;
+
+impl ConfigStore for DefaultConfigStore {
+    fn get_config(&self) -> Result<AppConfig, DomainError> {
+        Ok(AppConfig::default())
+    }
+
+    fn update_config(&self, _: ConfigPatch) -> Result<AppConfig, DomainError> {
+        Ok(AppConfig::default())
+    }
+}
+
+struct RejectingHttpClient;
+
+impl HttpClient for RejectingHttpClient {
+    fn head(&self, _: &str) -> Result<HttpResponse, DomainError> {
+        Err(DomainError::NetworkError("unexpected HTTP probe".into()))
+    }
+
+    fn get_range(&self, _: &str, _: u64, _: u64) -> Result<Vec<u8>, DomainError> {
+        Err(DomainError::NetworkError("unexpected HTTP request".into()))
+    }
+
+    fn supports_range(&self, _: &str) -> Result<bool, DomainError> {
+        Err(DomainError::NetworkError("unexpected HTTP probe".into()))
+    }
+}
 
 struct FreeHosterPluginLoader {
     services: Mutex<Vec<String>>,
@@ -68,6 +112,18 @@ impl PluginLoader for FreeHosterPluginLoader {
 
     fn set_enabled(&self, _: &str, _: bool) -> Result<(), DomainError> {
         Ok(())
+    }
+
+    fn extract_hoster_link(
+        &self,
+        service_name: &str,
+        url: &str,
+        credential: Option<&Credential>,
+    ) -> Result<ExtractedHosterLink, DomainError> {
+        self.extract_hoster_links(service_name, url, credential)?
+            .into_iter()
+            .next()
+            .ok_or(DomainError::HosterNoFile)
     }
 
     fn extract_hoster_links(
@@ -161,7 +217,15 @@ async fn free_mediafire_and_pixeldrain_resolution_preserves_download_metadata() 
         ),
         ("https://pixeldrain.com/u/abc", "vortex-mod-pixeldrain"),
     ] {
-        let (result, plugin) = resolve_free_hoster(url).await;
+        let plugin = Arc::new(FreeHosterPluginLoader::new());
+        let (bus, downloads, events) =
+            build_download_bus_with_plugin_loader(Arc::new(RejectingHttpClient), plugin.clone());
+        let result = bus
+            .handle_resolve_links(ResolveLinksCommand {
+                urls: vec![url.into()],
+            })
+            .await
+            .expect("free hoster resolution succeeds");
 
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].module_name, service);
@@ -175,6 +239,56 @@ async fn free_mediafire_and_pixeldrain_resolution_preserves_download_metadata() 
             !serde_json::to_string(&result)
                 .unwrap()
                 .contains("token=secret")
+        );
+
+        let temp = tempfile::tempdir().unwrap();
+        let resolved = &result[0];
+        let id = bus
+            .handle_start_download(StartDownloadCommand {
+                url: resolved.resolved_url.clone().unwrap(),
+                destination: Some(temp.path().to_path_buf()),
+                filename: resolved.filename.clone(),
+                size_bytes: resolved.size_bytes,
+                resume_supported: resolved.resumable,
+                source_hostname_override: None,
+                module_name: Some(resolved.module_name.clone()),
+                account_id: None,
+            })
+            .await
+            .expect("resolved hoster download is created");
+        let download = downloads
+            .find_by_id(id)
+            .unwrap()
+            .expect("created download is persisted");
+        assert_eq!(download.url().as_str(), url);
+
+        let account_repo = Arc::new(InMemoryAccountRepo::new());
+        let clock: Arc<dyn Clock> = Arc::new(FixedClock);
+        let selector = AccountSelector::new(account_repo.clone(), events.clone(), clock.clone());
+        let rotator = AccountRotator::new(
+            selector,
+            account_repo.clone(),
+            events.clone(),
+            clock.clone(),
+        );
+        let resolver = ResolveHosterSourceHandler::new(
+            account_repo,
+            Arc::new(FakeAccountCredentialStore::new()),
+            plugin.clone(),
+            events,
+            clock,
+            Arc::new(AccountOperationLocks::default()),
+            downloads,
+            Arc::new(DefaultConfigStore),
+            rotator,
+        );
+        let source = resolver.resolve(&download).expect("JIT source resolves");
+
+        assert!(source.is_protected());
+        assert_eq!(source.request_headers(), &[("Referer".into(), url.into())]);
+        assert_eq!(
+            plugin.services.lock().unwrap().as_slice(),
+            [service, service]
         );
     }
 }

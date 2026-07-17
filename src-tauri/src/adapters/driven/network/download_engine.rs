@@ -52,9 +52,10 @@ struct SegmentRuntimeState {
     started_at: std::time::Instant,
     start_byte: u64,
     initial_end: u64,
+    already_downloaded: u64,
     /// Set by the coordinator when the worker for this slot returns `Ok(_)`.
     /// Completed slots stay in `active_segments` (instead of being cleared)
-    /// so `persist_split_meta` records their byte range with `completed: true`
+    /// so `persist_resume_meta` records their byte range with `completed: true`
     /// — otherwise a crash right after a split would leave the resume meta
     /// without any record that those bytes are already on disk.
     completed: bool,
@@ -83,7 +84,10 @@ fn pick_split_target(
         if elapsed < MIN_SPLIT_SAMPLE_DURATION {
             continue; // worker hasn't run long enough to produce a meaningful bps
         }
-        let current_offset = state.start_byte.saturating_add(downloaded);
+        let current_offset = state
+            .start_byte
+            .saturating_add(state.already_downloaded)
+            .saturating_add(downloaded);
         if current_offset >= state.initial_end {
             continue; // already at end — completion event will fire shortly
         }
@@ -107,10 +111,9 @@ fn pick_split_target(
     slowest.map(|(idx, _, split_at)| (idx, split_at))
 }
 
-/// Atomically rewrite `.vortex-meta` after a dynamic split so resume after a
-/// crash sees the updated segment topology. A failure here only logs — the
-/// in-memory split is still valid for the live download.
-async fn persist_split_meta(
+/// Atomically rewrite `.vortex-meta` with the latest segment topology and
+/// progress. A failure here only logs — the in-memory download still proceeds.
+async fn persist_resume_meta(
     file_storage: &Arc<dyn FileStorage>,
     dest_path: &Path,
     download_id: DownloadId,
@@ -129,7 +132,9 @@ async fn persist_split_meta(
             let downloaded = if st.completed {
                 st.initial_end.saturating_sub(st.start_byte)
             } else {
-                st.progress.load(Ordering::Relaxed)
+                st.already_downloaded
+                    .saturating_add(st.progress.load(Ordering::Relaxed))
+                    .min(st.initial_end.saturating_sub(st.start_byte))
             };
             SegmentMeta {
                 id: i as u32,
@@ -175,6 +180,36 @@ async fn persist_split_meta(
             "persist meta after split task panicked"
         ),
     }
+}
+
+fn validated_resume_segments(
+    metadata: Option<&DownloadMeta>,
+    total_size: u64,
+    supports_range: bool,
+) -> Option<Vec<SegmentMeta>> {
+    if !supports_range || total_size == 0 {
+        return None;
+    }
+    let mut segments = metadata?.segments.clone();
+    if segments.is_empty() {
+        return None;
+    }
+    segments.sort_by_key(|segment| segment.start_byte);
+    let mut expected_start = 0;
+    for (index, segment) in segments.iter_mut().enumerate() {
+        let segment_size = segment.end_byte.checked_sub(segment.start_byte)?;
+        if segment.start_byte != expected_start
+            || segment_size == 0
+            || segment.end_byte > total_size
+            || segment.downloaded_bytes > segment_size
+        {
+            return None;
+        }
+        segment.id = index as u32;
+        segment.completed = segment.downloaded_bytes == segment_size;
+        expected_start = segment.end_byte;
+    }
+    (expected_start == total_size).then_some(segments)
 }
 
 pub struct SegmentedDownloadEngine {
@@ -741,10 +776,50 @@ async fn run_mirror_attempt(params: MirrorAttemptParams) -> AttemptOutcome {
         return AttemptOutcome::Cancelled;
     }
 
-    let created_by_attempt = {
+    let num_segments = if supports_range && total_size > 0 {
+        segments_count
+            .min((total_size / min_segment_bytes).max(1) as u32)
+            .max(1)
+    } else {
+        1
+    };
+    let fresh_segments: Vec<SegmentMeta> = {
+        let ranges: Vec<(u64, u64)> = if supports_range && total_size > 0 && num_segments > 1 {
+            let segment_size = total_size / num_segments as u64;
+            (0..num_segments)
+                .map(|i| {
+                    let start = i as u64 * segment_size;
+                    let end = if i == num_segments - 1 {
+                        total_size
+                    } else {
+                        (i as u64 + 1) * segment_size
+                    };
+                    (start, end)
+                })
+                .collect()
+        } else if supports_range && total_size > 0 {
+            vec![(0, total_size)]
+        } else {
+            vec![(0, u64::MAX)]
+        };
+        ranges
+            .into_iter()
+            .enumerate()
+            .map(|(index, (start_byte, end_byte))| SegmentMeta {
+                id: index as u32,
+                start_byte,
+                end_byte,
+                downloaded_bytes: 0,
+                completed: false,
+            })
+            .collect()
+    };
+
+    let (created_by_attempt, resume_metadata) = {
         let storage = file_storage.clone();
         let path = dest_path.clone();
         let stable_url = resume_url.clone();
+        let ownership_segments = fresh_segments.clone();
         match tokio::task::spawn_blocking(move || {
             if storage.file_exists(&path)? {
                 match storage.read_meta(&path)? {
@@ -757,7 +832,7 @@ async fn run_mirror_attempt(params: MirrorAttemptParams) -> AttemptOutcome {
                             total_size,
                         ) =>
                     {
-                        return Ok(false);
+                        return Ok((false, Some(metadata)));
                     }
                     Some(metadata) if metadata.download_id != download_id => {
                         return Err(DomainError::AlreadyExists(
@@ -773,7 +848,13 @@ async fn run_mirror_attempt(params: MirrorAttemptParams) -> AttemptOutcome {
                 }
             }
             storage.create_file(&path, total_size)?;
-            let metadata = ownership_metadata(download_id, stable_url, &path, total_size);
+            let metadata = ownership_metadata(
+                download_id,
+                stable_url,
+                &path,
+                total_size,
+                ownership_segments,
+            );
             if let Err(error) = storage.write_meta(&path, &metadata) {
                 if let Err(cleanup_error) = storage.delete_download_artifacts(&path) {
                     tracing::warn!(
@@ -784,7 +865,7 @@ async fn run_mirror_attempt(params: MirrorAttemptParams) -> AttemptOutcome {
                 }
                 return Err(error);
             }
-            Ok(true)
+            Ok((true, None))
         })
         .await
         {
@@ -805,36 +886,13 @@ async fn run_mirror_attempt(params: MirrorAttemptParams) -> AttemptOutcome {
                     false,
                 ));
             }
-            Ok(Ok(created)) => created,
+            Ok(Ok(result)) => result,
         }
     };
 
-    let num_segments = if supports_range && total_size > 0 {
-        segments_count
-            .min((total_size / min_segment_bytes).max(1) as u32)
-            .max(1)
-    } else {
-        1
-    };
-
-    let segments: Vec<(u64, u64)> = if supports_range && total_size > 0 && num_segments > 1 {
-        let segment_size = total_size / num_segments as u64;
-        (0..num_segments)
-            .map(|i| {
-                let start = i as u64 * segment_size;
-                let end = if i == num_segments - 1 {
-                    total_size
-                } else {
-                    (i as u64 + 1) * segment_size
-                };
-                (start, end)
-            })
-            .collect()
-    } else if supports_range && total_size > 0 {
-        vec![(0, total_size)]
-    } else {
-        vec![(0, u64::MAX)]
-    };
+    let segments: Vec<SegmentMeta> =
+        validated_resume_segments(resume_metadata.as_ref(), total_size, supports_range)
+            .unwrap_or(fresh_segments);
 
     let cancelled = user_cancel_token.is_cancelled();
     if source_policy.is_protected()
@@ -854,30 +912,39 @@ async fn run_mirror_attempt(params: MirrorAttemptParams) -> AttemptOutcome {
 
     event_bus.publish(DomainEvent::DownloadStarted { id: download_id });
 
-    let shared_downloaded = Arc::new(AtomicU64::new(0));
+    let shared_downloaded = Arc::new(AtomicU64::new(
+        segments
+            .iter()
+            .map(|segment| segment.downloaded_bytes)
+            .sum(),
+    ));
     let mut join_set: JoinSet<(usize, Result<u64, SegmentError>)> = JoinSet::new();
     let mut active_segments: Vec<SegmentRuntimeState> = Vec::with_capacity(segments.len());
-    for (index, (start, end)) in segments.iter().enumerate() {
-        let (end_tx, end_rx) = watch::channel(*end);
+    for (index, segment) in segments.iter().enumerate() {
+        let (end_tx, end_rx) = watch::channel(segment.end_byte);
         let progress = Arc::new(AtomicU64::new(0));
         active_segments.push(SegmentRuntimeState {
             end_tx,
             progress: progress.clone(),
             started_at: std::time::Instant::now(),
-            start_byte: *start,
-            initial_end: *end,
-            completed: false,
+            start_byte: segment.start_byte,
+            initial_end: segment.end_byte,
+            already_downloaded: segment.downloaded_bytes,
+            completed: segment.completed,
         });
+        if segment.completed {
+            continue;
+        }
         let params = SegmentParams {
             client: client.clone(),
             file_storage: file_storage.clone(),
             event_bus: event_bus.clone(),
             download_id,
-            segment_index: index as u32,
+            segment_index: segment.id,
             url: url.clone(),
-            start_byte: *start,
+            start_byte: segment.start_byte,
             end_byte_rx: end_rx,
-            already_downloaded: 0,
+            already_downloaded: segment.downloaded_bytes,
             total_file_size: total_size,
             dest_path: dest_path.clone(),
             pause_rx: pause_rx.clone(),
@@ -890,15 +957,58 @@ async fn run_mirror_attempt(params: MirrorAttemptParams) -> AttemptOutcome {
         join_set.spawn(async move { (slot_idx, download_segment(params).await) });
     }
 
+    if supports_range && total_size > 0 {
+        persist_resume_meta(
+            &file_storage,
+            &dest_path,
+            download_id,
+            &resume_url,
+            total_size,
+            &active_segments,
+        )
+        .await;
+    }
+
     let mut failed = false;
     let mut error_msg = String::new();
     let mut next_segment_id: u32 = segments.len() as u32;
+    let mut resume_interval = tokio::time::interval(std::time::Duration::from_millis(500));
+    resume_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    resume_interval.tick().await;
 
-    while let Some(result) = join_set.join_next().await {
+    while !join_set.is_empty() {
+        let Some(result) = (tokio::select! {
+            result = join_set.join_next() => result,
+            _ = resume_interval.tick(), if supports_range && total_size > 0 => {
+                persist_resume_meta(
+                    &file_storage,
+                    &dest_path,
+                    download_id,
+                    &resume_url,
+                    total_size,
+                    &active_segments,
+                )
+                .await;
+                continue;
+            }
+        }) else {
+            break;
+        };
         match result {
             Ok((slot_idx, Ok(_bytes))) => {
                 if slot_idx < active_segments.len() {
                     active_segments[slot_idx].completed = true;
+                }
+                if supports_range && total_size > 0 {
+                    persist_resume_meta(
+                        &file_storage,
+                        &dest_path,
+                        download_id,
+                        &resume_url,
+                        total_size,
+                        &active_segments,
+                    )
+                    .await;
                 }
 
                 if dynamic_split_enabled.load(Ordering::Relaxed)
@@ -957,10 +1067,11 @@ async fn run_mirror_attempt(params: MirrorAttemptParams) -> AttemptOutcome {
                         started_at: std::time::Instant::now(),
                         start_byte: split_at,
                         initial_end,
+                        already_downloaded: 0,
                         completed: false,
                     });
 
-                    persist_split_meta(
+                    persist_resume_meta(
                         &file_storage,
                         &dest_path,
                         download_id,
@@ -1003,6 +1114,17 @@ async fn run_mirror_attempt(params: MirrorAttemptParams) -> AttemptOutcome {
     }
 
     let cancelled = user_cancel_token.is_cancelled();
+    if supports_range && total_size > 0 && (cancelled || failed) {
+        persist_resume_meta(
+            &file_storage,
+            &dest_path,
+            download_id,
+            &resume_url,
+            total_size,
+            &active_segments,
+        )
+        .await;
+    }
     let cleanup_failed =
         if source_policy.is_protected() && created_by_attempt && (cancelled || failed) {
             cleanup_download_artifacts(&file_storage, &dest_path)

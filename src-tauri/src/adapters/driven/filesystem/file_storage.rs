@@ -98,6 +98,22 @@ fn recover_staged_meta(download_path: &Path) -> Result<(), DomainError> {
         return Ok(());
     }
     for staged in staged_meta_paths(download_path)? {
+        let staged_guard = match OpenOptions::new().read(true).write(true).open(&staged) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(DomainError::StorageError(format!(
+                    "failed to open staged metadata {}: {error}",
+                    staged.display()
+                )));
+            }
+        };
+        staged_guard.lock().map_err(|error| {
+            DomainError::StorageError(format!(
+                "failed to lock staged metadata {}: {error}",
+                staged.display()
+            ))
+        })?;
         match fs::hard_link(&staged, &mp) {
             Ok(()) => {
                 if let Err(error) = fs::remove_file(&staged) {
@@ -365,15 +381,37 @@ impl FileStorage for FsFileStorage {
         recover_staged_meta(path)?;
         let mp = meta_path(path);
         let staged_meta = unique_sibling_path(&mp, "vortex-meta", "delete");
-        let metadata_staged = match fs::rename(&mp, &staged_meta) {
-            Ok(()) => true,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+        let metadata_guard = match OpenOptions::new().read(true).write(true).open(&mp) {
+            Ok(file) => {
+                file.lock().map_err(|error| {
+                    DomainError::StorageError(format!(
+                        "failed to lock {} for deletion: {error}",
+                        mp.display()
+                    ))
+                })?;
+                Some(file)
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
             Err(error) => {
                 return Err(DomainError::StorageError(format!(
-                    "failed to stage {} for deletion: {error}",
+                    "failed to open {} for deletion: {error}",
                     mp.display()
                 )));
             }
+        };
+        let metadata_staged = if metadata_guard.is_some() {
+            match fs::rename(&mp, &staged_meta) {
+                Ok(()) => true,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+                Err(error) => {
+                    return Err(DomainError::StorageError(format!(
+                        "failed to stage {} for deletion: {error}",
+                        mp.display()
+                    )));
+                }
+            }
+        } else {
+            false
         };
         match fs::remove_file(path) {
             Ok(()) => debug!(path = %path.display(), "deleted download body"),
@@ -851,6 +889,57 @@ mod tests {
 
         assert!(storage.delete_download_artifacts(&body_path).is_err());
         assert!(meta_path(&body_path).exists());
+    }
+
+    #[test]
+    fn staged_metadata_is_not_recovered_while_cleanup_holds_its_lock() {
+        use std::sync::mpsc::{self, RecvTimeoutError};
+        use std::time::Duration;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file_path = dir.path().join("download.bin");
+        let storage = FsFileStorage::new();
+        storage.create_file(&file_path, 4).expect("create body");
+        storage
+            .write_meta(&file_path, &make_meta())
+            .expect("create metadata");
+
+        let mp = meta_path(&file_path);
+        let staged = unique_sibling_path(&mp, "vortex-meta", "delete");
+        let guard = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&mp)
+            .expect("open metadata guard");
+        guard.lock().expect("lock metadata guard");
+        fs::rename(&mp, &staged).expect("stage metadata");
+
+        let read_path = file_path.clone();
+        let (sender, receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            sender
+                .send(FsFileStorage::new().read_meta(&read_path))
+                .expect("send recovery result");
+        });
+
+        assert_eq!(
+            receiver.recv_timeout(Duration::from_millis(100)),
+            Err(RecvTimeoutError::Timeout),
+            "recovery must wait for the active cleanup"
+        );
+
+        fs::remove_file(&file_path).expect("delete body");
+        fs::remove_file(&staged).expect("delete staged metadata");
+        drop(guard);
+
+        assert!(
+            receiver
+                .recv_timeout(Duration::from_secs(1))
+                .expect("recovery finishes")
+                .expect("recovery succeeds")
+                .is_none()
+        );
+        assert!(!mp.exists(), "active cleanup metadata must not be revived");
     }
 
     #[test]

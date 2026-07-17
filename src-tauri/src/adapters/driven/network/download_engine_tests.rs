@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::time::Duration;
 
-use wiremock::matchers::{method, path};
+use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use crate::adapters::driven::filesystem::FsFileStorage;
@@ -12,6 +12,15 @@ use crate::domain::ports::driven::FileStorage;
 
 use super::test_support::*;
 use super::*;
+
+#[test]
+fn mock_file_storage_does_not_probe_the_host_filesystem() {
+    let temp = tempfile::tempdir().unwrap();
+    let existing = temp.path().join("existing.bin");
+    std::fs::write(&existing, b"user-owned").unwrap();
+
+    assert!(!MockFileStorage::new().file_exists(&existing).unwrap());
+}
 
 async fn start_staggered_range_server(total_size: u64) -> (String, tokio::task::JoinHandle<()>) {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -81,6 +90,154 @@ async fn start_staggered_range_server(total_size: u64) -> (String, tokio::task::
         }
     });
     (format!("http://{address}/file"), task)
+}
+
+#[tokio::test]
+async fn matching_resume_metadata_continues_from_the_persisted_offset() {
+    let server = MockServer::start().await;
+    Mock::given(method("HEAD"))
+        .and(path("/file"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-length", "8")
+                .insert_header("accept-ranges", "bytes"),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/file"))
+        .and(header("range", "bytes=6-7"))
+        .respond_with(
+            ResponseTemplate::new(206)
+                .insert_header("content-length", "2")
+                .insert_header("content-range", "bytes 6-7/8")
+                .set_body_bytes(b"gh"),
+        )
+        .mount(&server)
+        .await;
+
+    let temp = tempfile::tempdir().unwrap();
+    let destination = temp.path().join("resume.bin");
+    let storage = Arc::new(FsFileStorage::new());
+    storage.create_file(&destination, 8).unwrap();
+    storage.write_segment(&destination, 0, b"abcdef").unwrap();
+    let stable_url = "https://example.com/stable";
+    storage
+        .write_meta(
+            &destination,
+            &DownloadMeta {
+                download_id: DownloadId(312),
+                url: stable_url.into(),
+                file_name: "resume.bin".into(),
+                total_bytes: Some(8),
+                segments: vec![
+                    crate::domain::model::meta::SegmentMeta {
+                        id: 0,
+                        start_byte: 0,
+                        end_byte: 4,
+                        downloaded_bytes: 4,
+                        completed: true,
+                    },
+                    crate::domain::model::meta::SegmentMeta {
+                        id: 1,
+                        start_byte: 4,
+                        end_byte: 8,
+                        downloaded_bytes: 2,
+                        completed: false,
+                    },
+                ],
+                checksum_expected: None,
+                created_at: 1,
+                updated_at: 1,
+            },
+        )
+        .unwrap();
+
+    let outcome = run_mirror_attempt(MirrorAttemptParams {
+        url: format!("{}/file", server.uri()),
+        download_id: DownloadId(312),
+        segments_count: 2,
+        client: reqwest::Client::new(),
+        file_storage: storage.clone(),
+        event_bus: Arc::new(CollectingEventBus::new()),
+        dest_path: destination.clone(),
+        pause_rx: watch::channel(false).1,
+        user_cancel_token: CancellationToken::new(),
+        attempt_token: CancellationToken::new(),
+        min_segment_bytes: 1,
+        dynamic_split_enabled: Arc::new(AtomicBool::new(false)),
+        dynamic_split_min_remaining_bytes: Arc::new(AtomicU64::new(1)),
+        resume_url: stable_url.into(),
+        source_policy: SourcePolicy::Direct,
+        size_hint: Some(8),
+        resume_supported: Some(true),
+    })
+    .await;
+
+    assert!(matches!(outcome, AttemptOutcome::Completed));
+    assert_eq!(std::fs::read(&destination).unwrap(), b"abcdefgh");
+    assert_eq!(
+        server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|request| request.method.as_str() == "GET")
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn interrupted_attempt_persists_partial_segment_progress() {
+    let total_size = 8_192;
+    let (url, server_task) = start_staggered_range_server(total_size).await;
+    let temp = tempfile::tempdir().unwrap();
+    let destination = temp.path().join("interrupted.bin");
+    let storage = Arc::new(FsFileStorage::new());
+    let user_cancel_token = CancellationToken::new();
+    let attempt_token = user_cancel_token.child_token();
+    let attempt = tokio::spawn(run_mirror_attempt(MirrorAttemptParams {
+        url: url.clone(),
+        download_id: DownloadId(313),
+        segments_count: 2,
+        client: reqwest::Client::new(),
+        file_storage: storage.clone(),
+        event_bus: Arc::new(CollectingEventBus::new()),
+        dest_path: destination.clone(),
+        pause_rx: watch::channel(false).1,
+        user_cancel_token: user_cancel_token.clone(),
+        attempt_token,
+        min_segment_bytes: 1,
+        dynamic_split_enabled: Arc::new(AtomicBool::new(false)),
+        dynamic_split_min_remaining_bytes: Arc::new(AtomicU64::new(1)),
+        resume_url: url,
+        source_policy: SourcePolicy::Direct,
+        size_hint: Some(total_size),
+        resume_supported: Some(true),
+    }));
+
+    tokio::time::sleep(Duration::from_millis(650)).await;
+    user_cancel_token.cancel();
+    let outcome = tokio::time::timeout(Duration::from_secs(3), attempt)
+        .await
+        .expect("attempt stops after cancellation")
+        .expect("attempt task joins");
+    server_task.abort();
+
+    assert!(matches!(outcome, AttemptOutcome::Cancelled));
+    let metadata = storage
+        .read_meta(&destination)
+        .unwrap()
+        .expect("interrupted download retains resume metadata");
+    assert_eq!(metadata.total_bytes, Some(total_size));
+    assert!(
+        metadata
+            .segments
+            .iter()
+            .any(|segment| segment.downloaded_bytes > 0 && !segment.completed),
+        "partial segment progress must be persisted"
+    );
 }
 
 #[tokio::test]
@@ -472,6 +629,7 @@ fn test_pick_split_target_prefers_slowest_above_threshold() {
         started_at: std::time::Instant::now() - std::time::Duration::from_millis(age_ms),
         start_byte: start,
         initial_end: end,
+        already_downloaded: 0,
         completed: false,
     };
     let segs = [
@@ -507,6 +665,7 @@ fn test_pick_split_target_returns_none_when_all_below_threshold() {
         started_at: std::time::Instant::now() - std::time::Duration::from_millis(800),
         start_byte: start,
         initial_end: end,
+        already_downloaded: 0,
         completed: false,
     };
     let segs = [make(0, 1024, 100), make(1024, 2048, 1), make(2048, 3072, 1)];
@@ -525,6 +684,7 @@ fn test_pick_split_target_skips_fresh_segments() {
         started_at: std::time::Instant::now() - std::time::Duration::from_millis(age_ms),
         start_byte: start,
         initial_end: end,
+        already_downloaded: 0,
         completed: false,
     };
     let segs = [
@@ -549,6 +709,7 @@ fn test_pick_split_target_skips_completed_segments() {
         started_at: std::time::Instant::now() - std::time::Duration::from_millis(1000),
         start_byte: start,
         initial_end: end,
+        already_downloaded: 0,
         completed,
     };
     let segs = [
