@@ -1078,6 +1078,10 @@ mod tests {
         calls: AtomicUsize,
     }
 
+    struct RotatingHosterSourceResolver {
+        calls: AtomicUsize,
+    }
+
     struct BlockingSourceResolver {
         entered: Mutex<Option<std::sync::mpsc::Sender<()>>>,
         release: Arc<(Mutex<bool>, Condvar)>,
@@ -1125,6 +1129,25 @@ mod tests {
         }
     }
 
+    impl DownloadSourceResolver for RotatingHosterSourceResolver {
+        fn requires_resolution(&self, _: &Download) -> Result<bool, DomainError> {
+            Ok(true)
+        }
+
+        fn resolve(&self, _: &Download) -> Result<ResolvedDownloadSource, DomainError> {
+            let call = self.calls.fetch_add(1, AtomicOrdering::SeqCst) + 1;
+            Ok(
+                ResolvedDownloadSource::sensitive(format!(
+                    "https://1.1.1.1/file?capability={call}"
+                ))
+                .with_request_headers(vec![(
+                    "Authorization".into(),
+                    format!("Bearer token-{call}"),
+                )]),
+            )
+        }
+    }
+
     #[tokio::test]
     async fn premium_source_is_resolved_jit_and_blocked_before_private_network_access() {
         let storage = Arc::new(MockFileStorage::new());
@@ -1150,6 +1173,97 @@ mod tests {
         let serialized = format!("{:?}", bus.collected());
         assert!(!serialized.contains("secret-token"));
         assert_eq!(download.url().as_str(), "https://1fichier.com/?abc123");
+    }
+
+    #[tokio::test]
+    async fn every_hoster_engine_start_resolves_a_fresh_download_capability() {
+        for (index, service) in [
+            "vortex-mod-mediafire",
+            "vortex-mod-pixeldrain",
+            "vortex-mod-gofile",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let resolver = Arc::new(RotatingHosterSourceResolver {
+                calls: AtomicUsize::new(0),
+            });
+            let download = make_download(200 + index as u64, "https://hoster.example/page")
+                .with_module_name(service.into());
+
+            let first = prepare_sources(
+                download.clone(),
+                Some(resolver.clone()),
+                reqwest::Client::new(),
+                CancellationToken::new(),
+                ResolutionCancellation::default(),
+            )
+            .await
+            .expect("first start resolves");
+            let retry = prepare_sources(
+                download,
+                Some(resolver.clone()),
+                reqwest::Client::new(),
+                CancellationToken::new(),
+                ResolutionCancellation::default(),
+            )
+            .await
+            .expect("retry resolves again");
+
+            assert_eq!(resolver.calls.load(AtomicOrdering::SeqCst), 2, "{service}");
+            assert_ne!(first.urls, retry.urls, "{service}");
+            assert!(first.sensitive);
+            assert!(retry.sensitive);
+        }
+    }
+
+    #[tokio::test]
+    async fn sensitive_hoster_attempt_rejects_an_unexpected_html_page() {
+        let server = MockServer::start().await;
+        Mock::given(method("HEAD"))
+            .and(path("/download"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/html; charset=utf-8")
+                    .insert_header("content-length", "18"),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/download"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/html; charset=utf-8")
+                    .set_body_string("<html>expired</html>"),
+            )
+            .mount(&server)
+            .await;
+        let storage: Arc<dyn FileStorage> = Arc::new(MockFileStorage::new());
+        let events: Arc<dyn EventBus> = Arc::new(CollectingEventBus::new());
+
+        let outcome = run_mirror_attempt(MirrorAttemptParams {
+            url: format!("{}/download", server.uri()),
+            download_id: DownloadId(299),
+            segments_count: 1,
+            client: reqwest::Client::new(),
+            file_storage: storage,
+            event_bus: events,
+            dest_path: PathBuf::from("/tmp/vortex-hoster-html-test.bin"),
+            pause_rx: watch::channel(false).1,
+            user_cancel_token: CancellationToken::new(),
+            attempt_token: CancellationToken::new(),
+            min_segment_bytes: 1,
+            dynamic_split_enabled: Arc::new(AtomicBool::new(false)),
+            dynamic_split_min_remaining_bytes: Arc::new(AtomicU64::new(1)),
+            resume_url: "https://hoster.example/page".into(),
+            sensitive_url: true,
+        })
+        .await;
+
+        match outcome {
+            AttemptOutcome::Failed(error) => assert!(error.contains("HTML"), "{error}"),
+            _ => panic!("hoster HTML must be rejected"),
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

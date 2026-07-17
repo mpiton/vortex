@@ -894,4 +894,30 @@ mod tests {
             "source_hostname must reflect the origin, not the CDN"
         );
     }
+
+    #[tokio::test]
+    async fn hoster_metadata_is_preserved_when_the_stable_source_is_created() {
+        let (bus, repo, _) = make_command_bus(Arc::new(MockHttpClient::failing()));
+
+        let id = bus
+            .handle_start_download(StartDownloadCommand {
+                url: "https://gofile.io/d/folder/file-a".into(),
+                destination: Some(PathBuf::from("/tmp")),
+                filename: Some("archive.zip".into()),
+                size_bytes: Some(42),
+                resume_supported: Some(true),
+                source_hostname_override: None,
+                module_name: Some("vortex-mod-gofile".into()),
+                account_id: None,
+            })
+            .await
+            .expect("stable hoster download is created");
+
+        let saved = repo.store.lock().unwrap().get(&id.0).cloned().unwrap();
+        assert_eq!(saved.url().as_str(), "https://gofile.io/d/folder/file-a");
+        assert_eq!(saved.file_name(), "archive.zip");
+        assert_eq!(saved.file_size().map(|size| size.0), Some(42));
+        assert!(saved.resume_supported());
+        assert_eq!(saved.module_name(), Some("vortex-mod-gofile"));
+    }
 }

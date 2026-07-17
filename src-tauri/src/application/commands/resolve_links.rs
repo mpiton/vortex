@@ -458,6 +458,120 @@ mod tests {
         }
     }
 
+    struct FreeHosterPluginLoader {
+        services: Mutex<Vec<String>>,
+    }
+
+    impl FreeHosterPluginLoader {
+        fn new() -> Self {
+            Self {
+                services: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn plugin_info(name: &str) -> PluginInfo {
+            PluginInfo::new(
+                name.to_string(),
+                "1.0.0".into(),
+                name.to_string(),
+                "vortex".into(),
+                PluginCategory::Hoster,
+            )
+        }
+
+        fn service_for_url(url: &str) -> &'static str {
+            if url.contains("mediafire.com") {
+                "vortex-mod-mediafire"
+            } else if url.contains("pixeldrain.com") {
+                "vortex-mod-pixeldrain"
+            } else {
+                "vortex-mod-gofile"
+            }
+        }
+    }
+
+    impl PluginLoader for FreeHosterPluginLoader {
+        fn load(&self, _: &PluginManifest) -> Result<(), DomainError> {
+            Ok(())
+        }
+
+        fn unload(&self, _: &str) -> Result<(), DomainError> {
+            Ok(())
+        }
+
+        fn resolve_url(&self, url: &str) -> Result<Option<PluginInfo>, DomainError> {
+            Ok(Some(Self::plugin_info(Self::service_for_url(url))))
+        }
+
+        fn list_loaded(&self) -> Result<Vec<PluginInfo>, DomainError> {
+            Ok([
+                "vortex-mod-mediafire",
+                "vortex-mod-pixeldrain",
+                "vortex-mod-gofile",
+            ]
+            .into_iter()
+            .map(Self::plugin_info)
+            .collect())
+        }
+
+        fn set_enabled(&self, _: &str, _: bool) -> Result<(), DomainError> {
+            Ok(())
+        }
+
+        fn extract_hoster_links(
+            &self,
+            service_name: &str,
+            url: &str,
+            credential: Option<&Credential>,
+        ) -> Result<Vec<ExtractedHosterLink>, DomainError> {
+            assert!(credential.is_none());
+            self.services.lock().unwrap().push(service_name.to_string());
+            if url.contains("missing") {
+                return Err(DomainError::HosterNoFile);
+            }
+            let files = if service_name == "vortex-mod-gofile" {
+                vec![("file-a", "a.zip", 10_u64), ("file-b", "b.zip", 20_u64)]
+            } else {
+                vec![("file", "archive.zip", 42_u64)]
+            };
+            Ok(files
+                .into_iter()
+                .map(|(id, filename, size_bytes)| ExtractedHosterLink {
+                    source_url: format!("{url}/{id}"),
+                    filename: Some(filename.into()),
+                    size_bytes: Some(size_bytes),
+                    direct_url: Some(format!("https://cdn.example/{id}?token=secret")),
+                    resumable: Some(true),
+                    request_headers: vec![("Referer".into(), url.into())],
+                    traffic_used_bytes: None,
+                    traffic_total_bytes: None,
+                })
+                .collect())
+        }
+    }
+
+    async fn resolve_free_hoster(url: &str) -> (Vec<ResolvedLinkDto>, Arc<FreeHosterPluginLoader>) {
+        let repo = Arc::new(InMemoryAccountRepo::new());
+        let credentials = Arc::new(FakeAccountCredentialStore::new());
+        let events = Arc::new(CapturingEventBus::new());
+        let plugin = Arc::new(FreeHosterPluginLoader::new());
+        let bus = build_account_bus_with_plugin_loader(
+            repo,
+            credentials,
+            events,
+            None,
+            None,
+            plugin.clone(),
+        );
+        let result = bus
+            .handle_resolve_links(ResolveLinksCommand {
+                urls: vec![url.into()],
+            })
+            .await
+            .expect("free hoster resolution succeeds");
+        (result, plugin)
+    }
+
     fn premium_account(id: &str, traffic_left: u64) -> Account {
         Account::reconstruct_with_status(
             AccountId::new(id),
@@ -590,6 +704,70 @@ mod tests {
         );
         assert!(plugin.credentials.lock().unwrap().is_empty());
         assert!(plugin.services.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn free_mediafire_and_pixeldrain_resolution_preserves_download_metadata() {
+        for (url, service) in [
+            (
+                "https://www.mediafire.com/file/abc/archive.zip/file",
+                "vortex-mod-mediafire",
+            ),
+            ("https://pixeldrain.com/u/abc", "vortex-mod-pixeldrain"),
+        ] {
+            let (result, plugin) = resolve_free_hoster(url).await;
+
+            assert_eq!(result.len(), 1);
+            assert_eq!(result[0].module_name, service);
+            assert_eq!(result[0].filename.as_deref(), Some("archive.zip"));
+            assert_eq!(result[0].size_bytes, Some(42));
+            assert_eq!(result[0].resumable, Some(true));
+            let expected_source = format!("{url}/file");
+            assert_eq!(
+                result[0].resolved_url.as_deref(),
+                Some(expected_source.as_str())
+            );
+            assert_eq!(*plugin.services.lock().unwrap(), vec![service.to_string()]);
+            assert!(
+                !serde_json::to_string(&result)
+                    .unwrap()
+                    .contains("token=secret")
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn free_gofile_folder_expands_to_one_stable_row_per_file() {
+        let folder = "https://gofile.io/d/folder";
+        let (result, plugin) = resolve_free_hoster(folder).await;
+
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].original_url, format!("{folder}/file-a"));
+        assert_eq!(result[1].original_url, format!("{folder}/file-b"));
+        assert_eq!(result[0].filename.as_deref(), Some("a.zip"));
+        assert_eq!(result[1].size_bytes, Some(20));
+        assert_eq!(
+            plugin.services.lock().unwrap().as_slice(),
+            ["vortex-mod-gofile"]
+        );
+        assert!(
+            !serde_json::to_string(&result)
+                .unwrap()
+                .contains("token=secret")
+        );
+    }
+
+    #[tokio::test]
+    async fn typed_no_file_error_is_returned_to_link_grabber() {
+        let (result, _) = resolve_free_hoster("https://gofile.io/d/missing").await;
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].status, "error");
+        assert_eq!(result[0].error_kind, Some(LinkResolutionErrorKind::NoFile));
+        assert_eq!(
+            result[0].error_message.as_deref(),
+            Some("No downloadable file was found")
+        );
     }
 
     #[test]

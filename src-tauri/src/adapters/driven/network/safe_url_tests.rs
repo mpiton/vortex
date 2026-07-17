@@ -44,3 +44,32 @@ fn plugin_http_validator_rejects_cleartext_urls() {
 
     assert!(validate_public_url(&url).is_err());
 }
+
+#[test]
+fn plugin_download_headers_allow_only_explicit_end_to_end_fields() {
+    let headers = validated_plugin_headers(&[
+        ("Authorization".into(), "Bearer secret".into()),
+        ("Referer".into(), "https://hoster.example/page".into()),
+    ])
+    .expect("approved hoster headers");
+
+    assert_eq!(headers.get("authorization").unwrap(), "Bearer secret");
+    assert_eq!(
+        headers.get("referer").unwrap(),
+        "https://hoster.example/page"
+    );
+
+    for forbidden in ["Host", "Range", "Connection", "Proxy-Authorization"] {
+        assert!(
+            validated_plugin_headers(&[(forbidden.into(), "value".into())]).is_err(),
+            "{forbidden} must remain host-controlled"
+        );
+    }
+}
+
+#[test]
+fn plugin_download_headers_reject_invalid_values() {
+    assert!(
+        validated_plugin_headers(&[("Referer".into(), "safe\r\ninjected: true".into())]).is_err()
+    );
+}
