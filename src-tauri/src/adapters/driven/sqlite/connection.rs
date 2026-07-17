@@ -236,7 +236,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_premium_account_migration_backfills_legacy_download_association() {
+    async fn test_premium_account_migration_leaves_legacy_numeric_association_unset() {
         let sqlite_opts = sea_orm::sqlx::sqlite::SqliteConnectOptions::from_str("sqlite::memory:")
             .unwrap()
             .pragma("foreign_keys", "ON");
@@ -270,7 +270,7 @@ mod tests {
             .await
             .unwrap()
             .expect("download remains");
-        assert_eq!(row.try_get_by_index::<String>(0).unwrap(), "7");
+        assert_eq!(row.try_get_by_index::<Option<String>>(0).unwrap(), None);
     }
 
     #[tokio::test]

@@ -82,7 +82,29 @@ impl CommandBus {
 
         let validation = match self.account_validator_arc() {
             Some(validator) => {
-                Some(validate_credentials_blocking(validator, account.clone(), cmd.password).await?)
+                match validate_credentials_blocking(validator, account.clone(), cmd.password).await
+                {
+                    Ok(attempt) => Some(attempt),
+                    Err(error) => {
+                        if let Err(rollback_error) = repo.delete(&id) {
+                            tracing::warn!(
+                                account_id = %id.as_str(),
+                                validation_error = %error,
+                                rollback_error = %rollback_error,
+                                "account validation worker failed and row rollback also failed"
+                            );
+                        }
+                        if let Err(cleanup_error) = store.delete_password(&id) {
+                            tracing::warn!(
+                                account_id = %id.as_str(),
+                                validation_error = %error,
+                                cleanup_error = %cleanup_error,
+                                "account validation worker failed and credential cleanup also failed"
+                            );
+                        }
+                        return Err(error);
+                    }
+                }
             }
             None => None,
         };
@@ -143,8 +165,21 @@ mod tests {
     use crate::domain::event::DomainEvent;
     use crate::domain::model::account::{AccountStatus, AccountType};
     use crate::domain::ports::driven::{
-        AccountCredentialStore, AccountRepository, ValidationOutcome,
+        AccountCredentialStore, AccountRepository, AccountValidator, ValidationOutcome,
     };
+
+    struct PanickingValidator;
+
+    impl AccountValidator for PanickingValidator {
+        fn validate(
+            &self,
+            _service_name: &str,
+            _username: &str,
+            _password: &str,
+        ) -> Result<ValidationOutcome, DomainError> {
+            panic!("simulated validation worker failure")
+        }
+    }
 
     fn add_command(service: &str, user: &str, password: &str) -> AddAccountCommand {
         AddAccountCommand {
@@ -312,6 +347,34 @@ mod tests {
             repo.list().unwrap().is_empty(),
             "row must be rolled back when keyring write fails"
         );
+        assert!(events.snapshot().is_empty(), "no event on failure");
+    }
+
+    #[tokio::test]
+    async fn test_add_account_rolls_back_when_validation_worker_stops() {
+        let repo = Arc::new(InMemoryAccountRepo::new());
+        let creds = Arc::new(FakeAccountCredentialStore::new());
+        let events = Arc::new(CapturingEventBus::new());
+        let bus = build_account_bus(
+            repo.clone(),
+            creds.clone(),
+            events.clone(),
+            Some(Arc::new(PanickingValidator)),
+            None,
+        );
+
+        let err = bus
+            .handle_add_account(add_command("real-debrid", "alice", "pw"))
+            .await
+            .expect_err("validation worker failure surfaces");
+
+        assert!(matches!(
+            err,
+            AppError::Domain(DomainError::PluginError(message))
+                if message.contains("validation worker stopped")
+        ));
+        assert!(repo.list().unwrap().is_empty(), "row must be rolled back");
+        assert_eq!(creds.entry_count(), 0, "credential must be removed");
         assert!(events.snapshot().is_empty(), "no event on failure");
     }
 

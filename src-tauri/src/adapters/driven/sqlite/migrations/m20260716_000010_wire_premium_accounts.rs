@@ -1,4 +1,3 @@
-use sea_orm::{ConnectionTrait, Statement};
 use sea_orm_migration::prelude::*;
 
 #[derive(DeriveMigrationName)]
@@ -35,15 +34,6 @@ impl MigrationTrait for Migration {
                     .add_column(ColumnDef::new(Downloads::AccountRef).text().null())
                     .to_owned(),
             )
-            .await?;
-
-        manager
-            .get_connection()
-            .execute(Statement::from_string(
-                sea_orm::DatabaseBackend::Sqlite,
-                "UPDATE downloads SET account_ref = CAST(account_id AS TEXT) WHERE account_id IS NOT NULL"
-                    .to_string(),
-            ))
             .await?;
 
         manager

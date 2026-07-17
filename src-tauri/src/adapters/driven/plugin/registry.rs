@@ -165,26 +165,45 @@ impl PluginRegistry {
     where
         I: extism::convert::ToBytes<'a>,
     {
-        // Keep the registry guard through the call so `set_enabled` and
-        // credential injection share one linearization point. A disable that
-        // wins the guard is observed before any credential enters the slot;
-        // a call that wins completes before the disable is committed.
-        let entry = self
-            .plugins
-            .get(name)
-            .ok_or_else(|| DomainError::NotFound(name.to_string()))?;
-        if !entry.enabled {
-            return Err(DomainError::NotFound(format!(
-                "plugin '{name}' is disabled"
-            )));
-        }
-        let mut plugin = entry
-            .plugin
+        let plugin_handle = {
+            let entry = self
+                .plugins
+                .get(name)
+                .ok_or_else(|| DomainError::NotFound(name.to_string()))?;
+            if !entry.enabled {
+                return Err(DomainError::NotFound(format!(
+                    "plugin '{name}' is disabled"
+                )));
+            }
+            Arc::clone(&entry.plugin)
+        };
+        let mut plugin = plugin_handle
             .lock()
             .map_err(|_| DomainError::PluginError(format!("plugin '{name}' mutex poisoned")))?;
-        let _credential_scope = scoped_credential
-            .map(|credential| CredentialScope::new(Arc::clone(&entry.credential_slot), credential))
-            .transpose()?;
+        // Re-check after taking the per-plugin lock. The short registry guard
+        // makes enablement and credential injection atomic without pinning a
+        // DashMap shard during the WASM call.
+        let _credential_scope = {
+            let entry = self
+                .plugins
+                .get(name)
+                .ok_or_else(|| DomainError::NotFound(name.to_string()))?;
+            if !Arc::ptr_eq(&entry.plugin, &plugin_handle) {
+                return Err(DomainError::NotFound(format!(
+                    "plugin '{name}' was reloaded"
+                )));
+            }
+            if !entry.enabled {
+                return Err(DomainError::NotFound(format!(
+                    "plugin '{name}' is disabled"
+                )));
+            }
+            scoped_credential
+                .map(|credential| {
+                    CredentialScope::new(Arc::clone(&entry.credential_slot), credential)
+                })
+                .transpose()?
+        };
         let fn_exists = plugin.function_exists(func);
         tracing::debug!(plugin = name, func, fn_exists, "plugin call pre-call");
         let result = plugin.call::<I, &str>(func, input).map_err(|e| {
@@ -210,6 +229,12 @@ impl PluginReadRepository for PluginRegistry {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    use dashmap::try_result::TryResult;
+
     use super::*;
     use crate::domain::model::plugin::{PluginCategory, PluginInfo, PluginManifest};
 
@@ -324,6 +349,71 @@ mod tests {
         assert!(matches!(error, DomainError::NotFound(message) if message.contains("disabled")));
         assert!(slot.lock().unwrap().is_none());
         assert!(!slot.has_been_exposed());
+    }
+
+    #[test]
+    fn disabling_plugin_does_not_wait_for_blocked_plugin_call() {
+        let registry = Arc::new(PluginRegistry::new());
+        registry.insert("plug-a".to_string(), make_loaded("plug-a"));
+        let plugin_handle = Arc::clone(
+            &registry
+                .plugins
+                .get("plug-a")
+                .expect("loaded plugin")
+                .plugin,
+        );
+        let plugin_guard = plugin_handle.lock().unwrap();
+
+        let caller_registry = Arc::clone(&registry);
+        let caller = thread::spawn(move || caller_registry.call_plugin("plug-a", "missing", ""));
+
+        let deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            let registry_guard_held =
+                matches!(registry.plugins.try_get_mut("plug-a"), TryResult::Locked);
+            let plugin_handle_cloned = Arc::strong_count(&plugin_handle) >= 3;
+            if registry_guard_held || plugin_handle_cloned {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "plugin call did not reach the plugin mutex"
+            );
+            thread::yield_now();
+        }
+
+        let (disable_tx, disable_rx) = mpsc::channel();
+        let disabler_registry = Arc::clone(&registry);
+        let disabler = thread::spawn(move || {
+            disable_tx
+                .send(disabler_registry.set_enabled("plug-a", false))
+                .expect("disable receiver remains connected");
+        });
+
+        let prompt_disable = disable_rx.recv_timeout(Duration::from_secs(1));
+        let completed_while_call_blocked = prompt_disable.is_ok();
+        drop(plugin_guard);
+
+        let disable_result = match prompt_disable {
+            Ok(result) => result,
+            Err(_) => disable_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("disable completes after plugin call unblocks"),
+        };
+        disable_result.expect("disable succeeds");
+        disabler.join().expect("disable thread does not panic");
+        let call_error = caller
+            .join()
+            .expect("call thread does not panic")
+            .expect_err("disabled call is rejected");
+
+        assert!(
+            completed_while_call_blocked,
+            "disable must not wait for a blocked plugin call"
+        );
+        assert!(
+            matches!(call_error, DomainError::NotFound(message) if message.contains("disabled"))
+        );
     }
 
     #[test]
