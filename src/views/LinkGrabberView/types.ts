@@ -51,7 +51,7 @@ export interface ResolvedLink {
   moduleName: string;
   accountId: string | null;
   isMedia: boolean;
-  mediaType?: "video" | "audio";
+  mediaType?: "video" | "audio" | "image";
   /** Backend-owned policy: hoster pages are never probed as file URLs. */
   requiresOnlineProbe?: boolean;
   /**

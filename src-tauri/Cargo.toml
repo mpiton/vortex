@@ -59,6 +59,7 @@ aes-gcm = "0.10.3"
 pbkdf2 = "0.13.0"
 hmac = "0.13.0"
 rand = "0.10.1"
+url = "2.5.8"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

@@ -7472,6 +7472,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "unrar",
+ "url",
  "uuid",
  "windows-sys 0.59.0",
  "wiremock",
