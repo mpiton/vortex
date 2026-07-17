@@ -327,6 +327,54 @@ describe("LinkGrabberView", () => {
     });
   });
 
+  it("retries live probes after transient core and crawler analysis errors", async () => {
+    const coreUrl = "https://example.com/transient.zip";
+    const crawlerUrl = "https://gallery.example/album";
+    mockInvoke.mockImplementation((command) => {
+      if (command === "link_resolve") {
+        return Promise.resolve([
+          {
+            id: "core-error",
+            originalUrl: coreUrl,
+            resolvedUrl: null,
+            filename: null,
+            sizeBytes: null,
+            status: "error",
+            errorMessage: "Network request failed",
+            moduleName: "builtin-http",
+            accountId: null,
+            isMedia: false,
+          },
+          {
+            id: "crawler-error",
+            originalUrl: crawlerUrl,
+            resolvedUrl: null,
+            filename: null,
+            sizeBytes: null,
+            status: "error",
+            errorMessage: "Network request failed",
+            moduleName: "vortex-mod-gallery",
+            accountId: null,
+            isMedia: false,
+          },
+        ]);
+      }
+      if (command === "link_detect_duplicates") return Promise.resolve([]);
+      return Promise.resolve(null);
+    });
+
+    const user = userEvent.setup();
+    renderWithProviders();
+    await user.type(screen.getByRole("textbox"), `${coreUrl}\n${crawlerUrl}`);
+    await user.click(screen.getByRole("button", { name: "Analyze Links" }));
+
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith("link_check_online", {
+        urls: [coreUrl, crawlerUrl],
+      });
+    });
+  });
+
   it("should surface error toast on failure and success toast on retry", async () => {
     mockInvoke.mockRejectedValueOnce(new Error("AppState not registered")).mockResolvedValueOnce([
       {

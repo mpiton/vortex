@@ -1317,6 +1317,98 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn sensitive_hoster_attempt_rejects_html_disguised_as_binary() {
+        let server = MockServer::start().await;
+        let body = "<!doctype html><html>expired</html>";
+        Mock::given(method("HEAD"))
+            .and(path("/download"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "application/octet-stream")
+                    .insert_header("content-length", body.len().to_string()),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/download"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "application/octet-stream")
+                    .set_body_string(body),
+            )
+            .mount(&server)
+            .await;
+
+        let outcome = run_mirror_attempt(MirrorAttemptParams {
+            url: format!("{}/download", server.uri()),
+            download_id: DownloadId(300),
+            segments_count: 1,
+            client: reqwest::Client::new(),
+            file_storage: Arc::new(MockFileStorage::new()),
+            event_bus: Arc::new(CollectingEventBus::new()),
+            dest_path: PathBuf::from("/tmp/vortex-hoster-disguised-html-test.bin"),
+            pause_rx: watch::channel(false).1,
+            user_cancel_token: CancellationToken::new(),
+            attempt_token: CancellationToken::new(),
+            min_segment_bytes: 1,
+            dynamic_split_enabled: Arc::new(AtomicBool::new(false)),
+            dynamic_split_min_remaining_bytes: Arc::new(AtomicU64::new(1)),
+            resume_url: "https://hoster.example/page".into(),
+            sensitive_url: true,
+        })
+        .await;
+
+        match outcome {
+            AttemptOutcome::Failed(error) => assert!(error.contains("HTML"), "{error}"),
+            _ => panic!("disguised hoster HTML must be rejected"),
+        }
+    }
+
+    #[tokio::test]
+    async fn sensitive_hoster_attempt_never_deletes_an_unowned_destination() {
+        let server = MockServer::start().await;
+        Mock::given(method("HEAD"))
+            .and(path("/download"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "application/octet-stream")
+                    .insert_header("content-length", "4"),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/download"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"data"))
+            .mount(&server)
+            .await;
+        let temp = tempfile::tempdir().unwrap();
+        let destination = temp.path().join("existing.bin");
+        std::fs::write(&destination, b"user-owned").unwrap();
+
+        let outcome = run_mirror_attempt(MirrorAttemptParams {
+            url: format!("{}/download", server.uri()),
+            download_id: DownloadId(301),
+            segments_count: 1,
+            client: reqwest::Client::new(),
+            file_storage: Arc::new(MockFileStorage::new()),
+            event_bus: Arc::new(CollectingEventBus::new()),
+            dest_path: destination.clone(),
+            pause_rx: watch::channel(false).1,
+            user_cancel_token: CancellationToken::new(),
+            attempt_token: CancellationToken::new(),
+            min_segment_bytes: 1,
+            dynamic_split_enabled: Arc::new(AtomicBool::new(false)),
+            dynamic_split_min_remaining_bytes: Arc::new(AtomicU64::new(1)),
+            resume_url: "https://hoster.example/page".into(),
+            sensitive_url: true,
+        })
+        .await;
+
+        assert!(matches!(outcome, AttemptOutcome::Failed(_)));
+        assert_eq!(std::fs::read(destination).unwrap(), b"user-owned");
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cancellation_wins_against_blocked_jit_resolution_without_late_commit() {
         let storage = Arc::new(MockFileStorage::new());

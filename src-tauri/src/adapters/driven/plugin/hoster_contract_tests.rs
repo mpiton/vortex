@@ -48,6 +48,34 @@ fn test_parse_hoster_links_preserves_every_gofile_entry() {
 }
 
 #[test]
+fn test_parse_hoster_links_rejects_blank_source_or_direct_urls() {
+    for payload in [
+        r#"{"files":[{"url":"   ","direct_url":"https://cdn.example/file"}]}"#,
+        r#"{"files":[{"url":"https://hoster.example/file","direct_url":"  "}]}"#,
+    ] {
+        assert_eq!(parse_hoster_links(payload), Err(DomainError::HosterNoFile));
+    }
+}
+
+#[test]
+fn test_parse_hoster_links_caps_plugin_fan_out() {
+    let files = (0..501)
+        .map(|index| {
+            serde_json::json!({
+                "url": format!("https://gofile.io/d/folder/file-{index}"),
+                "direct_url": format!("https://store.example/file-{index}")
+            })
+        })
+        .collect::<Vec<_>>();
+    let payload = serde_json::json!({ "files": files }).to_string();
+
+    assert!(matches!(
+        parse_hoster_links(&payload),
+        Err(DomainError::PluginError(_))
+    ));
+}
+
+#[test]
 fn test_extract_hoster_link_calls_exact_named_plugin_without_reresolving_url() {
     let temp = tempfile::tempdir().unwrap();
     let name = "hoster-a";

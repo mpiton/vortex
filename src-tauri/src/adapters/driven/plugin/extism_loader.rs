@@ -947,6 +947,12 @@ mod tests {
             classify_hoster_plugin_error("hoster HTTP returned status 410: gone"),
             DomainError::HosterDirectUrlExpired
         );
+        assert_eq!(
+            classify_hoster_plugin_error(
+                "Gofile content is offline or removed: error-passwordRequired"
+            ),
+            DomainError::HosterAuthenticationRequired
+        );
     }
 
     #[test]
@@ -958,6 +964,16 @@ mod tests {
             DomainError::PluginError("hoster plugin operation failed".into())
         );
         assert!(!error.to_string().contains("super-secret-key"));
+    }
+
+    #[test]
+    fn unrelated_hoster_prose_does_not_become_a_typed_error() {
+        assert_eq!(
+            classify_hoster_plugin_error(
+                "private network policy expired while authenticating diagnostics"
+            ),
+            DomainError::PluginError("hoster plugin operation failed".into())
+        );
     }
 
     #[test]

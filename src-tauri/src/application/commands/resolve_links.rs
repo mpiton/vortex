@@ -603,8 +603,16 @@ mod tests {
             Ok(files
                 .into_iter()
                 .map(|(id, filename, size_bytes)| ExtractedHosterLink {
-                    source_url: format!("{url}/{id}"),
-                    filename: Some(filename.into()),
+                    source_url: if url.contains("unsafe-source") {
+                        "https://cdn.example/file?stable-token=leaked".into()
+                    } else {
+                        format!("{url}/{id}")
+                    },
+                    filename: if url.contains("unsafe-source") {
+                        None
+                    } else {
+                        Some(filename.into())
+                    },
                     size_bytes: Some(size_bytes),
                     direct_url: Some(format!("https://cdn.example/{id}?token=secret")),
                     resumable: Some(true),
@@ -833,6 +841,27 @@ mod tests {
         assert_eq!(
             result[0].error_message.as_deref(),
             Some("No downloadable file was found")
+        );
+    }
+
+    #[tokio::test]
+    async fn single_hoster_keeps_the_requested_url_and_synthesizes_a_safe_filename() {
+        let requested = "https://www.mediafire.com/file/unsafe-source";
+        let (result, _) = resolve_free_hoster(requested).await;
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].original_url, requested);
+        assert_eq!(result[0].resolved_url.as_deref(), Some(requested));
+        assert!(
+            result[0]
+                .filename
+                .as_deref()
+                .is_some_and(|name| !name.is_empty())
+        );
+        assert!(
+            !serde_json::to_string(&result)
+                .unwrap()
+                .contains("stable-token=leaked")
         );
     }
 
