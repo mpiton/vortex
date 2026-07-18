@@ -37,7 +37,7 @@ export function ActionsBar({
           {t("linkGrabber.actions.startSelected", { count: selectedCount })}
         </Button>
       )}
-      <Button onClick={onStartAll} variant="secondary" size="sm">
+      <Button data-testid="start-all-online" onClick={onStartAll} variant="secondary" size="sm">
         {t("linkGrabber.actions.startAllOnline")}
       </Button>
       <Button onClick={onClearAll} variant="destructive" size="sm">

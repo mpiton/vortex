@@ -151,6 +151,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Blocking desktop E2E smoke test (MAT-135)**: a new `e2e-smoke` CI job
+  builds the real desktop binary (debug profile, tauri-plugin-pilot embedded),
+  launches it under xvfb with an empty temporary profile, and drives the
+  critical path through the actual UI and Tauri IPC: paste a link served by a
+  local deterministic fixture server (HEAD + Range/206), resolve it in the
+  Link Grabber, start the download, and wait for completion in the Downloads
+  view. The downloaded file is checked against its expected name, size, and
+  SHA-256, and the app is restarted to verify the completed download persists
+  through SQLite. On failure the job uploads a screenshot, page HTML, console
+  and app logs, and the temp profile data as diagnostic artifacts.
 - **Gallery end-to-end integration (MAT-134)**: pasting a supported gallery
   URL (Imgur, Flickr, generic pages) into the Link Grabber now expands it into
   one selectable row per image, preserving gallery order, filenames, and the

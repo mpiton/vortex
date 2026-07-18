@@ -409,7 +409,15 @@ function SortableRow({
 
   return (
     <DragHandleContext value={ctxValue}>
-      <tr ref={setRef} data-index={dataIndex} style={style} className={className} onClick={onClick}>
+      <tr
+        ref={setRef}
+        data-testid="download-row"
+        data-state={state}
+        data-index={dataIndex}
+        style={style}
+        className={className}
+        onClick={onClick}
+      >
         {children}
       </tr>
     </DragHandleContext>
