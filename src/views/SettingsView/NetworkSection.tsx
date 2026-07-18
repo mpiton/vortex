@@ -45,6 +45,8 @@ export function NetworkSection({ config }: NetworkSectionProps) {
       <div>
         <h2 className="text-lg font-semibold">{t("settings.network.title")}</h2>
         <p className="text-sm text-muted-foreground">{t("settings.network.description")}</p>
+        {/* MAT-136 R-02: proxy/UA/timeout feed the client built at startup. */}
+        <p className="text-xs text-muted-foreground">{t("settings.network.restartHint")}</p>
       </div>
 
       <div className="space-y-4">
@@ -88,11 +90,14 @@ export function NetworkSection({ config }: NetworkSectionProps) {
           />
         </div>
 
+        {/* MAT-136 R-02: DoH is not consumed by the HTTP client yet. */}
         <SettingToggle
           label={t("settings.network.dnsOverHttps")}
           description={t("settings.network.dnsOverHttpsDesc")}
           checked={config.dnsOverHttps}
           onCheckedChange={(v) => handleChange("dnsOverHttps", v)}
+          disabled
+          badge={t("common.comingSoon")}
         />
 
         <SettingNumberInput

@@ -4,7 +4,7 @@
 //! whenever a slot becomes available.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -26,6 +26,9 @@ pub struct QueueManager {
     engine: Arc<dyn DownloadEngine>,
     event_bus: Arc<dyn EventBus>,
     max_concurrent: Arc<AtomicUsize>,
+    /// Base delay (seconds) for the exponential retry backoff, from the
+    /// `retry_delay_seconds` setting (MAT-136 R-01).
+    retry_base_delay_secs: Arc<AtomicU64>,
     active_count: Arc<AtomicUsize>,
     schedule_lock: Arc<tokio::sync::Mutex<()>>,
     retry_cancellations: Arc<Mutex<HashMap<u64, CancellationToken>>>,
@@ -89,6 +92,7 @@ impl QueueManager {
             engine,
             event_bus,
             max_concurrent: Arc::new(AtomicUsize::new(max_concurrent)),
+            retry_base_delay_secs: Arc::new(AtomicU64::new(DEFAULT_RETRY_BASE_DELAY_SECS)),
             active_count: Arc::new(AtomicUsize::new(0)),
             schedule_lock: Arc::new(tokio::sync::Mutex::new(())),
             retry_cancellations: Arc::new(Mutex::new(HashMap::new())),
@@ -129,6 +133,15 @@ impl QueueManager {
     }
 
     // F3+F4: takes &Arc<Self> so we clone the real Arc into the spawned task
+    pub fn set_retry_base_delay(&self, secs: u32) {
+        self.retry_base_delay_secs
+            .store(u64::from(secs), Ordering::SeqCst);
+    }
+
+    pub fn retry_base_delay_secs(&self) -> u64 {
+        self.retry_base_delay_secs.load(Ordering::SeqCst)
+    }
+
     pub fn set_max_concurrent(self: &Arc<Self>, n: usize) {
         self.max_concurrent.store(n, Ordering::SeqCst);
         let this = Arc::clone(self);
@@ -469,7 +482,7 @@ impl QueueManager {
         }
 
         let this = Arc::clone(self);
-        let delay = retry_delay(attempt);
+        let delay = retry_delay(self.retry_base_delay_secs.load(Ordering::SeqCst), attempt);
 
         tokio::spawn(async move {
             tokio::select! {
@@ -557,12 +570,20 @@ impl QueueManager {
     }
 }
 
+const DEFAULT_RETRY_BASE_DELAY_SECS: u64 = 10;
+
 // F9: pub(crate) visibility
-pub(crate) fn retry_delay(attempt: u32) -> Duration {
-    // Clamp exponent to 5 so the intermediate 2^exp never overflows u64.
-    // 10 * 2^5 = 320, capped to 300 by the min() below.
+pub(crate) fn retry_delay(base_secs: u64, attempt: u32) -> Duration {
+    // A zero base (hand-edited config) would retry in a hot loop.
+    let base_secs = if base_secs == 0 {
+        DEFAULT_RETRY_BASE_DELAY_SECS
+    } else {
+        base_secs
+    };
+    // Clamp exponent to 5 so base * 2^exp stays far below u64::MAX
+    // (u32 config base * 32 max); the min() below caps the result anyway.
     let exp = attempt.saturating_sub(1).min(5);
-    let delay = Duration::from_secs(10 * (1u64 << exp));
+    let delay = Duration::from_secs(base_secs * (1u64 << exp));
     delay.min(Duration::from_secs(300))
 }
 
@@ -876,17 +897,29 @@ mod tests {
 
     #[test]
     fn test_retry_delay_exponential() {
-        assert_eq!(retry_delay(1), Duration::from_secs(10));
-        assert_eq!(retry_delay(2), Duration::from_secs(20));
-        assert_eq!(retry_delay(3), Duration::from_secs(40));
-        assert_eq!(retry_delay(4), Duration::from_secs(80));
-        assert_eq!(retry_delay(5), Duration::from_secs(160));
+        assert_eq!(retry_delay(10, 1), Duration::from_secs(10));
+        assert_eq!(retry_delay(10, 2), Duration::from_secs(20));
+        assert_eq!(retry_delay(10, 3), Duration::from_secs(40));
+        assert_eq!(retry_delay(10, 4), Duration::from_secs(80));
+        assert_eq!(retry_delay(10, 5), Duration::from_secs(160));
     }
 
     #[test]
     fn test_retry_delay_capped_at_300s() {
-        assert_eq!(retry_delay(6), Duration::from_secs(300));
-        assert_eq!(retry_delay(10), Duration::from_secs(300));
+        assert_eq!(retry_delay(10, 6), Duration::from_secs(300));
+        assert_eq!(retry_delay(10, 10), Duration::from_secs(300));
+    }
+
+    #[test]
+    fn test_retry_delay_with_configured_base_scales_from_setting() {
+        assert_eq!(retry_delay(5, 1), Duration::from_secs(5));
+        assert_eq!(retry_delay(5, 2), Duration::from_secs(10));
+        assert_eq!(retry_delay(120, 3), Duration::from_secs(300));
+    }
+
+    #[test]
+    fn test_retry_delay_with_zero_base_falls_back_to_default() {
+        assert_eq!(retry_delay(0, 1), Duration::from_secs(10));
     }
 
     #[tokio::test]

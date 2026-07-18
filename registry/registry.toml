@@ -58,7 +58,11 @@ repository           = "https://github.com/mpiton/vortex-mod-soundcloud"
 checksum_sha256      = "e0af384e218947dc8574feb32483ad4eabff4f81682dd7d215c9d480308a5d71"
 checksum_sha256_toml = "d3116c6df5804d708ee16e0d7c0513e22bda0375af29f70d4f5368c561bff393"
 official             = true
-min_vortex_version   = "0.1.0"
+# 1.2.x already calls `run_subprocess`/`download_to_file` and relies on
+# `AdaptiveStreamOnly` — all introduced in Vortex 0.2.0. The released
+# v1.2.1 plugin.toml still says 0.1.0 by mistake; the registry carries
+# the correct floor until the next plugin release fixes the manifest.
+min_vortex_version   = "0.2.0"
 
 [[plugin]]
 name                 = "vortex-mod-mediafire"
@@ -98,19 +102,19 @@ min_vortex_version   = "0.1.0"
 
 [[plugin]]
 name                 = "vortex-mod-mega"
-description          = "MEGA hoster — file + folder URL resolution with AES-128-CTR streaming decryption + chunk-MAC verification (E2E client-side)"
+description          = "MEGA hoster — link/folder parsing and file metadata; downloads not available yet (MEGA files need client-side AES decryption, planned)"
 author               = "vortex-community"
-version              = "1.0.0"
+version              = "1.1.0"
 category             = "hoster"
 repository           = "https://github.com/mpiton/vortex-mod-mega"
-checksum_sha256      = "ee4fd7716f56802e43cef2804ddf6a49346177b716afffc974867a3316290f07"
-checksum_sha256_toml = "c9420281eb587afc938142c5f70104b0febb176fe68cd2ec441c275c0b4ef805"
+checksum_sha256      = "ad2aceaf0eb6df6746e2ddf5d403003b6601e363fb4d68fd71116fbc0bed836f"
+checksum_sha256_toml = "330d8c9540b1018c9ad1d13385dbaab0f9ab625fc055fc383d32b83e213d3392"
 official             = true
 min_vortex_version   = "0.1.0"
 
 [[plugin]]
 name                 = "vortex-mod-1fichier"
-description          = "1fichier hoster — free (60s wait + captcha stub) and premium (API key)"
+description          = "1fichier hoster — premium downloads via API key; free mode fails when 1fichier asks for a CAPTCHA (solver not available yet)"
 author               = "vortex-community"
 version              = "1.1.0"
 category             = "hoster"

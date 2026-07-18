@@ -1,12 +1,15 @@
 import { useState, useId, useEffect } from "react";
 import { Switch } from "@/components/ui/switch";
 import { Input } from "@/components/ui/input";
+import { Badge } from "@/components/ui/badge";
 
 interface SettingToggleProps {
   label: string;
   description?: string;
   checked: boolean;
   onCheckedChange: (checked: boolean) => void;
+  disabled?: boolean;
+  badge?: string;
 }
 
 export function SettingToggle({
@@ -14,17 +17,22 @@ export function SettingToggle({
   description,
   checked,
   onCheckedChange,
+  disabled,
+  badge,
 }: SettingToggleProps) {
   const id = useId();
   return (
     <div className="flex items-center justify-between gap-4 py-2">
       <div>
-        <label htmlFor={id} className="text-sm font-medium">
-          {label}
-        </label>
+        <div className="flex items-center gap-2">
+          <label htmlFor={id} className="text-sm font-medium">
+            {label}
+          </label>
+          {badge && <Badge variant="secondary">{badge}</Badge>}
+        </div>
         {description && <p className="text-xs text-muted-foreground">{description}</p>}
       </div>
-      <Switch id={id} checked={checked} onCheckedChange={onCheckedChange} />
+      <Switch id={id} checked={checked} onCheckedChange={onCheckedChange} disabled={disabled} />
     </div>
   );
 }
@@ -37,6 +45,8 @@ interface SettingNumberInputProps {
   min?: number;
   max?: number;
   step?: number;
+  disabled?: boolean;
+  badge?: string;
 }
 
 export function SettingNumberInput({
@@ -47,6 +57,8 @@ export function SettingNumberInput({
   min,
   max,
   step,
+  disabled,
+  badge,
 }: SettingNumberInputProps) {
   const id = useId();
   const [localValue, setLocalValue] = useState(String(value));
@@ -73,9 +85,12 @@ export function SettingNumberInput({
   return (
     <div className="flex items-center justify-between gap-4 py-2">
       <div>
-        <label htmlFor={id} className="text-sm font-medium">
-          {label}
-        </label>
+        <div className="flex items-center gap-2">
+          <label htmlFor={id} className="text-sm font-medium">
+            {label}
+          </label>
+          {badge && <Badge variant="secondary">{badge}</Badge>}
+        </div>
         {description && <p className="text-xs text-muted-foreground">{description}</p>}
       </div>
       <Input
@@ -86,6 +101,7 @@ export function SettingNumberInput({
         min={min}
         max={max}
         step={step}
+        disabled={disabled}
         onChange={(e) => setLocalValue(e.target.value)}
         onBlur={commit}
         onKeyDown={(e) => {

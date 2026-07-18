@@ -1,4 +1,5 @@
 mod checksum;
+mod client_config;
 mod download_artifact_lifecycle;
 mod download_engine;
 mod download_source_preparation;
@@ -10,6 +11,7 @@ mod segment_worker;
 mod wait_manager;
 
 pub use checksum::StreamingChecksumComputer;
+pub use client_config::client_from_config;
 pub use download_engine::SegmentedDownloadEngine;
 pub(crate) use protected_source::{
     BodyPrefixDecision, SourcePolicy, allows_html_filename, safe_source_failure,

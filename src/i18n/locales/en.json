@@ -81,24 +81,13 @@
       "userAgent": "User agent",
       "dnsOverHttps": "DNS over HTTPS",
       "dnsOverHttpsDesc": "Use encrypted DNS queries",
-      "connectionTimeout": "Connection timeout (seconds)"
+      "connectionTimeout": "Connection timeout (seconds)",
+      "restartHint": "Proxy, user agent and timeout changes take effect at next launch."
     },
     "remote": {
       "title": "Remote Access",
       "description": "Web interface and API configuration",
-      "warning": "Enabling remote access exposes your download manager to the network. Make sure to use a strong API key and restrict access to trusted networks.",
-      "webInterface": "Web interface",
-      "webInterfaceDesc": "Enable the browser-based control panel",
-      "webInterfacePort": "Web interface port",
-      "restApi": "REST API",
-      "restApiDesc": "Enable the HTTP REST API for third-party integrations",
-      "websocket": "WebSocket",
-      "websocketDesc": "Enable real-time WebSocket events",
-      "apiKey": "API Key",
-      "showApiKey": "Show API key",
-      "hideApiKey": "Hide API key",
-      "copyApiKey": "Copy API key",
-      "regenerateApiKey": "Regenerate API key"
+      "planned": "Remote access (web interface, REST API, WebSocket) is planned for a future release. No server runs in this version, so these options are not available yet."
     },
     "browser": {
       "title": "Browser Integration",

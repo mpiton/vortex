@@ -135,18 +135,21 @@ pub fn run() {
             // ── Driven adapters ─────────────────────────────────────
             let event_bus: Arc<dyn EventBus> = Arc::new(TokioEventBus::new(256));
             let file_storage: Arc<dyn FileStorage> = Arc::new(FsFileStorage::new());
-            let reqwest_client = reqwest::Client::builder()
-                .user_agent("Vortex/0.1")
-                .connect_timeout(std::time::Duration::from_secs(30))
-                .build()
-                .map_err(|e| e.to_string())?;
-            let http_client: Arc<dyn HttpClient> =
-                Arc::new(ReqwestHttpClient::with_client(reqwest_client.clone()));
             let config_store: Arc<dyn ConfigStore> = Arc::new(TomlConfigStore::new(
                 config_path,
                 resolve_system_download_dir(),
                 Some(uuid::Uuid::new_v4().to_string()),
             ));
+            // Network settings (user-agent, timeout, proxy) are applied to
+            // the shared client at startup; changes require a restart.
+            let startup_config = config_store
+                .get_config()
+                .unwrap_or_else(|_| crate::domain::model::config::AppConfig::default());
+            let reqwest_client =
+                adapters::driven::network::client_from_config(&startup_config)
+                    .map_err(|e| e.to_string())?;
+            let http_client: Arc<dyn HttpClient> =
+                Arc::new(ReqwestHttpClient::with_client(reqwest_client.clone()));
             let credential_store: Arc<dyn CredentialStore> = Arc::new(KeyringCredentialStore);
             let account_credential_store: Arc<dyn AccountCredentialStore> =
                 Arc::new(KeyringAccountStore);
@@ -276,20 +279,17 @@ pub fn run() {
                 download_source_handler.clone();
 
             // ── Download engine ─────────────────────────────────────
-            let initial_engine_config = config_store
-                .get_config()
-                .unwrap_or_else(|_| crate::domain::model::config::AppConfig::default());
             let segmented_engine = Arc::new(
                 SegmentedDownloadEngine::new(
                     reqwest_client,
                     file_storage.clone(),
                     event_bus.clone(),
-                    4,
+                    startup_config.max_segments_per_download,
                 )
                 .with_source_resolver(download_source_resolver)
                 .with_dynamic_split(
-                    initial_engine_config.dynamic_split_enabled,
-                    initial_engine_config.dynamic_split_min_remaining_mb,
+                    startup_config.dynamic_split_enabled,
+                    startup_config.dynamic_split_min_remaining_mb,
                 ),
             );
             // Keep settings → engine bridge alive so UI changes to
@@ -342,6 +342,7 @@ pub fn run() {
                 )
                 .with_checksum_pipeline(config_store.clone(), checksum_computer_for_queue),
             );
+            queue_manager.set_retry_base_delay(startup_config.retry_delay_seconds);
 
             // Propagate future settings updates (UI → command bus) to the
             // running queue manager without requiring a restart.

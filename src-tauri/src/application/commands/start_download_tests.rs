@@ -149,6 +149,31 @@ async fn test_start_download_persists_and_emits_event() {
 }
 
 #[tokio::test]
+async fn test_start_download_applies_configured_segments_and_retries() {
+    let (bus, repo, _event_bus) = build_download_bus(Arc::new(MockHttpClient::failing()));
+
+    let id = bus
+        .handle_start_download(StartDownloadCommand {
+            url: "https://example.com/files/data.bin".to_string(),
+            destination: Some(PathBuf::from("/tmp/downloads")),
+            filename: None,
+            size_bytes: None,
+            resume_supported: None,
+            source_hostname_override: None,
+            module_name: None,
+            account_id: None,
+        })
+        .await
+        .unwrap();
+
+    // StubConfigStore serves AppConfig::default(): 8 segments, 5 retries
+    // (MAT-136 R-01: settings drive new downloads, not domain defaults).
+    let dl = repo.find_by_id(id).unwrap().unwrap();
+    assert_eq!(dl.segments_count(), 8);
+    assert_eq!(dl.max_retries(), 5);
+}
+
+#[tokio::test]
 async fn test_start_download_persists_validated_account_association() {
     let (bus, repo, _) = build_download_bus(Arc::new(MockHttpClient::failing()));
     let account_repo = Arc::new(InMemoryAccountRepo::new());

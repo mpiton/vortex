@@ -77,7 +77,7 @@ src-tauri/src/
                      # clipboard, tray, notifications, scheduler
 ```
 
-Plugin runtime: **Extism** sandbox. Each plugin is a `.wasm` + `plugin.toml` manifest declaring capabilities. Plugins live in `~/.local/share/dev.vortex.app/plugins/<name>/` and hot-reload via filesystem watcher.
+Plugin runtime: **Extism** sandbox. Each plugin is a `.wasm` + `plugin.toml` manifest declaring capabilities. Plugins live in the Tauri app data dir — `~/.local/share/dev.vortex.app/plugins/<name>/` on Linux, `~/Library/Application Support/dev.vortex.app/plugins/<name>/` on macOS, `%APPDATA%\dev.vortex.app\plugins\<name>\` on Windows — and hot-reload via filesystem watcher.
 
 See [`ARCHI.md`](ARCHI.md) for the full architecture documentation.
 

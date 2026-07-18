@@ -43,7 +43,7 @@ function SectionContent({ tab, config }: { tab: SettingTab; config: AppConfig })
     case "network":
       return <NetworkSection config={config} />;
     case "remote":
-      return <RemoteAccessSection config={config} />;
+      return <RemoteAccessSection />;
     case "browser":
       return <BrowserSection config={config} />;
     case "appearance":
