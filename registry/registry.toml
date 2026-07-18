@@ -108,7 +108,7 @@ version              = "1.1.0"
 category             = "hoster"
 repository           = "https://github.com/mpiton/vortex-mod-mega"
 checksum_sha256      = "c846257ab043b4863c359f6e6385c9af598e2cd3b27eab0ecc2b957f51abbe52"
-checksum_sha256_toml = "b77b5f0fd2791beee1f45180c1dae0c722ebfe93fc9dff1559dfcd3c4ecb6dc5"
+checksum_sha256_toml = "330d8c9540b1018c9ad1d13385dbaab0f9ab625fc055fc383d32b83e213d3392"
 official             = true
 min_vortex_version   = "0.1.0"
 
