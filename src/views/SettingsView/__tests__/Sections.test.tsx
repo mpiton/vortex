@@ -241,10 +241,25 @@ describe("DownloadsSection", () => {
 
   it("should cap maxConcurrentDownloads input at 20 per PRD §6.10", () => {
     renderWithQuery(<DownloadsSection config={mockConfig} />);
-    const label = screen.getByText("Max concurrent downloads");
-    const input = label.closest("div")?.parentElement?.querySelector("input");
-    expect(input).not.toBeNull();
-    expect(input?.max).toBe("20");
+    const input = screen.getByLabelText<HTMLInputElement>("Max concurrent downloads");
+    expect(input.max).toBe("20");
+  });
+
+  // MAT-136 R-02: throttling and pre-allocation are not consumed by the
+  // engine yet — the controls must be non-interactive and marked planned.
+  it("should disable speed limit input when throttling is not implemented", () => {
+    renderWithQuery(<DownloadsSection config={mockConfig} />);
+    expect(screen.getByLabelText("Speed limit (MiB/s)")).toBeDisabled();
+  });
+
+  it("should disable pre-allocate toggle when setting is not consumed", () => {
+    renderWithQuery(<DownloadsSection config={mockConfig} />);
+    expect(screen.getByRole("switch", { name: "Pre-allocate space" })).toBeDisabled();
+  });
+
+  it("should mark planned download settings with coming soon badge", () => {
+    renderWithQuery(<DownloadsSection config={mockConfig} />);
+    expect(screen.getAllByText("Coming soon")).toHaveLength(2);
   });
 });
 
@@ -268,43 +283,31 @@ describe("NetworkSection", () => {
     renderWithQuery(<NetworkSection config={mockConfig} />);
     expect(screen.getByText("DNS over HTTPS")).toBeInTheDocument();
   });
+
+  // MAT-136 R-02: DoH is not consumed by the HTTP client yet.
+  it("should disable DNS over HTTPS toggle when setting is not consumed", () => {
+    renderWithQuery(<NetworkSection config={mockConfig} />);
+    expect(screen.getByRole("switch", { name: "DNS over HTTPS" })).toBeDisabled();
+  });
+
+  it("should show restart hint when network settings apply at launch", () => {
+    renderWithQuery(<NetworkSection config={mockConfig} />);
+    expect(screen.getByText(/next launch/i)).toBeInTheDocument();
+  });
 });
 
 describe("RemoteAccessSection", () => {
-  it("should render security warning", () => {
-    renderWithQuery(<RemoteAccessSection config={mockConfig} />);
-    expect(screen.getByText(/remote access exposes/i)).toBeInTheDocument();
+  // MAT-136 R-03: no server exists yet, the section must never look active.
+  it("should render planned notice when section is shown", () => {
+    renderWithQuery(<RemoteAccessSection />);
+    expect(screen.getByText(/planned for a future release/i)).toBeInTheDocument();
   });
 
-  it("should not show port input when web interface is disabled", () => {
-    renderWithQuery(<RemoteAccessSection config={mockConfig} />);
-    expect(screen.queryByText("Web interface port")).not.toBeInTheDocument();
-  });
-
-  it("should show port input when web interface is enabled", () => {
-    renderWithQuery(<RemoteAccessSection config={{ ...mockConfig, webInterfaceEnabled: true }} />);
-    expect(screen.getByText("Web interface port")).toBeInTheDocument();
-  });
-
-  it("should not show API key when REST API is disabled", () => {
-    renderWithQuery(<RemoteAccessSection config={{ ...mockConfig, restApiEnabled: false }} />);
+  it("should not render interactive controls when no server exists", () => {
+    renderWithQuery(<RemoteAccessSection />);
+    expect(screen.queryByRole("switch")).not.toBeInTheDocument();
+    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
     expect(screen.queryByText("API Key")).not.toBeInTheDocument();
-  });
-
-  it("should show masked API key when REST API is enabled", () => {
-    renderWithQuery(<RemoteAccessSection config={{ ...mockConfig, restApiEnabled: true }} />);
-    expect(screen.getByText("API Key")).toBeInTheDocument();
-    expect(screen.getByLabelText("Show API key")).toBeInTheDocument();
-  });
-
-  it("should reveal API key when show button clicked", async () => {
-    const user = userEvent.setup();
-    renderWithQuery(<RemoteAccessSection config={{ ...mockConfig, restApiEnabled: true }} />);
-
-    await user.click(screen.getByLabelText("Show API key"));
-
-    expect(screen.getByDisplayValue("test-api-key-abc-123")).toBeInTheDocument();
-    expect(screen.getByLabelText("Hide API key")).toBeInTheDocument();
   });
 });
 

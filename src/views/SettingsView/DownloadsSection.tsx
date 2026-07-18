@@ -46,6 +46,7 @@ export function DownloadsSection({ config }: DownloadsSectionProps) {
           min={1}
           max={32}
         />
+        {/* MAT-136 R-02: throttling is not consumed by the engine yet. */}
         <SettingNumberInput
           label={t("settings.downloads.speedLimit")}
           description={t("settings.downloads.speedLimitDesc")}
@@ -55,6 +56,8 @@ export function DownloadsSection({ config }: DownloadsSectionProps) {
           }
           min={0}
           step={0.5}
+          disabled
+          badge={t("common.comingSoon")}
         />
         <SettingNumberInput
           label={t("settings.downloads.maxRetries")}
@@ -79,11 +82,14 @@ export function DownloadsSection({ config }: DownloadsSectionProps) {
           checked={config.verifyChecksums}
           onCheckedChange={(v) => handleChange("verifyChecksums", v)}
         />
+        {/* MAT-136 R-02: the segmented engine always pre-sizes the file. */}
         <SettingToggle
           label={t("settings.downloads.preAllocate")}
           description={t("settings.downloads.preAllocateDesc")}
           checked={config.preAllocateSpace}
           onCheckedChange={(v) => handleChange("preAllocateSpace", v)}
+          disabled
+          badge={t("common.comingSoon")}
         />
       </div>
     </div>

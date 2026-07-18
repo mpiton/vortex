@@ -8,7 +8,8 @@ use crate::domain::model::config::{AppConfig, ConfigPatch};
 
 /// Reads and updates application configuration.
 ///
-/// The adapter loads from `~/.config/vortex/config.toml`,
+/// The adapter loads from `config.toml` in the Tauri app data dir
+/// (Linux: `~/.local/share/dev.vortex.app/config.toml`),
 /// applies patches, and writes back atomically.
 pub trait ConfigStore: Send + Sync {
     /// Get the current application configuration.

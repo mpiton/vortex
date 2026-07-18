@@ -60,12 +60,12 @@ impl CommandBus {
             }
         };
 
+        let settings = self.config_store().get_config().unwrap_or_default();
         let dest_dir = cmd.destination.unwrap_or_else(|| {
             // Prefer user-configured download dir; fall back to ~/Downloads/
-            self.config_store()
-                .get_config()
-                .ok()
-                .and_then(|c| c.download_dir)
+            settings
+                .download_dir
+                .clone()
                 .map(PathBuf::from)
                 .or_else(dirs::download_dir)
                 .unwrap_or_else(|| PathBuf::from("."))
@@ -93,7 +93,9 @@ impl CommandBus {
 
         let mut download = Download::new(id, url, file_name, dest.to_string_lossy().to_string())
             .with_queue_position(queue_position)
-            .with_remote_metadata(cmd.size_bytes, cmd.resume_supported);
+            .with_remote_metadata(cmd.size_bytes, cmd.resume_supported)
+            .with_segments_count(settings.max_segments_per_download)
+            .with_max_retries(settings.max_retries);
 
         if let Some(hostname) = cmd.source_hostname_override {
             download = download.with_source_hostname(hostname);

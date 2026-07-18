@@ -81,24 +81,13 @@
       "userAgent": "Agent utilisateur",
       "dnsOverHttps": "DNS sur HTTPS",
       "dnsOverHttpsDesc": "Utiliser des requêtes DNS chiffrées",
-      "connectionTimeout": "Délai de connexion (secondes)"
+      "connectionTimeout": "Délai de connexion (secondes)",
+      "restartHint": "Les changements de proxy, user agent et délai de connexion prennent effet au prochain démarrage."
     },
     "remote": {
       "title": "Accès distant",
       "description": "Configuration de l'interface web et de l'API",
-      "warning": "L'activation de l'accès distant expose votre gestionnaire de téléchargements au réseau. Utilisez une clé API robuste et limitez l'accès aux réseaux de confiance.",
-      "webInterface": "Interface web",
-      "webInterfaceDesc": "Activer le panneau de contrôle basé sur navigateur",
-      "webInterfacePort": "Port de l'interface web",
-      "restApi": "API REST",
-      "restApiDesc": "Activer l'API REST HTTP pour les intégrations tierces",
-      "websocket": "WebSocket",
-      "websocketDesc": "Activer les événements WebSocket en temps réel",
-      "apiKey": "Clé API",
-      "showApiKey": "Afficher la clé API",
-      "hideApiKey": "Masquer la clé API",
-      "copyApiKey": "Copier la clé API",
-      "regenerateApiKey": "Régénérer la clé API"
+      "planned": "L'accès distant (interface web, API REST, WebSocket) est prévu pour une version future. Aucun serveur ne tourne dans cette version, ces options ne sont donc pas encore disponibles."
     },
     "browser": {
       "title": "Intégration navigateur",

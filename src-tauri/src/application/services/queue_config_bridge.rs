@@ -1,8 +1,8 @@
-//! Bridges `SettingsUpdated` events to [`QueueManager::set_max_concurrent`].
+//! Bridges `SettingsUpdated` events to the running [`QueueManager`].
 //!
-//! Reads `max_concurrent_downloads` from [`ConfigStore`] on every
-//! `SettingsUpdated` event and propagates the new limit to the queue
-//! manager so the running scheduler reflects UI changes without restart.
+//! Reads `max_concurrent_downloads` and `retry_delay_seconds` from
+//! [`ConfigStore`] on every `SettingsUpdated` event and propagates them
+//! so the running scheduler reflects UI changes without restart.
 
 use std::sync::Arc;
 
@@ -30,6 +30,7 @@ pub fn subscribe_queue_to_config(
             Ok(config) => {
                 queue_manager
                     .set_max_concurrent(normalize_max_concurrent(config.max_concurrent_downloads));
+                queue_manager.set_retry_base_delay(config.retry_delay_seconds);
             }
             Err(err) => {
                 tracing::error!(%err, "queue_config_bridge: failed to read config");
@@ -155,6 +156,27 @@ mod tests {
 
         // Set is synchronous (AtomicUsize store happens before the spawn).
         assert_eq!(qm.max_concurrent(), 10);
+    }
+
+    #[tokio::test]
+    async fn test_settings_updated_propagates_retry_base_delay() {
+        let config_store: Arc<dyn ConfigStore> = Arc::new(StubConfigStore {
+            config: Mutex::new(AppConfig::default()),
+        });
+        let bus = SyncEventBus::new();
+        let qm = make_manager(4);
+
+        subscribe_queue_to_config(&bus, Arc::clone(&config_store), Arc::clone(&qm));
+
+        config_store
+            .update_config(ConfigPatch {
+                retry_delay_seconds: Some(30),
+                ..Default::default()
+            })
+            .unwrap();
+        bus.publish(DomainEvent::SettingsUpdated);
+
+        assert_eq!(qm.retry_base_delay_secs(), 30);
     }
 
     #[tokio::test]

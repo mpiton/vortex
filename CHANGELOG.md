@@ -53,6 +53,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **MAT-136 registry coherence**: the soundcloud entry's `min_vortex_version`
+  is raised to 0.2.0 (the released 1.2.1 build uses 0.2.0-only host
+  functions), the MEGA and 1fichier descriptions no longer overpromise
+  unimplemented features, and a new `registry_coherence` integration test
+  validates every registry entry in CI — required fields, semver formats,
+  checksum shape, known category, unique names.
+- **MAT-136 documentation paths**: README, ARCHI.md, and CLAUDE.md now point
+  at the real Tauri app-data location for the database, `config.toml`, and
+  plugins directory (`~/.local/share/dev.vortex.app/` on Linux, with macOS and
+  Windows equivalents) instead of the never-used `~/.config/vortex/`.
 - **MAT-133 cleanup observability**: engine tests now record artifact deletion
   requests so pre-download failures cannot silently exercise a cleanup path.
 - **MAT-133 review portability**: resume metadata locks preserve read-only
@@ -136,6 +146,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **MAT-136 settings drive real behavior**: `max_segments_per_download` and
+  `max_retries` are applied to each new download instead of hardcoded domain
+  defaults, `retry_delay_seconds` feeds the retry backoff live via the
+  settings bridge, and proxy/user-agent/connection-timeout build the HTTP
+  client at startup (the Network section now says changes apply at next
+  launch); an invalid `user_agent` in a hand-edited config falls back to the
+  default instead of aborting startup. Options with no engine wiring yet — speed limit, pre-allocate
+  space, DNS over HTTPS — are disabled with a "Coming soon" badge, and the
+  Remote Access section is replaced by a planned-feature notice so
+  REST/WebSocket/Web UI can never look active while no server exists.
+- **MAT-136 MEGA plugin 1.1.0**: `extract_links` and `resolve_stream_url`
+  now refuse with an explicit "downloads are not supported yet" error instead
+  of handing the engine an encrypted CDN URL whose bytes downloaded
+  "successfully" as unreadable AES ciphertext. The resolution and crypto code
+  stays in the plugin library, ready to rewire once host-side decryption
+  ships.
 - **MAT-132 account status contract**: account validation responses now expose
   their exact typed status to the UI, rejected-validation toasts use its
   localized label instead of plugin diagnostics, elapsed quota/cooldown markers

@@ -26,11 +26,15 @@ pub struct AppConfig {
     // ── Downloads ────────────────────────────────────────────────────
     pub max_concurrent_downloads: u32,
     pub max_segments_per_download: u32,
-    /// `None` means unlimited.
+    /// `None` means unlimited. Planned: not yet consumed by the download
+    /// engine — no throttling happens regardless of the value.
     pub speed_limit_bytes_per_sec: Option<u64>,
     pub max_retries: u32,
     pub retry_delay_seconds: u32,
     pub verify_checksums: bool,
+    /// Planned: the segmented engine always pre-sizes the file because
+    /// segment workers write at arbitrary offsets; disabling is not
+    /// supported yet and the value is not consumed.
     pub pre_allocate_space: bool,
     /// Enable runtime re-split of slow segments when a faster segment
     /// finishes. PRD §7.1 (répartition dynamique).
@@ -57,6 +61,8 @@ pub struct AppConfig {
     pub proxy_type: String,
     pub proxy_url: Option<String>,
     pub user_agent: String,
+    /// Planned: not yet consumed — the HTTP client uses the system
+    /// resolver regardless of the value.
     pub dns_over_https: bool,
     pub connection_timeout_seconds: u32,
 
@@ -140,9 +146,9 @@ impl Default for AppConfig {
             // Remote Access
             web_interface_enabled: false,
             web_interface_port: 9876,
-            rest_api_enabled: true,
+            rest_api_enabled: false,
             api_key: String::new(),
-            websocket_enabled: true,
+            websocket_enabled: false,
 
             // Browser Integration
             min_file_size_mb: 1.0,
@@ -410,7 +416,7 @@ pub fn apply_patch(config: &mut AppConfig, patch: &ConfigPatch) {
 
     // Link Grabber
     if let Some(v) = patch.link_check_parallelism {
-        // Clamp at write-time so `~/.config/vortex/config.toml` always
+        // Clamp at write-time so the persisted `config.toml` always
         // round-trips a canonical value, matching the bounds enforced
         // at probe-time by `normalize_link_check_parallelism`.
         config.link_check_parallelism =
@@ -450,15 +456,16 @@ mod tests {
         // Browser integration
         assert_eq!(config.min_file_size_mb, 1.0);
 
-        // Remote access — protocols enabled by PRD, but the gatekeeper
-        // (`web_interface_enabled`) stays off and `api_key` empty in the
-        // domain. The adapter layer is responsible for hydrating a generated
-        // key on first launch; we lock the bare-domain defaults here so a
-        // future change cannot accidentally expose the server with no auth.
+        // Remote access — no REST/WS server exists yet (MAT-136), so every
+        // remote-access preference defaults to OFF and `api_key` stays empty
+        // in the domain. The adapter layer is responsible for hydrating a
+        // generated key on first launch; we lock the bare-domain defaults
+        // here so a future change cannot accidentally expose the server
+        // with no auth.
         assert!(!config.web_interface_enabled);
         assert_eq!(config.web_interface_port, 9876);
-        assert!(config.rest_api_enabled);
-        assert!(config.websocket_enabled);
+        assert!(!config.rest_api_enabled);
+        assert!(!config.websocket_enabled);
         assert!(config.api_key.is_empty());
     }
 

@@ -119,6 +119,15 @@ for cargo_toml in src-tauri/Cargo.toml Cargo.toml; do
 
         if cargo_dep_change_detected "$cargo_toml"; then
             if ! echo "$STAGED" | grep -qF "$lock"; then
+                # A feature-only edit (e.g. enabling a reqwest feature whose
+                # code lives in an already-locked crate) can leave the lock
+                # byte-identical, so there is nothing to stage. The point of
+                # this hook is manifest/lock consistency: accept when the
+                # existing lock still satisfies the staged manifest.
+                if cargo metadata --manifest-path "$cargo_toml" --locked \
+                    --format-version 1 >/dev/null 2>&1; then
+                    continue
+                fi
                 echo "BLOCKED: $cargo_toml dependency table modified without updated $lock."
                 echo ""
                 echo "Correct procedure:"
