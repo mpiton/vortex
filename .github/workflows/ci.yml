@@ -243,6 +243,68 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
+  e2e-smoke:
+    name: E2E smoke (desktop)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            xvfb
+
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: src-tauri
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: npm ci
+        run: npm ci
+
+      - name: Cache tauri-pilot CLI
+        id: cache-pilot
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.cargo/bin/tauri-pilot
+          key: tauri-pilot-cli-0.7.2-${{ runner.os }}
+
+      - name: Install tauri-pilot CLI
+        if: steps.cache-pilot.outputs.cache-hit != 'true'
+        run: cargo install tauri-pilot-cli --version 0.7.2 --locked
+
+      - name: Build debug app (pilot plugin + E2E CSP overlay)
+        run: npx tauri build --debug --no-bundle --config scripts/e2e/tauri.e2e.conf.json
+
+      - name: Run E2E smoke
+        env:
+          WEBKIT_DISABLE_COMPOSITING_MODE: "1"
+          WEBKIT_DISABLE_DMABUF_RENDERER: "1"
+        run: xvfb-run -a ./scripts/e2e/smoke.sh
+
+      - name: Upload E2E diagnostics
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: e2e-smoke-diagnostics
+          path: e2e-artifacts/
+          if-no-files-found: warn
+          retention-days: 7
+
   changelog-check:
     name: CHANGELOG updated
     runs-on: ubuntu-latest

@@ -109,6 +109,7 @@ export function PasteZone({
       onDrop={handleDrop}
     >
       <textarea
+        data-testid="paste-input"
         data-shortcut-target="link-grabber-paste"
         ref={textareaRef}
         className="h-32 w-full resize-none rounded border bg-background p-3 text-sm focus:outline-none focus:ring-2 focus:ring-accent"
@@ -118,7 +119,7 @@ export function PasteZone({
         <Button variant="outline" onClick={handleClear}>
           {t("common.clear")}
         </Button>
-        <Button onClick={handleAnalyze} disabled={isLoading}>
+        <Button data-testid="analyze-links" onClick={handleAnalyze} disabled={isLoading}>
           {isLoading ? t("linkGrabber.resolving") : t("linkGrabber.analyze")}
         </Button>
       </div>
