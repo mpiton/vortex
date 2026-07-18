@@ -57,8 +57,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is raised to 0.2.0 (the released 1.2.1 build uses 0.2.0-only host
   functions), the MEGA and 1fichier descriptions no longer overpromise
   unimplemented features, and a new `registry_coherence` integration test
-  validates every registry entry in CI — required fields, semver formats,
-  checksum shape, known category, unique names.
+  validates every registry entry in CI — required fields, semver formats
+  (leading-zero segments rejected), checksum shape, known category including
+  `utility`, unique names; `min_vortex_version` stays optional as documented
+  in the registry template.
 - **MAT-136 documentation paths**: README, ARCHI.md, and CLAUDE.md now point
   at the real Tauri app-data location for the database, `config.toml`, and
   plugins directory (`~/.local/share/dev.vortex.app/` on Linux, with macOS and
@@ -152,7 +154,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   settings bridge, and proxy/user-agent/connection-timeout build the HTTP
   client at startup (the Network section now says changes apply at next
   launch); an invalid `user_agent` in a hand-edited config falls back to the
-  default instead of aborting startup. Options with no engine wiring yet — speed limit, pre-allocate
+  default instead of aborting startup, and the invalid-proxy warning no
+  longer logs the raw proxy URL, which can embed credentials. Options with no engine wiring yet — speed limit, pre-allocate
   space, DNS over HTTPS — are disabled with a "Coming soon" badge, and the
   Remote Access section is replaced by a planned-feature notice so
   REST/WebSocket/Web UI can never look active while no server exists.

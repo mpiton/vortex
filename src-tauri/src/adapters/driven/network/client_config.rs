@@ -21,7 +21,8 @@ pub fn client_from_config(config: &AppConfig) -> Result<reqwest::Client, reqwest
     if let Some(proxy_url) = configured_proxy_uri(config) {
         match reqwest::Proxy::all(&proxy_url) {
             Ok(proxy) => builder = builder.proxy(proxy),
-            Err(err) => warn!(proxy_url, error = %err, "invalid proxy setting ignored"),
+            // Never log the raw URL: proxy URIs can embed `user:password@`.
+            Err(err) => warn!(error = %err, "invalid proxy setting ignored"),
         }
     }
     builder.build()

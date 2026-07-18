@@ -14,6 +14,7 @@ const CATEGORIES: &[&str] = &[
     "captcha",
     "extractor",
     "notifier",
+    "utility",
 ];
 
 fn load_registry() -> toml::Table {
@@ -44,9 +45,11 @@ fn str_field<'a>(plugin: &'a toml::Value, name: &str, field: &str) -> &'a str {
 fn is_semver_triple(s: &str) -> bool {
     let parts: Vec<&str> = s.split('.').collect();
     parts.len() == 3
-        && parts
-            .iter()
-            .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
+        && parts.iter().all(|p| {
+            !p.is_empty()
+                && p.chars().all(|c| c.is_ascii_digit())
+                && (p.len() == 1 || !p.starts_with('0'))
+        })
 }
 
 fn is_sha256_hex(s: &str) -> bool {
@@ -77,11 +80,17 @@ fn test_registry_entries_are_complete_and_well_formed() {
             is_semver_triple(version),
             "{name}: version `{version}` is not MAJOR.MINOR.PATCH"
         );
-        let min_vortex = str_field(plugin, &name, "min_vortex_version");
-        assert!(
-            is_semver_triple(min_vortex),
-            "{name}: min_vortex_version `{min_vortex}` is not MAJOR.MINOR.PATCH"
-        );
+        // `min_vortex_version` is optional (see registry/TEMPLATE.toml and
+        // `Option<String>` in the store client); validate only when present.
+        if let Some(value) = plugin.get("min_vortex_version") {
+            let min_vortex = value
+                .as_str()
+                .unwrap_or_else(|| panic!("{name}: `min_vortex_version` must be a string"));
+            assert!(
+                is_semver_triple(min_vortex),
+                "{name}: min_vortex_version `{min_vortex}` is not MAJOR.MINOR.PATCH"
+            );
+        }
 
         let category = str_field(plugin, &name, "category");
         assert!(
@@ -97,6 +106,13 @@ fn test_registry_entries_are_complete_and_well_formed() {
             );
         }
     }
+}
+
+#[test]
+fn test_is_semver_triple_with_leading_zero_rejects() {
+    assert!(!is_semver_triple("01.2.3"));
+    assert!(!is_semver_triple("1.02.3"));
+    assert!(is_semver_triple("0.2.10"));
 }
 
 #[test]

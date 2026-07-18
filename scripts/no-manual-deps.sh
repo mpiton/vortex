@@ -124,8 +124,12 @@ for cargo_toml in src-tauri/Cargo.toml Cargo.toml; do
                 # byte-identical, so there is nothing to stage. The point of
                 # this hook is manifest/lock consistency: accept when the
                 # existing lock still satisfies the staged manifest.
-                if cargo metadata --manifest-path "$cargo_toml" --locked \
-                    --format-version 1 >/dev/null 2>&1; then
+                # `cargo metadata` reads the working tree, so only trust it
+                # when the working-tree manifest and lock are identical to
+                # the staged content; otherwise fail closed.
+                if git diff --quiet -- "$cargo_toml" "$lock" \
+                    && cargo metadata --manifest-path "$cargo_toml" --locked \
+                        --format-version 1 >/dev/null 2>&1; then
                     continue
                 fi
                 echo "BLOCKED: $cargo_toml dependency table modified without updated $lock."
