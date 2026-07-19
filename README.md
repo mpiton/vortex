@@ -21,7 +21,7 @@ Open-source desktop download manager — successor to JDownloader. Tauri 2 + Rus
 |--------|---------|
 | Debian / Ubuntu (`.deb`) | `wget https://github.com/mpiton/vortex/releases/download/v0.3.0-beta.1/Vortex_0.3.0-beta.1_amd64.deb && sudo dpkg -i Vortex_0.3.0-beta.1_amd64.deb` |
 | Fedora / RHEL (`.rpm`) | `sudo rpm -i https://github.com/mpiton/vortex/releases/download/v0.3.0-beta.1/Vortex-0.3.0-beta.1-1.x86_64.rpm` |
-| Portable (`.AppImage`) | `wget https://github.com/mpiton/vortex/releases/download/v0.3.0-beta.1/Vortex_0.3.0-beta.1_amd64.AppImage && chmod +x Vortex_*.AppImage && ./Vortex_*.AppImage` |
+| Portable (`.AppImage`) | `wget https://github.com/mpiton/vortex/releases/download/v0.3.0-beta.1/Vortex_0.3.0-beta.1_amd64.AppImage && chmod +x Vortex_0.3.0-beta.1_amd64.AppImage && ./Vortex_0.3.0-beta.1_amd64.AppImage` |
 | Flatpak | `flatpak install --user vortex.flatpak` (download from the [release page](https://github.com/mpiton/vortex/releases/tag/v0.3.0-beta.1)) |
 
 ### macOS (universal — Apple Silicon + Intel)
@@ -145,7 +145,7 @@ See [`PRD-v2.md`](PRD-v2.md) for the per-task breakdown.
 This is a **beta release** — bugs, rough edges and missing flows are expected. Two channels:
 
 - **Bugs** → [open an issue](https://github.com/mpiton/vortex/issues/new?template=bug_report.yml) with the *Vortex version* dropdown set to `v0.3.0-beta.1`
-- **Discussions** → [v0.3.0-beta.1 feedback thread](https://github.com/mpiton/vortex/discussions) for general impressions, missing features, plugin requests
+- **Discussions** → [GitHub Discussions](https://github.com/mpiton/vortex/discussions) for general impressions, missing features, plugin requests
 
 ## License
 

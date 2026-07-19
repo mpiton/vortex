@@ -32,8 +32,10 @@ tag build. **(R-02)**
 
 ## 3. Changelog and docs
 
-- [ ] `CHANGELOG.md`: cut a `## [X.Y.Z] - YYYY-MM-DD` section from `[Unreleased]`,
-      with Highlights, Known limitations and Upgrade notes.
+- [ ] `CHANGELOG.md`: cut a `## [<version>] - YYYY-MM-DD` section from `[Unreleased]`,
+      with Highlights, Known limitations and Upgrade notes. Use the full version,
+      prerelease suffix included (e.g. `## [0.3.0-beta.1] - 2026-07-19`) — the
+      version script greps for that exact heading.
 - [ ] Release notes claim **only verified capabilities** — no CAPTCHA solving, no MEGA
       decryption, no remote access (REST/WS/Web UI) until they actually ship. **(R-06)**
 - [ ] `README.md`: status line, install URLs/filenames, features heading, roadmap row,

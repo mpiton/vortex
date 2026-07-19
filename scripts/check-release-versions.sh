@@ -24,13 +24,12 @@ expected="${1:-$pkg_version}"
 [ "$cargo_version" = "$expected" ] || err "src-tauri/Cargo.toml version ($cargo_version) != expected ($expected)"
 [ "$tauri_version" = "$expected" ] || err "src-tauri/tauri.conf.json version ($tauri_version) != expected ($expected)"
 
-# Windows MSI needs a numeric x.y.z.w version: its x.y.z prefix must match
-# the semver core of the release (prerelease suffix stripped).
+# Windows MSI needs a strictly numeric x.y.z.w version whose x.y.z prefix
+# matches the semver core of the release (prerelease suffix stripped).
 core="${expected%%-*}"
-case "$wix_version" in
-  "$core".*) ;;
-  *) err "tauri.conf.json wix version ($wix_version) does not start with $core." ;;
-esac
+if ! [[ "$wix_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ && "$wix_version" == "$core".* ]]; then
+  err "tauri.conf.json wix version ($wix_version) must be numeric x.y.z.w starting with $core."
+fi
 
 # Fixed-string match: a `.` in an unescaped regex would match any character.
 if ! grep -qF "## [${expected}]" CHANGELOG.md; then
