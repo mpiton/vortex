@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- CI/release workflows: bumped all actions still targeting Node.js 20 to
+  their Node 24 majors (`actions/checkout` v7, `actions/setup-node` v7,
+  `actions/cache` v6, `actions/upload-artifact` v7, `moonrepo/setup-rust`
+  v1, `actions/labeler` v6, `actions/first-interaction` v3, `actions/stale`
+  v10), pinned by commit SHA.
 - Bug report template: version dropdown now lists `v0.3.0-beta.1` as the
   latest beta.
 - README: feedback section links to the v0.3.0-beta.1 discussion thread.
