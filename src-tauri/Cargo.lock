@@ -7425,7 +7425,7 @@ checksum = "051eb1abcf10076295e815102942cc58f9d5e3b4560e46e53c21e8ff6f3af7b1"
 
 [[package]]
 name = "vortex"
-version = "0.2.0-beta"
+version = "0.3.0-beta.1"
 dependencies = [
  "aes-gcm",
  "anyhow",

@@ -9,9 +9,9 @@
 
 Open-source desktop download manager — successor to JDownloader. Tauri 2 + Rust backend + React 19 frontend, hexagonal architecture, CQRS, WASM plugin system (Extism).
 
-> **Status: v0.2.0-beta** (2026-04-28). Phase 0 of the v2 roadmap shipped — every UI view is wired to a real backend, integrity checking via SHA-256/MD5, dynamic segment splitting, queue reorder, change directory, plugin config UI, history/statistics dashboards. Targeted at testers; REST API, browser extension and headless CLI are deferred to v0.3+. See [CHANGELOG.md](CHANGELOG.md) for the full feature list and [PRD-v2.md](PRD-v2.md) for the v1.0 roadmap.
+> **Status: v0.3.0-beta.1** (2026-07-19). Phase 1 of the v2 roadmap shipped — premium accounts (keyring-backed) wired end to end, file hosters (MediaFire, PixelDrain, Gofile), container files (DLC/CCF/RSDF/Metalink), per-image gallery rows in the Link Grabber, and a three-OS CI merge gate with a blocking E2E smoke test. Targeted at testers; CAPTCHA solving, MEGA decryption, REST API and browser extension are deferred to v0.4+. See [CHANGELOG.md](CHANGELOG.md) for the full feature list and [PRD-v2.md](PRD-v2.md) for the v1.0 roadmap.
 
-## Install (v0.2.0-beta)
+## Install (v0.3.0-beta.1)
 
 > ⚠️ Beta binaries on macOS and Windows ship **unsigned**. First-launch Gatekeeper / SmartScreen warnings are expected — see the per-platform notes below to bypass them.
 
@@ -19,16 +19,16 @@ Open-source desktop download manager — successor to JDownloader. Tauri 2 + Rus
 
 | Format | Command |
 |--------|---------|
-| Debian / Ubuntu (`.deb`) | `wget https://github.com/mpiton/vortex/releases/download/v0.2.0-beta/Vortex_0.2.0-beta_amd64.deb && sudo dpkg -i Vortex_0.2.0-beta_amd64.deb` |
-| Fedora / RHEL (`.rpm`) | `sudo rpm -i https://github.com/mpiton/vortex/releases/download/v0.2.0-beta/Vortex-0.2.0-beta-1.x86_64.rpm` |
-| Portable (`.AppImage`) | `wget https://github.com/mpiton/vortex/releases/download/v0.2.0-beta/Vortex_0.2.0-beta_amd64.AppImage && chmod +x Vortex_*.AppImage && ./Vortex_*.AppImage` |
-| Flatpak | `flatpak install --user vortex.flatpak` (download from the [release page](https://github.com/mpiton/vortex/releases/tag/v0.2.0-beta)) |
+| Debian / Ubuntu (`.deb`) | `wget https://github.com/mpiton/vortex/releases/download/v0.3.0-beta.1/Vortex_0.3.0-beta.1_amd64.deb && sudo dpkg -i Vortex_0.3.0-beta.1_amd64.deb` |
+| Fedora / RHEL (`.rpm`) | `sudo rpm -i https://github.com/mpiton/vortex/releases/download/v0.3.0-beta.1/Vortex-0.3.0-beta.1-1.x86_64.rpm` |
+| Portable (`.AppImage`) | `wget https://github.com/mpiton/vortex/releases/download/v0.3.0-beta.1/Vortex_0.3.0-beta.1_amd64.AppImage && chmod +x Vortex_*.AppImage && ./Vortex_*.AppImage` |
+| Flatpak | `flatpak install --user vortex.flatpak` (download from the [release page](https://github.com/mpiton/vortex/releases/tag/v0.3.0-beta.1)) |
 
 ### macOS (universal — Apple Silicon + Intel)
 
 ```bash
-curl -LO https://github.com/mpiton/vortex/releases/download/v0.2.0-beta/Vortex_0.2.0-beta_universal.dmg
-open Vortex_0.2.0-beta_universal.dmg
+curl -LO https://github.com/mpiton/vortex/releases/download/v0.3.0-beta.1/Vortex_0.3.0-beta.1_universal.dmg
+open Vortex_0.3.0-beta.1_universal.dmg
 # Drag Vortex.app to /Applications
 # First launch: right-click Vortex.app → Open → Open (bypasses Gatekeeper)
 ```
@@ -42,14 +42,17 @@ xattr -dr com.apple.quarantine /Applications/Vortex.app
 
 | Format | Notes |
 |--------|-------|
-| MSI installer | [`Vortex_0.2.0-beta_x64_en-US.msi`](https://github.com/mpiton/vortex/releases/download/v0.2.0-beta/Vortex_0.2.0-beta_x64_en-US.msi) — recommended for system-wide install |
-| NSIS setup | [`Vortex_0.2.0-beta_x64-setup.exe`](https://github.com/mpiton/vortex/releases/download/v0.2.0-beta/Vortex_0.2.0-beta_x64-setup.exe) — per-user install |
+| MSI installer | [`Vortex_0.3.0-beta.1_x64_en-US.msi`](https://github.com/mpiton/vortex/releases/download/v0.3.0-beta.1/Vortex_0.3.0-beta.1_x64_en-US.msi) — recommended for system-wide install |
+| NSIS setup | [`Vortex_0.3.0-beta.1_x64-setup.exe`](https://github.com/mpiton/vortex/releases/download/v0.3.0-beta.1/Vortex_0.3.0-beta.1_x64-setup.exe) — per-user install |
 
 SmartScreen will warn "Windows protected your PC" → click *More info* → *Run anyway*.
 
-## Features (v0.2.0-beta)
+## Features (v0.3.0-beta.1)
 
 - **Segmented downloads** — parallel HTTP Range workers with dynamic split (slow-tail rebalancing) and `.vortex-meta` resume across restarts
+- **Premium accounts** — add hoster credentials (stored in the OS keyring), validated and injected into plugin requests end to end
+- **File hosters** — MediaFire, PixelDrain and Gofile link resolution; MEGA and 1fichier-free links are detected and refused with an explicit reason (no CAPTCHA solver, no host-side decryption yet)
+- **Container files** — DLC / CCF / RSDF / Metalink import in the Link Grabber
 - **Queue manager** — drag-and-drop reorder, Move-to-top / -bottom, priority-aware scheduling, configurable concurrency (1-20)
 - **Integrity** — SHA-256 / MD5 verification on completion, mismatch surfaces with expected vs. computed hash
 - **History view** — group-by-day, filter tabs, debounced search, CSV / JSON export, retention purge worker (7 / 30 / 90 / 365 / unlimited days)
@@ -131,7 +134,7 @@ A typed SDK crate (`vortex-plugin-sdk`) is on the v1.0 roadmap to make this fast
 | Version | Target | Theme |
 |---------|--------|-------|
 | ✅ **v0.2.0-beta** | 2026-04-28 | Phase 0 — every placeholder view replaced, integrity, queue UX, plugin config UI |
-| v0.3 | 2026-07-01 | Phase 1 — Accounts (premium), Packages, file hosters (MEGA, MediaFire, 1fichier…), containers (DLC/CCF/RSDF/Metalink) |
+| ✅ **v0.3.0-beta.1** | 2026-07-19 | Phase 1 — Accounts (premium), file hosters (MediaFire, PixelDrain, Gofile), containers (DLC/CCF/RSDF/Metalink), gallery rows, CI merge gate + E2E smoke |
 | v0.4 | 2026-09-15 | Phase 2 — CAPTCHA pipeline, Real-Debrid / AllDebrid, Scheduler, automation rules, reconnect IP |
 | v1.0 | 2026-12-15 | Phase 3 — REST API + WebSocket, Web UI, browser extension, Click'n'Load, headless mode, i18n, Flathub |
 
@@ -141,8 +144,8 @@ See [`PRD-v2.md`](PRD-v2.md) for the per-task breakdown.
 
 This is a **beta release** — bugs, rough edges and missing flows are expected. Two channels:
 
-- **Bugs** → [open an issue](https://github.com/mpiton/vortex/issues/new?template=bug_report.yml) with the *Vortex version* dropdown set to `v0.2.0-beta`
-- **Discussions** → [v0.2.0-beta feedback thread](https://github.com/mpiton/vortex/discussions) for general impressions, missing features, plugin requests
+- **Bugs** → [open an issue](https://github.com/mpiton/vortex/issues/new?template=bug_report.yml) with the *Vortex version* dropdown set to `v0.3.0-beta.1`
+- **Discussions** → [v0.3.0-beta.1 feedback thread](https://github.com/mpiton/vortex/discussions) for general impressions, missing features, plugin requests
 
 ## License
 
