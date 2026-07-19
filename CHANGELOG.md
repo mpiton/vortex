@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- CAPTCHA pipeline: persistent manual challenge queue, solve/skip/retry
+  actions, timeout handling, and automatic download resumption (MAT-140).
+
 ### Security
 
 - `cargo audit` config now ignores RUSTSEC-2026-0194/0195 (quick-xml 0.39.4

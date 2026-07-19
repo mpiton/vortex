@@ -4,6 +4,8 @@
 //! Handler implementations live in submodules and add methods to `CommandBus`.
 
 #[cfg(test)]
+mod captcha_tests;
+#[cfg(test)]
 pub(crate) mod tests_support;
 
 mod add_account;

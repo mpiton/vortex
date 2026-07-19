@@ -507,6 +507,24 @@ mod tests {
     }
 
     #[test]
+    fn captcha_timeout_defaults_to_two_minutes_and_is_clamped() {
+        let mut config = AppConfig::default();
+        assert_eq!(
+            config.captcha_timeout_seconds,
+            DEFAULT_CAPTCHA_TIMEOUT_SECONDS
+        );
+
+        apply_patch(
+            &mut config,
+            &ConfigPatch {
+                captcha_timeout_seconds: Some(0),
+                ..Default::default()
+            },
+        );
+        assert_eq!(config.captcha_timeout_seconds, MIN_CAPTCHA_TIMEOUT_SECONDS);
+    }
+
+    #[test]
     fn test_apply_patch_updates_link_check_fields() {
         let mut config = AppConfig::default();
         let patch = ConfigPatch {

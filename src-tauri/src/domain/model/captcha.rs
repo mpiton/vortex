@@ -82,55 +82,98 @@ impl CaptchaChallenge {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::model::download::DownloadId;
 
     fn make_challenge() -> CaptchaChallenge {
         CaptchaChallenge::new(
-            42,
+            CaptchaId::new("captcha-42"),
+            DownloadId(7),
             CaptchaType::Image,
             "https://example.com/captcha".to_string(),
+            1_000,
+            61_000,
         )
+        .expect("valid challenge")
     }
 
     #[test]
-    fn test_captcha_new() {
+    fn new_challenge_is_pending_and_has_a_deadline() {
         let c = make_challenge();
-        assert_eq!(c.id(), 42);
+        assert_eq!(c.id().as_str(), "captcha-42");
+        assert_eq!(c.download_id(), DownloadId(7));
         assert_eq!(c.challenge_type(), CaptchaType::Image);
         assert_eq!(c.url(), "https://example.com/captcha");
         assert!(c.image_data().is_none());
-        assert!(!c.is_solved());
-        assert!(c.solution().is_none());
+        assert_eq!(c.status(), CaptchaStatus::Pending);
+        assert_eq!(c.expires_at(), 61_000);
+        assert_eq!(c.attempts(), 0);
     }
 
     #[test]
-    fn test_captcha_solve() {
+    fn solve_records_solver_and_duration_without_solution() {
         let mut c = make_challenge();
-        c.solve("abc123".to_string());
-        assert!(c.is_solved());
-        assert_eq!(c.solution(), Some("abc123"));
+        c.solve(4_000, "manual").expect("pending can be solved");
+
+        assert_eq!(c.status(), CaptchaStatus::Solved);
+        assert_eq!(c.solver(), Some("manual"));
+        assert_eq!(c.resolved_at(), Some(4_000));
+        assert_eq!(c.duration_ms(), Some(3_000));
     }
 
     #[test]
-    fn test_captcha_is_solved() {
+    fn skip_and_timeout_are_explicit_terminal_states() {
         let mut c = make_challenge();
-        assert!(!c.is_solved());
-        c.solve("x".to_string());
-        assert!(c.is_solved());
+        c.skip(2_000, "Skipped by user")
+            .expect("pending can be skipped");
+        assert_eq!(c.status(), CaptchaStatus::Skipped);
+        assert_eq!(c.failure_reason(), Some("Skipped by user"));
+
+        let mut timed_out = make_challenge();
+        timed_out.timeout(61_000).expect("pending can time out");
+        assert_eq!(timed_out.status(), CaptchaStatus::TimedOut);
+        assert_eq!(timed_out.failure_reason(), Some("CAPTCHA timed out"));
     }
 
     #[test]
-    fn test_captcha_with_image_data() {
+    fn retry_renews_pending_deadline_and_counts_attempt() {
+        let mut c = make_challenge();
+        c.retry(5_000, 65_000).expect("pending can be retried");
+
+        assert_eq!(c.status(), CaptchaStatus::Pending);
+        assert_eq!(c.attempts(), 1);
+        assert_eq!(c.expires_at(), 65_000);
+    }
+
+    #[test]
+    fn image_payload_is_bounded() {
         let data = vec![0u8, 1, 2, 3];
-        let c = make_challenge().with_image_data(data.clone());
+        let c = make_challenge()
+            .with_image_data(data.clone())
+            .expect("small image");
         assert_eq!(c.image_data(), Some(data.as_slice()));
+
+        let too_large = vec![0; MAX_CAPTCHA_IMAGE_BYTES + 1];
+        assert!(make_challenge().with_image_data(too_large).is_err());
     }
 
     #[test]
-    fn test_captcha_type_display() {
-        assert_eq!(CaptchaType::Image.to_string(), "Image");
-        assert_eq!(CaptchaType::ReCaptchaV2.to_string(), "reCAPTCHA v2");
-        assert_eq!(CaptchaType::ReCaptchaV3.to_string(), "reCAPTCHA v3");
-        assert_eq!(CaptchaType::HCaptcha.to_string(), "hCaptcha");
-        assert_eq!(CaptchaType::TextInput.to_string(), "TextInput");
+    fn persisted_enum_values_round_trip() {
+        for challenge_type in [
+            CaptchaType::Image,
+            CaptchaType::ReCaptchaV2,
+            CaptchaType::ReCaptchaV3,
+            CaptchaType::HCaptcha,
+            CaptchaType::TextInput,
+        ] {
+            assert_eq!(challenge_type.to_string().parse(), Ok(challenge_type));
+        }
+        for status in [
+            CaptchaStatus::Pending,
+            CaptchaStatus::Solved,
+            CaptchaStatus::Skipped,
+            CaptchaStatus::TimedOut,
+        ] {
+            assert_eq!(status.to_string().parse(), Ok(status));
+        }
     }
 }

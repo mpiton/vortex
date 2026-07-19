@@ -1,4 +1,6 @@
 pub mod account_repo;
+#[cfg(test)]
+pub mod captcha_repo;
 pub mod connection;
 pub mod download_read_repo;
 pub mod download_repo;
@@ -11,3 +13,6 @@ pub mod plugin_config_repo;
 pub mod progress_bridge;
 pub mod stats_repo;
 mod util;
+
+#[cfg(test)]
+mod captcha_repo_tests;

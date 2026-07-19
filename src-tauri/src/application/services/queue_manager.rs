@@ -742,6 +742,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn captcha_pending_releases_the_slot_and_starts_next_download() {
+        let mut waiting = make_download(1, 5, DownloadState::Queued);
+        waiting.start().expect("queued to downloading");
+        waiting.wait().expect("downloading to waiting");
+        let queued = make_download(2, 5, DownloadState::Queued);
+        let repo = Arc::new(MockDownloadRepo::new(vec![waiting, queued]));
+        let engine = Arc::new(MockEngine::new());
+        let bus = Arc::new(MockEventBus::new());
+        let qm = make_manager(repo, Arc::clone(&engine), bus, 1, 1);
+
+        qm.handle_captcha_pending().await.expect("schedule next");
+
+        assert_eq!(*engine.started.lock().unwrap(), vec![2]);
+        assert_eq!(qm.active_count(), 1);
+    }
+
+    #[tokio::test]
     async fn test_on_slot_freed_respects_max_concurrent() {
         let d = make_download(1, 5, DownloadState::Queued);
         let repo = Arc::new(MockDownloadRepo::new(vec![d]));

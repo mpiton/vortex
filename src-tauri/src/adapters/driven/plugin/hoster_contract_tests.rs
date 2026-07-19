@@ -4,6 +4,7 @@ use super::ExtismPluginLoader;
 use super::capabilities::SharedHostResources;
 use super::hoster_contract::{parse_hoster_link, parse_hoster_links};
 use crate::domain::error::DomainError;
+use crate::domain::model::captcha::CaptchaType;
 use crate::domain::model::credential::Credential;
 use crate::domain::model::plugin::{PluginCategory, PluginInfo, PluginManifest};
 use crate::domain::ports::driven::PluginLoader;
@@ -31,6 +32,22 @@ fn test_parse_hoster_link_rejects_empty_file_list() {
     assert_eq!(
         parse_hoster_link(r#"{"files":[]}"#),
         Err(DomainError::HosterNoFile)
+    );
+}
+
+#[test]
+fn test_parse_hoster_link_accepts_bounded_captcha_without_direct_url() {
+    let parsed = parse_hoster_link(
+        r#"{"files":[{"url":"https://hoster.example/file","direct_url":null,"requires_captcha":true,"captcha_type":"image","captcha_image_data":[137,80,78,71]}]}"#,
+    )
+    .expect("captcha response is a valid unresolved hoster link");
+
+    assert!(parsed.direct_url.is_none());
+    let captcha = parsed.captcha.expect("captcha metadata");
+    assert_eq!(captcha.challenge_type, CaptchaType::Image);
+    assert_eq!(
+        captcha.image_data.as_deref(),
+        Some([137, 80, 78, 71].as_slice())
     );
 }
 
