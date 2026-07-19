@@ -15,6 +15,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   but unreleased; the ignore goes away once wayland-scanner > 0.31.10 ships
   (MAT-139).
 
+### Fixed
+
+- Contributor Automation: `actions/first-interaction` v3 requires both
+  `issue_message` and `pr_message` at runtime, so the split welcome jobs
+  each crashed with "Input required and not supplied". Merged them into a
+  single job that supplies both messages.
+
 ### Changed
 
 - CI/release workflows: bumped all actions still targeting Node.js 20 to
