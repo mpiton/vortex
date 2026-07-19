@@ -8,6 +8,7 @@
 
 use crate::domain::error::DomainError;
 use crate::domain::model::download::DownloadState;
+use crate::domain::ports::driven::CaptchaRepository;
 use crate::domain::ports::driven::download_repository::DownloadRepository;
 
 /// States that imply a running engine task.  On fresh startup no task exists,
@@ -22,14 +23,38 @@ const ORPHAN_STATES: [DownloadState; 4] = [
 /// Transition every download in an active-but-orphaned state to `Error`.
 ///
 /// Returns the number of downloads recovered.
+#[cfg(test)]
 pub fn recover_orphaned_downloads(
     download_repo: &dyn DownloadRepository,
+) -> Result<usize, DomainError> {
+    recover(download_repo, None)
+}
+
+pub fn recover_orphaned_downloads_with_captchas(
+    download_repo: &dyn DownloadRepository,
+    captcha_repo: &dyn CaptchaRepository,
+) -> Result<usize, DomainError> {
+    recover(download_repo, Some(captcha_repo))
+}
+
+fn recover(
+    download_repo: &dyn DownloadRepository,
+    captcha_repo: Option<&dyn CaptchaRepository>,
 ) -> Result<usize, DomainError> {
     let mut recovered = 0;
 
     for state in ORPHAN_STATES {
         let downloads = download_repo.find_by_state(state)?;
         for mut download in downloads {
+            if state == DownloadState::Waiting
+                && captcha_repo
+                    .map(|repo| repo.find_pending_by_download(download.id()))
+                    .transpose()?
+                    .flatten()
+                    .is_some()
+            {
+                continue;
+            }
             // fail() is valid from all ORPHAN_STATES — see domain state machine.
             let error = "Interrupted: app restarted".to_string();
             let _event = download.fail(error.clone())?;
@@ -44,6 +69,7 @@ pub fn recover_orphaned_downloads(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::model::captcha::{CaptchaChallenge, CaptchaId, CaptchaType};
     use crate::domain::model::download::{Download, DownloadId, Url};
     use std::collections::HashMap;
     use std::sync::Mutex;
@@ -93,6 +119,26 @@ mod tests {
                 .filter(|d| d.state() == state)
                 .cloned()
                 .collect())
+        }
+    }
+
+    struct PendingCaptchaRepo(CaptchaChallenge);
+
+    impl CaptchaRepository for PendingCaptchaRepo {
+        fn save(&self, _: &CaptchaChallenge) -> Result<(), DomainError> {
+            Ok(())
+        }
+
+        fn find_by_id(&self, id: &CaptchaId) -> Result<Option<CaptchaChallenge>, DomainError> {
+            Ok((self.0.id() == id).then(|| self.0.clone()))
+        }
+
+        fn list(&self) -> Result<Vec<CaptchaChallenge>, DomainError> {
+            Ok(vec![self.0.clone()])
+        }
+
+        fn list_pending(&self) -> Result<Vec<CaptchaChallenge>, DomainError> {
+            Ok(vec![self.0.clone()])
         }
     }
 
@@ -167,6 +213,27 @@ mod tests {
         assert_eq!(count, 1);
         let d = repo.get(1).expect("download exists");
         assert_eq!(d.state(), DownloadState::Error);
+    }
+
+    #[test]
+    fn test_recover_preserves_waiting_download_with_pending_captcha() {
+        let repo = InMemoryRepo::new(vec![make_waiting(1)]);
+        let captchas = PendingCaptchaRepo(
+            CaptchaChallenge::new(
+                CaptchaId::new("captcha-1"),
+                DownloadId(1),
+                CaptchaType::TextInput,
+                "https://hoster.example/file".into(),
+                1_000,
+                61_000,
+            )
+            .expect("challenge"),
+        );
+
+        let count = recover_orphaned_downloads_with_captchas(&repo, &captchas).expect("recovery");
+
+        assert_eq!(count, 0);
+        assert_eq!(repo.get(1).unwrap().state(), DownloadState::Waiting);
     }
 
     #[test]

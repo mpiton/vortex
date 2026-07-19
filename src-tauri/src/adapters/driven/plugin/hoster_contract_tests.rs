@@ -38,7 +38,7 @@ fn test_parse_hoster_link_rejects_empty_file_list() {
 #[test]
 fn test_parse_hoster_link_accepts_bounded_captcha_without_direct_url() {
     let parsed = parse_hoster_link(
-        r#"{"files":[{"url":"https://hoster.example/file","direct_url":null,"requires_captcha":true,"captcha_type":"image","captcha_image_data":[137,80,78,71]}]}"#,
+        r#"{"files":[{"url":"https://hoster.example/file","direct_url":null,"requires_captcha":true,"captcha_type":"image","captcha_image_data":[137,80,78,71,13,10,26,10,0,0,0,13,73,72,68,82,0,0,0,1,0,0,0,1]}]}"#,
     )
     .expect("captcha response is a valid unresolved hoster link");
 
@@ -47,8 +47,23 @@ fn test_parse_hoster_link_accepts_bounded_captcha_without_direct_url() {
     assert_eq!(captcha.challenge_type, CaptchaType::Image);
     assert_eq!(
         captcha.image_data.as_deref(),
-        Some([137, 80, 78, 71].as_slice())
+        Some(
+            [
+                137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0,
+                1,
+            ]
+            .as_slice()
+        )
     );
+}
+
+#[test]
+fn test_parse_hoster_link_rejects_untrusted_captcha_image_formats() {
+    let result = parse_hoster_link(
+        r#"{"files":[{"url":"https://hoster.example/file","requires_captcha":true,"captcha_type":"image","captcha_image_data":[60,115,118,103,47,62]}]}"#,
+    );
+
+    assert!(matches!(result, Err(DomainError::PluginError(_))));
 }
 
 #[test]

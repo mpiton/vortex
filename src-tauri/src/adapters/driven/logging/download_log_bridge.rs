@@ -16,6 +16,9 @@ fn record_download_event(store: &DownloadLogStore, event: &DomainEvent) {
         DomainEvent::DownloadCreated { id } => {
             store.push(id.0, "[INFO] Download created".to_string());
         }
+        DomainEvent::DownloadQueued { id } => {
+            store.push(id.0, "[INFO] Download queued".to_string());
+        }
         DomainEvent::DownloadStarted { id } => {
             store.push(id.0, "[INFO] Download started".to_string());
         }
@@ -61,6 +64,37 @@ fn record_download_event(store: &DownloadLogStore, event: &DomainEvent) {
                 "ended early"
             };
             store.push(id.0, format!("[INFO] Wait {suffix}"));
+        }
+        DomainEvent::CaptchaPending { download_id, .. } => {
+            store.push(download_id.0, "[INFO] CAPTCHA waiting for user".to_string());
+        }
+        DomainEvent::CaptchaSolved {
+            download_id,
+            solver,
+            duration_ms,
+            ..
+        } => {
+            store.push(
+                download_id.0,
+                format!("[INFO] CAPTCHA solved by {solver} in {duration_ms}ms"),
+            );
+        }
+        DomainEvent::CaptchaSkipped {
+            download_id,
+            reason,
+            ..
+        } => {
+            store.push(download_id.0, format!("[WARN] {reason}"));
+        }
+        DomainEvent::CaptchaTimedOut {
+            download_id,
+            duration_ms,
+            ..
+        } => {
+            store.push(
+                download_id.0,
+                format!("[WARN] CAPTCHA timed out after {duration_ms}ms"),
+            );
         }
         DomainEvent::DownloadChecking { id } => {
             store.push(id.0, "[INFO] Checking download".to_string());
@@ -142,6 +176,7 @@ fn record_download_event(store: &DownloadLogStore, event: &DomainEvent) {
             );
         }
         DomainEvent::DownloadProgress { .. }
+        | DomainEvent::CaptchaRequired { .. }
         | DomainEvent::DownloadCompletedPersisted { .. }
         | DomainEvent::DownloadPrioritySet { .. }
         | DomainEvent::QueueReordered { .. }

@@ -376,10 +376,11 @@ fn into_hoster_resolution(
     service_name: &str,
 ) -> Result<HosterResolution, DomainError> {
     if link.source_url.trim().is_empty()
-        || link
+        || (link
             .direct_url
             .as_deref()
             .is_none_or(|url| url.trim().is_empty())
+            && link.captcha.is_none())
     {
         return Err(DomainError::HosterNoFile);
     }

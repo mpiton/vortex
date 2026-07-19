@@ -6,12 +6,37 @@ use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use crate::adapters::driven::filesystem::FsFileStorage;
+use crate::domain::event::DomainEvent;
+use crate::domain::model::captcha::CaptchaType;
 use crate::domain::model::download::{Download, DownloadId, Url};
 use crate::domain::model::meta::DownloadMeta;
 use crate::domain::ports::driven::FileStorage;
 
 use super::test_support::*;
 use super::*;
+
+#[test]
+fn captcha_resolution_failure_emits_the_typed_challenge() {
+    let event = source_resolution_event(
+        DownloadId(42),
+        &DomainError::CaptchaRequired {
+            challenge_type: CaptchaType::Image,
+            challenge_url: "https://hoster.example/file".into(),
+            image_data: Some(vec![1, 2, 3]),
+        },
+        false,
+    );
+
+    assert_eq!(
+        event,
+        DomainEvent::CaptchaRequired {
+            download_id: DownloadId(42),
+            challenge_type: CaptchaType::Image,
+            challenge_url: "https://hoster.example/file".into(),
+            image_data: Some(vec![1, 2, 3]),
+        }
+    );
+}
 
 #[test]
 fn mock_file_storage_does_not_probe_the_host_filesystem() {

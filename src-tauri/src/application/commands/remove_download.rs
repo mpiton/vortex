@@ -15,10 +15,15 @@ impl CommandBus {
             .find_by_id(cmd.id)?
             .ok_or_else(|| AppError::NotFound(format!("Download {} not found", cmd.id.0)))?;
 
+        let was_waiting_for_captcha = match self.captcha_handler_opt() {
+            Some(handler) => handler.skip_pending_for_download(cmd.id).await?,
+            None => false,
+        };
+
         let is_active = matches!(
             download.state(),
             DownloadState::Downloading | DownloadState::Waiting
-        );
+        ) && !was_waiting_for_captcha;
 
         if is_active {
             let _ = self.download_engine().cancel(cmd.id);

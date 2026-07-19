@@ -1,5 +1,4 @@
 pub mod account_repo;
-#[cfg(test)]
 pub mod captcha_repo;
 pub mod connection;
 pub mod download_read_repo;

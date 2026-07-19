@@ -30,6 +30,7 @@ export interface AppConfig {
   preAllocateSpace: boolean;
   dynamicSplitEnabled: boolean;
   dynamicSplitMinRemainingMb: number;
+  captchaTimeoutSeconds: number;
 
   // History
   historyRetentionDays: number;

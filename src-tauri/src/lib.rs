@@ -7,10 +7,10 @@ use std::sync::Arc;
 use tauri::Manager;
 
 use domain::ports::driven::{
-    AccountCredentialStore, AccountRepository, ArchiveExtractor, ClipboardObserver, Clock,
-    ConfigStore, CredentialStore, DownloadEngine, DownloadReadRepository, DownloadRepository,
-    DownloadSourceResolver, EventBus, FileStorage, HistoryRepository, HttpClient, PassphraseCodec,
-    PluginLoader, PluginReadRepository, StatsRepository,
+    AccountCredentialStore, AccountRepository, ArchiveExtractor, CaptchaRepository, CaptchaSolver,
+    ClipboardObserver, Clock, ConfigStore, CredentialStore, DownloadEngine, DownloadReadRepository,
+    DownloadRepository, DownloadSourceResolver, EventBus, FileStorage, HistoryRepository,
+    HttpClient, PassphraseCodec, PluginLoader, PluginReadRepository, StatsRepository,
 };
 
 // Public API — concrete types for app wiring (main.rs, Tauri setup, integration tests)
@@ -43,6 +43,7 @@ pub use adapters::driven::plugin::{
 };
 pub use adapters::driven::scheduler::{HISTORY_PURGE_STATE_FILE, HistoryPurgeWorker, SystemClock};
 pub use adapters::driven::sqlite::account_repo::SqliteAccountRepo;
+pub use adapters::driven::sqlite::captcha_repo::SqliteCaptchaRepo;
 pub use adapters::driven::sqlite::connection;
 pub use adapters::driven::sqlite::download_read_repo::SqliteDownloadReadRepo;
 pub use adapters::driven::sqlite::download_repo::SqliteDownloadRepo;
@@ -55,6 +56,7 @@ pub use adapters::driven::tray::{
     spawn_tray_animator,
 };
 pub use application::command_bus::CommandBus;
+pub use application::commands::captcha::{CaptchaCommandHandler, ManualCaptchaSolver};
 pub use application::commands::resolve_premium_source::ResolveHosterSourceHandler;
 pub use application::commands::store_refresh::{read_cache, write_cache};
 pub use application::error::AppError;
@@ -75,7 +77,8 @@ pub use domain::model::ExtractionConfig;
 pub use adapters::driving::tauri_ipc::{
     self, AppState, account_add, account_delete, account_export, account_get, account_import,
     account_list, account_traffic_get, account_update, account_validate, browse_file,
-    browse_folder, clipboard_state, clipboard_toggle, command_get_media_metadata, download_cancel,
+    browse_folder, captcha_get_pending, captcha_list, captcha_retry, captcha_skip, captcha_solve,
+    clipboard_state, clipboard_toggle, command_get_media_metadata, download_cancel,
     download_change_directory, download_change_directory_bulk, download_clear_completed,
     download_clear_failed, download_count_by_state, download_detail, download_list, download_logs,
     download_media_start, download_move_to_bottom, download_move_to_top, download_open_file,
@@ -164,6 +167,8 @@ pub fn run() {
             // ── SQLite repositories ─────────────────────────────────
             let download_repo: Arc<dyn DownloadRepository> =
                 Arc::new(SqliteDownloadRepo::new(db.clone()));
+            let captcha_repo: Arc<dyn CaptchaRepository> =
+                Arc::new(SqliteCaptchaRepo::new(db.clone()));
             let download_read_repo: Arc<dyn DownloadReadRepository> =
                 Arc::new(SqliteDownloadReadRepo::new(db.clone()));
             let history_repo: Arc<dyn HistoryRepository> =
@@ -305,8 +310,9 @@ pub fn run() {
             // Orphaned downloads (Downloading/Waiting/Checking/Extracting
             // in SQLite but no engine task) are marked Error so the user
             // can retry.  Runs early, before anything subscribes to events.
-            match application::services::startup_recovery::recover_orphaned_downloads(
+            match application::services::startup_recovery::recover_orphaned_downloads_with_captchas(
                 download_repo.as_ref(),
+                captcha_repo.as_ref(),
             ) {
                 Ok(0) => {}
                 Ok(n) => tracing::info!("Recovered {n} orphaned download(s) from previous session"),
@@ -351,6 +357,18 @@ pub fn run() {
                 config_store.clone(),
                 queue_manager.clone(),
             );
+
+            let captcha_solvers: Vec<Arc<dyn CaptchaSolver>> =
+                vec![Arc::new(ManualCaptchaSolver)];
+            let captcha_handler = Arc::new(CaptchaCommandHandler::new(
+                captcha_repo.clone(),
+                download_repo.clone(),
+                event_bus.clone(),
+                config_store.clone(),
+                Arc::new(SystemClock) as Arc<dyn Clock>,
+                captcha_solvers,
+            ));
+            captcha_handler.start_listening();
 
             // ── Plugin store client ─────────────────────────────────
             let registry_url =
@@ -424,7 +442,8 @@ pub fn run() {
                 .with_account_clock(account_clock)
                 .with_account_operation_locks(account_operation_locks)
                 .with_package_repo(package_repo.clone())
-                .with_passphrase_codec(passphrase_codec),
+                .with_passphrase_codec(passphrase_codec)
+                .with_captcha_handler(captcha_handler.clone()),
             );
 
             // Stats recorder bridge keeps its own handle once the query
@@ -441,7 +460,8 @@ pub fn run() {
                 .with_plugin_loader(plugin_loader.clone())
                 .with_plugin_config_store(plugin_config_store)
                 .with_account_repo(account_repo)
-                .with_package_read_repo(package_read_repo),
+                .with_package_read_repo(package_read_repo)
+                .with_captcha_repo(captcha_repo),
             );
 
             // ── Register AppState ───────────────────────────────────
@@ -525,6 +545,13 @@ pub fn run() {
             // ── Queue manager event listener ────────────────────────
             queue_manager.clone().start_listening();
 
+            let captcha_restore = captcha_handler.clone();
+            tokio::spawn(async move {
+                if let Err(error) = captcha_restore.restore_pending().await {
+                    tracing::warn!(error = %error, "failed to restore pending CAPTCHA timers");
+                }
+            });
+
             // Re-schedule any Queued/Retry downloads that survived the
             // previous session (their engine tasks are gone).
             let qm_startup = queue_manager.clone();
@@ -568,6 +595,11 @@ pub fn run() {
             download_resume,
             download_cancel,
             download_skip_wait,
+            captcha_solve,
+            captcha_skip,
+            captcha_retry,
+            captcha_list,
+            captcha_get_pending,
             download_change_directory,
             download_change_directory_bulk,
             download_retry,

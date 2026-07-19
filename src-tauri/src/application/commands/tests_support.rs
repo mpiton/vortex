@@ -674,17 +674,23 @@ impl ArchiveExtractor for StubArchiveExtractor {
 
 pub(crate) struct InMemoryDownloadRepo {
     store: Mutex<HashMap<DownloadId, Download>>,
+    fail_next_save: AtomicBool,
 }
 
 impl InMemoryDownloadRepo {
     pub(crate) fn new() -> Self {
         Self {
             store: Mutex::new(HashMap::new()),
+            fail_next_save: AtomicBool::new(false),
         }
     }
 
     pub(crate) fn seed(&self, download: Download) {
         self.store.lock().unwrap().insert(download.id(), download);
+    }
+
+    pub(crate) fn fail_next_save(&self) {
+        self.fail_next_save.store(true, Ordering::SeqCst);
     }
 }
 
@@ -694,6 +700,11 @@ impl DownloadRepository for InMemoryDownloadRepo {
     }
 
     fn save(&self, d: &Download) -> Result<(), DomainError> {
+        if self.fail_next_save.swap(false, Ordering::SeqCst) {
+            return Err(DomainError::StorageError(
+                "injected download save failure".into(),
+            ));
+        }
         self.store.lock().unwrap().insert(d.id(), d.clone());
         Ok(())
     }

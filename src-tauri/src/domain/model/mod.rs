@@ -18,7 +18,9 @@ pub mod views;
 
 pub use account::{Account, AccountId, AccountType};
 pub use archive::{ArchiveEntry, ArchiveFormat, ExtractSummary, ExtractionConfig};
-pub use captcha::{CaptchaChallenge, CaptchaType};
+pub use captcha::{
+    CaptchaChallenge, CaptchaChallengeRecord, CaptchaId, CaptchaStatus, CaptchaType,
+};
 pub use checksum::ChecksumAlgorithm;
 pub use config::{AppConfig, ConfigPatch};
 pub use credential::Credential;

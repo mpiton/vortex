@@ -35,6 +35,7 @@ const mockConfig: AppConfig = {
   preAllocateSpace: true,
   dynamicSplitEnabled: true,
   dynamicSplitMinRemainingMb: 4,
+  captchaTimeoutSeconds: 120,
   proxyType: "none",
   proxyUrl: null,
   userAgent: "Vortex/1.0",

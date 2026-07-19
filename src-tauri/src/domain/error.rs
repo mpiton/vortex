@@ -1,3 +1,4 @@
+use crate::domain::model::captcha::CaptchaType;
 use crate::domain::model::download::DownloadState;
 use crate::domain::model::segment::SegmentState;
 
@@ -30,6 +31,11 @@ pub enum DomainError {
     HosterAuthenticationRequired,
     HosterDirectUrlExpired,
     HosterUnexpectedHtml,
+    CaptchaRequired {
+        challenge_type: CaptchaType,
+        challenge_url: String,
+        image_data: Option<Vec<u8>>,
+    },
     AdaptiveStreamOnly,
     /// Computed checksum did not match the expected value.
     ChecksumMismatch {
@@ -93,6 +99,7 @@ impl std::fmt::Display for DomainError {
             DomainError::HosterUnexpectedHtml => {
                 write!(f, "Hoster returned an HTML page instead of file content")
             }
+            DomainError::CaptchaRequired { .. } => write!(f, "CAPTCHA is required"),
             DomainError::AdaptiveStreamOnly => write!(
                 f,
                 "Video is only available as adaptive stream (DASH/HLS); use download_to_file"

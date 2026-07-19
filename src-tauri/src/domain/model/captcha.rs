@@ -1,4 +1,42 @@
 use std::fmt;
+use std::str::FromStr;
+
+use crate::domain::error::DomainError;
+use crate::domain::model::download::DownloadId;
+
+pub const MAX_CAPTCHA_IMAGE_BYTES: usize = 2 * 1024 * 1024;
+pub const MAX_CAPTCHA_SOLUTION_BYTES: usize = 4 * 1024;
+pub const MAX_CAPTCHA_ID_BYTES: usize = 128;
+pub const MAX_CAPTCHA_IMAGE_PIXELS: u64 = 16_000_000;
+const MAX_CAPTCHA_URL_BYTES: usize = 8 * 1024;
+const REDACTED_CAPTCHA_URL: &str = "[redacted]";
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct CaptchaId(String);
+
+impl CaptchaId {
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn try_new(value: impl Into<String>) -> Result<Self, DomainError> {
+        let id = Self::new(value);
+        if id.as_str().trim().is_empty() || id.as_str().len() > MAX_CAPTCHA_ID_BYTES {
+            return Err(validation("CAPTCHA id is invalid"));
+        }
+        Ok(id)
+    }
+}
+
+impl fmt::Display for CaptchaId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CaptchaType {
@@ -12,54 +50,227 @@ pub enum CaptchaType {
 impl fmt::Display for CaptchaType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let name = match self {
-            CaptchaType::Image => "Image",
-            CaptchaType::ReCaptchaV2 => "reCAPTCHA v2",
-            CaptchaType::ReCaptchaV3 => "reCAPTCHA v3",
-            CaptchaType::HCaptcha => "hCaptcha",
-            CaptchaType::TextInput => "TextInput",
+            CaptchaType::Image => "image",
+            CaptchaType::ReCaptchaV2 => "recaptcha_v2",
+            CaptchaType::ReCaptchaV3 => "recaptcha_v3",
+            CaptchaType::HCaptcha => "hcaptcha",
+            CaptchaType::TextInput => "text_input",
         };
         write!(f, "{name}")
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+impl FromStr for CaptchaType {
+    type Err = DomainError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "image" => Ok(Self::Image),
+            "recaptcha_v2" => Ok(Self::ReCaptchaV2),
+            "recaptcha_v3" => Ok(Self::ReCaptchaV3),
+            "hcaptcha" => Ok(Self::HCaptcha),
+            "text_input" => Ok(Self::TextInput),
+            _ => Err(DomainError::ValidationError(format!(
+                "unknown CAPTCHA type '{value}'"
+            ))),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CaptchaStatus {
+    Pending,
+    Solved,
+    Skipped,
+    TimedOut,
+}
+
+impl fmt::Display for CaptchaStatus {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Pending => "pending",
+            Self::Solved => "solved",
+            Self::Skipped => "skipped",
+            Self::TimedOut => "timed_out",
+        })
+    }
+}
+
+impl FromStr for CaptchaStatus {
+    type Err = DomainError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "pending" => Ok(Self::Pending),
+            "solved" => Ok(Self::Solved),
+            "skipped" => Ok(Self::Skipped),
+            "timed_out" => Ok(Self::TimedOut),
+            _ => Err(DomainError::ValidationError(format!(
+                "unknown CAPTCHA status '{value}'"
+            ))),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CaptchaChallenge {
-    id: u64,
+    id: CaptchaId,
+    download_id: DownloadId,
     challenge_type: CaptchaType,
     url: String,
     image_data: Option<Vec<u8>>,
-    solved: bool,
-    solution: Option<String>,
+    status: CaptchaStatus,
+    solver: Option<String>,
+    attempts: u32,
+    created_at: u64,
+    expires_at: u64,
+    resolved_at: Option<u64>,
+    duration_ms: Option<u64>,
+    failure_reason: Option<String>,
+}
+
+pub struct CaptchaChallengeRecord {
+    pub id: CaptchaId,
+    pub download_id: DownloadId,
+    pub challenge_type: CaptchaType,
+    pub url: String,
+    pub image_data: Option<Vec<u8>>,
+    pub status: CaptchaStatus,
+    pub solver: Option<String>,
+    pub attempts: u32,
+    pub created_at: u64,
+    pub expires_at: u64,
+    pub resolved_at: Option<u64>,
+    pub duration_ms: Option<u64>,
+    pub failure_reason: Option<String>,
 }
 
 impl CaptchaChallenge {
-    pub fn new(id: u64, challenge_type: CaptchaType, url: String) -> Self {
-        Self {
+    pub fn new(
+        id: CaptchaId,
+        download_id: DownloadId,
+        challenge_type: CaptchaType,
+        url: String,
+        created_at: u64,
+        expires_at: u64,
+    ) -> Result<Self, DomainError> {
+        if id.as_str().trim().is_empty() || id.as_str().len() > MAX_CAPTCHA_ID_BYTES {
+            return Err(validation("CAPTCHA id is invalid"));
+        }
+        if url.trim().is_empty() || url.len() > MAX_CAPTCHA_URL_BYTES {
+            return Err(validation("CAPTCHA URL is invalid"));
+        }
+        if expires_at <= created_at {
+            return Err(validation("CAPTCHA deadline must be after creation"));
+        }
+        Ok(Self {
             id,
+            download_id,
             challenge_type,
             url,
             image_data: None,
-            solved: false,
-            solution: None,
+            status: CaptchaStatus::Pending,
+            solver: None,
+            attempts: 0,
+            created_at,
+            expires_at,
+            resolved_at: None,
+            duration_ms: None,
+            failure_reason: None,
+        })
+    }
+
+    pub fn reconstruct(record: CaptchaChallengeRecord) -> Result<Self, DomainError> {
+        let mut challenge = Self::new(
+            record.id,
+            record.download_id,
+            record.challenge_type,
+            record.url,
+            record.created_at,
+            record.expires_at,
+        )?;
+        if let Some(image) = record.image_data {
+            challenge = challenge.with_image_data(image)?;
         }
+        challenge.status = record.status;
+        challenge.solver = record.solver;
+        challenge.attempts = record.attempts;
+        challenge.resolved_at = record.resolved_at;
+        challenge.duration_ms = record.duration_ms;
+        challenge.failure_reason = record.failure_reason;
+        Ok(challenge)
     }
 
-    pub fn with_image_data(mut self, data: Vec<u8>) -> Self {
+    pub fn with_image_data(mut self, data: Vec<u8>) -> Result<Self, DomainError> {
+        if data.is_empty()
+            || data.len() > MAX_CAPTCHA_IMAGE_BYTES
+            || captcha_image_mime_type(&data).is_none()
+        {
+            return Err(validation(
+                "CAPTCHA image is invalid or exceeds safety limits",
+            ));
+        }
         self.image_data = Some(data);
-        self
+        Ok(self)
     }
 
-    pub fn solve(&mut self, solution: String) {
-        self.solved = true;
-        self.solution = Some(solution);
+    pub fn solve(&mut self, now_ms: u64, solver: &str) -> Result<(), DomainError> {
+        self.ensure_pending()?;
+        if solver.trim().is_empty() {
+            return Err(validation("CAPTCHA solver cannot be empty"));
+        }
+        self.status = CaptchaStatus::Solved;
+        self.solver = Some(solver.to_string());
+        self.resolve(now_ms);
+        Ok(())
     }
 
-    pub fn is_solved(&self) -> bool {
-        self.solved
+    pub fn skip(&mut self, now_ms: u64, reason: &str) -> Result<(), DomainError> {
+        self.ensure_pending()?;
+        self.status = CaptchaStatus::Skipped;
+        self.failure_reason = Some(reason.to_string());
+        self.resolve(now_ms);
+        Ok(())
     }
 
-    pub fn id(&self) -> u64 {
-        self.id
+    pub fn timeout(&mut self, now_ms: u64) -> Result<(), DomainError> {
+        self.ensure_pending()?;
+        self.status = CaptchaStatus::TimedOut;
+        self.failure_reason = Some("CAPTCHA timed out".to_string());
+        self.resolve(now_ms);
+        Ok(())
+    }
+
+    pub fn retry(&mut self, now_ms: u64, expires_at: u64) -> Result<(), DomainError> {
+        self.ensure_pending()?;
+        if expires_at <= now_ms {
+            return Err(validation("CAPTCHA retry deadline must be in the future"));
+        }
+        self.attempts = self.attempts.saturating_add(1);
+        self.expires_at = expires_at;
+        Ok(())
+    }
+
+    fn ensure_pending(&self) -> Result<(), DomainError> {
+        if self.status != CaptchaStatus::Pending {
+            return Err(validation("CAPTCHA challenge is no longer pending"));
+        }
+        Ok(())
+    }
+
+    fn resolve(&mut self, now_ms: u64) {
+        self.resolved_at = Some(now_ms);
+        self.duration_ms = Some(now_ms.saturating_sub(self.created_at));
+        self.image_data = None;
+        self.url = REDACTED_CAPTCHA_URL.to_string();
+    }
+
+    pub fn id(&self) -> &CaptchaId {
+        &self.id
+    }
+
+    pub fn download_id(&self) -> DownloadId {
+        self.download_id
     }
 
     pub fn challenge_type(&self) -> CaptchaType {
@@ -74,9 +285,126 @@ impl CaptchaChallenge {
         self.image_data.as_deref()
     }
 
-    pub fn solution(&self) -> Option<&str> {
-        self.solution.as_deref()
+    pub fn status(&self) -> CaptchaStatus {
+        self.status
     }
+
+    pub fn solver(&self) -> Option<&str> {
+        self.solver.as_deref()
+    }
+
+    pub fn attempts(&self) -> u32 {
+        self.attempts
+    }
+
+    pub fn created_at(&self) -> u64 {
+        self.created_at
+    }
+
+    pub fn expires_at(&self) -> u64 {
+        self.expires_at
+    }
+
+    pub fn is_expired(&self, now_ms: u64) -> bool {
+        now_ms >= self.expires_at
+    }
+
+    pub fn resolved_at(&self) -> Option<u64> {
+        self.resolved_at
+    }
+
+    pub fn duration_ms(&self) -> Option<u64> {
+        self.duration_ms
+    }
+
+    pub fn failure_reason(&self) -> Option<&str> {
+        self.failure_reason.as_deref()
+    }
+}
+
+fn validation(message: &str) -> DomainError {
+    DomainError::ValidationError(message.to_string())
+}
+
+pub fn captcha_image_mime_type(data: &[u8]) -> Option<&'static str> {
+    let (mime, width, height) = image_metadata(data)?;
+    let pixels = u64::from(width).checked_mul(u64::from(height))?;
+    (width > 0 && height > 0 && pixels <= MAX_CAPTCHA_IMAGE_PIXELS).then_some(mime)
+}
+
+fn image_metadata(data: &[u8]) -> Option<(&'static str, u32, u32)> {
+    if data.len() >= 24 && data.starts_with(b"\x89PNG\r\n\x1a\n") && &data[12..16] == b"IHDR" {
+        return Some((
+            "image/png",
+            u32::from_be_bytes(data[16..20].try_into().ok()?),
+            u32::from_be_bytes(data[20..24].try_into().ok()?),
+        ));
+    }
+    if data.len() >= 10 && (data.starts_with(b"GIF87a") || data.starts_with(b"GIF89a")) {
+        return Some((
+            "image/gif",
+            u32::from(u16::from_le_bytes(data[6..8].try_into().ok()?)),
+            u32::from(u16::from_le_bytes(data[8..10].try_into().ok()?)),
+        ));
+    }
+    jpeg_dimensions(data).map(|(width, height)| ("image/jpeg", width, height))
+}
+
+fn jpeg_dimensions(data: &[u8]) -> Option<(u32, u32)> {
+    if !data.starts_with(&[0xff, 0xd8]) {
+        return None;
+    }
+    let mut cursor = 2;
+    while cursor + 1 < data.len() {
+        while cursor < data.len() && data[cursor] == 0xff {
+            cursor += 1;
+        }
+        let marker = *data.get(cursor)?;
+        cursor += 1;
+        if marker == 0xd9 || marker == 0xda {
+            return None;
+        }
+        if marker == 0x01 || (0xd0..=0xd8).contains(&marker) {
+            continue;
+        }
+        let segment_len = usize::from(u16::from_be_bytes([
+            *data.get(cursor)?,
+            *data.get(cursor + 1)?,
+        ]));
+        if segment_len < 2 || cursor.checked_add(segment_len)? > data.len() {
+            return None;
+        }
+        if matches!(
+            marker,
+            0xc0 | 0xc1
+                | 0xc2
+                | 0xc3
+                | 0xc5
+                | 0xc6
+                | 0xc7
+                | 0xc9
+                | 0xca
+                | 0xcb
+                | 0xcd
+                | 0xce
+                | 0xcf
+        ) {
+            if segment_len < 7 {
+                return None;
+            }
+            let height = u32::from(u16::from_be_bytes([
+                *data.get(cursor + 3)?,
+                *data.get(cursor + 4)?,
+            ]));
+            let width = u32::from(u16::from_be_bytes([
+                *data.get(cursor + 5)?,
+                *data.get(cursor + 6)?,
+            ]));
+            return Some((width, height));
+        }
+        cursor += segment_len;
+    }
+    None
 }
 
 #[cfg(test)]
@@ -94,6 +422,13 @@ mod tests {
             61_000,
         )
         .expect("valid challenge")
+    }
+
+    fn png_image(width: u32, height: u32) -> Vec<u8> {
+        let mut image = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".to_vec();
+        image.extend_from_slice(&width.to_be_bytes());
+        image.extend_from_slice(&height.to_be_bytes());
+        image
     }
 
     #[test]
@@ -146,7 +481,7 @@ mod tests {
 
     #[test]
     fn image_payload_is_bounded() {
-        let data = vec![0u8, 1, 2, 3];
+        let data = png_image(1, 1);
         let c = make_challenge()
             .with_image_data(data.clone())
             .expect("small image");
@@ -154,6 +489,28 @@ mod tests {
 
         let too_large = vec![0; MAX_CAPTCHA_IMAGE_BYTES + 1];
         assert!(make_challenge().with_image_data(too_large).is_err());
+        assert!(
+            make_challenge()
+                .with_image_data(b"<svg/>".to_vec())
+                .is_err()
+        );
+        assert!(
+            make_challenge()
+                .with_image_data(png_image(5_000, 5_000))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn terminal_challenge_drops_ephemeral_image_material() {
+        let mut challenge = make_challenge()
+            .with_image_data(png_image(1, 1))
+            .expect("small image");
+
+        challenge.solve(2_000, "manual").expect("solve");
+
+        assert!(challenge.image_data().is_none());
+        assert_eq!(challenge.url(), REDACTED_CAPTCHA_URL);
     }
 
     #[test]
@@ -175,5 +532,12 @@ mod tests {
         ] {
             assert_eq!(status.to_string().parse(), Ok(status));
         }
+    }
+
+    #[test]
+    fn external_captcha_ids_are_bounded() {
+        assert!(CaptchaId::try_new("captcha-1").is_ok());
+        assert!(CaptchaId::try_new(" ").is_err());
+        assert!(CaptchaId::try_new("x".repeat(MAX_CAPTCHA_ID_BYTES + 1)).is_err());
     }
 }

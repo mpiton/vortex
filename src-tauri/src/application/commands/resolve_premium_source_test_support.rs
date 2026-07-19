@@ -96,6 +96,7 @@ impl PluginLoader for DirectUrlPlugin {
             request_headers: vec![("Referer".into(), "https://1fichier.com/".into())],
             traffic_used_bytes,
             traffic_total_bytes: Some(100),
+            captcha: None,
         })
     }
 }

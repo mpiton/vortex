@@ -162,6 +162,9 @@ struct ConfigDto {
     dynamic_split_enabled: bool,
     dynamic_split_min_remaining_mb: u64,
 
+    // CAPTCHA
+    captcha_timeout_seconds: u32,
+
     // History
     history_retention_days: i64,
 
@@ -225,6 +228,7 @@ impl From<AppConfig> for ConfigDto {
             pre_allocate_space: c.pre_allocate_space,
             dynamic_split_enabled: c.dynamic_split_enabled,
             dynamic_split_min_remaining_mb: c.dynamic_split_min_remaining_mb,
+            captcha_timeout_seconds: c.captcha_timeout_seconds,
             history_retention_days: c.history_retention_days,
             account_selection_strategy: c.account_selection_strategy.to_string(),
             proxy_type: c.proxy_type,
@@ -283,6 +287,7 @@ impl TryFrom<ConfigDto> for AppConfig {
             pre_allocate_space: d.pre_allocate_space,
             dynamic_split_enabled: d.dynamic_split_enabled,
             dynamic_split_min_remaining_mb: d.dynamic_split_min_remaining_mb,
+            captcha_timeout_seconds: d.captcha_timeout_seconds,
             history_retention_days: normalize_history_retention_days(d.history_retention_days),
             account_selection_strategy,
             proxy_type: d.proxy_type,

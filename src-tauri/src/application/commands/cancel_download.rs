@@ -15,11 +15,16 @@ impl CommandBus {
             .find_by_id(cmd.id)?
             .ok_or_else(|| AppError::NotFound(format!("Download {} not found", cmd.id.0)))?;
 
+        let was_waiting_for_captcha = match self.captcha_handler_opt() {
+            Some(handler) => handler.skip_pending_for_download(cmd.id).await?,
+            None => false,
+        };
+
         // Cancel engine if download is active
         let is_active = matches!(
             download.state(),
             DownloadState::Downloading | DownloadState::Waiting
-        );
+        ) && !was_waiting_for_captcha;
         if is_active {
             self.download_engine().cancel(cmd.id)?;
         }
@@ -56,9 +61,11 @@ mod tests {
 
     use crate::application::command_bus::CommandBus;
     use crate::application::commands::CancelDownloadCommand;
+    use crate::application::commands::captcha::{CaptchaCommandHandler, ManualCaptchaSolver};
     use crate::application::error::AppError;
     use crate::domain::error::DomainError;
     use crate::domain::event::DomainEvent;
+    use crate::domain::model::captcha::{CaptchaChallenge, CaptchaId, CaptchaStatus, CaptchaType};
     use crate::domain::model::config::{AppConfig, ConfigPatch};
     use crate::domain::model::credential::Credential;
     use crate::domain::model::download::{Download, DownloadId, DownloadState, Url};
@@ -66,9 +73,61 @@ mod tests {
     use crate::domain::model::meta::DownloadMeta;
     use crate::domain::model::plugin::{PluginInfo, PluginManifest};
     use crate::domain::ports::driven::{
-        ClipboardObserver, ConfigStore, CredentialStore, DownloadEngine, DownloadRepository,
-        EventBus, FileStorage, HttpClient, PluginLoader,
+        CaptchaRepository, ClipboardObserver, Clock, ConfigStore, CredentialStore, DownloadEngine,
+        DownloadRepository, EventBus, FileStorage, HttpClient, PluginLoader,
     };
+
+    struct MemoryCaptchaRepo(Mutex<Option<CaptchaChallenge>>);
+
+    impl MemoryCaptchaRepo {
+        fn new(challenge: CaptchaChallenge) -> Self {
+            Self(Mutex::new(Some(challenge)))
+        }
+    }
+
+    impl CaptchaRepository for MemoryCaptchaRepo {
+        fn save(&self, challenge: &CaptchaChallenge) -> Result<(), DomainError> {
+            *self.0.lock().unwrap() = Some(challenge.clone());
+            Ok(())
+        }
+
+        fn find_by_id(&self, id: &CaptchaId) -> Result<Option<CaptchaChallenge>, DomainError> {
+            Ok(self
+                .0
+                .lock()
+                .unwrap()
+                .as_ref()
+                .filter(|challenge| challenge.id() == id)
+                .cloned())
+        }
+
+        fn list(&self) -> Result<Vec<CaptchaChallenge>, DomainError> {
+            Ok(self.0.lock().unwrap().iter().cloned().collect())
+        }
+
+        fn list_pending(&self) -> Result<Vec<CaptchaChallenge>, DomainError> {
+            Ok(self
+                .0
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|challenge| challenge.status() == CaptchaStatus::Pending)
+                .cloned()
+                .collect())
+        }
+    }
+
+    struct FixedClock;
+
+    impl Clock for FixedClock {
+        fn now_unix_secs(&self) -> u64 {
+            1
+        }
+
+        fn now_unix_ms(&self) -> u64 {
+            1_000
+        }
+    }
 
     struct MockDownloadRepo {
         store: Mutex<HashMap<u64, Download>>,
@@ -426,5 +485,58 @@ mod tests {
             emitted.as_slice(),
             &[DomainEvent::DownloadRemoved { id: DownloadId(2) }]
         );
+    }
+
+    #[tokio::test]
+    async fn cancel_captcha_wait_does_not_cancel_engine_or_free_the_slot_twice() {
+        let repo = Arc::new(MockDownloadRepo::new());
+        let engine = Arc::new(MockDownloadEngine::new());
+        let events = Arc::new(MockEventBus::new());
+        let mut download = make_download(3);
+        download.start().unwrap();
+        download.wait().unwrap();
+        repo.save(&download).unwrap();
+        let captcha = CaptchaChallenge::new(
+            CaptchaId::new("captcha-3"),
+            DownloadId(3),
+            CaptchaType::Image,
+            "https://hoster.example/file".into(),
+            1_000,
+            121_000,
+        )
+        .unwrap();
+        let captcha_repo = Arc::new(MemoryCaptchaRepo::new(captcha));
+        let handler = Arc::new(CaptchaCommandHandler::new(
+            captcha_repo.clone(),
+            repo.clone(),
+            events.clone(),
+            Arc::new(MockConfigStore),
+            Arc::new(FixedClock),
+            vec![Arc::new(ManualCaptchaSolver)],
+        ));
+        let bus = make_command_bus(repo.clone(), engine.clone(), events.clone())
+            .with_captcha_handler(handler);
+
+        bus.handle_cancel_download(CancelDownloadCommand { id: DownloadId(3) })
+            .await
+            .expect("cancel CAPTCHA wait");
+
+        assert!(engine.cancelled.lock().unwrap().is_empty());
+        assert!(repo.find_by_id(DownloadId(3)).unwrap().is_none());
+        assert_eq!(
+            captcha_repo
+                .find_by_id(&CaptchaId::new("captcha-3"))
+                .unwrap()
+                .unwrap()
+                .status(),
+            CaptchaStatus::Skipped
+        );
+        let emitted = events.events.lock().unwrap();
+        assert!(!emitted.iter().any(
+            |event| matches!(event, DomainEvent::DownloadCancelled { id } if *id == DownloadId(3))
+        ));
+        assert!(emitted.iter().any(
+            |event| matches!(event, DomainEvent::DownloadRemoved { id } if *id == DownloadId(3))
+        ));
     }
 }

@@ -3,6 +3,7 @@
 //! Each query represents a read request. Queries never modify state.
 //! Handler implementations live in submodules and add methods to `QueryBus`.
 
+mod captcha;
 mod count_by_state;
 mod detect_duplicates;
 mod find_package_by_external_id;
@@ -25,6 +26,7 @@ mod search_history;
 mod top_modules;
 
 use crate::domain::model::account::{AccountId, AccountType};
+use crate::domain::model::captcha::CaptchaId;
 use crate::domain::model::download::DownloadId;
 use crate::domain::model::package::PackageId;
 use crate::domain::model::views::{
@@ -92,6 +94,16 @@ impl Query for ListPluginsQuery {}
 #[derive(Debug)]
 pub struct CountDownloadsByStateQuery;
 impl Query for CountDownloadsByStateQuery {}
+
+#[derive(Debug)]
+pub struct CaptchaListQuery;
+impl Query for CaptchaListQuery {}
+
+#[derive(Debug)]
+pub struct CaptchaGetPendingQuery {
+    pub challenge_id: Option<CaptchaId>,
+}
+impl Query for CaptchaGetPendingQuery {}
 
 // Handler: task 26 (archive contents listing)
 #[derive(Debug)]

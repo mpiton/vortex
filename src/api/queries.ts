@@ -54,3 +54,10 @@ export const accountQueries = {
   detail: (id: string) => [...accountQueries.details(), id] as const,
   traffic: (id: string) => [...accountQueries.all(), "traffic", id] as const,
 };
+
+export const captchaQueries = {
+  all: () => ["captcha"] as const,
+  list: () => [...captchaQueries.all(), "list"] as const,
+  details: () => [...captchaQueries.all(), "detail"] as const,
+  detail: (id: string) => [...captchaQueries.details(), id] as const,
+};

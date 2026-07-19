@@ -11,6 +11,7 @@ pub(crate) mod tests_support;
 mod add_account;
 mod add_download_to_package;
 mod cancel_download;
+pub mod captcha;
 mod change_directory;
 mod check_online;
 mod clear_downloads_by_state;
@@ -64,6 +65,7 @@ mod verify_checksum;
 use std::path::PathBuf;
 
 use crate::domain::model::account::{AccountId, AccountStatus, AccountType};
+use crate::domain::model::captcha::{CaptchaId, CaptchaType};
 use crate::domain::model::config::ConfigPatch;
 use crate::domain::model::download::DownloadId;
 use crate::domain::model::package::{PackageId, PackageSourceType};
@@ -114,6 +116,50 @@ pub struct RetryDownloadCommand {
     pub id: DownloadId,
 }
 impl Command for RetryDownloadCommand {}
+
+#[derive(Debug)]
+pub struct EnqueueCaptchaCommand {
+    pub download_id: DownloadId,
+    pub challenge_type: CaptchaType,
+    pub challenge_url: String,
+    pub image_data: Option<Vec<u8>>,
+}
+impl Command for EnqueueCaptchaCommand {}
+
+pub struct SolveCaptchaCommand {
+    pub challenge_id: CaptchaId,
+    pub solution: String,
+}
+impl Command for SolveCaptchaCommand {}
+
+impl std::fmt::Debug for SolveCaptchaCommand {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SolveCaptchaCommand")
+            .field("challenge_id", &self.challenge_id)
+            .field("solution", &"<redacted>")
+            .finish()
+    }
+}
+
+#[derive(Debug)]
+pub struct SkipCaptchaCommand {
+    pub challenge_id: CaptchaId,
+}
+impl Command for SkipCaptchaCommand {}
+
+#[derive(Debug)]
+pub struct RetryCaptchaCommand {
+    pub challenge_id: CaptchaId,
+}
+impl Command for RetryCaptchaCommand {}
+
+#[derive(Debug)]
+pub struct TimeoutCaptchaCommand {
+    pub challenge_id: CaptchaId,
+    pub expected_expires_at: u64,
+}
+impl Command for TimeoutCaptchaCommand {}
 
 #[derive(Debug)]
 pub struct PauseAllDownloadsCommand;

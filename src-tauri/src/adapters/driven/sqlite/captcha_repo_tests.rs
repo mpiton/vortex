@@ -16,7 +16,7 @@ fn challenge(id: &str, download_id: u64) -> CaptchaChallenge {
         61_000,
     )
     .expect("valid challenge")
-    .with_image_data(vec![137, 80, 78, 71])
+    .with_image_data(b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR\0\0\0\x01\0\0\0\x01".to_vec())
     .expect("bounded image")
 }
 
@@ -29,11 +29,24 @@ async fn captcha_log_round_trip_and_pending_query() {
     repo.save(&item).expect("save pending");
     let pending = repo.list_pending().expect("list pending");
     assert_eq!(pending.len(), 1);
-    assert_eq!(pending[0].image_data(), Some([137, 80, 78, 71].as_slice()));
+    assert!(pending[0].image_data().is_none());
+    assert_eq!(pending[0].url(), "[redacted]");
+    assert_eq!(
+        repo.find_next_pending()
+            .expect("find next pending")
+            .expect("pending challenge")
+            .id(),
+        item.id()
+    );
 
     item.solve(4_000, "manual").expect("solve");
     repo.save(&item).expect("save solved");
     assert!(repo.list_pending().expect("list pending").is_empty());
+    assert!(
+        repo.find_next_pending()
+            .expect("find next pending")
+            .is_none()
+    );
 
     let stored = repo
         .find_by_id(item.id())
@@ -42,6 +55,8 @@ async fn captcha_log_round_trip_and_pending_query() {
     assert_eq!(stored.status(), CaptchaStatus::Solved);
     assert_eq!(stored.solver(), Some("manual"));
     assert_eq!(stored.duration_ms(), Some(3_000));
+    assert!(stored.image_data().is_none());
+    assert_eq!(stored.url(), "[redacted]");
 }
 
 #[tokio::test]

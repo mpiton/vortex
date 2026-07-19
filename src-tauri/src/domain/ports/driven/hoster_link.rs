@@ -1,5 +1,13 @@
 //! Typed output of a hoster plugin extraction.
 
+use crate::domain::model::captcha::CaptchaType;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExtractedCaptchaChallenge {
+    pub challenge_type: CaptchaType,
+    pub image_data: Option<Vec<u8>>,
+}
+
 /// One hoster file resolved by a plugin adapter.
 ///
 /// The adapter owns deserialisation of the plugin wire format. Application
@@ -16,6 +24,7 @@ pub struct ExtractedHosterLink {
     pub request_headers: Vec<(String, String)>,
     pub traffic_used_bytes: Option<u64>,
     pub traffic_total_bytes: Option<u64>,
+    pub captcha: Option<ExtractedCaptchaChallenge>,
 }
 
 impl std::fmt::Debug for ExtractedHosterLink {
@@ -31,6 +40,7 @@ impl std::fmt::Debug for ExtractedHosterLink {
             .field("request_headers", &"<redacted>")
             .field("traffic_used_bytes", &self.traffic_used_bytes)
             .field("traffic_total_bytes", &self.traffic_total_bytes)
+            .field("captcha", &self.captcha.as_ref().map(|c| c.challenge_type))
             .finish()
     }
 }
@@ -50,6 +60,7 @@ mod tests {
             request_headers: vec![("Authorization".into(), "Bearer secret".into())],
             traffic_used_bytes: None,
             traffic_total_bytes: None,
+            captcha: None,
         };
 
         let debug = format!("{link:?}");

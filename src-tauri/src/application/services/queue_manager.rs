@@ -510,6 +510,10 @@ impl QueueManager {
         }
     }
 
+    async fn handle_captcha_pending(&self) -> Result<(), AppError> {
+        self.decrement_and_schedule().await
+    }
+
     pub fn start_listening(self: Arc<Self>) {
         let (tx, mut rx) = tokio::sync::mpsc::channel::<DomainEvent>(1024);
 
@@ -523,7 +527,9 @@ impl QueueManager {
                     | DomainEvent::DownloadFailed { .. }
                     | DomainEvent::DownloadCancelled { .. }
                     | DomainEvent::DownloadCreated { .. }
+                    | DomainEvent::DownloadQueued { .. }
                     | DomainEvent::DownloadResumed { .. }
+                    | DomainEvent::CaptchaPending { .. }
                     | DomainEvent::DownloadRetrying { .. }
                     | DomainEvent::DownloadPrioritySet { .. }
                     | DomainEvent::QueueReordered { .. }
@@ -542,10 +548,12 @@ impl QueueManager {
                     DomainEvent::DownloadPaused { .. } | DomainEvent::DownloadCancelled { .. } => {
                         self.decrement_and_schedule().await
                     }
+                    DomainEvent::CaptchaPending { .. } => self.handle_captcha_pending().await,
                     DomainEvent::DownloadFailed { id, error } => {
                         self.handle_download_failed(*id, error.clone()).await
                     }
                     DomainEvent::DownloadCreated { .. }
+                    | DomainEvent::DownloadQueued { .. }
                     | DomainEvent::DownloadRetrying { .. }
                     | DomainEvent::DownloadPrioritySet { .. }
                     | DomainEvent::QueueReordered { .. } => self.on_slot_freed().await,

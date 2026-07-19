@@ -16,6 +16,7 @@ const pendingCaptcha = {
   challengeType: "image",
   challengeUrl: "https://hoster.example/file/42",
   imageData: [137, 80, 78, 71],
+  imageMimeType: "image/png",
   status: "pending",
   solver: null,
   attempts: 0,
@@ -41,7 +42,10 @@ beforeEach(() => {
   window.localStorage.setItem("i18nextLng", "en");
   mockInvoke.mockReset();
   mockInvoke.mockImplementation(async (command: string) => {
-    if (command === "captcha_list") return [pendingCaptcha];
+    if (command === "captcha_list") {
+      return [{ ...pendingCaptcha, imageData: null, imageMimeType: null }];
+    }
+    if (command === "captcha_get_pending") return pendingCaptcha;
     return null;
   });
   Object.defineProperty(URL, "createObjectURL", {

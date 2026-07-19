@@ -677,6 +677,17 @@ impl Download {
         Ok(DomainEvent::DownloadResumedFromWait { id: self.id })
     }
 
+    pub fn queue_after_wait(&mut self) -> Result<DomainEvent, DomainError> {
+        if self.state != DownloadState::Waiting {
+            return Err(DomainError::InvalidTransition {
+                from: self.state,
+                to: DownloadState::Queued,
+            });
+        }
+        self.state = DownloadState::Queued;
+        Ok(DomainEvent::DownloadQueued { id: self.id })
+    }
+
     pub fn start_checking(&mut self) -> Result<DomainEvent, DomainError> {
         if self.state != DownloadState::Downloading {
             return Err(DomainError::InvalidTransition {
