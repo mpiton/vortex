@@ -14,10 +14,14 @@ jobs:
   verify-tag:
     name: Verify tag vs Cargo.toml + package.json + CHANGELOG
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     outputs:
       version: ${{ steps.tag.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
 
       - name: Extract version from tag
         id: tag
@@ -37,32 +41,14 @@ jobs:
             exit 1
           fi
 
-      - name: Verify Cargo.toml version
-        run: |
-          CARGO_VERSION=$(grep -m1 '^version' src-tauri/Cargo.toml | cut -d'"' -f2)
-          if [ "$CARGO_VERSION" != "${{ steps.tag.outputs.version }}" ]; then
-            echo "::error::Cargo.toml version ($CARGO_VERSION) != tag (${{ steps.tag.outputs.version }})"
-            exit 1
-          fi
-
-      - name: Verify package.json version
-        run: |
-          PKG_VERSION=$(node -p "require('./package.json').version")
-          if [ "$PKG_VERSION" != "${{ steps.tag.outputs.version }}" ]; then
-            echo "::error::package.json version ($PKG_VERSION) != tag (${{ steps.tag.outputs.version }})"
-            exit 1
-          fi
-
-      - name: Verify CHANGELOG entry
-        run: |
-          VERSION='${{ steps.tag.outputs.version }}'
-          # Use fixed-string match for version prefix to avoid `.` matching any
-          # char (e.g., `1X2X3` accepted by an unescaped regex).
-          if ! grep -qF "## [${VERSION}]" CHANGELOG.md \
-              && ! grep -qF "## ${VERSION}" CHANGELOG.md; then
-            echo "::error::CHANGELOG.md has no section for version ${VERSION}"
-            exit 1
-          fi
+      - name: Verify release version coherence
+        # Checks package.json, Cargo.toml, tauri.conf.json (app + wix) and
+        # the CHANGELOG section against the tag. Same script as the local
+        # pre-tag check documented in RELEASING.md. Version goes through env,
+        # not inline interpolation, so tag names can't inject into the shell.
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: bash scripts/check-release-versions.sh "$VERSION"
 
   create-release:
     name: Create GitHub Release
@@ -74,7 +60,9 @@ jobs:
       release_id: ${{ steps.create_release.outputs.id }}
       upload_url: ${{ steps.create_release.outputs.upload_url }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
 
       - name: Verify updater pubkey is configured
         run: |
@@ -103,7 +91,7 @@ jobs:
 
       - name: Create GitHub Release
         id: create_release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:
           name: Vortex ${{ github.ref_name }}
           body: ${{ steps.meta.outputs.body }}
@@ -118,7 +106,9 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
 
       - name: Install Linux dependencies
         run: |
@@ -130,7 +120,7 @@ jobs:
             libappindicator3-dev \
             librsvg2-dev
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: npm
@@ -138,9 +128,9 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           workspaces: src-tauri
 
@@ -151,19 +141,19 @@ jobs:
         run: npx tauri build
 
       - name: Upload .deb to release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           files: src-tauri/target/release/bundle/deb/*.deb
 
       - name: Upload .rpm to release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           files: src-tauri/target/release/bundle/rpm/*.rpm
 
       - name: Upload updater bundle to release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           files: |
@@ -193,9 +183,11 @@ jobs:
       TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: npm
@@ -203,11 +195,11 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           workspaces: src-tauri
 
@@ -251,13 +243,13 @@ jobs:
           xcrun stapler staple "$DMG"
 
       - name: Upload .dmg to release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           files: src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
 
       - name: Upload updater bundle to release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           files: |
@@ -271,9 +263,11 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: npm
@@ -281,9 +275,9 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           workspaces: src-tauri
 
@@ -308,13 +302,13 @@ jobs:
         run: Remove-Item -Path certificate.p12 -ErrorAction SilentlyContinue
 
       - name: Upload .msi to release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           files: src-tauri/target/release/bundle/msi/*.msi
 
       - name: Upload updater bundle to release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           files: |
@@ -328,7 +322,9 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
 
       - name: Install Flatpak tools
         run: |
@@ -344,7 +340,7 @@ jobs:
           flatpak build-bundle _repo vortex.flatpak org.vortex.Vortex
 
       - name: Upload .flatpak to release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           files: vortex.flatpak
@@ -356,7 +352,9 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
 
       - name: Download signature files from release
         env:
@@ -412,7 +410,52 @@ jobs:
           EOF
 
       - name: Upload latest.json to release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           files: latest.json
+
+  checksums:
+    name: Publish SHA-256 checksums + provenance
+    needs: [publish-flatpak, update-updater]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+
+      - name: Download release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          mkdir -p assets
+          gh release download "$TAG_NAME" --repo "$GITHUB_REPOSITORY" --dir assets
+          # On a re-run the previous checksum files are release assets too;
+          # they must not end up inside the new SHA256SUMS.
+          rm -f assets/SHA256SUMS assets/PROVENANCE.txt
+
+      - name: Generate SHA256SUMS and PROVENANCE.txt
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          # git rev-list resolves annotated tags to the tagged commit;
+          # GITHUB_SHA is not reliable for that on tag pushes.
+          COMMIT=$(git rev-list -n1 "$TAG_NAME")
+          (cd assets && sha256sum *) > SHA256SUMS
+          {
+            echo "tag: $TAG_NAME"
+            echo "commit: $COMMIT"
+            echo "workflow_run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            echo "verify: sha256sum --check --ignore-missing SHA256SUMS"
+          } > PROVENANCE.txt
+
+      - name: Upload SHA256SUMS and PROVENANCE.txt
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          files: |
+            SHA256SUMS
+            PROVENANCE.txt

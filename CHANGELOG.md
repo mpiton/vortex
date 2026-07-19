@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0-beta.1] - 2026-07-19
+
+### Highlights
+
+- CI is now the merge gate: a three-OS matrix (tests, lint, audits, Tauri
+  packaging), secrets scans, a blocking desktop E2E smoke test, and
+  reproducible plugin CI with checksummed release artifacts.
+- Premium accounts work end to end: real validation, per-service selection,
+  rotation on quota or cooldown, credentials confined to the OS keyring.
+- MediaFire, PixelDrain and Gofile pages are resolved by their hoster plugins
+  before transfer — HTML pages can no longer be saved as "successful" files.
+- Galleries expand into selectable per-image rows in Link Grabber.
+- Settings, plugin catalog and docs now match real capabilities: every visible
+  control either works or is explicitly marked as planned.
+
+### Known limitations
+
+- No CAPTCHA solving yet: 1fichier free downloads that require a CAPTCHA are
+  not supported.
+- MEGA downloads are refused with an explicit error until host-side decryption
+  ships; the plugin only parses and validates links.
+- No remote access: the REST API, WebSocket and Web UI do not exist yet; the
+  Remote Access settings section shows a planned-feature notice.
+- Speed limit, disk pre-allocation and DNS-over-HTTPS settings are disabled
+  ("Coming soon").
+- macOS and Windows binaries ship unsigned; Gatekeeper/SmartScreen warnings
+  are expected.
+
+### Upgrade notes (from v0.2.0-beta)
+
+- SQLite migrations run automatically on first launch (adds the
+  premium-accounts wiring migration); existing downloads, packages, history
+  and accounts are preserved.
+- `config.toml` keeps the same format; an invalid hand-edited `user_agent`
+  now falls back to the default instead of aborting startup.
+- Installed plugins keep working: every registry entry declares
+  `min_vortex_version` ≤ 0.2.0, which this release satisfies. Updating
+  plugins from the Plugins view is still recommended to pick up the fixes
+  below.
+
 ### Security
 
 - **MAT-132 transient premium URLs**: link analysis, IPC, queued downloads, and
