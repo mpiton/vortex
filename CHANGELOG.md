@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Bug report template: version dropdown now lists `v0.3.0-beta.1` as the
+  latest beta.
+- README: feedback section links to the v0.3.0-beta.1 discussion thread.
+
 ## [0.3.0-beta.1] - 2026-07-19
 
 ### Highlights
