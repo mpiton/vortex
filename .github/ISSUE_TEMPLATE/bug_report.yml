@@ -57,7 +57,8 @@ body:
       label: Vortex version
       description: Pick the version you reproduced the bug on. `Settings → About` shows the exact version, or run `vortex --version` from the CLI.
       options:
-        - v0.2.0-beta (latest beta)
+        - v0.3.0-beta.1 (latest beta)
+        - v0.2.0-beta
         - main / built from source
         - older / unsure
     validations:

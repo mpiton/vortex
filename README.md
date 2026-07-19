@@ -145,7 +145,7 @@ See [`PRD-v2.md`](PRD-v2.md) for the per-task breakdown.
 This is a **beta release** — bugs, rough edges and missing flows are expected. Two channels:
 
 - **Bugs** → [open an issue](https://github.com/mpiton/vortex/issues/new?template=bug_report.yml) with the *Vortex version* dropdown set to `v0.3.0-beta.1`
-- **Discussions** → [GitHub Discussions](https://github.com/mpiton/vortex/discussions) for general impressions, missing features, plugin requests
+- **Discussions** → [v0.3.0-beta.1 feedback thread](https://github.com/mpiton/vortex/discussions/177) for general impressions, missing features, plugin requests
 
 ## License
 
