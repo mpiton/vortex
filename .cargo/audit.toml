@@ -22,4 +22,11 @@ ignore = [
     "RUSTSEC-2026-0094",
     "RUSTSEC-2026-0095",
     "RUSTSEC-2026-0096",
+    # quick-xml 0.39.4 via wayland-scanner 0.31.10 (build-time proc-macro,
+    # trusted protocol XML — not reachable at runtime). Fix merged upstream
+    # (Smithay/wayland-rs d07c4f91f2, quick-xml 0.41) but not released yet.
+    # Temporary: remove after `cargo update` once wayland-scanner > 0.31.10
+    # ships. Tracking: MAT-139. Review by 2026-10-15 (aligned with deny.toml).
+    "RUSTSEC-2026-0194",
+    "RUSTSEC-2026-0195",
 ]

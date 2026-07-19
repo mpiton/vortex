@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- `cargo audit` config now ignores RUSTSEC-2026-0194/0195 (quick-xml 0.39.4
+  via the `wayland-scanner` build-time proc-macro) with a documented review
+  date, matching the existing `deny.toml` triage. The fix is merged upstream
+  but unreleased; the ignore goes away once wayland-scanner > 0.31.10 ships
+  (MAT-139).
+
 ### Changed
 
 - CI/release workflows: bumped all actions still targeting Node.js 20 to
