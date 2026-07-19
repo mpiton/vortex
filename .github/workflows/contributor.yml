@@ -19,11 +19,15 @@ jobs:
     steps:
       - uses: actions/labeler@b8dd2d9be0f68b860e7dae5dae7d772984eacd6d # v6.2.0
 
-  welcome-pr:
-    name: Welcome New Contributors (PR)
-    if: github.event_name == 'pull_request' && github.event.action == 'opened'
+  welcome:
+    name: Welcome New Contributors
+    # first-interaction v3 requires both issue_message and pr_message at
+    # runtime (even though action.yml marks neither as required), so a single
+    # job handles both events with both messages supplied.
+    if: github.event.action == 'opened' && (github.event_name == 'pull_request' || github.event_name == 'issues')
     runs-on: ubuntu-latest
     permissions:
+      issues: write
       pull-requests: write
     steps:
       - uses: actions/first-interaction@1c4688942c71f71d4f5502a26ea67c331730fa4d # v3.1.0
@@ -36,17 +40,6 @@ jobs:
             - [ ] `npx oxlint .` passes
             - [ ] All tests pass (`cargo test` and `npx vitest run`)
             - [ ] `CHANGELOG.md` updated under `[Unreleased]`
-
-  welcome-issue:
-    name: Welcome New Contributors (Issue)
-    if: github.event_name == 'issues' && github.event.action == 'opened'
-    runs-on: ubuntu-latest
-    permissions:
-      issues: write
-    steps:
-      - uses: actions/first-interaction@1c4688942c71f71d4f5502a26ea67c331730fa4d # v3.1.0
-        with:
-          repo_token: ${{ secrets.GITHUB_TOKEN }}
           issue_message: |
             Thanks for opening your first issue! We'll take a look as soon as possible. In the meantime, please make sure you've provided enough context for us to reproduce or understand the problem.
 
