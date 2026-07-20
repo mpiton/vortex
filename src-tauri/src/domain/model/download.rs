@@ -939,6 +939,31 @@ mod tests {
     }
 
     #[test]
+    fn queue_after_wait_returns_the_queued_event() {
+        let mut download = make_download();
+        download.start().unwrap();
+        download.wait().unwrap();
+
+        let event = download.queue_after_wait().unwrap();
+
+        assert_eq!(download.state(), DownloadState::Queued);
+        assert_eq!(event, DomainEvent::DownloadQueued { id: DownloadId(1) });
+    }
+
+    #[test]
+    fn queue_after_wait_rejects_non_waiting_downloads() {
+        let mut download = make_download();
+
+        assert!(matches!(
+            download.queue_after_wait(),
+            Err(DomainError::InvalidTransition {
+                from: DownloadState::Queued,
+                to: DownloadState::Queued,
+            })
+        ));
+    }
+
+    #[test]
     fn test_download_state_all_invalid_transitions() {
         // Can't pause from Queued
         let mut d = make_download();

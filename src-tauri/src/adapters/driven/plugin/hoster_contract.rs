@@ -10,7 +10,7 @@ use crate::domain::model::captcha::{
 };
 use crate::domain::ports::driven::{ExtractedCaptchaChallenge, ExtractedHosterLink};
 
-const MAX_HOSTER_PAYLOAD_BYTES: usize = 8 * 1024 * 1024;
+const MAX_HOSTER_PAYLOAD_BYTES: usize = MAX_CAPTCHA_IMAGE_BYTES * 4 + 64 * 1024;
 const MAX_HOSTER_FILES: usize = 500;
 const MAX_URL_BYTES: usize = 8 * 1024;
 const MAX_FILENAME_BYTES: usize = 4 * 1024;
@@ -71,11 +71,16 @@ pub(super) fn parse_hoster_links(payload: &str) -> Result<Vec<ExtractedHosterLin
                     .as_deref()
                     .unwrap_or("recaptcha_v2")
                     .parse::<CaptchaType>()?;
-                if file.captcha_image_data.as_ref().is_some_and(|data| {
-                    data.is_empty()
-                        || data.len() > MAX_CAPTCHA_IMAGE_BYTES
-                        || captcha_image_mime_type(data).is_none()
-                }) {
+                let image_data = file.captcha_image_data.as_deref();
+                let image_required =
+                    matches!(challenge_type, CaptchaType::Image | CaptchaType::TextInput);
+                if (image_required && image_data.is_none())
+                    || image_data.is_some_and(|data| {
+                        data.is_empty()
+                            || data.len() > MAX_CAPTCHA_IMAGE_BYTES
+                            || captcha_image_mime_type(data).is_none()
+                    })
+                {
                     return Err(limit_error());
                 }
                 Some(ExtractedCaptchaChallenge {

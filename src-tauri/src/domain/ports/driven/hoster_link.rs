@@ -2,10 +2,20 @@
 
 use crate::domain::model::captcha::CaptchaType;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ExtractedCaptchaChallenge {
     pub challenge_type: CaptchaType,
     pub image_data: Option<Vec<u8>>,
+}
+
+impl std::fmt::Debug for ExtractedCaptchaChallenge {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ExtractedCaptchaChallenge")
+            .field("challenge_type", &self.challenge_type)
+            .field("image_data_len", &self.image_data.as_ref().map(Vec::len))
+            .finish()
+    }
 }
 
 /// One hoster file resolved by a plugin adapter.
@@ -68,5 +78,20 @@ mod tests {
         assert!(debug.contains("<redacted>"));
         assert!(!debug.contains("secret-token"));
         assert!(!debug.contains("Bearer secret"));
+    }
+
+    #[test]
+    fn captcha_debug_output_reports_size_without_leaking_image_bytes() {
+        let captcha = ExtractedCaptchaChallenge {
+            challenge_type: CaptchaType::Image,
+            image_data: Some(vec![222, 173, 190, 239]),
+        };
+
+        let debug = format!("{captcha:?}");
+
+        assert!(debug.contains("Image"));
+        assert!(debug.contains("4"));
+        assert!(!debug.contains("222"));
+        assert!(!debug.contains("173"));
     }
 }

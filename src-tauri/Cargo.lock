@@ -7429,6 +7429,7 @@ version = "0.3.0-beta.1"
 dependencies = [
  "aes-gcm",
  "anyhow",
+ "base64 0.22.1",
  "bincode",
  "bytes",
  "bzip2",

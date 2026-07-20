@@ -15,7 +15,7 @@ const pendingCaptcha = {
   downloadId: 42,
   challengeType: "image",
   challengeUrl: "https://hoster.example/file/42",
-  imageData: [137, 80, 78, 71],
+  imageData: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB",
   imageMimeType: "image/png",
   status: "pending",
   solver: null,
@@ -48,21 +48,16 @@ beforeEach(() => {
     if (command === "captcha_get_pending") return pendingCaptcha;
     return null;
   });
-  Object.defineProperty(URL, "createObjectURL", {
-    configurable: true,
-    value: vi.fn(() => "blob:captcha"),
-  });
-  Object.defineProperty(URL, "revokeObjectURL", {
-    configurable: true,
-    value: vi.fn(),
-  });
 });
 
 describe("CaptchaView", () => {
   it("renders the pending image, input, timer and manual solver", async () => {
     renderView();
 
-    expect(await screen.findByTestId("captcha-image")).toBeInTheDocument();
+    expect(await screen.findByTestId("captcha-image")).toHaveAttribute(
+      "src",
+      `data:image/png;base64,${pendingCaptcha.imageData}`,
+    );
     expect(screen.getByLabelText("Captcha answer")).toBeInTheDocument();
     expect(screen.getByTestId("captcha-timer")).toHaveTextContent(/\d{2}:\d{2}/);
     expect(screen.getByText("Manual solver")).toBeInTheDocument();
@@ -99,5 +94,40 @@ describe("CaptchaView", () => {
     renderView();
 
     expect(await screen.findByText("No CAPTCHA waiting")).toBeInTheDocument();
+  });
+
+  it("selects the oldest pending challenge and marks the active row", async () => {
+    const newest = { ...pendingCaptcha, id: "captcha-newest", downloadId: 43, createdAt: 2_000 };
+    const oldest = { ...pendingCaptcha, id: "captcha-oldest", downloadId: 41, createdAt: 1_000 };
+    mockInvoke.mockImplementation(async (command: string, args) => {
+      if (command === "captcha_list") {
+        return [newest, oldest].map((challenge) => ({
+          ...challenge,
+          imageData: null,
+          imageMimeType: null,
+        }));
+      }
+      if (command === "captcha_get_pending") {
+        return (args as { challengeId?: string } | undefined)?.challengeId === oldest.id
+          ? oldest
+          : newest;
+      }
+      return null;
+    });
+    renderView();
+
+    const oldestRow = await screen.findByRole("button", { name: /Download #41/ });
+    const newestRow = screen.getByRole("button", { name: /Download #43/ });
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenCalledWith("captcha_get_pending", {
+        challengeId: "captcha-oldest",
+      }),
+    );
+    expect(oldestRow).toHaveAttribute("aria-pressed", "true");
+    expect(newestRow).toHaveAttribute("aria-pressed", "false");
+
+    await userEvent.click(newestRow);
+
+    expect(newestRow).toHaveAttribute("aria-pressed", "true");
   });
 });

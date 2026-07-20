@@ -97,7 +97,7 @@ impl CaptchaCommandHandler {
                 download_id: *download_id,
                 challenge_type: *challenge_type,
                 challenge_url: challenge_url.clone(),
-                image_data: image_data.clone(),
+                image_data: image_data.as_ref().map(|image| image.to_vec()),
             };
             tokio::spawn(async move {
                 if let Err(error) = CommandHandler::handle(handler.as_ref(), command).await {
@@ -177,20 +177,22 @@ impl CaptchaCommandHandler {
         challenge: &CaptchaChallenge,
         solution: &str,
     ) -> Result<String, DomainError> {
+        let mut last_error = None;
         for solver in self.solvers.iter() {
-            match solver.solve(challenge, solution)? {
-                CaptchaSolverOutcome::Solved => return Ok(solver.name().to_string()),
-                CaptchaSolverOutcome::Rejected => {
+            match solver.solve(challenge, solution) {
+                Ok(CaptchaSolverOutcome::Solved) => return Ok(solver.name().to_string()),
+                Ok(CaptchaSolverOutcome::Rejected) => {
                     return Err(DomainError::ValidationError(
                         "CAPTCHA solution was rejected".into(),
                     ));
                 }
-                CaptchaSolverOutcome::Unavailable => {}
+                Ok(CaptchaSolverOutcome::Unavailable) => {}
+                Err(error) => last_error = Some(error),
             }
         }
-        Err(DomainError::ValidationError(
-            "No solver supports this CAPTCHA type".into(),
-        ))
+        Err(last_error.unwrap_or_else(|| {
+            DomainError::ValidationError("No solver supports this CAPTCHA type".into())
+        }))
     }
 }
 
@@ -312,6 +314,17 @@ impl CommandHandler<TimeoutCaptchaCommand> for CaptchaCommandHandler {
 }
 
 impl CaptchaCommandHandler {
+    pub(crate) async fn has_pending_for_download(
+        &self,
+        download_id: crate::domain::model::download::DownloadId,
+    ) -> Result<bool, DomainError> {
+        let _guard = self.mutation_lock.lock().await;
+        Ok(self
+            .captchas
+            .find_pending_by_download(download_id)?
+            .is_some())
+    }
+
     pub(crate) async fn skip_pending_for_download(
         &self,
         download_id: crate::domain::model::download::DownloadId,
@@ -356,11 +369,14 @@ impl CaptchaCommandHandler {
             challenge.skip(now, "CAPTCHA skipped by user")?;
             "CAPTCHA skipped by user"
         };
-        let download = self.downloads.find_by_id(challenge.download_id())?;
-        let mut failed_download = download.clone();
-        if let Some(download) = failed_download.as_mut() {
-            download.fail(reason.to_string())?;
-        }
+        let failed_download = match self.downloads.find_by_id(challenge.download_id())? {
+            Some(mut download) => match download.fail(reason.to_string()) {
+                Ok(_) => Some(download),
+                Err(DomainError::InvalidTransition { .. }) => None,
+                Err(error) => return Err(error),
+            },
+            None => None,
+        };
         self.captchas.save(&challenge)?;
         if let Some(download) = failed_download.as_ref()
             && let Err(error) = self.downloads.save_failed(download, reason)
@@ -424,6 +440,39 @@ impl CommandHandler<RetryCaptchaCommand> for CaptchaCommandHandler {
 }
 
 impl CommandBus {
+    pub(crate) async fn has_pending_captcha_for_download(
+        &self,
+        download_id: crate::domain::model::download::DownloadId,
+    ) -> Result<bool, AppError> {
+        match self.captcha_handler_opt() {
+            Some(handler) => handler
+                .has_pending_for_download(download_id)
+                .await
+                .map_err(AppError::Domain),
+            None => Ok(false),
+        }
+    }
+
+    pub(crate) async fn delete_download_with_captcha_cleanup(
+        &self,
+        download: &crate::domain::model::download::Download,
+    ) -> Result<(), AppError> {
+        self.download_repo().delete(download.id())?;
+        let Some(handler) = self.captcha_handler_opt() else {
+            return Ok(());
+        };
+        if let Err(error) = handler.skip_pending_for_download(download.id()).await {
+            if let Err(rollback_error) = self.download_repo().save(download) {
+                tracing::error!(
+                    error = %rollback_error,
+                    "failed to restore download after CAPTCHA cleanup failure"
+                );
+            }
+            return Err(AppError::Domain(error));
+        }
+        Ok(())
+    }
+
     pub async fn handle_captcha_solve(&self, command: SolveCaptchaCommand) -> Result<(), AppError> {
         CommandHandler::handle(self.captcha_handler()?, command)
             .await

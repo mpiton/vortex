@@ -227,6 +227,9 @@ impl CaptchaChallenge {
 
     pub fn skip(&mut self, now_ms: u64, reason: &str) -> Result<(), DomainError> {
         self.ensure_pending()?;
+        if reason.trim().is_empty() {
+            return Err(validation("CAPTCHA skip reason cannot be empty"));
+        }
         self.status = CaptchaStatus::Skipped;
         self.failure_reason = Some(reason.to_string());
         self.resolve(now_ms);
@@ -431,6 +434,20 @@ mod tests {
         image
     }
 
+    fn gif_image(width: u16, height: u16) -> Vec<u8> {
+        let mut image = b"GIF89a".to_vec();
+        image.extend_from_slice(&width.to_le_bytes());
+        image.extend_from_slice(&height.to_le_bytes());
+        image
+    }
+
+    fn jpeg_image(width: u16, height: u16) -> Vec<u8> {
+        let mut image = vec![0xff, 0xd8, 0xff, 0xc0, 0x00, 0x07, 0x08];
+        image.extend_from_slice(&height.to_be_bytes());
+        image.extend_from_slice(&width.to_be_bytes());
+        image
+    }
+
     #[test]
     fn new_challenge_is_pending_and_has_a_deadline() {
         let c = make_challenge();
@@ -470,6 +487,15 @@ mod tests {
     }
 
     #[test]
+    fn skip_rejects_a_blank_reason_without_terminalizing_the_challenge() {
+        let mut challenge = make_challenge();
+
+        assert!(challenge.skip(2_000, "  ").is_err());
+        assert_eq!(challenge.status(), CaptchaStatus::Pending);
+        assert!(challenge.failure_reason().is_none());
+    }
+
+    #[test]
     fn retry_renews_pending_deadline_and_counts_attempt() {
         let mut c = make_challenge();
         c.retry(5_000, 65_000).expect("pending can be retried");
@@ -498,6 +524,26 @@ mod tests {
             make_challenge()
                 .with_image_data(png_image(5_000, 5_000))
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn gif_dimensions_accept_valid_headers_and_reject_malformed_ones() {
+        assert_eq!(captcha_image_mime_type(&gif_image(2, 3)), Some("image/gif"));
+        assert_eq!(captcha_image_mime_type(b"GIF89a\x02\0\x03"), None);
+        assert_eq!(captcha_image_mime_type(&gif_image(0, 3)), None);
+    }
+
+    #[test]
+    fn jpeg_dimensions_accept_valid_headers_and_reject_malformed_ones() {
+        assert_eq!(
+            captcha_image_mime_type(&jpeg_image(2, 3)),
+            Some("image/jpeg")
+        );
+        assert_eq!(captcha_image_mime_type(&jpeg_image(0, 3)), None);
+        assert_eq!(
+            captcha_image_mime_type(&[0xff, 0xd8, 0xff, 0xc0, 0x00, 0x20, 0x08]),
+            None
         );
     }
 

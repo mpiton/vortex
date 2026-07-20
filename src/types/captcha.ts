@@ -6,7 +6,7 @@ export interface CaptchaChallengeView {
   downloadId: number;
   challengeType: CaptchaType;
   challengeUrl: string;
-  imageData: number[] | null;
+  imageData: string | null;
   imageMimeType: string | null;
   status: CaptchaStatus;
   solver: string | null;

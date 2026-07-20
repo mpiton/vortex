@@ -18,7 +18,8 @@ export function CaptchaChallengePanel({ challenge }: { challenge: CaptchaChallen
   const acceptsText =
     challenge.challengeType === "image" || challenge.challengeType === "text_input";
   const totalMs = Math.max(1, challenge.expiresAt - challenge.createdAt);
-  const progress = Math.min(100, (countdown.remainingSeconds * 1_000 * 100) / totalMs);
+  const remainingMs = Math.max(0, challenge.expiresAt - Date.now());
+  const progress = Math.min(100, (remainingMs * 100) / totalMs);
 
   useEffect(() => setSolution(""), [challenge.id]);
 
@@ -45,7 +46,12 @@ export function CaptchaChallengePanel({ challenge }: { challenge: CaptchaChallen
       </CardHeader>
       <CardContent className="space-y-4">
         {challenge.imageData && challenge.imageMimeType ? (
-          <CaptchaImage bytes={challenge.imageData} mimeType={challenge.imageMimeType} />
+          <img
+            alt="CAPTCHA"
+            className="mx-auto max-h-64 max-w-full rounded-md border object-contain"
+            data-testid="captcha-image"
+            src={`data:${challenge.imageMimeType};base64,${challenge.imageData}`}
+          />
         ) : null}
         {acceptsText ? (
           <div className="space-y-2">
@@ -90,23 +96,4 @@ export function CaptchaChallengePanel({ challenge }: { challenge: CaptchaChallen
       </CardContent>
     </Card>
   );
-}
-
-function CaptchaImage({ bytes, mimeType }: { bytes: number[]; mimeType: string }) {
-  const [source, setSource] = useState<string | null>(null);
-
-  useEffect(() => {
-    const url = URL.createObjectURL(new Blob([Uint8Array.from(bytes)], { type: mimeType }));
-    setSource(url);
-    return () => URL.revokeObjectURL(url);
-  }, [bytes, mimeType]);
-
-  return source ? (
-    <img
-      alt="CAPTCHA"
-      className="mx-auto max-h-64 max-w-full rounded-md border object-contain"
-      data-testid="captcha-image"
-      src={source}
-    />
-  ) : null;
 }

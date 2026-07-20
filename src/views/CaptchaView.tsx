@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useCaptchaQueue, usePendingCaptcha } from "@/hooks/useCaptchaQueue";
+import { cn } from "@/lib/utils";
 import { CaptchaChallengePanel } from "./CaptchaChallengePanel";
 import { CaptchaSolverSettings } from "./CaptchaSolverSettings";
 
@@ -10,7 +11,9 @@ export function CaptchaView() {
   const { t } = useTranslation();
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const { data = [], isLoading, error } = useCaptchaQueue();
-  const pending = data.filter((challenge) => challenge.status === "pending");
+  const pending = data
+    .filter((challenge) => challenge.status === "pending")
+    .sort((left, right) => left.createdAt - right.createdAt);
   const history = data.filter((challenge) => challenge.status !== "pending");
   const selected = pending.find((challenge) => challenge.id === selectedId) ?? pending[0];
   const { data: selectedDetail } = usePendingCaptcha(selected?.id);
@@ -37,7 +40,11 @@ export function CaptchaView() {
               ) : (
                 pending.map((challenge) => (
                   <button
-                    className="w-full rounded-md border p-3 text-left hover:bg-accent"
+                    aria-pressed={selected?.id === challenge.id}
+                    className={cn(
+                      "w-full rounded-md border p-3 text-left hover:bg-accent",
+                      selected?.id === challenge.id && "border-primary bg-accent",
+                    )}
                     key={challenge.id}
                     onClick={() => setSelectedId(challenge.id)}
                     type="button"

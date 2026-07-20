@@ -18,7 +18,7 @@ const CAPTCHA_METADATA_QUERY: &str = "SELECT id, download_id, challenge_type, \
 const PENDING_CAPTCHA_METADATA_QUERY: &str = "SELECT id, download_id, challenge_type, \
     '[redacted]' AS challenge_url, NULL AS image_data, status, solver, attempts, created_at, expires_at, \
     resolved_at, duration_ms, failure_reason FROM captcha_log WHERE status = ? \
-    ORDER BY created_at ASC";
+    ORDER BY created_at ASC LIMIT 200";
 
 pub struct SqliteCaptchaRepo {
     db: DatabaseConnection,

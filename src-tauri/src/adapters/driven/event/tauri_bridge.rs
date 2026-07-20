@@ -365,6 +365,7 @@ fn to_tauri_event(event: &DomainEvent) -> (&'static str, serde_json::Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::model::captcha::CaptchaType;
     use crate::domain::model::download::DownloadId;
 
     #[test]
@@ -394,6 +395,16 @@ mod tests {
         assert!(!should_forward_to_frontend(
             &DomainEvent::DownloadCompleted { id: DownloadId(7) }
         ));
+    }
+
+    #[test]
+    fn test_internal_captcha_required_event_is_not_forwarded() {
+        assert!(!should_forward_to_frontend(&DomainEvent::CaptchaRequired {
+            download_id: DownloadId(8),
+            challenge_type: CaptchaType::Image,
+            challenge_url: "https://hoster.example/captcha".into(),
+            image_data: Some(std::sync::Arc::<[u8]>::from(vec![1, 2, 3])),
+        }));
     }
 
     #[test]

@@ -33,9 +33,40 @@ fn captcha_resolution_failure_emits_the_typed_challenge() {
             download_id: DownloadId(42),
             challenge_type: CaptchaType::Image,
             challenge_url: "https://hoster.example/file".into(),
-            image_data: Some(vec![1, 2, 3]),
+            image_data: Some(Arc::<[u8]>::from(vec![1, 2, 3])),
         }
     );
+}
+
+#[test]
+fn cloned_captcha_events_share_the_ephemeral_image_buffer() {
+    let event = source_resolution_event(
+        DownloadId(42),
+        &DomainError::CaptchaRequired {
+            challenge_type: CaptchaType::Image,
+            challenge_url: "https://hoster.example/file".into(),
+            image_data: Some(vec![1, 2, 3]),
+        },
+        false,
+    );
+    let cloned = event.clone();
+
+    let DomainEvent::CaptchaRequired {
+        image_data: Some(original),
+        ..
+    } = &event
+    else {
+        panic!("expected CAPTCHA event");
+    };
+    let DomainEvent::CaptchaRequired {
+        image_data: Some(copy),
+        ..
+    } = &cloned
+    else {
+        panic!("expected cloned CAPTCHA event");
+    };
+
+    assert_eq!(original.as_ptr(), copy.as_ptr());
 }
 
 #[test]

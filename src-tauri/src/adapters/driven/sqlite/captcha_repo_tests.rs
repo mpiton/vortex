@@ -76,3 +76,15 @@ async fn captcha_log_never_has_a_solution_column() {
 
     assert!(!names.iter().any(|name| name.contains("solution")));
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pending_query_is_defensively_capped() {
+    let db = setup_test_db().await.expect("test db");
+    let repo = SqliteCaptchaRepo::new(db);
+    for index in 0..201 {
+        repo.save(&challenge(&format!("captcha-{index}"), index))
+            .expect("save pending challenge");
+    }
+
+    assert_eq!(repo.list_pending().expect("list pending").len(), 200);
+}

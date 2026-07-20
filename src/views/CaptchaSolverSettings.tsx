@@ -12,13 +12,13 @@ export function CaptchaSolverSettings() {
     (state) => state.config?.captchaTimeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS,
   );
   const updateConfig = useSettingsStore((state) => state.updateConfig);
-  const [timeout, setTimeout] = useState(configured);
+  const [timeoutSeconds, setTimeoutSeconds] = useState(configured);
 
-  useEffect(() => setTimeout(configured), [configured]);
+  useEffect(() => setTimeoutSeconds(configured), [configured]);
 
   const persistTimeout = () => {
-    const normalized = Math.min(3_600, Math.max(10, timeout || DEFAULT_TIMEOUT_SECONDS));
-    setTimeout(normalized);
+    const normalized = Math.min(3_600, Math.max(10, timeoutSeconds || DEFAULT_TIMEOUT_SECONDS));
+    setTimeoutSeconds(normalized);
     void updateConfig({ captchaTimeoutSeconds: normalized });
   };
 
@@ -42,9 +42,13 @@ export function CaptchaSolverSettings() {
             max={3_600}
             min={10}
             onBlur={persistTimeout}
-            onChange={(event) => setTimeout(Number(event.target.value))}
+            onChange={(event) => {
+              if (!Number.isNaN(event.currentTarget.valueAsNumber)) {
+                setTimeoutSeconds(event.currentTarget.valueAsNumber);
+              }
+            }}
             type="number"
-            value={timeout}
+            value={timeoutSeconds}
           />
           <p className="text-xs text-muted-foreground">{t("captcha.settings.fallback")}</p>
         </div>

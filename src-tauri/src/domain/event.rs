@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::domain::model::account::AccountId;
 use crate::domain::model::captcha::{CaptchaId, CaptchaType};
 use crate::domain::model::download::DownloadId;
@@ -158,11 +160,13 @@ pub enum DomainEvent {
         id: DownloadId,
         expired_naturally: bool,
     },
+    /// Internal hand-off from the download engine to the CAPTCHA command
+    /// handler. The Tauri bridge deliberately never forwards this event.
     CaptchaRequired {
         download_id: DownloadId,
         challenge_type: CaptchaType,
         challenge_url: String,
-        image_data: Option<Vec<u8>>,
+        image_data: Option<Arc<[u8]>>,
     },
     CaptchaPending {
         challenge_id: CaptchaId,

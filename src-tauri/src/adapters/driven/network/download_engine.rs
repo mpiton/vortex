@@ -62,7 +62,7 @@ fn source_resolution_event(
             download_id,
             challenge_type: *challenge_type,
             challenge_url: challenge_url.clone(),
-            image_data: image_data.clone(),
+            image_data: image_data.as_deref().map(Arc::<[u8]>::from),
         };
     }
     DomainEvent::DownloadFailed {

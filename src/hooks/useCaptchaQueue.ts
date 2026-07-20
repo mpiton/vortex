@@ -3,7 +3,12 @@ import { tauriInvoke } from "@/api/client";
 import { captchaQueries } from "@/api/queries";
 import { useTauriEvent } from "@/hooks/useTauriEvent";
 import type { CaptchaChallengeView } from "@/types/captcha";
-import type { CaptchaEventPayload } from "@/types/events";
+import type {
+  CaptchaEventPayload,
+  CaptchaSkippedEventPayload,
+  CaptchaSolvedEventPayload,
+  CaptchaTimedOutEventPayload,
+} from "@/types/events";
 
 const CAPTCHA_EVENTS = [
   "captcha-pending",
@@ -19,9 +24,9 @@ export function useCaptchaQueue() {
   };
 
   useTauriEvent<CaptchaEventPayload>(CAPTCHA_EVENTS[0], invalidate);
-  useTauriEvent<CaptchaEventPayload>(CAPTCHA_EVENTS[1], invalidate);
-  useTauriEvent<CaptchaEventPayload>(CAPTCHA_EVENTS[2], invalidate);
-  useTauriEvent<CaptchaEventPayload>(CAPTCHA_EVENTS[3], invalidate);
+  useTauriEvent<CaptchaSolvedEventPayload>(CAPTCHA_EVENTS[1], invalidate);
+  useTauriEvent<CaptchaSkippedEventPayload>(CAPTCHA_EVENTS[2], invalidate);
+  useTauriEvent<CaptchaTimedOutEventPayload>(CAPTCHA_EVENTS[3], invalidate);
 
   return useQuery<CaptchaChallengeView[], Error>({
     queryKey: captchaQueries.list(),

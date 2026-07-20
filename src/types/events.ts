@@ -38,6 +38,19 @@ export interface CaptchaEventPayload {
   downloadId: number;
 }
 
+export interface CaptchaSolvedEventPayload extends CaptchaEventPayload {
+  solver: string;
+  durationMs: number;
+}
+
+export interface CaptchaSkippedEventPayload extends CaptchaEventPayload {
+  reason: string;
+}
+
+export interface CaptchaTimedOutEventPayload extends CaptchaEventPayload {
+  durationMs: number;
+}
+
 export interface SegmentPayload {
   downloadId: number;
   segmentId: number;
@@ -114,9 +127,9 @@ export type TauriEventMap = {
   "download-extracting": DownloadIdPayload;
   "download-progress": DownloadProgressPayload;
   "captcha-pending": CaptchaEventPayload;
-  "captcha-solved": CaptchaEventPayload;
-  "captcha-skipped": CaptchaEventPayload;
-  "captcha-timed-out": CaptchaEventPayload;
+  "captcha-solved": CaptchaSolvedEventPayload;
+  "captcha-skipped": CaptchaSkippedEventPayload;
+  "captcha-timed-out": CaptchaTimedOutEventPayload;
   "segment-started": SegmentPayload;
   "segment-completed": SegmentPayload;
   "segment-failed": SegmentFailedPayload;

@@ -1,3 +1,4 @@
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde::Serialize;
 
 use crate::domain::model::captcha::{CaptchaChallenge, captcha_image_mime_type};
@@ -9,7 +10,7 @@ pub struct CaptchaViewDto {
     pub download_id: u64,
     pub challenge_type: String,
     pub challenge_url: String,
-    pub image_data: Option<Vec<u8>>,
+    pub image_data: Option<String>,
     pub image_mime_type: Option<String>,
     pub status: String,
     pub solver: Option<String>,
@@ -43,7 +44,7 @@ impl CaptchaViewDto {
             challenge_type: challenge.challenge_type().to_string(),
             challenge_url: challenge.url().to_string(),
             image_data: include_image
-                .then(|| challenge.image_data().map(<[u8]>::to_vec))
+                .then(|| challenge.image_data().map(|image| STANDARD.encode(image)))
                 .flatten(),
             image_mime_type,
             status: challenge.status().to_string(),
@@ -82,10 +83,11 @@ mod tests {
     fn list_metadata_omits_image_bytes_but_pending_detail_includes_them() {
         let metadata = CaptchaViewDto::metadata(challenge());
         let detail = CaptchaViewDto::from(challenge());
+        let payload = serde_json::to_value(&detail).unwrap();
 
         assert!(metadata.image_data.is_none());
         assert!(metadata.image_mime_type.is_none());
-        assert_eq!(detail.image_data.as_ref().map(Vec::len), Some(24));
+        assert_eq!(payload["imageData"], "iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB");
         assert_eq!(detail.image_mime_type.as_deref(), Some("image/png"));
     }
 }

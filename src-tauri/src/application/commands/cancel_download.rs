@@ -15,10 +15,7 @@ impl CommandBus {
             .find_by_id(cmd.id)?
             .ok_or_else(|| AppError::NotFound(format!("Download {} not found", cmd.id.0)))?;
 
-        let was_waiting_for_captcha = match self.captcha_handler_opt() {
-            Some(handler) => handler.skip_pending_for_download(cmd.id).await?,
-            None => false,
-        };
+        let was_waiting_for_captcha = self.has_pending_captcha_for_download(cmd.id).await?;
 
         // Cancel engine if download is active
         let is_active = matches!(
@@ -29,14 +26,13 @@ impl CommandBus {
             self.download_engine().cancel(cmd.id)?;
         }
 
+        self.delete_download_with_captcha_cleanup(&download).await?;
+
         // Cleanup metadata file (best-effort, log on failure)
         let meta_path = format!("{}.vortex-meta", download.destination_path());
         if let Err(e) = self.file_storage().delete_meta(Path::new(&meta_path)) {
             tracing::warn!("Failed to delete meta for download {:?}: {e}", cmd.id);
         }
-
-        // Remove from persistence
-        self.download_repo().delete(cmd.id)?;
 
         // Only emit DownloadCancelled for active downloads.
         // QueueManager's decrement_and_schedule reacts to this event;
@@ -57,6 +53,7 @@ impl CommandBus {
 mod tests {
     use std::collections::HashMap;
     use std::path::Path;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
 
     use crate::application::command_bus::CommandBus;
@@ -131,13 +128,19 @@ mod tests {
 
     struct MockDownloadRepo {
         store: Mutex<HashMap<u64, Download>>,
+        fail_next_delete: AtomicBool,
     }
 
     impl MockDownloadRepo {
         fn new() -> Self {
             Self {
                 store: Mutex::new(HashMap::new()),
+                fail_next_delete: AtomicBool::new(false),
             }
+        }
+
+        fn fail_next_delete(&self) {
+            self.fail_next_delete.store(true, Ordering::SeqCst);
         }
     }
 
@@ -152,6 +155,9 @@ mod tests {
         }
 
         fn delete(&self, id: DownloadId) -> Result<(), DomainError> {
+            if self.fail_next_delete.swap(false, Ordering::SeqCst) {
+                return Err(DomainError::StorageError("injected delete failure".into()));
+            }
             self.store.lock().unwrap().remove(&id.0);
             Ok(())
         }
@@ -538,5 +544,52 @@ mod tests {
         assert!(emitted.iter().any(
             |event| matches!(event, DomainEvent::DownloadRemoved { id } if *id == DownloadId(3))
         ));
+    }
+
+    #[tokio::test]
+    async fn cancel_delete_failure_leaves_the_captcha_pending() {
+        let repo = Arc::new(MockDownloadRepo::new());
+        let engine = Arc::new(MockDownloadEngine::new());
+        let events = Arc::new(MockEventBus::new());
+        let mut download = make_download(4);
+        download.start().unwrap();
+        download.wait().unwrap();
+        repo.save(&download).unwrap();
+        let captcha_id = CaptchaId::new("captcha-4");
+        let captcha = CaptchaChallenge::new(
+            captcha_id.clone(),
+            DownloadId(4),
+            CaptchaType::Image,
+            "https://hoster.example/file".into(),
+            1_000,
+            121_000,
+        )
+        .unwrap();
+        let captcha_repo = Arc::new(MemoryCaptchaRepo::new(captcha));
+        let handler = Arc::new(CaptchaCommandHandler::new(
+            captcha_repo.clone(),
+            repo.clone(),
+            events.clone(),
+            Arc::new(MockConfigStore),
+            Arc::new(FixedClock),
+            vec![Arc::new(ManualCaptchaSolver)],
+        ));
+        let bus = make_command_bus(repo.clone(), engine, events).with_captcha_handler(handler);
+        repo.fail_next_delete();
+
+        let result = bus
+            .handle_cancel_download(CancelDownloadCommand { id: DownloadId(4) })
+            .await;
+
+        assert!(result.is_err());
+        assert!(repo.find_by_id(DownloadId(4)).unwrap().is_some());
+        assert_eq!(
+            captcha_repo
+                .find_by_id(&captcha_id)
+                .unwrap()
+                .unwrap()
+                .status(),
+            CaptchaStatus::Pending
+        );
     }
 }

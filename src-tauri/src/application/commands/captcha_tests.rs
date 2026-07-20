@@ -14,6 +14,7 @@ use crate::domain::model::captcha::{CaptchaChallenge, CaptchaId, CaptchaStatus, 
 use crate::domain::model::config::{AppConfig, ConfigPatch};
 use crate::domain::model::download::{Download, DownloadId, DownloadState, Url};
 use crate::domain::ports::driven::{CaptchaRepository, Clock, ConfigStore, DownloadRepository};
+use crate::domain::ports::driven::{CaptchaSolver, CaptchaSolverOutcome};
 use crate::domain::ports::driving::CommandHandler;
 
 struct MemoryCaptchaRepo {
@@ -104,6 +105,10 @@ type Fixture = (
 );
 
 fn fixture() -> Fixture {
+    fixture_with_solvers(vec![Arc::new(ManualCaptchaSolver)])
+}
+
+fn fixture_with_solvers(solvers: Vec<Arc<dyn CaptchaSolver>>) -> Fixture {
     let captchas = Arc::new(MemoryCaptchaRepo::new());
     let downloads = Arc::new(InMemoryDownloadRepo::new());
     let events = Arc::new(CapturingEventBus::new());
@@ -122,9 +127,25 @@ fn fixture() -> Fixture {
         events.clone(),
         Arc::new(FixedConfig),
         clock.clone(),
-        vec![Arc::new(ManualCaptchaSolver)],
+        solvers,
     );
     (handler, captchas, downloads, events, clock)
+}
+
+struct FailingCaptchaSolver;
+
+impl CaptchaSolver for FailingCaptchaSolver {
+    fn name(&self) -> &str {
+        "failing"
+    }
+
+    fn solve(
+        &self,
+        _challenge: &CaptchaChallenge,
+        _solution: &str,
+    ) -> Result<CaptchaSolverOutcome, DomainError> {
+        Err(DomainError::PluginError("solver unavailable".into()))
+    }
 }
 
 fn png_image() -> Vec<u8> {
@@ -227,6 +248,30 @@ async fn manual_solve_logs_metadata_and_requeues_without_persisting_answer() {
         DownloadState::Queued
     );
     assert!(events.snapshot().iter().any(|event| matches!(event, DomainEvent::CaptchaSolved { challenge_id, .. } if challenge_id == &id)));
+}
+
+#[tokio::test]
+async fn solve_falls_through_when_an_earlier_solver_errors() {
+    let (handler, captchas, _, _, _) = fixture_with_solvers(vec![
+        Arc::new(FailingCaptchaSolver),
+        Arc::new(ManualCaptchaSolver),
+    ]);
+    let id = enqueue(&handler).await;
+
+    <CaptchaCommandHandler as CommandHandler<SolveCaptchaCommand>>::handle(
+        &handler,
+        SolveCaptchaCommand {
+            challenge_id: id.clone(),
+            solution: "abc123".into(),
+        },
+    )
+    .await
+    .expect("manual solver should run after the failing solver");
+
+    assert_eq!(
+        captchas.find_by_id(&id).unwrap().unwrap().solver(),
+        Some("manual")
+    );
 }
 
 #[tokio::test]
@@ -397,6 +442,126 @@ async fn timeout_skips_by_default_and_retry_renews_a_pending_challenge() {
         captchas.find_by_id(&id).unwrap().unwrap().status(),
         CaptchaStatus::TimedOut
     );
+}
+
+#[tokio::test]
+async fn timeout_terminalizes_a_challenge_even_if_the_download_is_already_terminal() {
+    let (handler, captchas, downloads, _, clock) = fixture();
+    let id = enqueue(&handler).await;
+    let mut completed = Download::new(
+        DownloadId(42),
+        Url::new("https://hoster.example/file").unwrap(),
+        "file.zip".into(),
+        "/tmp/file.zip".into(),
+    );
+    completed.start().unwrap();
+    completed.complete().unwrap();
+    downloads.seed(completed);
+    clock.0.store(121_000, Ordering::SeqCst);
+
+    <CaptchaCommandHandler as CommandHandler<TimeoutCaptchaCommand>>::handle(
+        &handler,
+        TimeoutCaptchaCommand {
+            challenge_id: id.clone(),
+            expected_expires_at: 121_000,
+        },
+    )
+    .await
+    .expect("terminal download must not keep the CAPTCHA pending");
+
+    assert_eq!(
+        captchas.find_by_id(&id).unwrap().unwrap().status(),
+        CaptchaStatus::TimedOut
+    );
+}
+
+#[tokio::test]
+async fn retry_requeues_a_skipped_challenge_download() {
+    let (handler, _, downloads, events, _) = fixture();
+    let id = enqueue(&handler).await;
+    <CaptchaCommandHandler as CommandHandler<SkipCaptchaCommand>>::handle(
+        &handler,
+        SkipCaptchaCommand {
+            challenge_id: id.clone(),
+        },
+    )
+    .await
+    .unwrap();
+
+    <CaptchaCommandHandler as CommandHandler<RetryCaptchaCommand>>::handle(
+        &handler,
+        RetryCaptchaCommand { challenge_id: id },
+    )
+    .await
+    .expect("skipped CAPTCHA can be retried manually");
+
+    assert_eq!(
+        downloads
+            .find_by_id(DownloadId(42))
+            .unwrap()
+            .unwrap()
+            .state(),
+        DownloadState::Retry
+    );
+    assert!(events.snapshot().iter().any(|event| matches!(
+        event,
+        DomainEvent::DownloadRetrying { id, attempt: 1 } if *id == DownloadId(42)
+    )));
+}
+
+#[tokio::test]
+async fn retry_requeues_a_timed_out_challenge_download() {
+    let (handler, _, downloads, _, clock) = fixture();
+    let id = enqueue(&handler).await;
+    clock.0.store(121_000, Ordering::SeqCst);
+    <CaptchaCommandHandler as CommandHandler<TimeoutCaptchaCommand>>::handle(
+        &handler,
+        TimeoutCaptchaCommand {
+            challenge_id: id.clone(),
+            expected_expires_at: 121_000,
+        },
+    )
+    .await
+    .unwrap();
+
+    <CaptchaCommandHandler as CommandHandler<RetryCaptchaCommand>>::handle(
+        &handler,
+        RetryCaptchaCommand { challenge_id: id },
+    )
+    .await
+    .expect("timed-out CAPTCHA can be retried manually");
+
+    assert_eq!(
+        downloads
+            .find_by_id(DownloadId(42))
+            .unwrap()
+            .unwrap()
+            .state(),
+        DownloadState::Retry
+    );
+}
+
+#[tokio::test]
+async fn retry_rejects_a_solved_challenge() {
+    let (handler, _, _, _, _) = fixture();
+    let id = enqueue(&handler).await;
+    <CaptchaCommandHandler as CommandHandler<SolveCaptchaCommand>>::handle(
+        &handler,
+        SolveCaptchaCommand {
+            challenge_id: id.clone(),
+            solution: "abc123".into(),
+        },
+    )
+    .await
+    .unwrap();
+
+    let result = <CaptchaCommandHandler as CommandHandler<RetryCaptchaCommand>>::handle(
+        &handler,
+        RetryCaptchaCommand { challenge_id: id },
+    )
+    .await;
+
+    assert!(matches!(result, Err(DomainError::ValidationError(_))));
 }
 
 #[tokio::test]

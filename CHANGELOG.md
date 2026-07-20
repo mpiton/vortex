@@ -10,8 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - CAPTCHA pipeline: persistent manual challenge queue, solve/skip/retry
-  actions, timeout handling, automatic download resumption, and redacted
-  challenge history (MAT-140).
+  actions, timeout handling, automatic download resumption, compact image
+  transport, bounded plugin inputs, and redacted challenge history (MAT-140).
 
 ### Security
 
