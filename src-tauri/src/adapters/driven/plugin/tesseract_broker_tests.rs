@@ -106,7 +106,7 @@ fn tesseract_windows_fixture_receives_only_fixed_arguments() {
     let binary = temp.path().join("tesseract.bat");
     std::fs::write(
         &binary,
-        "@echo off\r\nif not \"%~7\"==\"\" exit /b 9\r\nif not \"%~1\"==\"stdin\" exit /b 9\r\nif not \"%~2\"==\"stdout\" exit /b 9\r\nif not \"%~3\"==\"-l\" exit /b 9\r\nif not \"%~4\"==\"eng\" exit /b 9\r\nif not \"%~5\"==\"--psm\" exit /b 9\r\nif not \"%~6\"==\"7\" exit /b 9\r\n%SystemRoot%\\System32\\more.com >NUL\r\n<nul set /p \"=ABC123\"\r\n",
+        "@echo off\r\nif not \"%~7\"==\"\" exit /b 9\r\nif not \"%~1\"==\"stdin\" exit /b 9\r\nif not \"%~2\"==\"stdout\" exit /b 9\r\nif not \"%~3\"==\"-l\" exit /b 9\r\nif not \"%~4\"==\"eng\" exit /b 9\r\nif not \"%~5\"==\"--psm\" exit /b 9\r\nif not \"%~6\"==\"7\" exit /b 9\r\n%SystemRoot%\\System32\\more.com >NUL\r\n<nul set /p \"=ABC123\"\r\nexit /b 0\r\n",
     )
     .expect("write fake tesseract");
 
