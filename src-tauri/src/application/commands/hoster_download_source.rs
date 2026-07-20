@@ -116,8 +116,15 @@ impl ResolveHosterSourceHandler {
         debrid_error: DomainError,
     ) -> Result<ResolvedDownloadSource, DomainError> {
         let url = download.url().as_str();
+        // `resolve_url` keeps debrid candidates and merely orders them last,
+        // so the runner-up for a URL no hoster claims is another debrid.
+        // Calling it without credentials is not a free extraction, and
+        // reporting its refusal as "free" would name a rung never tried.
         let hoster = match self.plugins.resolve_url(url) {
-            Ok(Some(info)) if Some(info.name()) != download.module_name() => {
+            Ok(Some(info))
+                if info.category() == PluginCategory::Hoster
+                    && Some(info.name()) != download.module_name() =>
+            {
                 info.name().to_string()
             }
             _ => return Err(debrid_error),

@@ -38,7 +38,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to anonymous extraction instead of leaving the download in error. The link
   check picks the debrid while it is healthy, but the quota can be spent, the
   hoster can drop out of coverage, or the service can go down before the
-  transfer starts. When neither rung delivers, the error names both (MAT-142).
+  transfer starts. When neither rung delivers, the error names both. The
+  fall-through only ever targets a hoster plugin, so a second debrid is never
+  called anonymously and reported as the free rung (MAT-142).
 - Resolution tier identifiers coming over IPC are now length-bounded, so a
   malformed patch cannot turn the parse error into an oversized IPC string
   (MAT-142).

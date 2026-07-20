@@ -19,6 +19,7 @@ use crate::domain::ports::driven::{
 };
 
 const DEBRID: &str = "vortex-mod-alldebrid";
+const OTHER_DEBRID: &str = "vortex-mod-realdebrid";
 const HOSTER: &str = "vortex-mod-mediafire";
 const URL: &str = "https://www.mediafire.com/file/abc/archive.zip/file";
 
@@ -47,6 +48,7 @@ impl ConfigStore for DefaultConfig {
 /// unless the hoster is down too.
 struct FallThroughLoader {
     hoster_serves: bool,
+    resolves_to: &'static str,
     anonymous_calls: Mutex<Vec<String>>,
 }
 
@@ -54,12 +56,22 @@ impl FallThroughLoader {
     fn new(hoster_serves: bool) -> Self {
         Self {
             hoster_serves,
+            resolves_to: HOSTER,
             anonymous_calls: Mutex::new(Vec::new()),
         }
     }
 
+    /// The plugin `resolve_url` hands back for the URL, which is not always
+    /// a hoster: debrids stay in the candidate list, ordered last.
+    fn resolving_to(name: &'static str) -> Self {
+        Self {
+            resolves_to: name,
+            ..Self::new(true)
+        }
+    }
+
     fn info(name: &str) -> PluginInfo {
-        let category = if name == DEBRID {
+        let category = if name == DEBRID || name == OTHER_DEBRID {
             PluginCategory::Debrid
         } else {
             PluginCategory::Hoster
@@ -84,7 +96,7 @@ impl PluginLoader for FallThroughLoader {
     }
 
     fn resolve_url(&self, _: &str) -> Result<Option<PluginInfo>, DomainError> {
-        Ok(Some(Self::info(HOSTER)))
+        Ok(Some(Self::info(self.resolves_to)))
     }
 
     fn plugin_can_handle(&self, _: &str, _: &str) -> Result<bool, DomainError> {
@@ -208,6 +220,26 @@ fn test_both_rungs_failing_reports_both_reasons_and_never_a_direct_url() {
     let message = error.to_string();
     assert!(message.contains("debrid:"), "{message}");
     assert!(message.contains("free:"), "{message}");
+}
+
+#[test]
+fn test_a_second_debrid_is_never_mistaken_for_the_free_rung() {
+    // With no hoster plugin loaded for the URL, the runner-up `resolve_url`
+    // offers is the other debrid. Calling it without credentials is not a
+    // free extraction, so the debrid's own error has to stand rather than a
+    // combined one naming a rung that was never tried.
+    let loader = Arc::new(FallThroughLoader::resolving_to(OTHER_DEBRID));
+    let handler = handler(loader.clone());
+
+    let error = handler
+        .resolve(&download(DEBRID, "debrid-1"))
+        .expect_err("no free rung covers this URL");
+
+    assert!(
+        matches!(error, DomainError::AccountQuotaExceeded),
+        "{error}"
+    );
+    assert!(loader.anonymous_calls.lock().expect("call log").is_empty());
 }
 
 #[test]
