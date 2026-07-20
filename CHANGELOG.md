@@ -15,6 +15,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CAPTCHA solvers: configurable OCR → AntiCaptcha → browser cascade, typed
   Tesseract host broker, keyring-backed AntiCaptcha credentials, persisted
   per-solver attempts, and a dedicated human-assisted WebView (MAT-141).
+- Debrid support: `vortex-mod-realdebrid` and `vortex-mod-alldebrid` plugins
+  unrestrict a covered hoster link through a keyring-held API token and report
+  premium expiry back to the Accounts view (MAT-142).
+- Configurable Premium → Debrid → Free resolution order (PRD-v2 §4.3). Link
+  resolution now walks the tiers in the order set under Settings → Downloads,
+  picking the plugin and account before any hoster is contacted. A tier that
+  declines records why, so an exhausted cascade names every rung it tried
+  instead of failing as a bare "no source" (MAT-142).
 
 ### Security
 

@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::application::command_bus::CommandBus;
 use crate::application::services::account_operation_locks::AccountOperationLocks;
+use crate::application::services::{AccountRotator, AccountSelector};
 use crate::application::test_support::NoopHistoryRepo;
 use crate::domain::error::DomainError;
 use crate::domain::event::DomainEvent;
@@ -899,6 +900,41 @@ pub(crate) fn build_account_bus_with_plugin_loader(
         bus = bus.with_passphrase_codec(c);
     }
     bus
+}
+
+/// Account bus whose config store is supplied by the caller, so a test can
+/// drive the Premium → Debrid → Free cascade through `resolution_order`.
+pub(crate) fn build_account_bus_with_config(
+    account_repo: Arc<dyn AccountRepository>,
+    plugin_loader: Arc<dyn PluginLoader>,
+    config_store: Arc<dyn ConfigStore>,
+) -> CommandBus {
+    let events = Arc::new(CapturingEventBus::new());
+    let clock: Arc<dyn Clock> = Arc::new(FixedAccountClock);
+    CommandBus::new(
+        Arc::new(StubDownloadRepo),
+        Arc::new(StubDownloadEngine),
+        events.clone(),
+        Arc::new(StubFileStorage),
+        Arc::new(StubHttpClient),
+        plugin_loader,
+        config_store,
+        Arc::new(StubCredentialStore),
+        Arc::new(StubClipboardObserver),
+        Arc::new(StubArchiveExtractor),
+        Arc::new(NoopHistoryRepo),
+        None,
+    )
+    .with_account_repo(account_repo.clone())
+    .with_account_credential_store(Arc::new(FakeAccountCredentialStore::new()))
+    .with_account_clock(clock.clone())
+    .with_account_operation_locks(Arc::new(AccountOperationLocks::default()))
+    .with_account_rotator(AccountRotator::new(
+        AccountSelector::new(account_repo.clone(), events.clone(), clock.clone()),
+        account_repo,
+        events,
+        clock,
+    ))
 }
 
 pub(crate) fn build_credential_bus(credential_store: Arc<dyn CredentialStore>) -> CommandBus {

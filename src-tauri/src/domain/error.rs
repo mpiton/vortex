@@ -31,6 +31,10 @@ pub enum DomainError {
     HosterAuthenticationRequired,
     HosterDirectUrlExpired,
     HosterUnexpectedHtml,
+    /// Every rung of the Premium → Debrid → Free cascade declined the link.
+    /// The payload lists each tier and why, so the failure is never a bare
+    /// "no source" the user cannot act on (PRD §4.3).
+    ResolutionExhausted(String),
     CaptchaRequired {
         challenge_type: CaptchaType,
         challenge_url: String,
@@ -116,6 +120,9 @@ impl std::fmt::Display for DomainError {
             }
             DomainError::HosterUnexpectedHtml => {
                 write!(f, "Hoster returned an HTML page instead of file content")
+            }
+            DomainError::ResolutionExhausted(reasons) => {
+                write!(f, "No resolution tier could handle this link ({reasons})")
             }
             DomainError::CaptchaRequired { .. } => write!(f, "CAPTCHA is required"),
             DomainError::AdaptiveStreamOnly => write!(

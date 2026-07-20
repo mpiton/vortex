@@ -3,6 +3,10 @@
 //! Used by `ConfigStore` port for reading and updating settings.
 //! These types live in the domain because the port traits reference them.
 
+use std::fmt;
+use std::str::FromStr;
+
+use crate::domain::error::DomainError;
 use crate::domain::model::account::AccountSelectionStrategy;
 
 /// Application-wide configuration.
@@ -61,6 +65,9 @@ pub struct AppConfig {
     /// for the same service. PRD §6.4 — "Auto-select du meilleur
     /// compte disponible".
     pub account_selection_strategy: AccountSelectionStrategy,
+    /// Order in which link resolution walks the available tiers.
+    /// PRD §4.3 — "Priorité de résolution (configurable)".
+    pub resolution_order: Vec<ResolutionTier>,
 
     // ── Network ──────────────────────────────────────────────────────
     /// `"none"`, `"http"`, or `"socks5"`.
@@ -145,6 +152,7 @@ impl Default for AppConfig {
 
             // Accounts
             account_selection_strategy: AccountSelectionStrategy::DEFAULT,
+            resolution_order: default_resolution_order(),
 
             // Network
             proxy_type: "none".to_string(),
@@ -226,6 +234,68 @@ pub fn normalize_captcha_solver_order(raw: &[String]) -> Vec<String> {
     }
 }
 
+/// One rung of the link resolution cascade. PRD §4.3.
+///
+/// The set is closed, so this is an enum rather than the open-ended
+/// plugin-name strings used by `captcha_solver_order`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResolutionTier {
+    /// A premium account registered against the hoster plugin itself.
+    Premium,
+    /// A debrid service that covers the hoster.
+    Debrid,
+    /// Anonymous extraction through the hoster plugin (wait + captcha).
+    Free,
+}
+
+impl fmt::Display for ResolutionTier {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            ResolutionTier::Premium => "premium",
+            ResolutionTier::Debrid => "debrid",
+            ResolutionTier::Free => "free",
+        })
+    }
+}
+
+impl FromStr for ResolutionTier {
+    type Err = DomainError;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        match raw {
+            "premium" => Ok(ResolutionTier::Premium),
+            "debrid" => Ok(ResolutionTier::Debrid),
+            "free" => Ok(ResolutionTier::Free),
+            other => Err(DomainError::ValidationError(format!(
+                "invalid resolution tier: {other}"
+            ))),
+        }
+    }
+}
+
+/// PRD §4.3 default: a hoster-specific premium account outranks a debrid
+/// subscription, which outranks anonymous free extraction.
+pub fn default_resolution_order() -> Vec<ResolutionTier> {
+    vec![
+        ResolutionTier::Premium,
+        ResolutionTier::Debrid,
+        ResolutionTier::Free,
+    ]
+}
+
+/// Drop duplicates from a persisted order and append any tier the user
+/// left out, so every rung stays reachable and no link becomes
+/// unresolvable through a hand-edited config.
+pub fn normalize_resolution_order(raw: &[ResolutionTier]) -> Vec<ResolutionTier> {
+    let mut normalized: Vec<ResolutionTier> = Vec::with_capacity(3);
+    for tier in raw.iter().chain(default_resolution_order().iter()) {
+        if !normalized.contains(tier) {
+            normalized.push(*tier);
+        }
+    }
+    normalized
+}
+
 /// Lower bound for `link_check_parallelism`. Below 1 the queue stalls.
 pub const MIN_LINK_CHECK_PARALLELISM: u32 = 1;
 
@@ -279,6 +349,7 @@ pub struct ConfigPatch {
 
     // Accounts
     pub account_selection_strategy: Option<AccountSelectionStrategy>,
+    pub resolution_order: Option<Vec<ResolutionTier>>,
 
     // Network
     pub proxy_type: Option<String>,
@@ -414,6 +485,9 @@ pub fn apply_patch(config: &mut AppConfig, patch: &ConfigPatch) {
     // Accounts
     if let Some(v) = patch.account_selection_strategy {
         config.account_selection_strategy = v;
+    }
+    if let Some(ref order) = patch.resolution_order {
+        config.resolution_order = normalize_resolution_order(order);
     }
 
     // Network
@@ -697,6 +771,74 @@ mod tests {
         };
         apply_patch(&mut config, &patch);
         assert_eq!(config.link_check_timeout_secs, 1);
+    }
+
+    #[test]
+    fn test_default_resolution_order_is_premium_then_debrid_then_free() {
+        assert_eq!(
+            AppConfig::default().resolution_order,
+            vec![
+                ResolutionTier::Premium,
+                ResolutionTier::Debrid,
+                ResolutionTier::Free
+            ]
+        );
+    }
+
+    #[test]
+    fn test_apply_patch_reorders_resolution_tiers() {
+        let mut config = AppConfig::default();
+        let patch = ConfigPatch {
+            resolution_order: Some(vec![ResolutionTier::Debrid, ResolutionTier::Premium]),
+            ..Default::default()
+        };
+        apply_patch(&mut config, &patch);
+        assert_eq!(
+            config.resolution_order,
+            vec![
+                ResolutionTier::Debrid,
+                ResolutionTier::Premium,
+                ResolutionTier::Free
+            ],
+            "omitted tiers are appended so every rung stays reachable"
+        );
+    }
+
+    #[test]
+    fn test_normalize_resolution_order_drops_duplicates() {
+        assert_eq!(
+            normalize_resolution_order(&[
+                ResolutionTier::Free,
+                ResolutionTier::Free,
+                ResolutionTier::Debrid
+            ]),
+            vec![
+                ResolutionTier::Free,
+                ResolutionTier::Debrid,
+                ResolutionTier::Premium
+            ]
+        );
+    }
+
+    #[test]
+    fn test_normalize_resolution_order_of_empty_input_is_the_default() {
+        assert_eq!(normalize_resolution_order(&[]), default_resolution_order());
+    }
+
+    #[test]
+    fn test_resolution_tier_round_trips_through_its_wire_name() {
+        for tier in default_resolution_order() {
+            let rendered = tier.to_string();
+            assert_eq!(
+                ResolutionTier::from_str(&rendered).expect("tier parses back"),
+                tier
+            );
+        }
+    }
+
+    #[test]
+    fn test_resolution_tier_rejects_unknown_name() {
+        assert!(ResolutionTier::from_str("torrent").is_err());
     }
 
     #[test]

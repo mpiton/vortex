@@ -127,6 +127,22 @@
       "speedLimitDesc": "0 = unlimited",
       "maxRetries": "Max retries",
       "retryDelay": "Retry delay (seconds)",
+      "resolutionOrder": {
+        "label": "Resolution priority",
+        "description": "Order in which a link is resolved. The first tier that can serve the link wins.",
+        "tiers": {
+          "premium": "Premium account",
+          "debrid": "Debrid service",
+          "free": "Free"
+        },
+        "hints": {
+          "premium": "A paid account registered directly with the file host.",
+          "debrid": "A Real-Debrid or AllDebrid subscription covering the host.",
+          "free": "Anonymous download, with the wait and CAPTCHA the host imposes."
+        },
+        "moveUp": "Move {{tier}} up",
+        "moveDown": "Move {{tier}} down"
+      },
       "verifyChecksums": "Verify checksums",
       "verifyChecksumsDesc": "Verify file integrity after download",
       "preAllocate": "Pre-allocate space",

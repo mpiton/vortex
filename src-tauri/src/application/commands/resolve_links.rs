@@ -7,8 +7,8 @@ use serde::Serialize;
 use uuid::Uuid;
 
 use crate::application::command_bus::CommandBus;
+use crate::application::commands::resolve_links_tiers::TierPlan;
 use crate::application::error::AppError;
-use crate::application::services::account_rotator::NextAccountOutcome;
 use crate::application::services::download_source_policy::is_protected_plugin_category;
 use crate::domain::error::DomainError;
 use crate::domain::model::http::HttpResponse;
@@ -57,6 +57,9 @@ struct HosterResolution {
     size_bytes: Option<u64>,
     resumable: Option<bool>,
     account_id: Option<String>,
+    /// Plugin the cascade picked. Differs from the plugin that claimed the
+    /// URL when a debrid service won the tier walk.
+    module_name: String,
 }
 
 impl CommandBus {
@@ -161,7 +164,7 @@ impl CommandBus {
                                     status: "online".to_string(),
                                     error_message: None,
                                     error_kind: None,
-                                    module_name: module_name.clone(),
+                                    module_name: resolved.module_name,
                                     account_id: resolved.account_id,
                                     is_media: false,
                                     media_type: None,
@@ -312,23 +315,17 @@ impl CommandBus {
         if service_name == "vortex-mod-gofile" {
             validate_gofile_requested_origin(url)?;
         }
-        if self.account_repo().is_some() {
-            match self.next_hoster_account(service_name)? {
-                NextAccountOutcome::Picked(account) => {
-                    return Ok(vec![HosterResolution {
-                        stable_url: url.to_string(),
-                        filename: extract_filename_from_url(url)
-                            .unwrap_or_else(|| "download".into()),
-                        size_bytes: None,
-                        resumable: None,
-                        account_id: Some(account.id().as_str().to_string()),
-                    }]);
-                }
-                NextAccountOutcome::AllExhausted { reason, .. } => {
-                    return Err(reason.into_domain_error().into());
-                }
-                NextAccountOutcome::NoneAvailable => {}
-            }
+        if let TierPlan::WithAccount { module, account_id } =
+            self.walk_resolution_tiers(url, service_name)?
+        {
+            return Ok(vec![HosterResolution {
+                stable_url: url.to_string(),
+                filename: extract_filename_from_url(url).unwrap_or_else(|| "download".into()),
+                size_bytes: None,
+                resumable: None,
+                account_id: Some(account_id),
+                module_name: module,
+            }]);
         }
 
         let links = self
@@ -342,17 +339,6 @@ impl CommandBus {
             .map(|link| into_hoster_resolution(link, url, service_name))
             .collect::<Result<Vec<_>, _>>()
             .map_err(Into::into)
-    }
-
-    fn next_hoster_account(&self, service_name: &str) -> Result<NextAccountOutcome, AppError> {
-        let Some(rotator) = self.account_rotator() else {
-            return Ok(match self.resolve_account_for(service_name)? {
-                Some(account) => NextAccountOutcome::Picked(account),
-                None => NextAccountOutcome::NoneAvailable,
-            });
-        };
-        let strategy = self.config_store().get_config()?.account_selection_strategy;
-        rotator.next_account(service_name, strategy)
     }
 }
 
@@ -405,6 +391,7 @@ fn into_hoster_resolution(
         size_bytes: link.size_bytes,
         resumable: link.resumable,
         account_id: None,
+        module_name: service_name.to_string(),
     })
 }
 
@@ -502,6 +489,11 @@ fn hoster_error_details(error: &AppError) -> (LinkResolutionErrorKind, String) {
             LinkResolutionErrorKind::NoFile,
             "No downloadable file was found".to_string(),
         ),
+        // Host-authored text listing each declined tier — safe to surface
+        // verbatim, unlike the plugin-authored messages below.
+        AppError::Domain(error @ DomainError::ResolutionExhausted(_)) => {
+            (LinkResolutionErrorKind::NoFile, error.to_string())
+        }
         AppError::Domain(DomainError::AccountCooldown) => (
             LinkResolutionErrorKind::AccountUnavailable,
             "Account is temporarily rate-limited".to_string(),

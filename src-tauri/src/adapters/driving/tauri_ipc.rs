@@ -76,7 +76,7 @@ use crate::application::read_models::stats_view::{ModuleStatsDto, StatsViewDto};
 use crate::domain::error::DomainError;
 use crate::domain::model::account::{AccountId, AccountType};
 use crate::domain::model::captcha::{CaptchaId, MAX_CAPTCHA_SOLUTION_BYTES};
-use crate::domain::model::config::{AppConfig, ConfigPatch};
+use crate::domain::model::config::{AppConfig, ConfigPatch, ResolutionTier};
 use crate::domain::model::download::{DownloadId, DownloadState};
 use crate::domain::model::package::{PackageId, PackageSourceType};
 use crate::domain::model::views::{
@@ -1316,6 +1316,9 @@ pub struct SettingsDto {
     /// Serialized as `"best_traffic" | "round_robin" | "manual"` to mirror
     /// the snake_case enum convention used elsewhere in IPC payloads.
     pub account_selection_strategy: String,
+    /// Link resolution cascade, most-preferred first. Entries are
+    /// `"premium" | "debrid" | "free"`.
+    pub resolution_order: Vec<String>,
 
     // Network
     pub proxy_type: String,
@@ -1377,6 +1380,11 @@ impl From<AppConfig> for SettingsDto {
             captcha_solver_order: c.captcha_solver_order,
             history_retention_days: c.history_retention_days,
             account_selection_strategy: c.account_selection_strategy.to_string(),
+            resolution_order: c
+                .resolution_order
+                .iter()
+                .map(ResolutionTier::to_string)
+                .collect(),
             proxy_type: c.proxy_type,
             proxy_url: c.proxy_url,
             user_agent: c.user_agent,
@@ -1402,6 +1410,9 @@ impl From<AppConfig> for SettingsDto {
 
 const MAX_CAPTCHA_SOLVER_ORDER_ENTRIES: usize = 3;
 const MAX_CAPTCHA_SOLVER_IDENTIFIER_BYTES: usize = 128;
+/// One entry per `ResolutionTier` variant; duplicates are dropped by
+/// `normalize_resolution_order`, so a longer list is malformed input.
+const MAX_RESOLUTION_ORDER_ENTRIES: usize = 3;
 
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1438,6 +1449,9 @@ pub struct ConfigPatchDto {
     /// Accepted values: `"best_traffic"`, `"round_robin"`, `"manual"`.
     /// Unknown values are rejected by `ConfigPatch::try_from(ConfigPatchDto)`.
     pub account_selection_strategy: Option<String>,
+    /// Accepted values: `"premium"`, `"debrid"`, `"free"`. Unknown values
+    /// are rejected by `ConfigPatch::try_from(ConfigPatchDto)`.
+    pub resolution_order: Option<Vec<String>>,
 
     // Network
     pub proxy_type: Option<String>,
@@ -1488,6 +1502,19 @@ impl TryFrom<ConfigPatchDto> for ConfigPatch {
             Some(raw) => Some(raw.parse().map_err(|e: DomainError| e.to_string())?),
             None => None,
         };
+        let resolution_order = match &d.resolution_order {
+            Some(order) if order.len() > MAX_RESOLUTION_ORDER_ENTRIES => {
+                return Err("Resolution order exceeds safety limits".to_string());
+            }
+            Some(order) => Some(
+                order
+                    .iter()
+                    .map(|tier| tier.parse())
+                    .collect::<Result<Vec<ResolutionTier>, DomainError>>()
+                    .map_err(|e| e.to_string())?,
+            ),
+            None => None,
+        };
         Ok(Self {
             download_dir: d.download_dir,
             start_minimized: d.start_minimized,
@@ -1510,6 +1537,7 @@ impl TryFrom<ConfigPatchDto> for ConfigPatch {
             captcha_solver_order: d.captcha_solver_order,
             history_retention_days: d.history_retention_days,
             account_selection_strategy,
+            resolution_order,
             proxy_type: d.proxy_type,
             proxy_url: d.proxy_url,
             user_agent: d.user_agent,
