@@ -71,24 +71,42 @@ pub(super) fn find_approved_binary(
     candidates: &[PathBuf],
     roots: &[PathBuf],
 ) -> anyhow::Result<PathBuf> {
+    find_approved_named_binary(
+        candidates,
+        roots,
+        if cfg!(windows) {
+            "yt-dlp.exe"
+        } else {
+            "yt-dlp"
+        },
+    )
+    .context(INSTALL_REMEDIATION)
+}
+
+#[cfg(unix)]
+const INSTALL_REMEDIATION: &str = "yt-dlp not found in approved locations; install or update it at ~/.local/bin/yt-dlp or with a supported system package";
+
+#[cfg(windows)]
+const INSTALL_REMEDIATION: &str = "yt-dlp not found in approved locations; install it with WinGet or at %LOCALAPPDATA%\\Programs\\yt-dlp\\yt-dlp.exe";
+
+pub(crate) fn find_approved_named_binary(
+    candidates: &[PathBuf],
+    roots: &[PathBuf],
+    expected_name: &str,
+) -> anyhow::Result<PathBuf> {
     for candidate in candidates {
         let Ok(canonical) = std::fs::canonicalize(candidate) else {
             continue;
         };
-        if valid_binary(&canonical, roots)? {
+        if valid_binary(&canonical, roots, expected_name)? {
             return Ok(canonical);
         }
     }
-    bail!("yt-dlp not found in approved locations; install it with: pip install yt-dlp")
+    bail!("approved executable '{expected_name}' was not found")
 }
 
-fn valid_binary(path: &Path, roots: &[PathBuf]) -> anyhow::Result<bool> {
-    let expected = if cfg!(windows) {
-        "yt-dlp.exe"
-    } else {
-        "yt-dlp"
-    };
-    if path.file_name().and_then(|name| name.to_str()) != Some(expected) {
+fn valid_binary(path: &Path, roots: &[PathBuf], expected_name: &str) -> anyhow::Result<bool> {
+    if path.file_name().and_then(|name| name.to_str()) != Some(expected_name) {
         return Ok(false);
     }
     let metadata = std::fs::metadata(path)?;
@@ -213,7 +231,7 @@ fn trusted_directory(path: &Path, roots: &[PathBuf]) -> Option<PathBuf> {
 }
 
 #[cfg(windows)]
-pub(super) fn copy_required_environment(command: &mut Command) {
+pub(crate) fn copy_required_environment(command: &mut Command) {
     for name in ["SystemRoot", "WINDIR"] {
         if let Some(value) = std::env::var_os(name) {
             command.env(name, value);
@@ -222,4 +240,4 @@ pub(super) fn copy_required_environment(command: &mut Command) {
 }
 
 #[cfg(not(windows))]
-pub(super) fn copy_required_environment(_command: &mut Command) {}
+pub(crate) fn copy_required_environment(_command: &mut Command) {}

@@ -2,7 +2,10 @@ use sea_orm::{ConnectionTrait, Statement};
 
 use super::captcha_repo::SqliteCaptchaRepo;
 use super::connection::setup_test_db;
-use crate::domain::model::captcha::{CaptchaChallenge, CaptchaId, CaptchaStatus, CaptchaType};
+use crate::domain::model::captcha::{
+    CaptchaChallenge, CaptchaId, CaptchaSolverAttempt, CaptchaSolverAttemptOutcome, CaptchaStatus,
+    CaptchaType,
+};
 use crate::domain::model::download::DownloadId;
 use crate::domain::ports::driven::CaptchaRepository;
 
@@ -75,6 +78,28 @@ async fn captcha_log_never_has_a_solution_column() {
         .collect();
 
     assert!(!names.iter().any(|name| name.contains("solution")));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn captcha_solver_attempts_survive_a_repository_round_trip() {
+    let db = setup_test_db().await.expect("test db");
+    let repo = SqliteCaptchaRepo::new(db);
+    let mut item = challenge("captcha-attempts", 43);
+    item.record_solver_attempt(CaptchaSolverAttempt::new(
+        "vortex-mod-captcha-ocr",
+        CaptchaSolverAttemptOutcome::Unavailable,
+        1_100,
+        25,
+    ))
+    .expect("record attempt");
+
+    repo.save(&item).expect("save challenge with attempt");
+    let restored = repo
+        .find_by_id(item.id())
+        .expect("find")
+        .expect("stored challenge");
+
+    assert_eq!(restored.solver_attempts(), item.solver_attempts());
 }
 
 #[tokio::test(flavor = "multi_thread")]

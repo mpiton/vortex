@@ -32,6 +32,13 @@ mod unix {
     }
 
     #[test]
+    fn missing_binary_error_keeps_install_remediation() {
+        let error = find_approved_binary(&[], &[]).expect_err("missing yt-dlp");
+
+        assert!(error.to_string().contains("~/.local/bin/yt-dlp"));
+    }
+
+    #[test]
     fn binary_below_group_writable_parent_is_rejected() {
         let approved = tempfile::tempdir().unwrap();
         let writable_parent = approved.path().join("bin");

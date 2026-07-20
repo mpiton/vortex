@@ -6,9 +6,10 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use tauri::State;
+use tauri::{State, WebviewWindow};
 use tracing;
 
+use crate::adapters::captcha_browser::browser_window_label;
 use crate::adapters::driven::logging::download_log_store::DownloadLogStore;
 use crate::adapters::driven::network::WaitManager;
 use crate::application::command_bus::CommandBus;
@@ -17,20 +18,21 @@ use crate::application::commands::{
     AccountPatch, AddAccountCommand, AddDownloadToPackageCommand, CancelDownloadCommand,
     ChangeDirectoryBulkCommand, ChangeDirectoryBulkOutcome, ChangeDirectoryCommand,
     ChangeDirectoryFailure, CheckOnlineCommand, ClearDownloadsByStateCommand, ClearHistoryCommand,
-    CreatePackageCommand, DeleteAccountCommand, DeleteHistoryEntryCommand, DeletePackageCommand,
-    DisablePluginCommand, EnablePluginCommand, ExportAccountsCommand, ExportAccountsOutcome,
-    ExportHistoryCommand, ExportHistoryFormat, ImportAccountsCommand, ImportAccountsOutcome,
-    ImportContainerCommand, ImportContainerOutcome, InstallPluginCommand,
-    MovePackageToFolderCommand, MoveToBottomCommand, MoveToTopCommand, OpenDownloadFileCommand,
-    OpenDownloadFolderCommand, PackageMoveOutcome, PackagePatch, PauseAllDownloadsCommand,
-    PauseDownloadCommand, PurgeHistoryCommand, RedownloadCommand, RedownloadSource,
-    RemoveDownloadCommand, RemoveDownloadFromPackageCommand, ReorderQueueCommand,
+    CreatePackageCommand, DeleteAccountCommand, DeleteCaptchaCredentialCommand,
+    DeleteHistoryEntryCommand, DeletePackageCommand, DisablePluginCommand, EnablePluginCommand,
+    ExportAccountsCommand, ExportAccountsOutcome, ExportHistoryCommand, ExportHistoryFormat,
+    ImportAccountsCommand, ImportAccountsOutcome, ImportContainerCommand, ImportContainerOutcome,
+    InstallPluginCommand, MovePackageToFolderCommand, MoveToBottomCommand, MoveToTopCommand,
+    OpenDownloadFileCommand, OpenDownloadFolderCommand, PackageMoveOutcome, PackagePatch,
+    PauseAllDownloadsCommand, PauseDownloadCommand, PurgeHistoryCommand, RedownloadCommand,
+    RedownloadSource, RemoveDownloadCommand, RemoveDownloadFromPackageCommand, ReorderQueueCommand,
     ReportBrokenPluginCommand, ResolveLinksCommand, ResolvedLinkDto, ResumeAllDownloadsCommand,
-    ResumeDownloadCommand, RetryCaptchaCommand, RetryDownloadCommand, SetPackagePasswordCommand,
-    SetPackagePriorityCommand, SetPriorityCommand, SkipCaptchaCommand, SolveCaptchaCommand,
-    StartDownloadCommand, TogglePackageAutoExtractCommand, UninstallPluginCommand,
-    UpdateAccountCommand, UpdateConfigCommand, UpdatePackageCommand, UpdatePluginConfigCommand,
-    ValidateAccountCommand, ValidationOutcomeDto, VerifyChecksumCommand, VerifyChecksumOutcome,
+    ResumeDownloadCommand, RetryCaptchaCommand, RetryDownloadCommand, SetCaptchaCredentialCommand,
+    SetPackagePasswordCommand, SetPackagePriorityCommand, SetPriorityCommand, SkipCaptchaCommand,
+    SolveCaptchaCommand, StartDownloadCommand, TogglePackageAutoExtractCommand,
+    UninstallPluginCommand, UpdateAccountCommand, UpdateConfigCommand, UpdatePackageCommand,
+    UpdatePluginConfigCommand, ValidateAccountCommand, ValidationOutcomeDto, VerifyChecksumCommand,
+    VerifyChecksumOutcome,
 };
 use crate::application::error::AppError;
 use crate::application::queries::{
@@ -180,17 +182,20 @@ pub async fn download_skip_wait(state: State<'_, AppState>, id: u64) -> Result<(
 
 #[tauri::command]
 pub async fn captcha_solve(
+    window: WebviewWindow,
     state: State<'_, AppState>,
     challenge_id: String,
     solution: String,
 ) -> Result<(), String> {
+    let challenge_id = parse_captcha_id(challenge_id)?;
+    authorize_captcha_window(window.label(), Some(&challenge_id))?;
     if solution.trim().is_empty() || solution.len() > MAX_CAPTCHA_SOLUTION_BYTES {
         return Err("CAPTCHA solution is empty or exceeds safety limits".into());
     }
     state
         .command_bus
         .handle_captcha_solve(SolveCaptchaCommand {
-            challenge_id: parse_captcha_id(challenge_id)?,
+            challenge_id,
             solution,
         })
         .await
@@ -198,29 +203,52 @@ pub async fn captcha_solve(
 }
 
 #[tauri::command]
-pub async fn captcha_skip(state: State<'_, AppState>, challenge_id: String) -> Result<(), String> {
+pub async fn captcha_skip(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    challenge_id: String,
+) -> Result<(), String> {
+    let challenge_id = parse_captcha_id(challenge_id)?;
+    authorize_captcha_window(window.label(), Some(&challenge_id))?;
     state
         .command_bus
-        .handle_captcha_skip(SkipCaptchaCommand {
-            challenge_id: parse_captcha_id(challenge_id)?,
-        })
+        .handle_captcha_skip(SkipCaptchaCommand { challenge_id })
         .await
         .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
-pub async fn captcha_retry(state: State<'_, AppState>, challenge_id: String) -> Result<(), String> {
+pub async fn captcha_retry(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    challenge_id: String,
+) -> Result<(), String> {
+    let challenge_id = parse_captcha_id(challenge_id)?;
+    authorize_captcha_window(window.label(), Some(&challenge_id))?;
     state
         .command_bus
-        .handle_captcha_retry(RetryCaptchaCommand {
-            challenge_id: parse_captcha_id(challenge_id)?,
-        })
+        .handle_captcha_retry(RetryCaptchaCommand { challenge_id })
         .await
         .map_err(|error| error.to_string())
 }
 
 fn parse_captcha_id(value: String) -> Result<CaptchaId, String> {
     CaptchaId::try_new(value).map_err(|error| error.to_string())
+}
+
+fn authorize_captcha_window(
+    window_label: &str,
+    challenge_id: Option<&CaptchaId>,
+) -> Result<(), String> {
+    if window_label == "main" {
+        return Ok(());
+    }
+    let challenge_id = challenge_id
+        .ok_or_else(|| "CAPTCHA browser window must specify its challenge".to_string())?;
+    if window_label != browser_window_label(challenge_id.as_str()) {
+        return Err("CAPTCHA browser window is not authorized for this challenge".into());
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -234,13 +262,54 @@ pub async fn captcha_list(state: State<'_, AppState>) -> Result<Vec<CaptchaViewD
 
 #[tauri::command]
 pub async fn captcha_get_pending(
+    window: WebviewWindow,
     state: State<'_, AppState>,
     challenge_id: Option<String>,
 ) -> Result<Option<CaptchaViewDto>, String> {
     let challenge_id = challenge_id.map(parse_captcha_id).transpose()?;
+    authorize_captcha_window(window.label(), challenge_id.as_ref())?;
     state
         .query_bus
         .handle_captcha_get_pending(CaptchaGetPendingQuery { challenge_id })
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CaptchaCredentialStatusDto {
+    pub configured: bool,
+}
+
+#[tauri::command]
+pub async fn captcha_credential_status(
+    state: State<'_, AppState>,
+) -> Result<CaptchaCredentialStatusDto, String> {
+    state
+        .command_bus
+        .captcha_credential_configured()
+        .await
+        .map(|configured| CaptchaCredentialStatusDto { configured })
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn captcha_credential_set(
+    state: State<'_, AppState>,
+    api_key: String,
+) -> Result<(), String> {
+    state
+        .command_bus
+        .handle_set_captcha_credential(SetCaptchaCredentialCommand { api_key })
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn captcha_credential_delete(state: State<'_, AppState>) -> Result<(), String> {
+    state
+        .command_bus
+        .handle_delete_captcha_credential(DeleteCaptchaCredentialCommand)
         .await
         .map_err(|error| error.to_string())
 }
@@ -1238,6 +1307,7 @@ pub struct SettingsDto {
 
     // CAPTCHA
     pub captcha_timeout_seconds: u32,
+    pub captcha_solver_order: Vec<String>,
 
     // History
     pub history_retention_days: i64,
@@ -1304,6 +1374,7 @@ impl From<AppConfig> for SettingsDto {
             dynamic_split_enabled: c.dynamic_split_enabled,
             dynamic_split_min_remaining_mb: c.dynamic_split_min_remaining_mb,
             captcha_timeout_seconds: c.captcha_timeout_seconds,
+            captcha_solver_order: c.captcha_solver_order,
             history_retention_days: c.history_retention_days,
             account_selection_strategy: c.account_selection_strategy.to_string(),
             proxy_type: c.proxy_type,
@@ -1328,6 +1399,9 @@ impl From<AppConfig> for SettingsDto {
         }
     }
 }
+
+const MAX_CAPTCHA_SOLVER_ORDER_ENTRIES: usize = 3;
+const MAX_CAPTCHA_SOLVER_IDENTIFIER_BYTES: usize = 128;
 
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1355,6 +1429,7 @@ pub struct ConfigPatchDto {
 
     // CAPTCHA
     pub captcha_timeout_seconds: Option<u32>,
+    pub captcha_solver_order: Option<Vec<String>>,
 
     // History
     pub history_retention_days: Option<i64>,
@@ -1398,6 +1473,17 @@ impl TryFrom<ConfigPatchDto> for ConfigPatch {
     type Error = String;
 
     fn try_from(d: ConfigPatchDto) -> Result<Self, Self::Error> {
+        if let Some(order) = &d.captcha_solver_order {
+            if order.len() > MAX_CAPTCHA_SOLVER_ORDER_ENTRIES {
+                return Err("CAPTCHA solver order exceeds safety limits".to_string());
+            }
+            if order
+                .iter()
+                .any(|solver| solver.len() > MAX_CAPTCHA_SOLVER_IDENTIFIER_BYTES)
+            {
+                return Err("CAPTCHA solver identifier exceeds safety limits".to_string());
+            }
+        }
         let account_selection_strategy = match d.account_selection_strategy.as_deref() {
             Some(raw) => Some(raw.parse().map_err(|e: DomainError| e.to_string())?),
             None => None,
@@ -1421,6 +1507,7 @@ impl TryFrom<ConfigPatchDto> for ConfigPatch {
             dynamic_split_enabled: d.dynamic_split_enabled,
             dynamic_split_min_remaining_mb: d.dynamic_split_min_remaining_mb,
             captcha_timeout_seconds: d.captcha_timeout_seconds,
+            captcha_solver_order: d.captcha_solver_order,
             history_retention_days: d.history_retention_days,
             account_selection_strategy,
             proxy_type: d.proxy_type,
@@ -3590,11 +3677,12 @@ pub async fn package_find_by_external_id(
 mod tests {
     use super::{
         DEFAULT_DOWNLOAD_LOG_LIMIT, StreamResolution, ValidationOutcomeView,
-        configured_download_destination, configured_status_bar_path, extract_hostname_from_url,
-        load_plugin_media_metadata, parse_plugin_video_metadata, parse_soundcloud_metadata,
-        parse_soundcloud_playlist_targets, parse_stats_period, read_available_space,
-        resolve_download_log_limit, resolve_existing_disk_path, resolve_media_stream,
-        sanitize_extension, sanitize_filename, soundcloud_track_download_title, unique_destination,
+        authorize_captcha_window, configured_download_destination, configured_status_bar_path,
+        extract_hostname_from_url, load_plugin_media_metadata, parse_plugin_video_metadata,
+        parse_soundcloud_metadata, parse_soundcloud_playlist_targets, parse_stats_period,
+        read_available_space, resolve_download_log_limit, resolve_existing_disk_path,
+        resolve_media_stream, sanitize_extension, sanitize_filename,
+        soundcloud_track_download_title, unique_destination,
     };
     use crate::adapters::driven::logging::download_log_store::DownloadLogStore;
     use crate::application::commands::ValidationOutcomeDto;
@@ -4855,5 +4943,58 @@ mod tests {
 
         let patch: ConfigPatch = dto.try_into().expect("None strategy is valid");
         assert!(patch.account_selection_strategy.is_none());
+    }
+
+    #[test]
+    fn config_patch_dto_rejects_oversized_captcha_solver_order() {
+        use super::{ConfigPatch, ConfigPatchDto};
+
+        let dto = ConfigPatchDto {
+            captcha_solver_order: Some(vec!["solver".to_string(); 4]),
+            ..Default::default()
+        };
+
+        let result: Result<ConfigPatch, String> = dto.try_into();
+        assert!(
+            result
+                .expect_err("oversized order must be rejected")
+                .contains("solver order")
+        );
+    }
+
+    #[test]
+    fn config_patch_dto_rejects_oversized_captcha_solver_identifier() {
+        use super::{ConfigPatch, ConfigPatchDto};
+
+        let dto = ConfigPatchDto {
+            captcha_solver_order: Some(vec!["x".repeat(129)]),
+            ..Default::default()
+        };
+
+        let result: Result<ConfigPatch, String> = dto.try_into();
+        assert!(
+            result
+                .expect_err("oversized solver identifier must be rejected")
+                .contains("solver identifier")
+        );
+    }
+
+    #[test]
+    fn captcha_browser_window_is_bound_to_its_challenge() {
+        let own_id = crate::domain::model::captcha::CaptchaId::new("captcha-1");
+        let other_id = crate::domain::model::captcha::CaptchaId::new("captcha-2");
+        let label = crate::adapters::captcha_browser::browser_window_label(own_id.as_str());
+
+        assert!(authorize_captcha_window(&label, Some(&own_id)).is_ok());
+        assert!(authorize_captcha_window(&label, Some(&other_id)).is_err());
+        assert!(authorize_captcha_window(&label, None).is_err());
+    }
+
+    #[test]
+    fn main_window_can_manage_any_captcha() {
+        let id = crate::domain::model::captcha::CaptchaId::new("captcha-1");
+
+        assert!(authorize_captcha_window("main", Some(&id)).is_ok());
+        assert!(authorize_captcha_window("main", None).is_ok());
     }
 }

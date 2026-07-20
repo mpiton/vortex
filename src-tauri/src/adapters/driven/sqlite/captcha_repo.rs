@@ -13,10 +13,10 @@ use super::util::{block_on, map_db_err};
 
 const CAPTCHA_METADATA_QUERY: &str = "SELECT id, download_id, challenge_type, \
     '[redacted]' AS challenge_url, \
-    NULL AS image_data, status, solver, attempts, created_at, expires_at, resolved_at, \
+    NULL AS image_data, status, solver, attempts, solver_attempts_json, created_at, expires_at, resolved_at, \
     duration_ms, failure_reason FROM captcha_log ORDER BY created_at DESC LIMIT 200";
 const PENDING_CAPTCHA_METADATA_QUERY: &str = "SELECT id, download_id, challenge_type, \
-    '[redacted]' AS challenge_url, NULL AS image_data, status, solver, attempts, created_at, expires_at, \
+    '[redacted]' AS challenge_url, NULL AS image_data, status, solver, attempts, solver_attempts_json, created_at, expires_at, \
     resolved_at, duration_ms, failure_reason FROM captcha_log WHERE status = ? \
     ORDER BY created_at ASC";
 
@@ -45,6 +45,7 @@ impl CaptchaRepository for SqliteCaptchaRepo {
                             captcha_log::Column::Status,
                             captcha_log::Column::Solver,
                             captcha_log::Column::Attempts,
+                            captcha_log::Column::SolverAttemptsJson,
                             captcha_log::Column::ExpiresAt,
                             captcha_log::Column::ResolvedAt,
                             captcha_log::Column::DurationMs,

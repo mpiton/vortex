@@ -22,9 +22,19 @@
     "empty": "No CAPTCHA waiting",
     "loading": "Loading CAPTCHA queue…",
     "error": "Could not load the CAPTCHA queue",
+    "browserTitle": "Human CAPTCHA check",
+    "browserUnavailable": "This CAPTCHA is no longer pending. You can close this window.",
     "history": "Recent challenges",
     "download": "Download #{{id}}",
     "answer": "Captcha answer",
+    "attempts": "Solver attempts",
+    "outcomes": {
+      "solved": "Solved",
+      "unavailable": "Unavailable",
+      "rejected": "Rejected",
+      "failed": "Failed",
+      "interaction_required": "Human interaction requested"
+    },
     "unsupported": "This challenge requires browser interaction and is not supported yet.",
     "actions": {
       "solve": "Solve",
@@ -46,7 +56,21 @@
     },
     "settings": {
       "title": "Solver settings",
-      "description": "Solvers run in order. Only manual solving is enabled in this release.",
+      "description": "Enabled solvers run automatically in the order shown.",
+      "automatic": "Automatic cascade",
+      "solvers": {
+        "ocr": "Tesseract OCR",
+        "antiCaptcha": "AntiCaptcha",
+        "browser": "Browser fallback"
+      },
+      "moveUp": "Move {{solver}} up",
+      "moveDown": "Move {{solver}} down",
+      "tesseractDetection": "Tesseract availability is checked automatically. If it is missing, the cascade continues automatically.",
+      "apiKey": "AntiCaptcha API key",
+      "saveApiKey": "Save API key",
+      "deleteApiKey": "Delete API key",
+      "apiKeyConfigured": "Stored securely in the system keyring.",
+      "apiKeyMissing": "No API key configured.",
       "manual": "Manual solver",
       "manualDescription": "Enter the answer shown in the challenge image.",
       "timeout": "Timeout (seconds)",

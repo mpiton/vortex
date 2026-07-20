@@ -11,6 +11,7 @@ use crate::domain::error::DomainError;
 use crate::domain::ports::driven::plugin_store_client::OfficialPluginProvenance;
 
 use super::capabilities::HostFunctionGrants;
+use super::tesseract_broker::OCR_PLUGIN_NAME;
 
 type ParentSync = fn(&Path) -> std::io::Result<()>;
 
@@ -132,7 +133,10 @@ impl OfficialProvenanceStore {
                 && entry.wasm_sha256 == digest(wasm_bytes)
                 && entry.manifest_sha256 == digest(manifest_bytes)
         });
-        HostFunctionGrants { ytdlp: verified }
+        HostFunctionGrants {
+            ytdlp: verified,
+            tesseract: verified && name == OCR_PLUGIN_NAME,
+        }
     }
 
     pub(super) fn revoke(&self, name: &str) -> Result<(), DomainError> {

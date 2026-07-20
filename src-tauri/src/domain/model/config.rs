@@ -47,6 +47,8 @@ pub struct AppConfig {
     // ── CAPTCHA ────────────────────────────────────────────────────
     /// Manual challenge deadline. Expiry applies the safe default: skip.
     pub captcha_timeout_seconds: u32,
+    /// Enabled automatic CAPTCHA solvers, in cascade order.
+    pub captcha_solver_order: Vec<String>,
 
     // ── History ──────────────────────────────────────────────────────
     /// Number of days history entries are retained before automatic
@@ -136,6 +138,7 @@ impl Default for AppConfig {
 
             // CAPTCHA
             captcha_timeout_seconds: DEFAULT_CAPTCHA_TIMEOUT_SECONDS,
+            captcha_solver_order: default_captcha_solver_order(),
 
             // History
             history_retention_days: 30,
@@ -187,6 +190,41 @@ pub const DEFAULT_LINK_CHECK_TIMEOUT_SECS: u32 = 10;
 pub const DEFAULT_CAPTCHA_TIMEOUT_SECONDS: u32 = 120;
 pub const MIN_CAPTCHA_TIMEOUT_SECONDS: u32 = 10;
 pub const MAX_CAPTCHA_TIMEOUT_SECONDS: u32 = 3_600;
+pub const CAPTCHA_SOLVER_OCR: &str = "vortex-mod-captcha-ocr";
+pub const CAPTCHA_SOLVER_ANTICAPTCHA: &str = "vortex-mod-captcha-anticaptcha";
+pub const CAPTCHA_SOLVER_BROWSER: &str = "vortex-mod-captcha-browser";
+
+pub fn default_captcha_solver_order() -> Vec<String> {
+    [
+        CAPTCHA_SOLVER_OCR,
+        CAPTCHA_SOLVER_ANTICAPTCHA,
+        CAPTCHA_SOLVER_BROWSER,
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect()
+}
+
+pub fn normalize_captcha_solver_order(raw: &[String]) -> Vec<String> {
+    if raw.is_empty() {
+        return Vec::new();
+    }
+    let mut normalized = Vec::with_capacity(raw.len().min(3));
+    for solver in raw {
+        let known = matches!(
+            solver.as_str(),
+            CAPTCHA_SOLVER_OCR | CAPTCHA_SOLVER_ANTICAPTCHA | CAPTCHA_SOLVER_BROWSER
+        );
+        if known && !normalized.contains(solver) {
+            normalized.push(solver.clone());
+        }
+    }
+    if normalized.is_empty() {
+        default_captcha_solver_order()
+    } else {
+        normalized
+    }
+}
 
 /// Lower bound for `link_check_parallelism`. Below 1 the queue stalls.
 pub const MIN_LINK_CHECK_PARALLELISM: u32 = 1;
@@ -234,6 +272,7 @@ pub struct ConfigPatch {
 
     // CAPTCHA
     pub captcha_timeout_seconds: Option<u32>,
+    pub captcha_solver_order: Option<Vec<String>>,
 
     // History
     pub history_retention_days: Option<i64>,
@@ -362,6 +401,9 @@ pub fn apply_patch(config: &mut AppConfig, patch: &ConfigPatch) {
     if let Some(v) = patch.captcha_timeout_seconds {
         config.captcha_timeout_seconds =
             v.clamp(MIN_CAPTCHA_TIMEOUT_SECONDS, MAX_CAPTCHA_TIMEOUT_SECONDS);
+    }
+    if let Some(ref order) = patch.captcha_solver_order {
+        config.captcha_solver_order = normalize_captcha_solver_order(order);
     }
 
     // History
@@ -541,6 +583,71 @@ mod tests {
             },
         );
         assert_eq!(config.captcha_timeout_seconds, MIN_CAPTCHA_TIMEOUT_SECONDS);
+    }
+
+    #[test]
+    fn captcha_solver_order_defaults_to_the_documented_cascade() {
+        assert_eq!(
+            AppConfig::default().captcha_solver_order,
+            vec![
+                CAPTCHA_SOLVER_OCR.to_string(),
+                CAPTCHA_SOLVER_ANTICAPTCHA.to_string(),
+                CAPTCHA_SOLVER_BROWSER.to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn captcha_solver_order_patch_keeps_only_unique_known_solvers() {
+        let mut config = AppConfig::default();
+        apply_patch(
+            &mut config,
+            &ConfigPatch {
+                captcha_solver_order: Some(vec![
+                    CAPTCHA_SOLVER_BROWSER.to_string(),
+                    "unknown".to_string(),
+                    CAPTCHA_SOLVER_OCR.to_string(),
+                    CAPTCHA_SOLVER_BROWSER.to_string(),
+                ]),
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(
+            config.captcha_solver_order,
+            vec![
+                CAPTCHA_SOLVER_BROWSER.to_string(),
+                CAPTCHA_SOLVER_OCR.to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn captcha_solver_order_can_disable_all_automatic_solvers() {
+        let mut config = AppConfig::default();
+        apply_patch(
+            &mut config,
+            &ConfigPatch {
+                captcha_solver_order: Some(Vec::new()),
+                ..Default::default()
+            },
+        );
+
+        assert!(config.captcha_solver_order.is_empty());
+    }
+
+    #[test]
+    fn nonempty_invalid_captcha_solver_order_falls_back_to_defaults() {
+        let mut config = AppConfig::default();
+        apply_patch(
+            &mut config,
+            &ConfigPatch {
+                captcha_solver_order: Some(vec!["unknown".to_string(), "also-unknown".to_string()]),
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(config.captcha_solver_order, default_captcha_solver_order());
     }
 
     #[test]

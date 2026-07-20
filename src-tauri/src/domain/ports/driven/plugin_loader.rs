@@ -4,9 +4,11 @@
 //! to determine which plugin can handle a given URL.
 
 use crate::domain::error::DomainError;
+use crate::domain::model::captcha::CaptchaChallenge;
 use crate::domain::model::credential::Credential;
 use crate::domain::model::plugin::{PluginInfo, PluginManifest};
 use crate::domain::ports::driven::account_validator::ValidationOutcome;
+use crate::domain::ports::driven::captcha_solver::CaptchaSolverOutcome;
 use crate::domain::ports::driven::hoster_link::ExtractedHosterLink;
 use crate::domain::ports::driven::plugin_store_client::OfficialPluginProvenance;
 
@@ -195,6 +197,17 @@ pub trait PluginLoader: Send + Sync {
         Ok(())
     }
 
+    /// Ask one enabled CAPTCHA plugin to solve a bounded challenge.
+    fn solve_captcha(
+        &self,
+        plugin_name: &str,
+        _challenge: &CaptchaChallenge,
+    ) -> Result<CaptchaSolverOutcome, DomainError> {
+        Err(DomainError::NotFound(format!(
+            "CAPTCHA solver '{plugin_name}' is not available"
+        )))
+    }
+
     /// Decrypt a link container blob (DLC / CCF / RSDF / Metalink) using
     /// an enabled plugin in the [`Container`](crate::domain::model::plugin::PluginCategory::Container)
     /// category that exports a `decrypt` function. Implementations probe
@@ -293,6 +306,24 @@ mod tests {
         let loader = MinimalLoader;
         let result = loader.decrypt_container(b"DLC\x00random");
         assert!(matches!(result, Err(DomainError::NotFound(_))));
+    }
+
+    #[test]
+    fn test_solve_captcha_default_returns_not_found() {
+        let challenge = crate::domain::model::captcha::CaptchaChallenge::new(
+            crate::domain::model::captcha::CaptchaId::new("captcha-1"),
+            crate::domain::model::download::DownloadId(1),
+            crate::domain::model::captcha::CaptchaType::Image,
+            "https://example.com/captcha".to_string(),
+            1_000,
+            61_000,
+        )
+        .expect("valid challenge");
+
+        assert!(matches!(
+            MinimalLoader.solve_captcha("vortex-mod-captcha-ocr", &challenge),
+            Err(DomainError::NotFound(_))
+        ));
     }
 
     #[test]

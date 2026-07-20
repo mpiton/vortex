@@ -229,6 +229,23 @@ jobs:
       - name: npm ci
         run: npm ci
 
+      - name: Tesseract broker test (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          CARGO_TERM_COLOR: never
+        run: |
+          $output = & cargo test --manifest-path src-tauri/Cargo.toml --lib adapters::driven::plugin::tesseract_broker_tests::tesseract_windows_fixture_receives_only_fixed_arguments -- --exact 2>&1
+          $exitCode = $LASTEXITCODE
+          $output | Write-Output
+          if ($exitCode -ne 0) {
+            exit $exitCode
+          }
+          $passed = @($output | Select-String -Pattern '^test result: ok\. 1 passed; 0 failed;')
+          if ($passed.Count -ne 1) {
+            throw 'The Windows Tesseract regression test did not run exactly once.'
+          }
+
       - name: Tauri build
         id: tauri-build
         shell: bash

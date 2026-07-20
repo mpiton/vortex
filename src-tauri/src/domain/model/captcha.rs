@@ -9,6 +9,8 @@ pub const MAX_CAPTCHA_SOLUTION_BYTES: usize = 4 * 1024;
 pub const MAX_CAPTCHA_ID_BYTES: usize = 128;
 pub const MAX_CAPTCHA_IMAGE_PIXELS: u64 = 16_000_000;
 const MAX_CAPTCHA_URL_BYTES: usize = 8 * 1024;
+const MAX_CAPTCHA_SOLVER_NAME_BYTES: usize = 128;
+pub const MAX_EXPOSED_CAPTCHA_SOLVER_ATTEMPTS: usize = 64;
 const REDACTED_CAPTCHA_URL: &str = "[redacted]";
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -35,6 +37,32 @@ impl CaptchaId {
 impl fmt::Display for CaptchaId {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(&self.0)
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct CaptchaSolution(String);
+
+impl CaptchaSolution {
+    pub fn try_new(value: impl Into<String>) -> Result<Self, DomainError> {
+        let value = value.into();
+        if value.trim().is_empty() || value.len() > MAX_CAPTCHA_SOLUTION_BYTES {
+            return Err(validation("CAPTCHA solution is invalid"));
+        }
+        Ok(Self(value))
+    }
+
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Debug for CaptchaSolution {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_tuple("CaptchaSolution")
+            .field(&"<redacted>")
+            .finish()
     }
 }
 
@@ -112,6 +140,82 @@ impl FromStr for CaptchaStatus {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CaptchaSolverAttemptOutcome {
+    Solved,
+    Unavailable,
+    Rejected,
+    Failed,
+    InteractionRequired,
+}
+
+impl fmt::Display for CaptchaSolverAttemptOutcome {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Solved => "solved",
+            Self::Unavailable => "unavailable",
+            Self::Rejected => "rejected",
+            Self::Failed => "failed",
+            Self::InteractionRequired => "interaction_required",
+        })
+    }
+}
+
+impl FromStr for CaptchaSolverAttemptOutcome {
+    type Err = DomainError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "solved" => Ok(Self::Solved),
+            "unavailable" => Ok(Self::Unavailable),
+            "rejected" => Ok(Self::Rejected),
+            "failed" => Ok(Self::Failed),
+            "interaction_required" => Ok(Self::InteractionRequired),
+            _ => Err(validation("unknown CAPTCHA solver attempt outcome")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CaptchaSolverAttempt {
+    solver: String,
+    outcome: CaptchaSolverAttemptOutcome,
+    attempted_at: u64,
+    duration_ms: u64,
+}
+
+impl CaptchaSolverAttempt {
+    pub fn new(
+        solver: impl Into<String>,
+        outcome: CaptchaSolverAttemptOutcome,
+        attempted_at: u64,
+        duration_ms: u64,
+    ) -> Self {
+        Self {
+            solver: solver.into(),
+            outcome,
+            attempted_at,
+            duration_ms,
+        }
+    }
+
+    pub fn solver(&self) -> &str {
+        &self.solver
+    }
+
+    pub fn outcome(&self) -> CaptchaSolverAttemptOutcome {
+        self.outcome
+    }
+
+    pub fn attempted_at(&self) -> u64 {
+        self.attempted_at
+    }
+
+    pub fn duration_ms(&self) -> u64 {
+        self.duration_ms
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CaptchaChallenge {
     id: CaptchaId,
@@ -122,6 +226,7 @@ pub struct CaptchaChallenge {
     status: CaptchaStatus,
     solver: Option<String>,
     attempts: u32,
+    solver_attempts: Vec<CaptchaSolverAttempt>,
     created_at: u64,
     expires_at: u64,
     resolved_at: Option<u64>,
@@ -138,6 +243,7 @@ pub struct CaptchaChallengeRecord {
     pub status: CaptchaStatus,
     pub solver: Option<String>,
     pub attempts: u32,
+    pub solver_attempts: Vec<CaptchaSolverAttempt>,
     pub created_at: u64,
     pub expires_at: u64,
     pub resolved_at: Option<u64>,
@@ -172,6 +278,7 @@ impl CaptchaChallenge {
             status: CaptchaStatus::Pending,
             solver: None,
             attempts: 0,
+            solver_attempts: Vec::new(),
             created_at,
             expires_at,
             resolved_at: None,
@@ -191,6 +298,9 @@ impl CaptchaChallenge {
         )?;
         if let Some(image) = record.image_data {
             challenge = challenge.with_image_data(image)?;
+        }
+        for attempt in record.solver_attempts {
+            challenge.record_solver_attempt(attempt)?;
         }
         challenge.status = record.status;
         challenge.solver = record.solver;
@@ -254,6 +364,19 @@ impl CaptchaChallenge {
         Ok(())
     }
 
+    pub fn record_solver_attempt(
+        &mut self,
+        attempt: CaptchaSolverAttempt,
+    ) -> Result<(), DomainError> {
+        if attempt.solver().trim().is_empty()
+            || attempt.solver().len() > MAX_CAPTCHA_SOLVER_NAME_BYTES
+        {
+            return Err(validation("CAPTCHA solver name is invalid"));
+        }
+        self.solver_attempts.push(attempt);
+        Ok(())
+    }
+
     fn ensure_pending(&self) -> Result<(), DomainError> {
         if self.status != CaptchaStatus::Pending {
             return Err(validation("CAPTCHA challenge is no longer pending"));
@@ -298,6 +421,10 @@ impl CaptchaChallenge {
 
     pub fn attempts(&self) -> u32 {
         self.attempts
+    }
+
+    pub fn solver_attempts(&self) -> &[CaptchaSolverAttempt] {
+        &self.solver_attempts
     }
 
     pub fn created_at(&self) -> u64 {
@@ -470,6 +597,127 @@ mod tests {
         assert_eq!(c.solver(), Some("manual"));
         assert_eq!(c.resolved_at(), Some(4_000));
         assert_eq!(c.duration_ms(), Some(3_000));
+    }
+
+    #[test]
+    fn captcha_solution_validates_and_redacts_debug_output() {
+        let solution = CaptchaSolution::try_new("secret-answer").expect("valid solution");
+
+        assert_eq!(solution.expose(), "secret-answer");
+        assert_eq!(format!("{solution:?}"), "CaptchaSolution(\"<redacted>\")");
+        assert!(CaptchaSolution::try_new("  ").is_err());
+        assert!(CaptchaSolution::try_new("x".repeat(MAX_CAPTCHA_SOLUTION_BYTES + 1)).is_err());
+    }
+
+    #[test]
+    fn solver_attempts_are_ordered_and_reconstructed_without_solutions() {
+        let mut challenge = make_challenge();
+        challenge
+            .record_solver_attempt(CaptchaSolverAttempt::new(
+                "vortex-mod-captcha-ocr",
+                CaptchaSolverAttemptOutcome::Unavailable,
+                1_100,
+                25,
+            ))
+            .expect("record OCR attempt");
+        challenge
+            .record_solver_attempt(CaptchaSolverAttempt::new(
+                "vortex-mod-captcha-anticaptcha",
+                CaptchaSolverAttemptOutcome::Solved,
+                1_200,
+                75,
+            ))
+            .expect("record service attempt");
+
+        assert_eq!(challenge.solver_attempts().len(), 2);
+        assert_eq!(
+            challenge.solver_attempts()[0].solver(),
+            "vortex-mod-captcha-ocr"
+        );
+        assert_eq!(
+            challenge.solver_attempts()[1].outcome(),
+            CaptchaSolverAttemptOutcome::Solved
+        );
+
+        let record = CaptchaChallengeRecord {
+            id: challenge.id().clone(),
+            download_id: challenge.download_id(),
+            challenge_type: challenge.challenge_type(),
+            url: challenge.url().to_string(),
+            image_data: None,
+            status: challenge.status(),
+            solver: None,
+            attempts: challenge.attempts(),
+            solver_attempts: challenge.solver_attempts().to_vec(),
+            created_at: challenge.created_at(),
+            expires_at: challenge.expires_at(),
+            resolved_at: None,
+            duration_ms: None,
+            failure_reason: None,
+        };
+        let restored = CaptchaChallenge::reconstruct(record).expect("reconstruct challenge");
+
+        assert_eq!(restored.solver_attempts(), challenge.solver_attempts());
+    }
+
+    #[test]
+    fn solver_attempt_rejects_blank_names() {
+        let mut challenge = make_challenge();
+
+        assert!(
+            challenge
+                .record_solver_attempt(CaptchaSolverAttempt::new(
+                    " ",
+                    CaptchaSolverAttemptOutcome::Failed,
+                    1_100,
+                    10,
+                ))
+                .is_err()
+        );
+        assert!(challenge.solver_attempts().is_empty());
+    }
+
+    #[test]
+    fn solver_attempt_history_keeps_every_audit_entry() {
+        let mut challenge = make_challenge();
+
+        for index in 0..=64 {
+            challenge
+                .record_solver_attempt(CaptchaSolverAttempt::new(
+                    format!("solver-{index}"),
+                    CaptchaSolverAttemptOutcome::Failed,
+                    1_100 + index,
+                    10,
+                ))
+                .expect("record solver attempt");
+        }
+
+        assert_eq!(challenge.solver_attempts().len(), 65);
+        assert_eq!(challenge.solver_attempts()[0].solver(), "solver-0");
+        assert_eq!(challenge.solver_attempts()[64].solver(), "solver-64");
+    }
+
+    #[test]
+    fn late_solver_attempt_can_be_recorded_after_manual_resolution() {
+        let mut challenge = make_challenge();
+        challenge
+            .solve(1_100, "manual")
+            .expect("manual resolution succeeds");
+
+        challenge
+            .record_solver_attempt(CaptchaSolverAttempt::new(
+                "vortex-mod-captcha-ocr",
+                CaptchaSolverAttemptOutcome::Rejected,
+                1_050,
+                100,
+            ))
+            .expect("completed automatic attempt remains auditable");
+
+        assert_eq!(challenge.solver_attempts().len(), 1);
+        assert_eq!(
+            challenge.solver_attempts()[0].outcome(),
+            CaptchaSolverAttemptOutcome::Rejected
+        );
     }
 
     #[test]

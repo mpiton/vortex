@@ -130,6 +130,7 @@ pub struct PluginHostContext {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) struct HostFunctionGrants {
     pub(super) ytdlp: bool,
+    pub(super) tesseract: bool,
 }
 
 /// Build host functions based on manifest capabilities.
@@ -207,6 +208,14 @@ fn build_host_functions_with_slot(
             "ignoring yt-dlp capability without verified official provenance"
         );
     }
+    let declares_tesseract = manifest.has_capability("subprocess:tesseract");
+    let supports_tesseract = super::tesseract_broker::supports_plugin(&name);
+    if declares_tesseract && (!supports_tesseract || !grants.tesseract) {
+        tracing::warn!(
+            plugin = %name,
+            "ignoring Tesseract capability without verified official provenance"
+        );
+    }
 
     let ctx = PluginHostContext {
         plugin_name: name,
@@ -236,6 +245,11 @@ fn build_host_functions_with_slot(
             user_data.clone(),
         ));
         functions.push(super::host_functions::make_legacy_run_subprocess_function(
+            user_data.clone(),
+        ));
+    }
+    if declares_tesseract && supports_tesseract && grants.tesseract {
+        functions.push(super::host_functions::make_run_tesseract_function(
             user_data.clone(),
         ));
     }
@@ -274,7 +288,10 @@ mod tests {
         let functions = build_host_functions_with_grants(
             &manifest,
             &shared,
-            HostFunctionGrants { ytdlp: true },
+            HostFunctionGrants {
+                ytdlp: true,
+                ..Default::default()
+            },
         );
 
         // 6 base + http + typed yt-dlp + legacy compatibility = 9
@@ -395,7 +412,10 @@ mod tests {
         let functions = build_host_functions_with_grants(
             &manifest,
             &shared,
-            HostFunctionGrants { ytdlp: true },
+            HostFunctionGrants {
+                ytdlp: true,
+                ..Default::default()
+            },
         );
 
         assert_eq!(functions.len(), 8);
@@ -413,6 +433,53 @@ mod tests {
 
         assert!(!functions.iter().any(|f| f.name() == "run_ytdlp"));
         assert!(!functions.iter().any(|f| f.name() == "run_subprocess"));
+    }
+
+    #[test]
+    fn verified_ocr_plugin_registers_only_the_typed_tesseract_broker() {
+        let shared = Arc::new(SharedHostResources::new());
+        let manifest =
+            make_named_manifest_with_caps("vortex-mod-captcha-ocr", vec!["subprocess:tesseract"]);
+
+        let functions = build_host_functions_with_grants(
+            &manifest,
+            &shared,
+            HostFunctionGrants {
+                ytdlp: false,
+                tesseract: true,
+            },
+        );
+
+        assert!(
+            functions
+                .iter()
+                .any(|function| function.name() == "run_tesseract")
+        );
+        assert!(
+            !functions
+                .iter()
+                .any(|function| function.name() == "run_subprocess")
+        );
+    }
+
+    #[test]
+    fn ocr_manifest_cannot_self_grant_tesseract_access() {
+        let shared = Arc::new(SharedHostResources::new());
+        let manifest =
+            make_named_manifest_with_caps("vortex-mod-captcha-ocr", vec!["subprocess:tesseract"]);
+
+        let functions = build_host_functions(&manifest, &shared);
+
+        assert!(
+            !functions
+                .iter()
+                .any(|function| function.name() == "run_tesseract")
+        );
+        assert!(
+            !functions
+                .iter()
+                .any(|function| function.name() == "run_subprocess")
+        );
     }
 
     #[test]

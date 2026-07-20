@@ -65,6 +65,42 @@ official             = true
 min_vortex_version   = "0.2.0"
 
 [[plugin]]
+name                 = "vortex-mod-captcha-ocr"
+description          = "Local OCR solver for simple image CAPTCHAs via the typed Tesseract host broker"
+author               = "vortex-community"
+version              = "1.0.0"
+category             = "captcha"
+repository           = "https://github.com/mpiton/vortex-mod-captcha-ocr"
+checksum_sha256      = "bbb6bdcb2d9cf89ff4136bdb39129686a00c92b0620050cb6f61168cb60ef181"
+checksum_sha256_toml = "08fbee0b5464ad4eb55ee1da28088f4ad9b2179eb8ee82a5505edfd3bd91c660"
+official             = true
+min_vortex_version   = "0.3.0"
+
+[[plugin]]
+name                 = "vortex-mod-captcha-anticaptcha"
+description          = "Paid AntiCaptcha image solver with credentials isolated in the OS keyring"
+author               = "vortex-community"
+version              = "1.0.0"
+category             = "captcha"
+repository           = "https://github.com/mpiton/vortex-mod-captcha-anticaptcha"
+checksum_sha256      = "6a18863455ee375511ed6a34de96dfb64df75096c4a968ab7d17b0805b8c993a"
+checksum_sha256_toml = "b16268b0ae26b222c3048677d0d707f5338c87169466d7fbe0f7a682e213acc9"
+official             = true
+min_vortex_version   = "0.3.0"
+
+[[plugin]]
+name                 = "vortex-mod-captcha-browser"
+description          = "Human-assisted CAPTCHA fallback in a dedicated local Tauri WebView"
+author               = "vortex-community"
+version              = "1.0.0"
+category             = "captcha"
+repository           = "https://github.com/mpiton/vortex-mod-captcha-browser"
+checksum_sha256      = "edfdb71e407af9a3b5910394d7e66326be13ab08d6bdea1b00a2ce65cfee0c4e"
+checksum_sha256_toml = "99c4404a16fcf45023c0e74e05be40ef75fbf605b6f6b3c90b9f536effb8c7ea"
+official             = true
+min_vortex_version   = "0.3.0"
+
+[[plugin]]
 name                 = "vortex-mod-mediafire"
 description          = "MediaFire free hoster — direct download URL resolution from public file pages"
 author               = "vortex-community"

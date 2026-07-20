@@ -5,13 +5,18 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
+use base64::Engine;
+
 use crate::domain::error::DomainError;
 use crate::domain::model::account::AccountStatus;
+use crate::domain::model::captcha::{CaptchaChallenge, CaptchaSolution};
 use crate::domain::model::credential::Credential;
-use crate::domain::model::plugin::{PluginInfo, PluginManifest};
+use crate::domain::model::plugin::{PluginCategory, PluginInfo, PluginManifest};
 use crate::domain::ports::driven::plugin_loader::DownloadedFileInfo;
 use crate::domain::ports::driven::plugin_store_client::OfficialPluginProvenance;
-use crate::domain::ports::driven::{ExtractedHosterLink, PluginLoader, ValidationOutcome};
+use crate::domain::ports::driven::{
+    CaptchaSolverOutcome, ExtractedHosterLink, PluginLoader, ValidationOutcome,
+};
 
 use super::builtin::HttpModule;
 use super::capabilities::{SharedHostResources, build_host_functions_for_instance};
@@ -36,6 +41,72 @@ use super::registry::{LoadedPlugin, PluginRegistry};
 struct InstallState {
     serializer: Mutex<()>,
     count: AtomicUsize,
+}
+
+const MAX_CAPTCHA_SOLVER_OUTPUT_BYTES: usize = 8 * 1024;
+const CAPTCHA_PLUGIN_MEMORY_MAX_PAGES: u32 = 1024;
+
+fn runtime_manifest(wasm_bytes: Vec<u8>, category: PluginCategory) -> extism::Manifest {
+    let manifest = extism::Manifest::new([extism::Wasm::data(wasm_bytes)]);
+    if category == PluginCategory::Captcha {
+        // One WebAssembly page is 64 KiB. This bounds allocations made while
+        // producing output; the registry's byte cap then prevents a large
+        // guest response from being copied into a host String.
+        manifest.with_memory_max(CAPTCHA_PLUGIN_MEMORY_MAX_PAGES)
+    } else {
+        manifest
+    }
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+struct CaptchaSolverRequest<'a> {
+    challenge_id: &'a str,
+    challenge_type: String,
+    challenge_url: &'a str,
+    image_data: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CaptchaSolverResponse {
+    status: String,
+    solution: Option<String>,
+}
+
+fn encode_captcha_solver_request(challenge: &CaptchaChallenge) -> Result<String, DomainError> {
+    serde_json::to_string(&CaptchaSolverRequest {
+        challenge_id: challenge.id().as_str(),
+        challenge_type: challenge.challenge_type().to_string(),
+        challenge_url: challenge.url(),
+        image_data: challenge
+            .image_data()
+            .map(|image| base64::engine::general_purpose::STANDARD.encode(image)),
+    })
+    .map_err(|_| DomainError::PluginError("failed to encode CAPTCHA request".into()))
+}
+
+fn parse_captcha_solver_output(output: &str) -> Result<CaptchaSolverOutcome, DomainError> {
+    if output.len() > MAX_CAPTCHA_SOLVER_OUTPUT_BYTES {
+        return Err(DomainError::PluginError(
+            "CAPTCHA solver response exceeds safety limit".into(),
+        ));
+    }
+    let response: CaptchaSolverResponse = serde_json::from_str(output)
+        .map_err(|_| DomainError::PluginError("CAPTCHA solver returned invalid JSON".into()))?;
+    match (response.status.as_str(), response.solution) {
+        ("solved", Some(solution)) => CaptchaSolution::try_new(solution)
+            .map(CaptchaSolverOutcome::Solved)
+            .map_err(|_| {
+                DomainError::PluginError("CAPTCHA solver returned an invalid solution".into())
+            }),
+        ("unavailable", None) => Ok(CaptchaSolverOutcome::Unavailable),
+        ("rejected", None) => Ok(CaptchaSolverOutcome::Rejected),
+        ("interaction_required", None) => Ok(CaptchaSolverOutcome::InteractionRequired),
+        _ => Err(DomainError::PluginError(
+            "CAPTCHA solver returned an invalid status payload".into(),
+        )),
+    }
 }
 
 impl InstallState {
@@ -364,7 +435,7 @@ impl PluginLoader for ExtismPluginLoader {
             &wasm_bytes,
             &manifest_bytes,
         );
-        let extism_manifest = extism::Manifest::new([extism::Wasm::data(wasm_bytes)]);
+        let extism_manifest = runtime_manifest(wasm_bytes, disk_manifest.info().category());
         let (host_functions, credential_slot) =
             build_host_functions_for_instance(&disk_manifest, &self.shared_resources, grants);
         let plugin = extism::Plugin::new(&extism_manifest, host_functions, true)
@@ -485,6 +556,66 @@ impl PluginLoader for ExtismPluginLoader {
             .or_default()
             .insert(key.to_string(), value.to_string());
         Ok(())
+    }
+
+    fn solve_captcha(
+        &self,
+        plugin_name: &str,
+        challenge: &CaptchaChallenge,
+    ) -> Result<CaptchaSolverOutcome, DomainError> {
+        let info = self
+            .registry
+            .list_info()
+            .into_iter()
+            .find(|info| info.name() == plugin_name)
+            .ok_or_else(|| DomainError::NotFound(plugin_name.to_string()))?;
+        if !info.is_enabled() || info.category() != PluginCategory::Captcha {
+            return Err(DomainError::NotFound(format!(
+                "CAPTCHA solver '{plugin_name}' is not enabled"
+            )));
+        }
+        for export in ["can_solve", "solve"] {
+            if !self.registry.function_exists(plugin_name, export)? {
+                return Err(DomainError::PluginError(format!(
+                    "CAPTCHA plugin '{plugin_name}' does not export '{export}'"
+                )));
+            }
+        }
+        let request = encode_captcha_solver_request(challenge)?;
+        let supports = self
+            .registry
+            .call_plugin_capped(
+                plugin_name,
+                "can_solve",
+                &request,
+                MAX_CAPTCHA_SOLVER_OUTPUT_BYTES,
+            )
+            .map_err(|_| {
+                DomainError::PluginError(format!(
+                    "CAPTCHA plugin '{plugin_name}' capability probe failed"
+                ))
+            })?;
+        match supports.trim() {
+            "false" => return Ok(CaptchaSolverOutcome::Unavailable),
+            "true" => {}
+            _ => {
+                return Err(DomainError::PluginError(format!(
+                    "CAPTCHA plugin '{plugin_name}' returned an invalid capability response"
+                )));
+            }
+        }
+        let output = self
+            .registry
+            .call_plugin_capped(
+                plugin_name,
+                "solve",
+                &request,
+                MAX_CAPTCHA_SOLVER_OUTPUT_BYTES,
+            )
+            .map_err(|_| {
+                DomainError::PluginError(format!("CAPTCHA plugin '{plugin_name}' solve failed"))
+            })?;
+        parse_captcha_solver_output(&output)
     }
 
     fn extract_links(&self, url: &str) -> Result<String, DomainError> {
@@ -923,6 +1054,7 @@ fn parse_validation_outcome(output: &str) -> Result<ValidationOutcome, DomainErr
 mod tests {
     use super::*;
     use crate::domain::model::plugin::{PluginCategory, PluginInfo, PluginManifest};
+    use crate::domain::ports::driven::CaptchaSolverOutcome;
     use std::io::Write;
     use tempfile::TempDir;
 
@@ -935,6 +1067,59 @@ mod tests {
             PluginCategory::Utility,
         );
         PluginManifest::new(info)
+    }
+
+    #[test]
+    fn captcha_solver_output_accepts_a_redacted_solution() {
+        let outcome =
+            parse_captcha_solver_output(r#"{"status":"solved","solution":"secret-answer"}"#)
+                .expect("valid solver response");
+
+        let CaptchaSolverOutcome::Solved(solution) = outcome else {
+            panic!("expected solved outcome");
+        };
+        assert_eq!(solution.expose(), "secret-answer");
+        assert!(!format!("{solution:?}").contains("secret-answer"));
+    }
+
+    #[test]
+    fn captcha_solver_output_maps_fallback_statuses() {
+        for (status, expected) in [
+            ("unavailable", CaptchaSolverOutcome::Unavailable),
+            ("rejected", CaptchaSolverOutcome::Rejected),
+            (
+                "interaction_required",
+                CaptchaSolverOutcome::InteractionRequired,
+            ),
+        ] {
+            let output = format!(r#"{{"status":"{status}"}}"#);
+            assert_eq!(parse_captcha_solver_output(&output), Ok(expected));
+        }
+    }
+
+    #[test]
+    fn captcha_solver_output_rejects_unknown_fields_and_missing_solutions() {
+        assert!(parse_captcha_solver_output(r#"{"status":"solved"}"#).is_err());
+        assert!(
+            parse_captcha_solver_output(
+                r#"{"status":"unavailable","solution":"must-not-be-here"}"#,
+            )
+            .is_err()
+        );
+        assert!(parse_captcha_solver_output(r#"{"status":"unknown","debug":"secret"}"#).is_err());
+    }
+
+    #[test]
+    fn captcha_runtime_has_a_guest_memory_limit() {
+        let manifest = runtime_manifest(
+            vec![0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00],
+            PluginCategory::Captcha,
+        );
+
+        assert_eq!(
+            manifest.memory.max_pages,
+            Some(CAPTCHA_PLUGIN_MEMORY_MAX_PAGES)
+        );
     }
 
     #[test]

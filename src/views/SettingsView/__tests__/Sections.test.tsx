@@ -47,6 +47,11 @@ const mockConfig: AppConfig = {
   dynamicSplitEnabled: true,
   dynamicSplitMinRemainingMb: 4,
   captchaTimeoutSeconds: 120,
+  captchaSolverOrder: [
+    "vortex-mod-captcha-ocr",
+    "vortex-mod-captcha-anticaptcha",
+    "vortex-mod-captcha-browser",
+  ],
   historyRetentionDays: 30,
   proxyType: "none",
   proxyUrl: null,

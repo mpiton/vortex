@@ -1,5 +1,6 @@
 //! Driven adapters — implementations of domain port traits.
 
+pub mod captcha_interaction;
 pub mod clipboard;
 pub mod config;
 pub mod credential;
