@@ -1,4 +1,3 @@
-use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
@@ -174,19 +173,7 @@ fn execute(binary: &Path, image: Vec<u8>, timeout: Duration) -> anyhow::Result<P
     if !binary.is_absolute() {
         bail!("run_tesseract: approved binary path must be absolute");
     }
-    let mut command = Command::new(binary);
-    command
-        .args(["stdin", "stdout", "-l", "eng", "--psm", "7"])
-        .env_clear()
-        .env("LANG", "C.UTF-8")
-        .env("LC_ALL", "C.UTF-8")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    if let Some(prefix) = validated_tessdata_prefix(std::env::var_os("TESSDATA_PREFIX")) {
-        command.env("TESSDATA_PREFIX", prefix);
-    }
-    super::ytdlp_broker::platform::copy_required_environment(&mut command);
+    let mut command = build_tesseract_command(binary);
     let mut child = command
         .group_spawn()
         .with_context(|| format!("run_tesseract: failed to spawn '{}'", binary.display()))?;
@@ -210,13 +197,18 @@ fn execute(binary: &Path, image: Vec<u8>, timeout: Duration) -> anyhow::Result<P
     Ok(ProcessOutput { status, stdout })
 }
 
-pub(crate) fn validated_tessdata_prefix(value: Option<OsString>) -> Option<PathBuf> {
-    let path = PathBuf::from(value?);
-    if !path.is_absolute() {
-        return None;
-    }
-    let canonical = std::fs::canonicalize(path).ok()?;
-    canonical.is_dir().then_some(canonical)
+pub(crate) fn build_tesseract_command(binary: &Path) -> Command {
+    let mut command = Command::new(binary);
+    command
+        .args(["stdin", "stdout", "-l", "eng", "--psm", "7"])
+        .env_clear()
+        .env("LANG", "C.UTF-8")
+        .env("LC_ALL", "C.UTF-8")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    super::ytdlp_broker::platform::copy_required_environment(&mut command);
+    command
 }
 
 fn spawn_writer(

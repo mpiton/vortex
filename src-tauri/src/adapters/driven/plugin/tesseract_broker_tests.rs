@@ -4,8 +4,8 @@ use std::time::{Duration, Instant};
 use base64::Engine;
 
 use super::tesseract_broker::{
-    PluginTesseractRequest, TesseractResponse, run_with_discovery, run_with_discovery_timeout,
-    validated_tessdata_prefix,
+    PluginTesseractRequest, TesseractResponse, build_tesseract_command, run_with_discovery,
+    run_with_discovery_timeout,
 };
 use crate::domain::model::captcha::MAX_CAPTCHA_IMAGE_BYTES;
 
@@ -64,9 +64,16 @@ fn tesseract_receives_image_on_stdin_and_only_fixed_arguments() {
 
     let temp = tempfile::tempdir().expect("tempdir");
     let binary = temp.path().join("tesseract");
+    let wc = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+        .map(|directory| directory.join("wc"))
+        .find(|candidate| candidate.is_file())
+        .expect("wc on the test PATH");
     std::fs::write(
         &binary,
-        "#!/bin/sh\n[ \"$#\" -eq 6 ] && [ \"$1\" = stdin ] && [ \"$2\" = stdout ] && [ \"$3\" = -l ] && [ \"$4\" = eng ] && [ \"$5\" = --psm ] && [ \"$6\" = 7 ] || exit 9\n[ \"$(/usr/bin/wc -c)\" -eq 24 ] || exit 10\nprintf ' ABC123 \\n'\n",
+        format!(
+            "#!/bin/sh\n[ \"$#\" -eq 6 ] && [ \"$1\" = stdin ] && [ \"$2\" = stdout ] && [ \"$3\" = -l ] && [ \"$4\" = eng ] && [ \"$5\" = --psm ] && [ \"$6\" = 7 ] || exit 9\n[ \"$(\"{}\" -c)\" -eq 24 ] || exit 10\nprintf ' ABC123 \\n'\n",
+            wc.display()
+        ),
     )
     .expect("write fake tesseract");
     std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700))
@@ -82,25 +89,21 @@ fn tesseract_receives_image_on_stdin_and_only_fixed_arguments() {
 }
 
 #[test]
-fn tessdata_prefix_must_be_an_absolute_existing_directory() {
-    let directory = tempfile::tempdir().expect("tempdir");
-    let canonical = directory.path().canonicalize().expect("canonical tempdir");
-    let file = directory.path().join("eng.traineddata");
-    std::fs::write(&file, b"fixture").expect("write fixture");
+fn tesseract_command_does_not_inherit_tessdata_prefix() {
+    let command = build_tesseract_command(std::path::Path::new("/approved/tesseract"));
 
-    assert_eq!(
-        validated_tessdata_prefix(Some(directory.path().as_os_str().to_owned())),
-        Some(canonical)
+    assert!(
+        command
+            .get_envs()
+            .all(|(name, _)| name != "TESSDATA_PREFIX")
     );
-    assert!(validated_tessdata_prefix(Some("relative/tessdata".into())).is_none());
-    assert!(validated_tessdata_prefix(Some(file.into_os_string())).is_none());
 }
 
 #[cfg(windows)]
 #[test]
 fn tesseract_windows_fixture_receives_only_fixed_arguments() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let binary = temp.path().join("tesseract.cmd");
+    let binary = temp.path().join("tesseract.bat");
     std::fs::write(
         &binary,
         "@echo off\r\nif not \"%~7\"==\"\" exit /b 9\r\nif not \"%~1\"==\"stdin\" exit /b 9\r\nif not \"%~2\"==\"stdout\" exit /b 9\r\nif not \"%~3\"==\"-l\" exit /b 9\r\nif not \"%~4\"==\"eng\" exit /b 9\r\nif not \"%~5\"==\"--psm\" exit /b 9\r\nif not \"%~6\"==\"7\" exit /b 9\r\n%SystemRoot%\\System32\\more.com >NUL\r\n<nul set /p \"=ABC123\"\r\n",

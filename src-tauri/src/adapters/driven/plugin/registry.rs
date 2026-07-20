@@ -222,6 +222,8 @@ impl PluginRegistry {
                 "plugin call failed (function_exists={fn_exists}): {e}"
             ))
         })?;
+        // `result` still borrows guest memory. Check its length before the
+        // only host allocation; CAPTCHA guests also have a runtime memory cap.
         materialize_plugin_output(result, output_limit)
     }
 }

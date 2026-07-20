@@ -1,8 +1,6 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useTranslation } from "react-i18next";
 import { usePendingCaptcha } from "@/hooks/useCaptchaQueue";
-import { useTauriEvent } from "@/hooks/useTauriEvent";
-import type { CaptchaEventPayload } from "@/types/events";
 import { CaptchaChallengePanel } from "./CaptchaChallengePanel";
 
 export function CaptchaBrowserWindow({ challengeId }: { challengeId: string }) {
@@ -11,13 +9,6 @@ export function CaptchaBrowserWindow({ challengeId }: { challengeId: string }) {
   const close = () => {
     void getCurrentWindow().close();
   };
-  const closeIfResolved = (payload: CaptchaEventPayload) => {
-    if (payload.challengeId === challengeId) close();
-  };
-
-  useTauriEvent<CaptchaEventPayload>("captcha-solved", closeIfResolved);
-  useTauriEvent<CaptchaEventPayload>("captcha-skipped", closeIfResolved);
-  useTauriEvent<CaptchaEventPayload>("captcha-timed-out", closeIfResolved);
 
   return (
     <main className="min-h-screen bg-background p-4 text-foreground">

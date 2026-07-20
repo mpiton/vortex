@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, it, vi } from "vitest";
 import { CaptchaBrowserWindow } from "../CaptchaBrowserWindow";
@@ -58,7 +58,7 @@ beforeEach(() => {
   });
 });
 
-it("closes when its challenge is resolved from another window", async () => {
+it("does not subscribe the isolated WebView to app-wide events", async () => {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
@@ -69,20 +69,8 @@ it("closes when its challenge is resolved from another window", async () => {
   );
 
   await screen.findByTestId("captcha-image");
-  await waitFor(() => expect(eventListeners.has("captcha-solved")).toBe(true));
-  act(() => {
-    eventListeners.get("captcha-solved")?.({
-      payload: { challengeId: "another-captcha", downloadId: 42 },
-    });
-  });
+  expect(eventListeners.size).toBe(0);
   expect(closeWindow).not.toHaveBeenCalled();
-
-  act(() => {
-    eventListeners.get("captcha-solved")?.({
-      payload: { challengeId: "captcha-1", downloadId: 42 },
-    });
-  });
-  await waitFor(() => expect(closeWindow).toHaveBeenCalledOnce());
 });
 
 it("submits the human answer and closes the CAPTCHA WebView", async () => {

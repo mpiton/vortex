@@ -5,8 +5,6 @@
   "windows": ["captcha-browser-*"],
   "permissions": [
     "captcha-browser-commands",
-    "core:window:allow-close",
-    "core:event:allow-listen",
-    "core:event:allow-unlisten"
+    "core:window:allow-close"
   ]
 }

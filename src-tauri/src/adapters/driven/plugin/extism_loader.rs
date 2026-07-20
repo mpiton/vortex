@@ -44,6 +44,19 @@ struct InstallState {
 }
 
 const MAX_CAPTCHA_SOLVER_OUTPUT_BYTES: usize = 8 * 1024;
+const CAPTCHA_PLUGIN_MEMORY_MAX_PAGES: u32 = 1024;
+
+fn runtime_manifest(wasm_bytes: Vec<u8>, category: PluginCategory) -> extism::Manifest {
+    let manifest = extism::Manifest::new([extism::Wasm::data(wasm_bytes)]);
+    if category == PluginCategory::Captcha {
+        // One WebAssembly page is 64 KiB. This bounds allocations made while
+        // producing output; the registry's byte cap then prevents a large
+        // guest response from being copied into a host String.
+        manifest.with_memory_max(CAPTCHA_PLUGIN_MEMORY_MAX_PAGES)
+    } else {
+        manifest
+    }
+}
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -422,7 +435,7 @@ impl PluginLoader for ExtismPluginLoader {
             &wasm_bytes,
             &manifest_bytes,
         );
-        let extism_manifest = extism::Manifest::new([extism::Wasm::data(wasm_bytes)]);
+        let extism_manifest = runtime_manifest(wasm_bytes, disk_manifest.info().category());
         let (host_functions, credential_slot) =
             build_host_functions_for_instance(&disk_manifest, &self.shared_resources, grants);
         let plugin = extism::Plugin::new(&extism_manifest, host_functions, true)
@@ -1094,6 +1107,19 @@ mod tests {
             .is_err()
         );
         assert!(parse_captcha_solver_output(r#"{"status":"unknown","debug":"secret"}"#).is_err());
+    }
+
+    #[test]
+    fn captcha_runtime_has_a_guest_memory_limit() {
+        let manifest = runtime_manifest(
+            vec![0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00],
+            PluginCategory::Captcha,
+        );
+
+        assert_eq!(
+            manifest.memory.max_pages,
+            Some(CAPTCHA_PLUGIN_MEMORY_MAX_PAGES)
+        );
     }
 
     #[test]

@@ -80,8 +80,14 @@ pub(super) fn find_approved_binary(
             "yt-dlp"
         },
     )
-    .context("yt-dlp not found in approved locations; install it with: pip install yt-dlp")
+    .context(INSTALL_REMEDIATION)
 }
+
+#[cfg(unix)]
+const INSTALL_REMEDIATION: &str = "yt-dlp not found in approved locations; install or update it at ~/.local/bin/yt-dlp or with a supported system package";
+
+#[cfg(windows)]
+const INSTALL_REMEDIATION: &str = "yt-dlp not found in approved locations; install it with WinGet or at %LOCALAPPDATA%\\Programs\\yt-dlp\\yt-dlp.exe";
 
 pub(crate) fn find_approved_named_binary(
     candidates: &[PathBuf],

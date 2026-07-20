@@ -1,8 +1,6 @@
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
-
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 
+use crate::adapters::captcha_browser::browser_window_label;
 use crate::domain::error::DomainError;
 use crate::domain::model::captcha::CaptchaChallenge;
 use crate::domain::ports::driven::CaptchaInteraction;
@@ -41,12 +39,6 @@ impl CaptchaInteraction for TauriCaptchaInteraction {
     }
 }
 
-fn browser_window_label(challenge_id: &str) -> String {
-    let mut hasher = DefaultHasher::new();
-    challenge_id.hash(&mut hasher);
-    format!("captcha-browser-{:016x}", hasher.finish())
-}
-
 fn browser_window_path(challenge_id: &str) -> String {
     let encoded: String = url::form_urlencoded::byte_serialize(challenge_id.as_bytes()).collect();
     format!("index.html?captchaWindow={encoded}")
@@ -72,6 +64,10 @@ mod tests {
             browser_window_label("captcha / ?")
                 .chars()
                 .all(|character| character.is_ascii_alphanumeric() || character == '-')
+        );
+        assert_eq!(
+            browser_window_label("captcha / ?").len(),
+            "captcha-browser-".len() + 64
         );
     }
 
@@ -99,12 +95,7 @@ mod tests {
         assert_eq!(browser["windows"], serde_json::json!(["captcha-browser-*"]));
         assert_eq!(
             browser["permissions"],
-            serde_json::json!([
-                "captcha-browser-commands",
-                "core:window:allow-close",
-                "core:event:allow-listen",
-                "core:event:allow-unlisten"
-            ])
+            serde_json::json!(["captcha-browser-commands", "core:window:allow-close"])
         );
 
         let permission_source = std::fs::read_to_string(manifest_dir.join("permissions/app.toml"))

@@ -171,6 +171,20 @@ struct BlockingCaptchaSolver {
     release: Arc<AtomicBool>,
 }
 
+struct BlockingSolverRelease(Arc<AtomicBool>);
+
+impl BlockingSolverRelease {
+    fn release(&self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+}
+
+impl Drop for BlockingSolverRelease {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
+
 impl CaptchaSolver for BlockingCaptchaSolver {
     fn name(&self) -> &str {
         CAPTCHA_SOLVER_OCR
@@ -327,6 +341,7 @@ async fn enqueue_runs_enabled_solvers_in_order_until_one_succeeds() {
 async fn late_automatic_result_is_logged_after_manual_resolution() {
     let started = Arc::new(AtomicBool::new(false));
     let release = Arc::new(AtomicBool::new(false));
+    let release_guard = BlockingSolverRelease(release.clone());
     let config = AppConfig {
         captcha_solver_order: vec![CAPTCHA_SOLVER_OCR.into()],
         ..AppConfig::default()
@@ -356,7 +371,7 @@ async fn late_automatic_result_is_logged_after_manual_resolution() {
     )
     .await
     .expect("manual resolution");
-    release.store(true, Ordering::SeqCst);
+    release_guard.release();
     wait_for_solver_attempts(&captchas, &id, 2).await;
 
     let stored = captchas.find_by_id(&id).unwrap().unwrap();

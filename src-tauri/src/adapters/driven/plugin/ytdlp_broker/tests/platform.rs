@@ -35,7 +35,7 @@ mod unix {
     fn missing_binary_error_keeps_install_remediation() {
         let error = find_approved_binary(&[], &[]).expect_err("missing yt-dlp");
 
-        assert!(error.to_string().contains("pip install yt-dlp"));
+        assert!(error.to_string().contains("~/.local/bin/yt-dlp"));
     }
 
     #[test]

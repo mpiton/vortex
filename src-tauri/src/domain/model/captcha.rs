@@ -10,7 +10,7 @@ pub const MAX_CAPTCHA_ID_BYTES: usize = 128;
 pub const MAX_CAPTCHA_IMAGE_PIXELS: u64 = 16_000_000;
 const MAX_CAPTCHA_URL_BYTES: usize = 8 * 1024;
 const MAX_CAPTCHA_SOLVER_NAME_BYTES: usize = 128;
-const MAX_CAPTCHA_SOLVER_ATTEMPTS: usize = 64;
+pub const MAX_EXPOSED_CAPTCHA_SOLVER_ATTEMPTS: usize = 64;
 const REDACTED_CAPTCHA_URL: &str = "[redacted]";
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -373,11 +373,6 @@ impl CaptchaChallenge {
         {
             return Err(validation("CAPTCHA solver name is invalid"));
         }
-        let retained_before_push = MAX_CAPTCHA_SOLVER_ATTEMPTS.saturating_sub(1);
-        if self.solver_attempts.len() > retained_before_push {
-            let discard = self.solver_attempts.len() - retained_before_push;
-            self.solver_attempts.drain(..discard);
-        }
         self.solver_attempts.push(attempt);
         Ok(())
     }
@@ -683,7 +678,7 @@ mod tests {
     }
 
     #[test]
-    fn solver_attempt_history_keeps_only_the_latest_entries() {
+    fn solver_attempt_history_keeps_every_audit_entry() {
         let mut challenge = make_challenge();
 
         for index in 0..=64 {
@@ -694,12 +689,12 @@ mod tests {
                     1_100 + index,
                     10,
                 ))
-                .expect("record bounded solver attempt");
+                .expect("record solver attempt");
         }
 
-        assert_eq!(challenge.solver_attempts().len(), 64);
-        assert_eq!(challenge.solver_attempts()[0].solver(), "solver-1");
-        assert_eq!(challenge.solver_attempts()[63].solver(), "solver-64");
+        assert_eq!(challenge.solver_attempts().len(), 65);
+        assert_eq!(challenge.solver_attempts()[0].solver(), "solver-0");
+        assert_eq!(challenge.solver_attempts()[64].solver(), "solver-64");
     }
 
     #[test]
