@@ -1,3 +1,4 @@
+use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
@@ -11,7 +12,8 @@ use crate::domain::model::captcha::{
     MAX_CAPTCHA_IMAGE_BYTES, MAX_CAPTCHA_SOLUTION_BYTES, captcha_image_mime_type,
 };
 
-const OCR_PLUGIN_NAME: &str = "vortex-mod-captcha-ocr";
+pub(crate) const OCR_PLUGIN_NAME: &str = "vortex-mod-captcha-ocr";
+pub(crate) const MAX_TESSERACT_REQUEST_BYTES: usize = MAX_CAPTCHA_IMAGE_BYTES.div_ceil(3) * 4 + 64;
 const PROCESS_TIMEOUT: Duration = Duration::from_secs(15);
 const PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const OUTPUT_LIMIT: usize = MAX_CAPTCHA_SOLUTION_BYTES;
@@ -21,17 +23,36 @@ pub(crate) fn supports_plugin(plugin_name: &str) -> bool {
     plugin_name == OCR_PLUGIN_NAME
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PluginTesseractRequest {
     image_data: String,
 }
 
-#[derive(Debug, serde::Serialize)]
+impl std::fmt::Debug for PluginTesseractRequest {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PluginTesseractRequest")
+            .field("image_data", &"<redacted>")
+            .finish()
+    }
+}
+
+#[derive(serde::Serialize)]
 pub(crate) struct TesseractResponse {
     pub(crate) status: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) solution: Option<String>,
+}
+
+impl std::fmt::Debug for TesseractResponse {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("TesseractResponse")
+            .field("status", &self.status)
+            .field("solution", &self.solution.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
 }
 
 pub(crate) fn run_plugin_request(
@@ -162,6 +183,9 @@ fn execute(binary: &Path, image: Vec<u8>, timeout: Duration) -> anyhow::Result<P
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    if let Some(prefix) = validated_tessdata_prefix(std::env::var_os("TESSDATA_PREFIX")) {
+        command.env("TESSDATA_PREFIX", prefix);
+    }
     super::ytdlp_broker::platform::copy_required_environment(&mut command);
     let mut child = command
         .group_spawn()
@@ -184,6 +208,15 @@ fn execute(binary: &Path, image: Vec<u8>, timeout: Duration) -> anyhow::Result<P
     let stdout = stdout?;
     let _stderr = stderr?;
     Ok(ProcessOutput { status, stdout })
+}
+
+pub(crate) fn validated_tessdata_prefix(value: Option<OsString>) -> Option<PathBuf> {
+    let path = PathBuf::from(value?);
+    if !path.is_absolute() {
+        return None;
+    }
+    let canonical = std::fs::canonicalize(path).ok()?;
+    canonical.is_dir().then_some(canonical)
 }
 
 fn spawn_writer(

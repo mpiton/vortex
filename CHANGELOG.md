@@ -26,6 +26,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- CAPTCHA solver review hardening now bounds attempt, IPC, and WASM payloads,
+  preserves late solver audit entries and Tesseract data discovery, isolates
+  popup permissions, and keeps keyring I/O off async workers (MAT-141).
 - CAPTCHA recovery now re-arms every pending timeout, and download removal
   atomically coordinates engine cancellation with challenge cleanup (MAT-140).
 - Contributor Automation: `actions/first-interaction` v3 requires both

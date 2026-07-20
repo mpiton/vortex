@@ -131,7 +131,17 @@ impl PluginRegistry {
     }
 
     pub fn call_plugin(&self, name: &str, func: &str, input: &str) -> Result<String, DomainError> {
-        self.call_plugin_inner(name, func, input, None)
+        self.call_plugin_inner(name, func, input, None, None)
+    }
+
+    pub(crate) fn call_plugin_capped(
+        &self,
+        name: &str,
+        func: &str,
+        input: &str,
+        output_limit: usize,
+    ) -> Result<String, DomainError> {
+        self.call_plugin_inner(name, func, input, None, Some(output_limit))
     }
 
     pub fn call_plugin_with_credential(
@@ -141,7 +151,7 @@ impl PluginRegistry {
         input: &str,
         credential: Credential,
     ) -> Result<String, DomainError> {
-        self.call_plugin_inner(name, func, input, Some(credential))
+        self.call_plugin_inner(name, func, input, Some(credential), None)
     }
 
     /// Container plugins decode binary blobs (DLC / CCF / RSDF / Metalink);
@@ -152,7 +162,7 @@ impl PluginRegistry {
         func: &str,
         input: &[u8],
     ) -> Result<String, DomainError> {
-        self.call_plugin_inner(name, func, input, None)
+        self.call_plugin_inner(name, func, input, None, None)
     }
 
     fn call_plugin_inner<'a, I>(
@@ -161,6 +171,7 @@ impl PluginRegistry {
         func: &str,
         input: I,
         scoped_credential: Option<Credential>,
+        output_limit: Option<usize>,
     ) -> Result<String, DomainError>
     where
         I: extism::convert::ToBytes<'a>,
@@ -206,13 +217,24 @@ impl PluginRegistry {
         };
         let fn_exists = plugin.function_exists(func);
         tracing::debug!(plugin = name, func, fn_exists, "plugin call pre-call");
-        let result = plugin.call::<I, &str>(func, input).map_err(|e| {
+        let result = plugin.call::<I, &[u8]>(func, input).map_err(|e| {
             DomainError::PluginError(format!(
                 "plugin call failed (function_exists={fn_exists}): {e}"
             ))
         })?;
-        Ok(result.to_string())
+        materialize_plugin_output(result, output_limit)
     }
+}
+
+fn materialize_plugin_output(output: &[u8], limit: Option<usize>) -> Result<String, DomainError> {
+    if limit.is_some_and(|limit| output.len() > limit) {
+        return Err(DomainError::PluginError(
+            "plugin output exceeds safety limit".into(),
+        ));
+    }
+    std::str::from_utf8(output)
+        .map(str::to_owned)
+        .map_err(|_| DomainError::PluginError("plugin output is not valid UTF-8".into()))
 }
 
 impl Default for PluginRegistry {
@@ -463,5 +485,17 @@ mod tests {
 
         let result = registry.function_exists("plug-a", "extract_links");
         assert!(!result.unwrap());
+    }
+
+    #[test]
+    fn capped_output_is_rejected_before_materialization() {
+        let output = vec![b'x'; 9];
+
+        let error = materialize_plugin_output(&output, Some(8))
+            .expect_err("oversized output must be rejected");
+
+        assert!(
+            matches!(error, DomainError::PluginError(message) if message.contains("safety limit"))
+        );
     }
 }

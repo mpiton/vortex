@@ -65,7 +65,7 @@
       },
       "moveUp": "Move {{solver}} up",
       "moveDown": "Move {{solver}} down",
-      "tesseractDetection": "Tesseract is detected in trusted system paths. If it is missing, the cascade continues automatically.",
+      "tesseractDetection": "Tesseract availability is checked automatically. If it is missing, the cascade continues automatically.",
       "apiKey": "AntiCaptcha API key",
       "saveApiKey": "Save API key",
       "deleteApiKey": "Delete API key",

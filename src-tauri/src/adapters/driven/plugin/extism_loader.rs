@@ -571,7 +571,12 @@ impl PluginLoader for ExtismPluginLoader {
         let request = encode_captcha_solver_request(challenge)?;
         let supports = self
             .registry
-            .call_plugin(plugin_name, "can_solve", &request)
+            .call_plugin_capped(
+                plugin_name,
+                "can_solve",
+                &request,
+                MAX_CAPTCHA_SOLVER_OUTPUT_BYTES,
+            )
             .map_err(|_| {
                 DomainError::PluginError(format!(
                     "CAPTCHA plugin '{plugin_name}' capability probe failed"
@@ -588,7 +593,12 @@ impl PluginLoader for ExtismPluginLoader {
         }
         let output = self
             .registry
-            .call_plugin(plugin_name, "solve", &request)
+            .call_plugin_capped(
+                plugin_name,
+                "solve",
+                &request,
+                MAX_CAPTCHA_SOLVER_OUTPUT_BYTES,
+            )
             .map_err(|_| {
                 DomainError::PluginError(format!("CAPTCHA plugin '{plugin_name}' solve failed"))
             })?;

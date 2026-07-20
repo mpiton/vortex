@@ -2,8 +2,9 @@
   "$schema": "https://schema.tauri.app/config/2",
   "identifier": "default",
   "description": "Default capabilities for Vortex",
-  "windows": ["main", "captcha-browser-*"],
+  "windows": ["main"],
   "permissions": [
+    "main-window-commands",
     "core:default",
     "core:tray:default",
     "notification:allow-notify",

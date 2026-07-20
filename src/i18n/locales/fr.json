@@ -65,7 +65,7 @@
       },
       "moveUp": "Monter {{solver}}",
       "moveDown": "Descendre {{solver}}",
-      "tesseractDetection": "Tesseract est détecté dans les chemins système de confiance. S’il est absent, la cascade continue automatiquement.",
+      "tesseractDetection": "La disponibilité de Tesseract est vérifiée automatiquement. S’il est absent, la cascade continue automatiquement.",
       "apiKey": "Clé API AntiCaptcha",
       "saveApiKey": "Enregistrer la clé API",
       "deleteApiKey": "Supprimer la clé API",

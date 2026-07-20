@@ -1,0 +1,12 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "identifier": "captcha-browser",
+  "description": "Minimal capabilities for assisted CAPTCHA browser windows",
+  "windows": ["captcha-browser-*"],
+  "permissions": [
+    "captcha-browser-commands",
+    "core:window:allow-close",
+    "core:event:allow-listen",
+    "core:event:allow-unlisten"
+  ]
+}

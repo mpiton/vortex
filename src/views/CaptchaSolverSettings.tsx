@@ -157,7 +157,7 @@ export function CaptchaSolverSettings() {
           <div className="flex flex-wrap items-center gap-2">
             <Button
               disabled={apiKey.trim().length === 0 || saveCredential.isPending}
-              onClick={() => saveCredential.mutate({ apiKey })}
+              onClick={() => saveCredential.mutate({ apiKey: apiKey.trim() })}
               type="button"
             >
               {t("captcha.settings.saveApiKey")}

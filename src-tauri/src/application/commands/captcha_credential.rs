@@ -12,16 +12,21 @@ impl CommandBus {
         &self,
         command: SetCaptchaCredentialCommand,
     ) -> Result<(), AppError> {
-        let api_key = command.api_key.trim();
+        let api_key = command.api_key.trim().to_string();
         if api_key.is_empty() || api_key.len() > MAX_ANTICAPTCHA_API_KEY_BYTES {
             return Err(AppError::Validation(
                 "AntiCaptcha API key is empty or exceeds safety limits".into(),
             ));
         }
-        self.credential_store().store(
-            CAPTCHA_SOLVER_ANTICAPTCHA,
-            &Credential::new("api-key", api_key),
-        )?;
+        let store = self.credential_store_arc();
+        tokio::task::spawn_blocking(move || {
+            store.store(
+                CAPTCHA_SOLVER_ANTICAPTCHA,
+                &Credential::new("api-key", api_key),
+            )
+        })
+        .await
+        .map_err(|error| AppError::Storage(format!("credential task failed: {error}")))??;
         Ok(())
     }
 
@@ -29,15 +34,19 @@ impl CommandBus {
         &self,
         _command: DeleteCaptchaCredentialCommand,
     ) -> Result<(), AppError> {
-        self.credential_store().delete(CAPTCHA_SOLVER_ANTICAPTCHA)?;
+        let store = self.credential_store_arc();
+        tokio::task::spawn_blocking(move || store.delete(CAPTCHA_SOLVER_ANTICAPTCHA))
+            .await
+            .map_err(|error| AppError::Storage(format!("credential task failed: {error}")))??;
         Ok(())
     }
 
-    pub fn captcha_credential_configured(&self) -> Result<bool, AppError> {
-        Ok(self
-            .credential_store()
-            .get(CAPTCHA_SOLVER_ANTICAPTCHA)?
-            .is_some())
+    pub async fn captcha_credential_configured(&self) -> Result<bool, AppError> {
+        let store = self.credential_store_arc();
+        let credential = tokio::task::spawn_blocking(move || store.get(CAPTCHA_SOLVER_ANTICAPTCHA))
+            .await
+            .map_err(|error| AppError::Storage(format!("credential task failed: {error}")))??;
+        Ok(credential.is_some())
     }
 }
 
@@ -65,7 +74,7 @@ mod tests {
         .await
         .expect("store credential");
 
-        assert!(bus.captcha_credential_configured().expect("status"));
+        assert!(bus.captcha_credential_configured().await.expect("status"));
         let stored = credentials
             .get(CAPTCHA_SOLVER_ANTICAPTCHA)
             .expect("read credential")
@@ -90,7 +99,7 @@ mod tests {
             .await
             .expect("delete credential");
 
-        assert!(!bus.captcha_credential_configured().expect("status"));
+        assert!(!bus.captcha_credential_configured().await.expect("status"));
     }
 
     #[tokio::test]
@@ -106,5 +115,72 @@ mod tests {
 
         assert!(result.is_err());
         assert_eq!(credentials.entry_count(), 0);
+    }
+
+    struct ThreadRecordingCredentialStore {
+        inner: InMemoryCredentialStore,
+        threads: std::sync::Mutex<Vec<std::thread::ThreadId>>,
+    }
+
+    impl ThreadRecordingCredentialStore {
+        fn new() -> Self {
+            Self {
+                inner: InMemoryCredentialStore::new(),
+                threads: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+
+        fn record_thread(&self) {
+            self.threads
+                .lock()
+                .expect("thread log")
+                .push(std::thread::current().id());
+        }
+    }
+
+    impl CredentialStore for ThreadRecordingCredentialStore {
+        fn get(
+            &self,
+            service: &str,
+        ) -> Result<Option<crate::domain::model::credential::Credential>, crate::domain::DomainError>
+        {
+            self.record_thread();
+            self.inner.get(service)
+        }
+
+        fn store(
+            &self,
+            service: &str,
+            credential: &crate::domain::model::credential::Credential,
+        ) -> Result<(), crate::domain::DomainError> {
+            self.record_thread();
+            self.inner.store(service, credential)
+        }
+
+        fn delete(&self, service: &str) -> Result<(), crate::domain::DomainError> {
+            self.record_thread();
+            self.inner.delete(service)
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn credential_store_io_runs_outside_the_async_runtime_thread() {
+        let credentials = Arc::new(ThreadRecordingCredentialStore::new());
+        let bus = build_credential_bus(credentials.clone());
+        let runtime_thread = std::thread::current().id();
+
+        bus.handle_set_captcha_credential(SetCaptchaCredentialCommand {
+            api_key: "secret-api-key".into(),
+        })
+        .await
+        .expect("store credential");
+        assert!(bus.captcha_credential_configured().await.expect("status"));
+        bus.handle_delete_captcha_credential(DeleteCaptchaCredentialCommand)
+            .await
+            .expect("delete credential");
+
+        let io_threads = credentials.threads.lock().expect("thread log");
+        assert_eq!(io_threads.len(), 3);
+        assert!(io_threads.iter().all(|thread| *thread != runtime_thread));
     }
 }

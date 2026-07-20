@@ -4,7 +4,8 @@ use std::time::{Duration, Instant};
 use base64::Engine;
 
 use super::tesseract_broker::{
-    PluginTesseractRequest, run_with_discovery, run_with_discovery_timeout,
+    PluginTesseractRequest, TesseractResponse, run_with_discovery, run_with_discovery_timeout,
+    validated_tessdata_prefix,
 };
 use crate::domain::model::captcha::MAX_CAPTCHA_IMAGE_BYTES;
 
@@ -31,6 +32,23 @@ fn tesseract_request_rejects_unknown_fields() {
 }
 
 #[test]
+fn tesseract_debug_output_redacts_images_and_solutions() {
+    let request_debug = format!("{:?}", request());
+    let response_debug = format!(
+        "{:?}",
+        TesseractResponse {
+            status: "solved",
+            solution: Some("secret-answer".into()),
+        }
+    );
+
+    assert!(!request_debug.contains("iVBOR"));
+    assert!(request_debug.contains("<redacted>"));
+    assert!(!response_debug.contains("secret-answer"));
+    assert!(response_debug.contains("<redacted>"));
+}
+
+#[test]
 fn missing_tesseract_is_reported_as_unavailable() {
     let response = run_with_discovery("vortex-mod-captcha-ocr", request(), || Ok(None))
         .expect("missing binary is not a broker failure");
@@ -48,11 +66,46 @@ fn tesseract_receives_image_on_stdin_and_only_fixed_arguments() {
     let binary = temp.path().join("tesseract");
     std::fs::write(
         &binary,
-        "#!/bin/sh\n[ \"$1\" = stdin ] && [ \"$2\" = stdout ] && [ \"$3\" = -l ] && [ \"$4\" = eng ] && [ \"$5\" = --psm ] && [ \"$6\" = 7 ] || exit 9\n/bin/cat >/dev/null\nprintf ' ABC123 \\n'\n",
+        "#!/bin/sh\n[ \"$#\" -eq 6 ] && [ \"$1\" = stdin ] && [ \"$2\" = stdout ] && [ \"$3\" = -l ] && [ \"$4\" = eng ] && [ \"$5\" = --psm ] && [ \"$6\" = 7 ] || exit 9\n[ \"$(/usr/bin/wc -c)\" -eq 24 ] || exit 10\nprintf ' ABC123 \\n'\n",
     )
     .expect("write fake tesseract");
     std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700))
         .expect("make executable");
+
+    let response = run_with_discovery("vortex-mod-captcha-ocr", request(), || {
+        Ok(Some(PathBuf::from(&binary)))
+    })
+    .expect("run fake tesseract");
+
+    assert_eq!(response.status, "solved");
+    assert_eq!(response.solution.as_deref(), Some("ABC123"));
+}
+
+#[test]
+fn tessdata_prefix_must_be_an_absolute_existing_directory() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let canonical = directory.path().canonicalize().expect("canonical tempdir");
+    let file = directory.path().join("eng.traineddata");
+    std::fs::write(&file, b"fixture").expect("write fixture");
+
+    assert_eq!(
+        validated_tessdata_prefix(Some(directory.path().as_os_str().to_owned())),
+        Some(canonical)
+    );
+    assert!(validated_tessdata_prefix(Some("relative/tessdata".into())).is_none());
+    assert!(validated_tessdata_prefix(Some(file.into_os_string())).is_none());
+}
+
+#[cfg(windows)]
+#[test]
+fn tesseract_windows_fixture_receives_only_fixed_arguments() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let binary = temp.path().join("tesseract.cmd");
+    std::fs::write(
+        &binary,
+        "@echo off\r\nif not \"%~7\"==\"\" exit /b 9\r\nif not \"%~1\"==\"stdin\" exit /b 9\r\nif not \"%~2\"==\"stdout\" exit /b 9\r\nif not \"%~3\"==\"-l\" exit /b 9\r\nif not \"%~4\"==\"eng\" exit /b 9\r\nif not \"%~5\"==\"--psm\" exit /b 9\r\nif not \"%~6\"==\"7\" exit /b 9\r\n%SystemRoot%\\System32\\more.com >NUL\r\n<nul set /p \"=ABC123\"\r\n",
+    )
+    .expect("write fake tesseract");
 
     let response = run_with_discovery("vortex-mod-captcha-ocr", request(), || {
         Ok(Some(PathBuf::from(&binary)))

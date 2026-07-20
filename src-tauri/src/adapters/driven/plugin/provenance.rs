@@ -11,6 +11,7 @@ use crate::domain::error::DomainError;
 use crate::domain::ports::driven::plugin_store_client::OfficialPluginProvenance;
 
 use super::capabilities::HostFunctionGrants;
+use super::tesseract_broker::OCR_PLUGIN_NAME;
 
 type ParentSync = fn(&Path) -> std::io::Result<()>;
 
@@ -134,7 +135,7 @@ impl OfficialProvenanceStore {
         });
         HostFunctionGrants {
             ytdlp: verified,
-            tesseract: verified && name == "vortex-mod-captcha-ocr",
+            tesseract: verified && name == OCR_PLUGIN_NAME,
         }
     }
 

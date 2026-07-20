@@ -65,7 +65,7 @@ describe("CaptchaView", () => {
     expect(screen.getByText("Manual solver")).toBeInTheDocument();
     expect(
       screen.getByText(
-        "Tesseract is detected in trusted system paths. If it is missing, the cascade continues automatically.",
+        "Tesseract availability is checked automatically. If it is missing, the cascade continues automatically.",
       ),
     ).toBeInTheDocument();
   });
@@ -102,7 +102,7 @@ describe("CaptchaView", () => {
     renderView();
     const user = userEvent.setup();
 
-    await user.type(await screen.findByLabelText("AntiCaptcha API key"), "secret-api-key");
+    await user.type(await screen.findByLabelText("AntiCaptcha API key"), " secret-api-key ");
     await user.click(screen.getByRole("button", { name: "Save API key" }));
 
     await waitFor(() =>

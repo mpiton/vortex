@@ -8,7 +8,8 @@ use serde::{Deserialize, Serialize};
 
 use super::capabilities::{CredentialSlot, PluginHostContext};
 use super::tesseract_broker::{
-    PluginTesseractRequest, run_plugin_request as run_tesseract_request,
+    MAX_TESSERACT_REQUEST_BYTES, PluginTesseractRequest,
+    run_plugin_request as run_tesseract_request,
 };
 use super::ytdlp_broker::{
     LegacySubprocessRequest, PluginYtDlpRequest, run_legacy_request, run_plugin_request,
@@ -59,8 +60,36 @@ fn read_input_string(
     plugin: &mut extism::CurrentPlugin,
     inputs: &[extism::Val],
 ) -> Result<String, extism::Error> {
-    let bytes: Vec<u8> = plugin.memory_get_val(&inputs[0])?;
-    String::from_utf8(bytes).map_err(|e| anyhow::anyhow!("invalid utf-8 input: {e}"))
+    read_input_string_capped(plugin, inputs, usize::MAX, "plugin input")
+}
+
+fn read_input_string_capped(
+    plugin: &mut extism::CurrentPlugin,
+    inputs: &[extism::Val],
+    limit: usize,
+    operation: &str,
+) -> Result<String, extism::Error> {
+    let offset = inputs
+        .first()
+        .and_then(extism::Val::i64)
+        .ok_or_else(|| anyhow::anyhow!("{operation}: invalid input pointer"))?;
+    let offset =
+        u64::try_from(offset).map_err(|_| anyhow::anyhow!("{operation}: invalid input pointer"))?;
+    let handle = plugin
+        .memory_handle(offset)
+        .ok_or_else(|| anyhow::anyhow!("{operation}: invalid input pointer"))?;
+    ensure_input_size(handle.len(), limit, operation)?;
+    let bytes = plugin.memory_bytes(handle)?;
+    std::str::from_utf8(bytes)
+        .map(str::to_owned)
+        .map_err(|error| anyhow::anyhow!("{operation}: invalid UTF-8 input: {error}"))
+}
+
+fn ensure_input_size(length: usize, limit: usize, operation: &str) -> Result<(), extism::Error> {
+    if length > limit {
+        return Err(anyhow::anyhow!("{operation}: input exceeds safety limit"));
+    }
+    Ok(())
 }
 
 fn write_output_string(
@@ -433,7 +462,12 @@ pub fn make_run_tesseract_function(
         [extism::ValType::I64],
         user_data,
         |plugin, inputs, outputs, ud| {
-            let input = read_input_string(plugin, inputs)?;
+            let input = read_input_string_capped(
+                plugin,
+                inputs,
+                MAX_TESSERACT_REQUEST_BYTES,
+                "run_tesseract",
+            )?;
             let request: PluginTesseractRequest = serde_json::from_str(&input)
                 .map_err(|_| anyhow::anyhow!("run_tesseract: invalid request"))?;
             let plugin_name = {
@@ -595,5 +629,17 @@ mod tests {
 
         assert_eq!(message, "plugin log redacted after credential access");
         assert!(!message.contains("retained secret"));
+    }
+
+    #[test]
+    fn tesseract_input_limit_is_checked_before_decoding() {
+        assert!(
+            ensure_input_size(
+                MAX_TESSERACT_REQUEST_BYTES + 1,
+                MAX_TESSERACT_REQUEST_BYTES,
+                "run_tesseract",
+            )
+            .is_err()
+        );
     }
 }

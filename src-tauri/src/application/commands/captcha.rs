@@ -251,18 +251,19 @@ impl CaptchaCommandHandler {
             let _guard = self.mutation_lock.lock().await;
             let mut challenge = self.find(&id)?;
             let now = self.clock.now_unix_ms();
-            if token.is_cancelled()
+            let cascade_stopped = token.is_cancelled()
                 || challenge.status() != CaptchaStatus::Pending
-                || challenge.is_expired(now)
-            {
-                return Ok(());
-            }
+                || challenge.is_expired(now);
             challenge.record_solver_attempt(CaptchaSolverAttempt::new(
                 solver_name.clone(),
                 attempt_outcome,
                 attempted_at,
                 duration_ms,
             ))?;
+            if cascade_stopped {
+                self.captchas.save(&challenge)?;
+                return Ok(());
+            }
             match outcome {
                 Some(CaptchaSolverOutcome::Solved(_solution)) => {
                     return self.finish_as_solved_locked(challenge, now, &solver_name);
@@ -397,6 +398,11 @@ impl CommandHandler<SolveCaptchaCommand> for CaptchaCommandHandler {
         let _guard = self.mutation_lock.lock().await;
         let mut challenge = self.find(&command.challenge_id)?;
         let now = self.clock.now_unix_ms();
+        if challenge.status() != CaptchaStatus::Pending {
+            return Err(DomainError::ValidationError(
+                "CAPTCHA challenge is no longer pending".into(),
+            ));
+        }
         if challenge.is_expired(now) {
             return Err(DomainError::ValidationError(
                 "CAPTCHA challenge has expired".into(),

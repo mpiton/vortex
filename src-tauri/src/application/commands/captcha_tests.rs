@@ -166,6 +166,29 @@ struct RecordedCaptchaSolver {
     calls: Arc<Mutex<Vec<String>>>,
 }
 
+struct BlockingCaptchaSolver {
+    started: Arc<AtomicBool>,
+    release: Arc<AtomicBool>,
+}
+
+impl CaptchaSolver for BlockingCaptchaSolver {
+    fn name(&self) -> &str {
+        CAPTCHA_SOLVER_OCR
+    }
+
+    fn solve(
+        &self,
+        _challenge: &CaptchaChallenge,
+        _solution: &str,
+    ) -> Result<CaptchaSolverOutcome, DomainError> {
+        self.started.store(true, Ordering::SeqCst);
+        while !self.release.load(Ordering::SeqCst) {
+            std::thread::yield_now();
+        }
+        Ok(CaptchaSolverOutcome::Rejected)
+    }
+}
+
 #[derive(Default)]
 struct RecordingCaptchaInteraction(Mutex<Vec<CaptchaId>>);
 
@@ -251,8 +274,8 @@ async fn enqueue_runs_enabled_solvers_in_order_until_one_succeeds() {
     let calls = Arc::new(Mutex::new(Vec::new()));
     let solvers: Vec<Arc<dyn CaptchaSolver>> = vec![
         Arc::new(RecordedCaptchaSolver {
-            name: CAPTCHA_SOLVER_OCR,
-            outcome: CaptchaSolverOutcome::Unavailable,
+            name: CAPTCHA_SOLVER_BROWSER,
+            outcome: CaptchaSolverOutcome::InteractionRequired,
             calls: calls.clone(),
         }),
         Arc::new(RecordedCaptchaSolver {
@@ -263,8 +286,8 @@ async fn enqueue_runs_enabled_solvers_in_order_until_one_succeeds() {
             calls: calls.clone(),
         }),
         Arc::new(RecordedCaptchaSolver {
-            name: CAPTCHA_SOLVER_BROWSER,
-            outcome: CaptchaSolverOutcome::InteractionRequired,
+            name: CAPTCHA_SOLVER_OCR,
+            outcome: CaptchaSolverOutcome::Unavailable,
             calls: calls.clone(),
         }),
     ];
@@ -297,6 +320,58 @@ async fn enqueue_runs_enabled_solvers_in_order_until_one_succeeds() {
             .unwrap()
             .state(),
         DownloadState::Queued
+    );
+}
+
+#[tokio::test]
+async fn late_automatic_result_is_logged_after_manual_resolution() {
+    let started = Arc::new(AtomicBool::new(false));
+    let release = Arc::new(AtomicBool::new(false));
+    let config = AppConfig {
+        captcha_solver_order: vec![CAPTCHA_SOLVER_OCR.into()],
+        ..AppConfig::default()
+    };
+    let (handler, captchas, _, _, _) = fixture_with_config_and_solvers(
+        config,
+        vec![Arc::new(BlockingCaptchaSolver {
+            started: started.clone(),
+            release: release.clone(),
+        })],
+    );
+    let id = enqueue(&handler).await;
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while !started.load(Ordering::SeqCst) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("automatic solver should start");
+
+    <CaptchaCommandHandler as CommandHandler<SolveCaptchaCommand>>::handle(
+        &handler,
+        SolveCaptchaCommand {
+            challenge_id: id.clone(),
+            solution: "manual-answer".into(),
+        },
+    )
+    .await
+    .expect("manual resolution");
+    release.store(true, Ordering::SeqCst);
+    wait_for_solver_attempts(&captchas, &id, 2).await;
+
+    let stored = captchas.find_by_id(&id).unwrap().unwrap();
+    assert_eq!(stored.status(), CaptchaStatus::Solved);
+    assert_eq!(stored.solver(), Some("manual"));
+    assert_eq!(
+        stored
+            .solver_attempts()
+            .iter()
+            .map(|attempt| (attempt.solver(), attempt.outcome()))
+            .collect::<Vec<_>>(),
+        vec![
+            ("manual", CaptchaSolverAttemptOutcome::Solved),
+            (CAPTCHA_SOLVER_OCR, CaptchaSolverAttemptOutcome::Rejected),
+        ]
     );
 }
 
@@ -335,12 +410,18 @@ async fn automatic_failures_fall_through_and_are_logged_per_solver() {
         stored
             .solver_attempts()
             .iter()
-            .map(|attempt| attempt.outcome())
+            .map(|attempt| (attempt.solver(), attempt.outcome()))
             .collect::<Vec<_>>(),
         vec![
-            CaptchaSolverAttemptOutcome::Failed,
-            CaptchaSolverAttemptOutcome::Rejected,
-            CaptchaSolverAttemptOutcome::InteractionRequired,
+            ("failing", CaptchaSolverAttemptOutcome::Failed),
+            (
+                CAPTCHA_SOLVER_ANTICAPTCHA,
+                CaptchaSolverAttemptOutcome::Rejected,
+            ),
+            (
+                CAPTCHA_SOLVER_BROWSER,
+                CaptchaSolverAttemptOutcome::InteractionRequired,
+            ),
         ]
     );
     assert_eq!(

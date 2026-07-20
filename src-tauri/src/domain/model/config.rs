@@ -206,6 +206,9 @@ pub fn default_captcha_solver_order() -> Vec<String> {
 }
 
 pub fn normalize_captcha_solver_order(raw: &[String]) -> Vec<String> {
+    if raw.is_empty() {
+        return Vec::new();
+    }
     let mut normalized = Vec::with_capacity(raw.len().min(3));
     for solver in raw {
         let known = matches!(
@@ -216,7 +219,11 @@ pub fn normalize_captcha_solver_order(raw: &[String]) -> Vec<String> {
             normalized.push(solver.clone());
         }
     }
-    normalized
+    if normalized.is_empty() {
+        default_captcha_solver_order()
+    } else {
+        normalized
+    }
 }
 
 /// Lower bound for `link_check_parallelism`. Below 1 the queue stalls.
@@ -627,6 +634,20 @@ mod tests {
         );
 
         assert!(config.captcha_solver_order.is_empty());
+    }
+
+    #[test]
+    fn nonempty_invalid_captcha_solver_order_falls_back_to_defaults() {
+        let mut config = AppConfig::default();
+        apply_patch(
+            &mut config,
+            &ConfigPatch {
+                captcha_solver_order: Some(vec!["unknown".to_string(), "also-unknown".to_string()]),
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(config.captcha_solver_order, default_captcha_solver_order());
     }
 
     #[test]

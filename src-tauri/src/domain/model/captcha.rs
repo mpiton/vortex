@@ -10,6 +10,7 @@ pub const MAX_CAPTCHA_ID_BYTES: usize = 128;
 pub const MAX_CAPTCHA_IMAGE_PIXELS: u64 = 16_000_000;
 const MAX_CAPTCHA_URL_BYTES: usize = 8 * 1024;
 const MAX_CAPTCHA_SOLVER_NAME_BYTES: usize = 128;
+const MAX_CAPTCHA_SOLVER_ATTEMPTS: usize = 64;
 const REDACTED_CAPTCHA_URL: &str = "[redacted]";
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -367,11 +368,15 @@ impl CaptchaChallenge {
         &mut self,
         attempt: CaptchaSolverAttempt,
     ) -> Result<(), DomainError> {
-        self.ensure_pending()?;
         if attempt.solver().trim().is_empty()
             || attempt.solver().len() > MAX_CAPTCHA_SOLVER_NAME_BYTES
         {
             return Err(validation("CAPTCHA solver name is invalid"));
+        }
+        let retained_before_push = MAX_CAPTCHA_SOLVER_ATTEMPTS.saturating_sub(1);
+        if self.solver_attempts.len() > retained_before_push {
+            let discard = self.solver_attempts.len() - retained_before_push;
+            self.solver_attempts.drain(..discard);
         }
         self.solver_attempts.push(attempt);
         Ok(())
@@ -675,6 +680,49 @@ mod tests {
                 .is_err()
         );
         assert!(challenge.solver_attempts().is_empty());
+    }
+
+    #[test]
+    fn solver_attempt_history_keeps_only_the_latest_entries() {
+        let mut challenge = make_challenge();
+
+        for index in 0..=64 {
+            challenge
+                .record_solver_attempt(CaptchaSolverAttempt::new(
+                    format!("solver-{index}"),
+                    CaptchaSolverAttemptOutcome::Failed,
+                    1_100 + index,
+                    10,
+                ))
+                .expect("record bounded solver attempt");
+        }
+
+        assert_eq!(challenge.solver_attempts().len(), 64);
+        assert_eq!(challenge.solver_attempts()[0].solver(), "solver-1");
+        assert_eq!(challenge.solver_attempts()[63].solver(), "solver-64");
+    }
+
+    #[test]
+    fn late_solver_attempt_can_be_recorded_after_manual_resolution() {
+        let mut challenge = make_challenge();
+        challenge
+            .solve(1_100, "manual")
+            .expect("manual resolution succeeds");
+
+        challenge
+            .record_solver_attempt(CaptchaSolverAttempt::new(
+                "vortex-mod-captcha-ocr",
+                CaptchaSolverAttemptOutcome::Rejected,
+                1_050,
+                100,
+            ))
+            .expect("completed automatic attempt remains auditable");
+
+        assert_eq!(challenge.solver_attempts().len(), 1);
+        assert_eq!(
+            challenge.solver_attempts()[0].outcome(),
+            CaptchaSolverAttemptOutcome::Rejected
+        );
     }
 
     #[test]

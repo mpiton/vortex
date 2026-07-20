@@ -408,6 +408,10 @@ impl CommandBus {
         self.credential_store.as_ref()
     }
 
+    pub(crate) fn credential_store_arc(&self) -> Arc<dyn CredentialStore> {
+        Arc::clone(&self.credential_store)
+    }
+
     pub fn clipboard_observer(&self) -> &dyn ClipboardObserver {
         self.clipboard_observer.as_ref()
     }

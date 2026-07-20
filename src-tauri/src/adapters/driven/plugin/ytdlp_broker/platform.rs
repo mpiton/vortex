@@ -80,6 +80,7 @@ pub(super) fn find_approved_binary(
             "yt-dlp"
         },
     )
+    .context("yt-dlp not found in approved locations; install it with: pip install yt-dlp")
 }
 
 pub(crate) fn find_approved_named_binary(

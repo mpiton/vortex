@@ -259,6 +259,7 @@ pub async fn captcha_credential_status(
     state
         .command_bus
         .captcha_credential_configured()
+        .await
         .map(|configured| CaptchaCredentialStatusDto { configured })
         .map_err(|error| error.to_string())
 }
@@ -1370,6 +1371,9 @@ impl From<AppConfig> for SettingsDto {
     }
 }
 
+const MAX_CAPTCHA_SOLVER_ORDER_ENTRIES: usize = 3;
+const MAX_CAPTCHA_SOLVER_IDENTIFIER_BYTES: usize = 128;
+
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConfigPatchDto {
@@ -1440,6 +1444,17 @@ impl TryFrom<ConfigPatchDto> for ConfigPatch {
     type Error = String;
 
     fn try_from(d: ConfigPatchDto) -> Result<Self, Self::Error> {
+        if let Some(order) = &d.captcha_solver_order {
+            if order.len() > MAX_CAPTCHA_SOLVER_ORDER_ENTRIES {
+                return Err("CAPTCHA solver order exceeds safety limits".to_string());
+            }
+            if order
+                .iter()
+                .any(|solver| solver.len() > MAX_CAPTCHA_SOLVER_IDENTIFIER_BYTES)
+            {
+                return Err("CAPTCHA solver identifier exceeds safety limits".to_string());
+            }
+        }
         let account_selection_strategy = match d.account_selection_strategy.as_deref() {
             Some(raw) => Some(raw.parse().map_err(|e: DomainError| e.to_string())?),
             None => None,
@@ -4898,5 +4913,39 @@ mod tests {
 
         let patch: ConfigPatch = dto.try_into().expect("None strategy is valid");
         assert!(patch.account_selection_strategy.is_none());
+    }
+
+    #[test]
+    fn config_patch_dto_rejects_oversized_captcha_solver_order() {
+        use super::{ConfigPatch, ConfigPatchDto};
+
+        let dto = ConfigPatchDto {
+            captcha_solver_order: Some(vec!["solver".to_string(); 4]),
+            ..Default::default()
+        };
+
+        let result: Result<ConfigPatch, String> = dto.try_into();
+        assert!(
+            result
+                .expect_err("oversized order must be rejected")
+                .contains("solver order")
+        );
+    }
+
+    #[test]
+    fn config_patch_dto_rejects_oversized_captcha_solver_identifier() {
+        use super::{ConfigPatch, ConfigPatchDto};
+
+        let dto = ConfigPatchDto {
+            captcha_solver_order: Some(vec!["x".repeat(129)]),
+            ..Default::default()
+        };
+
+        let result: Result<ConfigPatch, String> = dto.try_into();
+        assert!(
+            result
+                .expect_err("oversized solver identifier must be rejected")
+                .contains("solver identifier")
+        );
     }
 }
