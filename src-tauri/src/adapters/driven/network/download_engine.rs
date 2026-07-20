@@ -44,6 +44,33 @@ struct RemoteMetadata {
 /// signal.
 const MIN_SPLIT_SAMPLE_DURATION: std::time::Duration = std::time::Duration::from_millis(500);
 
+fn source_resolution_event(
+    download_id: DownloadId,
+    error: &DomainError,
+    cancelled: bool,
+) -> DomainEvent {
+    if cancelled {
+        return DomainEvent::DownloadCancelled { id: download_id };
+    }
+    if let DomainError::CaptchaRequired {
+        challenge_type,
+        challenge_url,
+        image_data,
+    } = error
+    {
+        return DomainEvent::CaptchaRequired {
+            download_id,
+            challenge_type: *challenge_type,
+            challenge_url: challenge_url.clone(),
+            image_data: image_data.as_deref().map(Arc::<[u8]>::from),
+        };
+    }
+    DomainEvent::DownloadFailed {
+        id: download_id,
+        error: safe_source_failure(error),
+    }
+}
+
 fn segment_count_for_attempt(
     requested_segments: u32,
     total_size: u64,
@@ -416,14 +443,8 @@ impl DownloadEngine for SegmentedDownloadEngine {
             {
                 Ok(prepared) => prepared,
                 Err(error) => {
-                    let event = if cancel_token.is_cancelled() {
-                        DomainEvent::DownloadCancelled { id: download_id }
-                    } else {
-                        DomainEvent::DownloadFailed {
-                            id: download_id,
-                            error: safe_source_failure(&error),
-                        }
-                    };
+                    let event =
+                        source_resolution_event(download_id, &error, cancel_token.is_cancelled());
                     event_bus.publish(event);
                     active_downloads
                         .lock()
@@ -524,14 +545,11 @@ impl DownloadEngine for SegmentedDownloadEngine {
                             {
                                 Ok(refreshed) => refreshed,
                                 Err(error) => {
-                                    let event = if cancel_token.is_cancelled() {
-                                        DomainEvent::DownloadCancelled { id: download_id }
-                                    } else {
-                                        DomainEvent::DownloadFailed {
-                                            id: download_id,
-                                            error: safe_source_failure(&error),
-                                        }
-                                    };
+                                    let event = source_resolution_event(
+                                        download_id,
+                                        &error,
+                                        cancel_token.is_cancelled(),
+                                    );
                                     event_bus.publish(event);
                                     break;
                                 }

@@ -5,9 +5,12 @@ use std::collections::BTreeMap;
 use serde::Deserialize;
 
 use crate::domain::error::DomainError;
-use crate::domain::ports::driven::ExtractedHosterLink;
+use crate::domain::model::captcha::{
+    CaptchaType, MAX_CAPTCHA_IMAGE_BYTES, captcha_image_mime_type,
+};
+use crate::domain::ports::driven::{ExtractedCaptchaChallenge, ExtractedHosterLink};
 
-const MAX_HOSTER_PAYLOAD_BYTES: usize = 8 * 1024 * 1024;
+const MAX_HOSTER_PAYLOAD_BYTES: usize = MAX_CAPTCHA_IMAGE_BYTES * 4 + 64 * 1024;
 const MAX_HOSTER_FILES: usize = 500;
 const MAX_URL_BYTES: usize = 8 * 1024;
 const MAX_FILENAME_BYTES: usize = 4 * 1024;
@@ -31,6 +34,10 @@ struct HosterFile {
     headers: BTreeMap<String, String>,
     traffic_used_bytes: Option<u64>,
     traffic_total_bytes: Option<u64>,
+    #[serde(default)]
+    requires_captcha: bool,
+    captcha_type: Option<String>,
+    captcha_image_data: Option<Vec<u8>>,
 }
 
 #[cfg(test)]
@@ -58,8 +65,36 @@ pub(super) fn parse_hoster_links(payload: &str) -> Result<Vec<ExtractedHosterLin
         .into_iter()
         .map(|file| {
             let source_url = bounded_required_url(file.url)?;
-            let direct_url =
-                bounded_required_url(file.direct_url.ok_or(DomainError::HosterNoFile)?)?;
+            let captcha = if file.requires_captcha {
+                let challenge_type = file
+                    .captcha_type
+                    .as_deref()
+                    .unwrap_or("recaptcha_v2")
+                    .parse::<CaptchaType>()?;
+                let image_data = file.captcha_image_data.as_deref();
+                let image_required =
+                    matches!(challenge_type, CaptchaType::Image | CaptchaType::TextInput);
+                if (image_required && image_data.is_none())
+                    || image_data.is_some_and(|data| {
+                        data.is_empty()
+                            || data.len() > MAX_CAPTCHA_IMAGE_BYTES
+                            || captcha_image_mime_type(data).is_none()
+                    })
+                {
+                    return Err(limit_error());
+                }
+                Some(ExtractedCaptchaChallenge {
+                    challenge_type,
+                    image_data: file.captcha_image_data,
+                })
+            } else {
+                None
+            };
+            let direct_url = match file.direct_url {
+                Some(url) => Some(bounded_required_url(url)?),
+                None if captcha.is_some() => None,
+                None => return Err(DomainError::HosterNoFile),
+            };
             if file
                 .filename
                 .as_ref()
@@ -75,11 +110,12 @@ pub(super) fn parse_hoster_links(payload: &str) -> Result<Vec<ExtractedHosterLin
                 source_url,
                 filename: file.filename.filter(|name| !name.trim().is_empty()),
                 size_bytes: file.size_bytes,
-                direct_url: Some(direct_url),
+                direct_url,
                 resumable: file.resumable,
                 request_headers: file.headers.into_iter().collect(),
                 traffic_used_bytes: file.traffic_used_bytes,
                 traffic_total_bytes: file.traffic_total_bytes,
+                captcha,
             })
         })
         .collect()

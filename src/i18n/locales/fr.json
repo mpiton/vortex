@@ -14,6 +14,45 @@
     "statistics": "Statistiques",
     "settings": "Paramètres"
   },
+  "captcha": {
+    "title": "Captcha",
+    "pendingCount_one": "{{count}} en attente",
+    "pendingCount_other": "{{count}} en attente",
+    "queue": "File en attente",
+    "empty": "Aucun CAPTCHA en attente",
+    "loading": "Chargement de la file CAPTCHA…",
+    "error": "Impossible de charger la file CAPTCHA",
+    "history": "Défis récents",
+    "download": "Téléchargement nº {{id}}",
+    "answer": "Réponse au captcha",
+    "unsupported": "Ce défi exige une interaction navigateur et n’est pas encore pris en charge.",
+    "actions": {
+      "solve": "Résoudre",
+      "skip": "Ignorer",
+      "retry": "Réessayer"
+    },
+    "types": {
+      "image": "Défi image",
+      "text_input": "Défi texte",
+      "recaptcha_v2": "reCAPTCHA v2",
+      "recaptcha_v3": "reCAPTCHA v3",
+      "hcaptcha": "hCaptcha"
+    },
+    "status": {
+      "pending": "En attente",
+      "solved": "Résolu",
+      "skipped": "Ignoré",
+      "timed_out": "Expiré"
+    },
+    "settings": {
+      "title": "Configuration des solveurs",
+      "description": "Les solveurs s’exécutent dans l’ordre. Seule la résolution manuelle est active dans cette version.",
+      "manual": "Solveur manuel",
+      "manualDescription": "Saisissez la réponse affichée dans l’image du défi.",
+      "timeout": "Délai d’expiration (secondes)",
+      "fallback": "Les défis expirés sont ignorés et journalisés."
+    }
+  },
   "settings": {
     "tabs": {
       "general": "Général",

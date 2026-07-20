@@ -8,6 +8,10 @@ import type {
   DownloadRetryingPayload,
   DownloadWaitingStartedPayload,
   DownloadWaitingEndedPayload,
+  CaptchaEventPayload,
+  CaptchaSkippedEventPayload,
+  CaptchaSolvedEventPayload,
+  CaptchaTimedOutEventPayload,
 } from "@/types/events";
 
 export function useDownloadEvents(): void {
@@ -16,6 +20,7 @@ export function useDownloadEvents(): void {
   };
 
   useTauriEvent<DownloadIdPayload>("download-created", invalidateDownloads);
+  useTauriEvent<DownloadIdPayload>("download-queued", invalidateDownloads);
   useTauriEvent<DownloadIdPayload>("download-started", invalidateDownloads);
   useTauriEvent<DownloadIdPayload>("download-paused", invalidateDownloads);
   useTauriEvent<DownloadIdPayload>("download-resumed", invalidateDownloads);
@@ -28,6 +33,10 @@ export function useDownloadEvents(): void {
   useTauriEvent<DownloadIdPayload>("download-checking", invalidateDownloads);
   useTauriEvent<DownloadIdPayload>("download-removed", invalidateDownloads);
   useTauriEvent<DownloadIdPayload>("download-extracting", invalidateDownloads);
+  useTauriEvent<CaptchaEventPayload>("captcha-pending", invalidateDownloads);
+  useTauriEvent<CaptchaSolvedEventPayload>("captcha-solved", invalidateDownloads);
+  useTauriEvent<CaptchaSkippedEventPayload>("captcha-skipped", invalidateDownloads);
+  useTauriEvent<CaptchaTimedOutEventPayload>("captcha-timed-out", invalidateDownloads);
   // The accompanying `download-waiting` / `download-resumed-from-wait`
   // events already trigger query invalidation; these two only sync the
   // per-row wait ticket into the store for the countdown UI.

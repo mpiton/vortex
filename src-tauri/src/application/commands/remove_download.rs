@@ -10,19 +10,18 @@ impl CommandBus {
         &self,
         cmd: super::RemoveDownloadCommand,
     ) -> Result<(), AppError> {
-        let download = self
-            .download_repo()
-            .find_by_id(cmd.id)?
-            .ok_or_else(|| AppError::NotFound(format!("Download {} not found", cmd.id.0)))?;
-
-        let is_active = matches!(
-            download.state(),
-            DownloadState::Downloading | DownloadState::Waiting
-        );
-
-        if is_active {
-            let _ = self.download_engine().cancel(cmd.id);
-        }
+        let (download, is_active) = self
+            .delete_download_with_captcha_cleanup(cmd.id, |download, has_pending_captcha| {
+                let is_active = matches!(
+                    download.state(),
+                    DownloadState::Downloading | DownloadState::Waiting
+                ) && !has_pending_captcha;
+                if is_active {
+                    let _ = self.download_engine().cancel(cmd.id);
+                }
+                Ok(is_active)
+            })
+            .await?;
 
         if cmd.delete_files {
             // Remove the downloaded content file
@@ -34,8 +33,6 @@ impl CommandBus {
             let meta_path = format!("{}.vortex-meta", download.destination_path());
             let _ = self.file_storage().delete_meta(Path::new(&meta_path));
         }
-
-        self.download_repo().delete(cmd.id)?;
 
         // Only emit DownloadCancelled for active downloads.
         // QueueManager's decrement_and_schedule reacts to this event;
@@ -60,9 +57,11 @@ mod tests {
 
     use crate::application::command_bus::CommandBus;
     use crate::application::commands::RemoveDownloadCommand;
+    use crate::application::commands::captcha::{CaptchaCommandHandler, ManualCaptchaSolver};
     use crate::application::error::AppError;
     use crate::domain::error::DomainError;
     use crate::domain::event::DomainEvent;
+    use crate::domain::model::captcha::{CaptchaChallenge, CaptchaId, CaptchaStatus, CaptchaType};
     use crate::domain::model::config::{AppConfig, ConfigPatch};
     use crate::domain::model::credential::Credential;
     use crate::domain::model::download::{Download, DownloadId, DownloadState, Url};
@@ -70,9 +69,55 @@ mod tests {
     use crate::domain::model::meta::DownloadMeta;
     use crate::domain::model::plugin::{PluginInfo, PluginManifest};
     use crate::domain::ports::driven::{
-        ClipboardObserver, ConfigStore, CredentialStore, DownloadEngine, DownloadRepository,
-        EventBus, FileStorage, HttpClient, PluginLoader,
+        CaptchaRepository, ClipboardObserver, Clock, ConfigStore, CredentialStore, DownloadEngine,
+        DownloadRepository, EventBus, FileStorage, HttpClient, PluginLoader,
     };
+
+    struct MemoryCaptchaRepo(Mutex<Option<CaptchaChallenge>>);
+
+    impl CaptchaRepository for MemoryCaptchaRepo {
+        fn save(&self, challenge: &CaptchaChallenge) -> Result<(), DomainError> {
+            *self.0.lock().unwrap() = Some(challenge.clone());
+            Ok(())
+        }
+
+        fn find_by_id(&self, id: &CaptchaId) -> Result<Option<CaptchaChallenge>, DomainError> {
+            Ok(self
+                .0
+                .lock()
+                .unwrap()
+                .as_ref()
+                .filter(|challenge| challenge.id() == id)
+                .cloned())
+        }
+
+        fn list(&self) -> Result<Vec<CaptchaChallenge>, DomainError> {
+            Ok(self.0.lock().unwrap().iter().cloned().collect())
+        }
+
+        fn list_pending(&self) -> Result<Vec<CaptchaChallenge>, DomainError> {
+            Ok(self
+                .0
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|challenge| challenge.status() == CaptchaStatus::Pending)
+                .cloned()
+                .collect())
+        }
+    }
+
+    struct FixedClock;
+
+    impl Clock for FixedClock {
+        fn now_unix_secs(&self) -> u64 {
+            1
+        }
+
+        fn now_unix_ms(&self) -> u64 {
+            1_000
+        }
+    }
 
     struct MockDownloadRepo {
         store: Mutex<HashMap<u64, Download>>,
@@ -298,6 +343,7 @@ mod tests {
 
     struct TestHarness {
         bus: CommandBus,
+        download_repo: Arc<MockDownloadRepo>,
         engine: Arc<MockDownloadEngine>,
         event_bus: Arc<MockEventBus>,
         file_storage: Arc<MockFileStorage>,
@@ -343,12 +389,13 @@ mod tests {
     }
 
     fn make_harness(repo: MockDownloadRepo) -> TestHarness {
+        let download_repo = Arc::new(repo);
         let engine = Arc::new(MockDownloadEngine::new());
         let event_bus = Arc::new(MockEventBus::new());
         let file_storage = Arc::new(MockFileStorage::new());
 
         let bus = CommandBus::new(
-            Arc::new(repo),
+            download_repo.clone(),
             engine.clone(),
             event_bus.clone(),
             file_storage.clone(),
@@ -364,6 +411,7 @@ mod tests {
 
         TestHarness {
             bus,
+            download_repo,
             engine,
             event_bus,
             file_storage,
@@ -455,5 +503,57 @@ mod tests {
 
         let events = harness.event_bus.events.lock().unwrap();
         assert!(events.contains(&DomainEvent::DownloadRemoved { id: DownloadId(1) }));
+    }
+
+    #[tokio::test]
+    async fn remove_captcha_wait_terminalizes_the_pending_challenge() {
+        let mut download = make_active_download();
+        download.wait().unwrap();
+        let harness = make_harness(MockDownloadRepo::new().with_download(download));
+        let captcha_id = CaptchaId::new("captcha-remove");
+        let captcha_repo = Arc::new(MemoryCaptchaRepo(Mutex::new(Some(
+            CaptchaChallenge::new(
+                captcha_id.clone(),
+                DownloadId(1),
+                CaptchaType::Image,
+                "https://hoster.example/file".into(),
+                1_000,
+                121_000,
+            )
+            .unwrap(),
+        ))));
+        let handler = Arc::new(CaptchaCommandHandler::new(
+            captcha_repo.clone(),
+            harness.download_repo.clone(),
+            harness.event_bus.clone(),
+            Arc::new(MockConfigStore),
+            Arc::new(FixedClock),
+            vec![Arc::new(ManualCaptchaSolver)],
+        ));
+        let bus = harness.bus.with_captcha_handler(handler);
+
+        bus.handle_remove_download(RemoveDownloadCommand {
+            id: DownloadId(1),
+            delete_files: false,
+        })
+        .await
+        .expect("remove CAPTCHA wait");
+
+        assert!(
+            harness
+                .download_repo
+                .find_by_id(DownloadId(1))
+                .unwrap()
+                .is_none()
+        );
+        assert!(harness.engine.cancelled.lock().unwrap().is_empty());
+        assert_eq!(
+            captcha_repo
+                .find_by_id(&captcha_id)
+                .unwrap()
+                .unwrap()
+                .status(),
+            CaptchaStatus::Skipped
+        );
     }
 }

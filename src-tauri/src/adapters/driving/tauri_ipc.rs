@@ -26,19 +26,20 @@ use crate::application::commands::{
     PauseDownloadCommand, PurgeHistoryCommand, RedownloadCommand, RedownloadSource,
     RemoveDownloadCommand, RemoveDownloadFromPackageCommand, ReorderQueueCommand,
     ReportBrokenPluginCommand, ResolveLinksCommand, ResolvedLinkDto, ResumeAllDownloadsCommand,
-    ResumeDownloadCommand, RetryDownloadCommand, SetPackagePasswordCommand,
-    SetPackagePriorityCommand, SetPriorityCommand, StartDownloadCommand,
-    TogglePackageAutoExtractCommand, UninstallPluginCommand, UpdateAccountCommand,
-    UpdateConfigCommand, UpdatePackageCommand, UpdatePluginConfigCommand, ValidateAccountCommand,
-    ValidationOutcomeDto, VerifyChecksumCommand, VerifyChecksumOutcome,
+    ResumeDownloadCommand, RetryCaptchaCommand, RetryDownloadCommand, SetPackagePasswordCommand,
+    SetPackagePriorityCommand, SetPriorityCommand, SkipCaptchaCommand, SolveCaptchaCommand,
+    StartDownloadCommand, TogglePackageAutoExtractCommand, UninstallPluginCommand,
+    UpdateAccountCommand, UpdateConfigCommand, UpdatePackageCommand, UpdatePluginConfigCommand,
+    ValidateAccountCommand, ValidationOutcomeDto, VerifyChecksumCommand, VerifyChecksumOutcome,
 };
 use crate::application::error::AppError;
 use crate::application::queries::{
-    AccountFilter, CountDownloadsByStateQuery, DetectDuplicatesQuery, DuplicateSource,
-    GetAccountQuery, GetAccountTrafficQuery, GetDownloadDetailQuery, GetDownloadsQuery,
-    GetHistoryEntryQuery, GetPackageQuery, GetPluginConfigQuery, GetStatsQuery, ListAccountsQuery,
-    ListHistoryQuery, ListPackageDownloadsQuery, ListPackagesQuery, ListPluginsQuery,
-    SearchHistoryQuery, TopModulesQuery,
+    AccountFilter, CaptchaGetPendingQuery, CaptchaListQuery, CountDownloadsByStateQuery,
+    DetectDuplicatesQuery, DuplicateSource, GetAccountQuery, GetAccountTrafficQuery,
+    GetDownloadDetailQuery, GetDownloadsQuery, GetHistoryEntryQuery, GetPackageQuery,
+    GetPluginConfigQuery, GetStatsQuery, ListAccountsQuery, ListHistoryQuery,
+    ListPackageDownloadsQuery, ListPackagesQuery, ListPluginsQuery, SearchHistoryQuery,
+    TopModulesQuery,
 };
 
 /// IPC mirror of [`DuplicateSource`] — serialised as a lowercase tag
@@ -61,6 +62,7 @@ impl From<DuplicateSource> for DuplicateSourceDto {
 }
 use crate::application::query_bus::QueryBus;
 use crate::application::read_models::account_view::{AccountTrafficDto, AccountViewDto};
+use crate::application::read_models::captcha_view::CaptchaViewDto;
 use crate::application::read_models::download_detail_view::DownloadDetailViewDto;
 use crate::application::read_models::download_view::DownloadViewDto;
 use crate::application::read_models::history_view::HistoryViewDto;
@@ -71,6 +73,7 @@ use crate::application::read_models::plugin_view::PluginViewDto;
 use crate::application::read_models::stats_view::{ModuleStatsDto, StatsViewDto};
 use crate::domain::error::DomainError;
 use crate::domain::model::account::{AccountId, AccountType};
+use crate::domain::model::captcha::{CaptchaId, MAX_CAPTCHA_SOLUTION_BYTES};
 use crate::domain::model::config::{AppConfig, ConfigPatch};
 use crate::domain::model::download::{DownloadId, DownloadState};
 use crate::domain::model::package::{PackageId, PackageSourceType};
@@ -173,6 +176,73 @@ pub async fn download_skip_wait(state: State<'_, AppState>, id: u64) -> Result<(
         .wait_manager
         .skip_wait(DownloadId(id))
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn captcha_solve(
+    state: State<'_, AppState>,
+    challenge_id: String,
+    solution: String,
+) -> Result<(), String> {
+    if solution.trim().is_empty() || solution.len() > MAX_CAPTCHA_SOLUTION_BYTES {
+        return Err("CAPTCHA solution is empty or exceeds safety limits".into());
+    }
+    state
+        .command_bus
+        .handle_captcha_solve(SolveCaptchaCommand {
+            challenge_id: parse_captcha_id(challenge_id)?,
+            solution,
+        })
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn captcha_skip(state: State<'_, AppState>, challenge_id: String) -> Result<(), String> {
+    state
+        .command_bus
+        .handle_captcha_skip(SkipCaptchaCommand {
+            challenge_id: parse_captcha_id(challenge_id)?,
+        })
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn captcha_retry(state: State<'_, AppState>, challenge_id: String) -> Result<(), String> {
+    state
+        .command_bus
+        .handle_captcha_retry(RetryCaptchaCommand {
+            challenge_id: parse_captcha_id(challenge_id)?,
+        })
+        .await
+        .map_err(|error| error.to_string())
+}
+
+fn parse_captcha_id(value: String) -> Result<CaptchaId, String> {
+    CaptchaId::try_new(value).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn captcha_list(state: State<'_, AppState>) -> Result<Vec<CaptchaViewDto>, String> {
+    state
+        .query_bus
+        .handle_captcha_list(CaptchaListQuery)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn captcha_get_pending(
+    state: State<'_, AppState>,
+    challenge_id: Option<String>,
+) -> Result<Option<CaptchaViewDto>, String> {
+    let challenge_id = challenge_id.map(parse_captcha_id).transpose()?;
+    state
+        .query_bus
+        .handle_captcha_get_pending(CaptchaGetPendingQuery { challenge_id })
+        .await
+        .map_err(|error| error.to_string())
 }
 
 /// Per-id failure entry surfaced in [`ChangeDirectoryBulkOutcomeDto`].
@@ -1166,6 +1236,9 @@ pub struct SettingsDto {
     pub dynamic_split_enabled: bool,
     pub dynamic_split_min_remaining_mb: u64,
 
+    // CAPTCHA
+    pub captcha_timeout_seconds: u32,
+
     // History
     pub history_retention_days: i64,
 
@@ -1230,6 +1303,7 @@ impl From<AppConfig> for SettingsDto {
             pre_allocate_space: c.pre_allocate_space,
             dynamic_split_enabled: c.dynamic_split_enabled,
             dynamic_split_min_remaining_mb: c.dynamic_split_min_remaining_mb,
+            captcha_timeout_seconds: c.captcha_timeout_seconds,
             history_retention_days: c.history_retention_days,
             account_selection_strategy: c.account_selection_strategy.to_string(),
             proxy_type: c.proxy_type,
@@ -1278,6 +1352,9 @@ pub struct ConfigPatchDto {
     pub pre_allocate_space: Option<bool>,
     pub dynamic_split_enabled: Option<bool>,
     pub dynamic_split_min_remaining_mb: Option<u64>,
+
+    // CAPTCHA
+    pub captcha_timeout_seconds: Option<u32>,
 
     // History
     pub history_retention_days: Option<i64>,
@@ -1343,6 +1420,7 @@ impl TryFrom<ConfigPatchDto> for ConfigPatch {
             pre_allocate_space: d.pre_allocate_space,
             dynamic_split_enabled: d.dynamic_split_enabled,
             dynamic_split_min_remaining_mb: d.dynamic_split_min_remaining_mb,
+            captcha_timeout_seconds: d.captcha_timeout_seconds,
             history_retention_days: d.history_retention_days,
             account_selection_strategy,
             proxy_type: d.proxy_type,

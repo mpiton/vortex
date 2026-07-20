@@ -33,6 +33,7 @@ describe("useDownloadEvents", () => {
     renderHook(() => useDownloadEvents());
     const subscribedEvents = vi.mocked(useTauriEvent).mock.calls.map(([event]) => event);
     expect(subscribedEvents).toContain("download-created");
+    expect(subscribedEvents).toContain("download-queued");
     expect(subscribedEvents).toContain("download-started");
     expect(subscribedEvents).toContain("download-paused");
     expect(subscribedEvents).toContain("download-resumed");
@@ -45,6 +46,10 @@ describe("useDownloadEvents", () => {
     expect(subscribedEvents).toContain("download-checking");
     expect(subscribedEvents).toContain("download-removed");
     expect(subscribedEvents).toContain("download-extracting");
+    expect(subscribedEvents).toContain("captcha-pending");
+    expect(subscribedEvents).toContain("captcha-solved");
+    expect(subscribedEvents).toContain("captcha-skipped");
+    expect(subscribedEvents).toContain("captcha-timed-out");
   });
 
   it("should invalidate download list queries on download-created", () => {
@@ -97,8 +102,8 @@ describe("useDownloadEvents", () => {
     });
   });
 
-  it("should subscribe to exactly 15 lifecycle events", () => {
+  it("should subscribe to exactly 20 lifecycle events", () => {
     renderHook(() => useDownloadEvents());
-    expect(useTauriEvent).toHaveBeenCalledTimes(15);
+    expect(useTauriEvent).toHaveBeenCalledTimes(20);
   });
 });

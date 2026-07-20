@@ -98,6 +98,7 @@ impl PluginLoader for PremiumPluginLoader {
             request_headers: Vec::new(),
             traffic_used_bytes: Some(1),
             traffic_total_bytes: Some(100),
+            captcha: None,
         })
     }
 }

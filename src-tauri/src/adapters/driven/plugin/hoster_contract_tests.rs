@@ -4,6 +4,7 @@ use super::ExtismPluginLoader;
 use super::capabilities::SharedHostResources;
 use super::hoster_contract::{parse_hoster_link, parse_hoster_links};
 use crate::domain::error::DomainError;
+use crate::domain::model::captcha::{CaptchaType, MAX_CAPTCHA_IMAGE_BYTES};
 use crate::domain::model::credential::Credential;
 use crate::domain::model::plugin::{PluginCategory, PluginInfo, PluginManifest};
 use crate::domain::ports::driven::PluginLoader;
@@ -32,6 +33,86 @@ fn test_parse_hoster_link_rejects_empty_file_list() {
         parse_hoster_link(r#"{"files":[]}"#),
         Err(DomainError::HosterNoFile)
     );
+}
+
+#[test]
+fn test_parse_hoster_link_accepts_bounded_captcha_without_direct_url() {
+    let parsed = parse_hoster_link(
+        r#"{"files":[{"url":"https://hoster.example/file","direct_url":null,"requires_captcha":true,"captcha_type":"image","captcha_image_data":[137,80,78,71,13,10,26,10,0,0,0,13,73,72,68,82,0,0,0,1,0,0,0,1]}]}"#,
+    )
+    .expect("captcha response is a valid unresolved hoster link");
+
+    assert!(parsed.direct_url.is_none());
+    let captcha = parsed.captcha.expect("captcha metadata");
+    assert_eq!(captcha.challenge_type, CaptchaType::Image);
+    assert_eq!(
+        captcha.image_data.as_deref(),
+        Some(
+            [
+                137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0,
+                1,
+            ]
+            .as_slice()
+        )
+    );
+}
+
+#[test]
+fn test_parse_hoster_link_rejects_untrusted_captcha_image_formats() {
+    let result = parse_hoster_link(
+        r#"{"files":[{"url":"https://hoster.example/file","requires_captcha":true,"captcha_type":"image","captcha_image_data":[60,115,118,103,47,62]}]}"#,
+    );
+
+    assert!(matches!(result, Err(DomainError::PluginError(_))));
+}
+
+#[test]
+fn test_parse_hoster_link_requires_images_for_visual_challenges() {
+    for challenge_type in ["image", "text_input"] {
+        let payload = serde_json::json!({
+            "files": [{
+                "url": "https://hoster.example/file",
+                "requires_captcha": true,
+                "captcha_type": challenge_type
+            }]
+        })
+        .to_string();
+
+        assert!(matches!(
+            parse_hoster_link(&payload),
+            Err(DomainError::PluginError(_))
+        ));
+    }
+}
+
+#[test]
+fn test_parse_hoster_link_allows_token_challenges_without_images() {
+    let parsed = parse_hoster_link(
+        r#"{"files":[{"url":"https://hoster.example/file","requires_captcha":true,"captcha_type":"recaptcha_v2"}]}"#,
+    )
+    .expect("token challenge does not require an image");
+
+    assert_eq!(
+        parsed.captcha.expect("captcha metadata").challenge_type,
+        CaptchaType::ReCaptchaV2
+    );
+}
+
+#[test]
+fn test_parse_hoster_link_accepts_the_largest_valid_image_serialization() {
+    let mut image = vec![255; MAX_CAPTCHA_IMAGE_BYTES];
+    image[..24].copy_from_slice(b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR\0\0\0\x01\0\0\0\x01");
+    let payload = serde_json::json!({
+        "files": [{
+            "url": "https://hoster.example/file",
+            "requires_captcha": true,
+            "captcha_type": "image",
+            "captcha_image_data": image
+        }]
+    })
+    .to_string();
+
+    assert!(parse_hoster_link(&payload).is_ok());
 }
 
 #[test]

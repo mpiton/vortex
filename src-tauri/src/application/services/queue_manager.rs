@@ -510,6 +510,10 @@ impl QueueManager {
         }
     }
 
+    async fn handle_captcha_pending(&self) -> Result<(), AppError> {
+        self.decrement_and_schedule().await
+    }
+
     pub fn start_listening(self: Arc<Self>) {
         let (tx, mut rx) = tokio::sync::mpsc::channel::<DomainEvent>(1024);
 
@@ -523,7 +527,9 @@ impl QueueManager {
                     | DomainEvent::DownloadFailed { .. }
                     | DomainEvent::DownloadCancelled { .. }
                     | DomainEvent::DownloadCreated { .. }
+                    | DomainEvent::DownloadQueued { .. }
                     | DomainEvent::DownloadResumed { .. }
+                    | DomainEvent::CaptchaPending { .. }
                     | DomainEvent::DownloadRetrying { .. }
                     | DomainEvent::DownloadPrioritySet { .. }
                     | DomainEvent::QueueReordered { .. }
@@ -542,10 +548,12 @@ impl QueueManager {
                     DomainEvent::DownloadPaused { .. } | DomainEvent::DownloadCancelled { .. } => {
                         self.decrement_and_schedule().await
                     }
+                    DomainEvent::CaptchaPending { .. } => self.handle_captcha_pending().await,
                     DomainEvent::DownloadFailed { id, error } => {
                         self.handle_download_failed(*id, error.clone()).await
                     }
                     DomainEvent::DownloadCreated { .. }
+                    | DomainEvent::DownloadQueued { .. }
                     | DomainEvent::DownloadRetrying { .. }
                     | DomainEvent::DownloadPrioritySet { .. }
                     | DomainEvent::QueueReordered { .. } => self.on_slot_freed().await,
@@ -738,6 +746,23 @@ mod tests {
         qm.on_slot_freed().await.unwrap();
 
         assert!(engine.started.lock().unwrap().contains(&1));
+        assert_eq!(qm.active_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn captcha_pending_releases_the_slot_and_starts_next_download() {
+        let mut waiting = make_download(1, 5, DownloadState::Queued);
+        waiting.start().expect("queued to downloading");
+        waiting.wait().expect("downloading to waiting");
+        let queued = make_download(2, 5, DownloadState::Queued);
+        let repo = Arc::new(MockDownloadRepo::new(vec![waiting, queued]));
+        let engine = Arc::new(MockEngine::new());
+        let bus = Arc::new(MockEventBus::new());
+        let qm = make_manager(repo, Arc::clone(&engine), bus, 1, 1);
+
+        qm.handle_captcha_pending().await.expect("schedule next");
+
+        assert_eq!(*engine.started.lock().unwrap(), vec![2]);
         assert_eq!(qm.active_count(), 1);
     }
 

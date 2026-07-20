@@ -25,12 +25,16 @@ pub fn spawn_tauri_event_bridge(app_handle: AppHandle, event_bus: &dyn EventBus)
 /// notifications per download and the first refetch runs against the
 /// pre-persist state (the race this flow exists to fix).
 fn should_forward_to_frontend(event: &DomainEvent) -> bool {
-    !matches!(event, DomainEvent::DownloadCompleted { .. })
+    !matches!(
+        event,
+        DomainEvent::DownloadCompleted { .. } | DomainEvent::CaptchaRequired { .. }
+    )
 }
 
 fn event_name(event: &DomainEvent) -> &'static str {
     match event {
         DomainEvent::DownloadCreated { .. } => "download-created",
+        DomainEvent::DownloadQueued { .. } => "download-queued",
         DomainEvent::DownloadStarted { .. } => "download-started",
         DomainEvent::DownloadPaused { .. } => "download-paused",
         DomainEvent::DownloadResumed { .. } => "download-resumed",
@@ -44,6 +48,11 @@ fn event_name(event: &DomainEvent) -> &'static str {
         DomainEvent::DownloadWaiting { .. } => "download-waiting",
         DomainEvent::DownloadWaitingStarted { .. } => "download-waiting-started",
         DomainEvent::DownloadWaitingEnded { .. } => "download-waiting-ended",
+        DomainEvent::CaptchaRequired { .. } => "captcha-required",
+        DomainEvent::CaptchaPending { .. } => "captcha-pending",
+        DomainEvent::CaptchaSolved { .. } => "captcha-solved",
+        DomainEvent::CaptchaSkipped { .. } => "captcha-skipped",
+        DomainEvent::CaptchaTimedOut { .. } => "captcha-timed-out",
         DomainEvent::DownloadChecking { .. } => "download-checking",
         DomainEvent::DownloadCancelled { .. } => "download-cancelled",
         DomainEvent::DownloadRemoved { .. } => "download-removed",
@@ -85,6 +94,7 @@ fn event_name(event: &DomainEvent) -> &'static str {
 fn event_payload(event: &DomainEvent) -> serde_json::Value {
     match event {
         DomainEvent::DownloadCreated { id }
+        | DomainEvent::DownloadQueued { id }
         | DomainEvent::DownloadStarted { id }
         | DomainEvent::DownloadPaused { id }
         | DomainEvent::DownloadResumed { id }
@@ -96,6 +106,43 @@ fn event_payload(event: &DomainEvent) -> serde_json::Value {
         | DomainEvent::DownloadChecking { id }
         | DomainEvent::DownloadExtracting { id } => json!({ "id": id.0 }),
         DomainEvent::DownloadCompletedPersisted { id, .. } => json!({ "id": id.0 }),
+
+        DomainEvent::CaptchaRequired { download_id, .. } => {
+            json!({ "downloadId": download_id.0 })
+        }
+        DomainEvent::CaptchaPending {
+            challenge_id,
+            download_id,
+        } => json!({ "challengeId": challenge_id.as_str(), "downloadId": download_id.0 }),
+        DomainEvent::CaptchaSolved {
+            challenge_id,
+            download_id,
+            solver,
+            duration_ms,
+        } => json!({
+            "challengeId": challenge_id.as_str(),
+            "downloadId": download_id.0,
+            "solver": solver,
+            "durationMs": duration_ms,
+        }),
+        DomainEvent::CaptchaSkipped {
+            challenge_id,
+            download_id,
+            reason,
+        } => json!({
+            "challengeId": challenge_id.as_str(),
+            "downloadId": download_id.0,
+            "reason": reason,
+        }),
+        DomainEvent::CaptchaTimedOut {
+            challenge_id,
+            download_id,
+            duration_ms,
+        } => json!({
+            "challengeId": challenge_id.as_str(),
+            "downloadId": download_id.0,
+            "durationMs": duration_ms,
+        }),
 
         DomainEvent::DownloadFailed { id, error } => json!({ "id": id.0, "error": error }),
         DomainEvent::DownloadRetrying { id, attempt } => {
@@ -318,6 +365,7 @@ fn to_tauri_event(event: &DomainEvent) -> (&'static str, serde_json::Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::model::captcha::CaptchaType;
     use crate::domain::model::download::DownloadId;
 
     #[test]
@@ -347,6 +395,16 @@ mod tests {
         assert!(!should_forward_to_frontend(
             &DomainEvent::DownloadCompleted { id: DownloadId(7) }
         ));
+    }
+
+    #[test]
+    fn test_internal_captcha_required_event_is_not_forwarded() {
+        assert!(!should_forward_to_frontend(&DomainEvent::CaptchaRequired {
+            download_id: DownloadId(8),
+            challenge_type: CaptchaType::Image,
+            challenge_url: "https://hoster.example/captcha".into(),
+            image_data: Some(std::sync::Arc::<[u8]>::from(vec![1, 2, 3])),
+        }));
     }
 
     #[test]

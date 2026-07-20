@@ -44,6 +44,10 @@ pub struct AppConfig {
     /// is dwarfed by HTTP request and rebalance overhead.
     pub dynamic_split_min_remaining_mb: u64,
 
+    // ── CAPTCHA ────────────────────────────────────────────────────
+    /// Manual challenge deadline. Expiry applies the safe default: skip.
+    pub captcha_timeout_seconds: u32,
+
     // ── History ──────────────────────────────────────────────────────
     /// Number of days history entries are retained before automatic
     /// hard-delete. `0` disables retention (entries are kept forever).
@@ -130,6 +134,9 @@ impl Default for AppConfig {
             dynamic_split_enabled: true,
             dynamic_split_min_remaining_mb: 4,
 
+            // CAPTCHA
+            captcha_timeout_seconds: DEFAULT_CAPTCHA_TIMEOUT_SECONDS,
+
             // History
             history_retention_days: 30,
 
@@ -177,6 +184,10 @@ pub const DEFAULT_LINK_CHECK_PARALLELISM: u32 = 8;
 /// should stall on a single URL before flipping to `Unknown`.
 pub const DEFAULT_LINK_CHECK_TIMEOUT_SECS: u32 = 10;
 
+pub const DEFAULT_CAPTCHA_TIMEOUT_SECONDS: u32 = 120;
+pub const MIN_CAPTCHA_TIMEOUT_SECONDS: u32 = 10;
+pub const MAX_CAPTCHA_TIMEOUT_SECONDS: u32 = 3_600;
+
 /// Lower bound for `link_check_parallelism`. Below 1 the queue stalls.
 pub const MIN_LINK_CHECK_PARALLELISM: u32 = 1;
 
@@ -220,6 +231,9 @@ pub struct ConfigPatch {
     pub pre_allocate_space: Option<bool>,
     pub dynamic_split_enabled: Option<bool>,
     pub dynamic_split_min_remaining_mb: Option<u64>,
+
+    // CAPTCHA
+    pub captcha_timeout_seconds: Option<u32>,
 
     // History
     pub history_retention_days: Option<i64>,
@@ -343,6 +357,11 @@ pub fn apply_patch(config: &mut AppConfig, patch: &ConfigPatch) {
     }
     if let Some(v) = patch.dynamic_split_min_remaining_mb {
         config.dynamic_split_min_remaining_mb = v;
+    }
+
+    if let Some(v) = patch.captcha_timeout_seconds {
+        config.captcha_timeout_seconds =
+            v.clamp(MIN_CAPTCHA_TIMEOUT_SECONDS, MAX_CAPTCHA_TIMEOUT_SECONDS);
     }
 
     // History
@@ -504,6 +523,24 @@ mod tests {
         let c = AppConfig::default();
         assert_eq!(c.link_check_timeout_secs, DEFAULT_LINK_CHECK_TIMEOUT_SECS);
         assert_eq!(c.link_check_timeout_secs, 10);
+    }
+
+    #[test]
+    fn captcha_timeout_defaults_to_two_minutes_and_is_clamped() {
+        let mut config = AppConfig::default();
+        assert_eq!(
+            config.captcha_timeout_seconds,
+            DEFAULT_CAPTCHA_TIMEOUT_SECONDS
+        );
+
+        apply_patch(
+            &mut config,
+            &ConfigPatch {
+                captcha_timeout_seconds: Some(0),
+                ..Default::default()
+            },
+        );
+        assert_eq!(config.captcha_timeout_seconds, MIN_CAPTCHA_TIMEOUT_SECONDS);
     }
 
     #[test]

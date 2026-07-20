@@ -34,6 +34,7 @@ const baseConfig: AppConfig = {
   preAllocateSpace: false,
   dynamicSplitEnabled: true,
   dynamicSplitMinRemainingMb: 4,
+  captchaTimeoutSeconds: 120,
   proxyType: "none",
   proxyUrl: null,
   userAgent: "Vortex/1.0",

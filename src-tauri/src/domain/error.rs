@@ -1,7 +1,8 @@
+use crate::domain::model::captcha::CaptchaType;
 use crate::domain::model::download::DownloadState;
 use crate::domain::model::segment::SegmentState;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub enum DomainError {
     InvalidTransition {
         from: DownloadState,
@@ -30,6 +31,11 @@ pub enum DomainError {
     HosterAuthenticationRequired,
     HosterDirectUrlExpired,
     HosterUnexpectedHtml,
+    CaptchaRequired {
+        challenge_type: CaptchaType,
+        challenge_url: String,
+        image_data: Option<Vec<u8>>,
+    },
     AdaptiveStreamOnly,
     /// Computed checksum did not match the expected value.
     ChecksumMismatch {
@@ -39,6 +45,24 @@ pub enum DomainError {
     },
     /// Expected checksum string format is not supported (length / non-hex).
     UnsupportedChecksumFormat(String),
+}
+
+impl std::fmt::Debug for DomainError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::CaptchaRequired {
+                challenge_type,
+                image_data,
+                ..
+            } => formatter
+                .debug_struct("CaptchaRequired")
+                .field("challenge_type", challenge_type)
+                .field("challenge_url", &"<redacted>")
+                .field("image_data_len", &image_data.as_ref().map(Vec::len))
+                .finish(),
+            _ => std::fmt::Display::fmt(self, formatter),
+        }
+    }
 }
 
 impl std::fmt::Display for DomainError {
@@ -93,6 +117,7 @@ impl std::fmt::Display for DomainError {
             DomainError::HosterUnexpectedHtml => {
                 write!(f, "Hoster returned an HTML page instead of file content")
             }
+            DomainError::CaptchaRequired { .. } => write!(f, "CAPTCHA is required"),
             DomainError::AdaptiveStreamOnly => write!(
                 f,
                 "Video is only available as adaptive stream (DASH/HLS); use download_to_file"
@@ -223,5 +248,22 @@ mod tests {
         assert!(msg.contains("xyz"));
         assert!(msg.contains("MD5"));
         assert!(msg.contains("SHA-256"));
+    }
+
+    #[test]
+    fn captcha_required_debug_output_redacts_ephemeral_material() {
+        let error = DomainError::CaptchaRequired {
+            challenge_type: CaptchaType::Image,
+            challenge_url: "https://hoster.example/captcha?token=secret".into(),
+            image_data: Some(vec![222, 173, 190, 239]),
+        };
+
+        let debug = format!("{error:?}");
+
+        assert!(debug.contains("CaptchaRequired"));
+        assert!(debug.contains("Image"));
+        assert!(debug.contains("4"));
+        assert!(!debug.contains("token=secret"));
+        assert!(!debug.contains("222"));
     }
 }

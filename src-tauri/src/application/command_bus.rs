@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use tokio::sync::Semaphore;
 
+use crate::application::commands::captcha::CaptchaCommandHandler;
 use crate::application::services::account_operation_locks::AccountOperationLocks;
 use crate::application::services::{AccountRotator, AccountSelector};
 use crate::domain::error::DomainError;
@@ -104,6 +105,7 @@ pub struct CommandBus {
     account_operation_locks: Arc<AccountOperationLocks>,
     account_clock: Option<Arc<dyn Clock>>,
     passphrase_codec: Option<Arc<dyn PassphraseCodec>>,
+    captcha_handler: Option<Arc<CaptchaCommandHandler>>,
     /// Serializes queue-position allocation across handlers. Without this,
     /// two concurrent move-to-top/move-to-bottom/start-download calls can
     /// observe the same min/max and write colliding `queue_position`
@@ -175,6 +177,7 @@ impl CommandBus {
             account_operation_locks: Arc::new(AccountOperationLocks::default()),
             account_clock: None,
             passphrase_codec: None,
+            captcha_handler: None,
             queue_position_lock: tokio::sync::Mutex::new(()),
             link_check_limiter,
         }
@@ -247,6 +250,25 @@ impl CommandBus {
     pub fn with_passphrase_codec(mut self, codec: Arc<dyn PassphraseCodec>) -> Self {
         self.passphrase_codec = Some(codec);
         self
+    }
+
+    pub fn with_captcha_handler(mut self, handler: Arc<CaptchaCommandHandler>) -> Self {
+        self.captcha_handler = Some(handler);
+        self
+    }
+
+    pub(crate) fn captcha_handler(
+        &self,
+    ) -> Result<&CaptchaCommandHandler, crate::application::error::AppError> {
+        self.captcha_handler.as_deref().ok_or_else(|| {
+            crate::application::error::AppError::Validation(
+                "CAPTCHA command handler not configured".into(),
+            )
+        })
+    }
+
+    pub(crate) fn captcha_handler_opt(&self) -> Option<&CaptchaCommandHandler> {
+        self.captcha_handler.as_deref()
     }
 
     pub fn account_repo(&self) -> Option<&dyn AccountRepository> {

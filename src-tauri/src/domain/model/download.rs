@@ -677,6 +677,17 @@ impl Download {
         Ok(DomainEvent::DownloadResumedFromWait { id: self.id })
     }
 
+    pub fn queue_after_wait(&mut self) -> Result<DomainEvent, DomainError> {
+        if self.state != DownloadState::Waiting {
+            return Err(DomainError::InvalidTransition {
+                from: self.state,
+                to: DownloadState::Queued,
+            });
+        }
+        self.state = DownloadState::Queued;
+        Ok(DomainEvent::DownloadQueued { id: self.id })
+    }
+
     pub fn start_checking(&mut self) -> Result<DomainEvent, DomainError> {
         if self.state != DownloadState::Downloading {
             return Err(DomainError::InvalidTransition {
@@ -925,6 +936,32 @@ mod tests {
         d4.start().unwrap();
         assert!(d4.start_extracting().is_ok());
         assert!(d4.complete().is_ok());
+    }
+
+    #[test]
+    fn queue_after_wait_returns_the_queued_event() {
+        let mut download = make_download();
+        download.start().unwrap();
+        download.wait().unwrap();
+
+        let event = download.queue_after_wait().unwrap();
+
+        assert_eq!(download.state(), DownloadState::Queued);
+        assert_eq!(event, DomainEvent::DownloadQueued { id: DownloadId(1) });
+    }
+
+    #[test]
+    fn queue_after_wait_rejects_non_waiting_downloads() {
+        let mut download = make_download();
+        download.start().unwrap();
+
+        assert!(matches!(
+            download.queue_after_wait(),
+            Err(DomainError::InvalidTransition {
+                from: DownloadState::Downloading,
+                to: DownloadState::Queued,
+            })
+        ));
     }
 
     #[test]

@@ -126,18 +126,18 @@ describe("issue #30 — French UI translations", () => {
     expect(screen.getByText("0 actif")).toBeInTheDocument();
   });
 
-  it("renders placeholder views in French", () => {
-    const views = [
-      { component: <CaptchaView />, title: "Captcha" },
-      { component: <SchedulerView />, title: "Planificateur" },
-    ];
+  it("renders the CAPTCHA queue in French", async () => {
+    mockInvoke.mockResolvedValue([]);
+    renderWithProviders(<CaptchaView />);
 
-    for (const view of views) {
-      const result = render(view.component);
-      expect(screen.getByText(view.title)).toBeInTheDocument();
-      expect(screen.getByText("Bientôt disponible")).toBeInTheDocument();
-      result.unmount();
-    }
+    expect(screen.getByRole("heading", { name: "Captcha" })).toBeInTheDocument();
+    expect(await screen.findAllByText("Aucun CAPTCHA en attente")).not.toHaveLength(0);
+  });
+
+  it("renders scheduler placeholder in French", () => {
+    render(<SchedulerView />);
+    expect(screen.getByText("Planificateur")).toBeInTheDocument();
+    expect(screen.getByText("Bientôt disponible")).toBeInTheDocument();
   });
 
   it("renders the Packages view header in French", async () => {

@@ -6,8 +6,9 @@
 use std::sync::Arc;
 
 use crate::domain::ports::driven::{
-    AccountRepository, ArchiveExtractor, DownloadReadRepository, HistoryRepository,
-    PackageReadRepository, PluginConfigStore, PluginLoader, PluginReadRepository, StatsRepository,
+    AccountRepository, ArchiveExtractor, CaptchaRepository, DownloadReadRepository,
+    HistoryRepository, PackageReadRepository, PluginConfigStore, PluginLoader,
+    PluginReadRepository, StatsRepository,
 };
 
 /// Central dispatcher for CQRS queries.
@@ -24,6 +25,7 @@ pub struct QueryBus {
     plugin_config_store: Option<Arc<dyn PluginConfigStore>>,
     account_repo: Option<Arc<dyn AccountRepository>>,
     package_read_repo: Option<Arc<dyn PackageReadRepository>>,
+    captcha_repo: Option<Arc<dyn CaptchaRepository>>,
 }
 
 impl QueryBus {
@@ -44,6 +46,7 @@ impl QueryBus {
             plugin_config_store: None,
             account_repo: None,
             package_read_repo: None,
+            captcha_repo: None,
         }
     }
 
@@ -82,6 +85,21 @@ impl QueryBus {
 
     pub fn package_read_repo(&self) -> Option<&dyn PackageReadRepository> {
         self.package_read_repo.as_deref()
+    }
+
+    pub fn with_captcha_repo(mut self, repo: Arc<dyn CaptchaRepository>) -> Self {
+        self.captcha_repo = Some(repo);
+        self
+    }
+
+    pub(crate) fn captcha_repo(
+        &self,
+    ) -> Result<&dyn CaptchaRepository, crate::application::error::AppError> {
+        self.captcha_repo.as_deref().ok_or_else(|| {
+            crate::application::error::AppError::Validation(
+                "CAPTCHA repository not configured".into(),
+            )
+        })
     }
 
     pub fn download_read_repo(&self) -> &dyn DownloadReadRepository {

@@ -1,4 +1,5 @@
 pub mod account;
+pub mod captcha_log;
 pub mod download;
 pub mod download_segment;
 pub mod history;

@@ -1,4 +1,7 @@
+use std::sync::Arc;
+
 use crate::domain::model::account::AccountId;
+use crate::domain::model::captcha::{CaptchaId, CaptchaType};
 use crate::domain::model::download::DownloadId;
 use crate::domain::model::link::LinkStatus;
 use crate::domain::model::package::PackageId;
@@ -95,6 +98,9 @@ pub enum DomainEvent {
     DownloadCreated {
         id: DownloadId,
     },
+    DownloadQueued {
+        id: DownloadId,
+    },
     DownloadStarted {
         id: DownloadId,
     },
@@ -153,6 +159,34 @@ pub enum DomainEvent {
     DownloadWaitingEnded {
         id: DownloadId,
         expired_naturally: bool,
+    },
+    /// Internal hand-off from the download engine to the CAPTCHA command
+    /// handler. The Tauri bridge deliberately never forwards this event.
+    CaptchaRequired {
+        download_id: DownloadId,
+        challenge_type: CaptchaType,
+        challenge_url: String,
+        image_data: Option<Arc<[u8]>>,
+    },
+    CaptchaPending {
+        challenge_id: CaptchaId,
+        download_id: DownloadId,
+    },
+    CaptchaSolved {
+        challenge_id: CaptchaId,
+        download_id: DownloadId,
+        solver: String,
+        duration_ms: u64,
+    },
+    CaptchaSkipped {
+        challenge_id: CaptchaId,
+        download_id: DownloadId,
+        reason: String,
+    },
+    CaptchaTimedOut {
+        challenge_id: CaptchaId,
+        download_id: DownloadId,
+        duration_ms: u64,
     },
     DownloadChecking {
         id: DownloadId,

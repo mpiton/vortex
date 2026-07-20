@@ -10,12 +10,14 @@ use crate::application::commands::tests_support::{
 use crate::application::services::account_operation_locks::AccountOperationLocks;
 use crate::application::services::{AccountRotator, AccountSelector};
 use crate::domain::error::DomainError;
+use crate::domain::model::captcha::CaptchaType;
 use crate::domain::model::config::{AppConfig, ConfigPatch};
 use crate::domain::model::credential::Credential;
 use crate::domain::model::http::HttpResponse;
 use crate::domain::model::plugin::{PluginCategory, PluginInfo, PluginManifest};
 use crate::domain::ports::driven::{
-    Clock, ConfigStore, DownloadRepository, DownloadSourceResolver, HttpClient, PluginLoader,
+    Clock, ConfigStore, DownloadRepository, DownloadSourceResolver, ExtractedCaptchaChallenge,
+    HttpClient, PluginLoader,
 };
 
 struct FixedClock;
@@ -151,6 +153,7 @@ impl PluginLoader for FreeHosterPluginLoader {
                     request_headers: Vec::new(),
                     traffic_used_bytes: None,
                     traffic_total_bytes: None,
+                    captcha: None,
                 })
                 .collect());
         }
@@ -187,6 +190,7 @@ impl PluginLoader for FreeHosterPluginLoader {
                 request_headers: vec![("Referer".into(), url.into())],
                 traffic_used_bytes: None,
                 traffic_total_bytes: None,
+                captcha: None,
             })
             .collect())
     }
@@ -206,6 +210,33 @@ async fn resolve_free_hoster(url: &str) -> (Vec<ResolvedLinkDto>, Arc<FreeHoster
         .await
         .expect("free hoster resolution succeeds");
     (result, plugin)
+}
+
+#[test]
+fn captcha_challenge_keeps_the_stable_hoster_link_without_a_direct_url() {
+    let requested_url = "https://1fichier.com/?abc";
+    let resolution = into_hoster_resolution(
+        ExtractedHosterLink {
+            source_url: requested_url.into(),
+            filename: Some("archive.zip".into()),
+            size_bytes: Some(42),
+            direct_url: None,
+            resumable: None,
+            request_headers: Vec::new(),
+            traffic_used_bytes: None,
+            traffic_total_bytes: None,
+            captcha: Some(ExtractedCaptchaChallenge {
+                challenge_type: CaptchaType::ReCaptchaV2,
+                image_data: None,
+            }),
+        },
+        requested_url,
+        "vortex-mod-1fichier",
+    )
+    .expect("a CAPTCHA challenge is a resolvable hoster link");
+
+    assert_eq!(resolution.stable_url, requested_url);
+    assert_eq!(resolution.filename, "archive.zip");
 }
 
 #[tokio::test]

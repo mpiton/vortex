@@ -33,6 +33,24 @@ export interface DownloadWaitingEndedPayload {
   expiredNaturally: boolean;
 }
 
+export interface CaptchaEventPayload {
+  challengeId: string;
+  downloadId: number;
+}
+
+export interface CaptchaSolvedEventPayload extends CaptchaEventPayload {
+  solver: string;
+  durationMs: number;
+}
+
+export interface CaptchaSkippedEventPayload extends CaptchaEventPayload {
+  reason: string;
+}
+
+export interface CaptchaTimedOutEventPayload extends CaptchaEventPayload {
+  durationMs: number;
+}
+
 export interface SegmentPayload {
   downloadId: number;
   segmentId: number;
@@ -92,6 +110,7 @@ export interface AccountExhaustedPayload extends AccountIdPayload {
 
 export type TauriEventMap = {
   "download-created": DownloadIdPayload;
+  "download-queued": DownloadIdPayload;
   "download-started": DownloadIdPayload;
   "download-paused": DownloadIdPayload;
   "download-resumed": DownloadIdPayload;
@@ -107,6 +126,10 @@ export type TauriEventMap = {
   "download-removed": DownloadIdPayload;
   "download-extracting": DownloadIdPayload;
   "download-progress": DownloadProgressPayload;
+  "captcha-pending": CaptchaEventPayload;
+  "captcha-solved": CaptchaSolvedEventPayload;
+  "captcha-skipped": CaptchaSkippedEventPayload;
+  "captcha-timed-out": CaptchaTimedOutEventPayload;
   "segment-started": SegmentPayload;
   "segment-completed": SegmentPayload;
   "segment-failed": SegmentFailedPayload;

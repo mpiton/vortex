@@ -9,7 +9,8 @@ use std::sync::Mutex;
 use crate::domain::error::DomainError;
 use crate::domain::model::account::AccountSelectionStrategy;
 use crate::domain::model::config::{
-    AppConfig, ConfigPatch, apply_patch, normalize_history_retention_days,
+    AppConfig, ConfigPatch, MAX_CAPTCHA_TIMEOUT_SECONDS, MIN_CAPTCHA_TIMEOUT_SECONDS, apply_patch,
+    normalize_history_retention_days,
 };
 use crate::domain::ports::driven::ConfigStore;
 
@@ -162,6 +163,9 @@ struct ConfigDto {
     dynamic_split_enabled: bool,
     dynamic_split_min_remaining_mb: u64,
 
+    // CAPTCHA
+    captcha_timeout_seconds: u32,
+
     // History
     history_retention_days: i64,
 
@@ -225,6 +229,7 @@ impl From<AppConfig> for ConfigDto {
             pre_allocate_space: c.pre_allocate_space,
             dynamic_split_enabled: c.dynamic_split_enabled,
             dynamic_split_min_remaining_mb: c.dynamic_split_min_remaining_mb,
+            captcha_timeout_seconds: c.captcha_timeout_seconds,
             history_retention_days: c.history_retention_days,
             account_selection_strategy: c.account_selection_strategy.to_string(),
             proxy_type: c.proxy_type,
@@ -283,6 +288,9 @@ impl TryFrom<ConfigDto> for AppConfig {
             pre_allocate_space: d.pre_allocate_space,
             dynamic_split_enabled: d.dynamic_split_enabled,
             dynamic_split_min_remaining_mb: d.dynamic_split_min_remaining_mb,
+            captcha_timeout_seconds: d
+                .captcha_timeout_seconds
+                .clamp(MIN_CAPTCHA_TIMEOUT_SECONDS, MAX_CAPTCHA_TIMEOUT_SECONDS),
             history_retention_days: normalize_history_retention_days(d.history_retention_days),
             account_selection_strategy,
             proxy_type: d.proxy_type,
@@ -311,6 +319,7 @@ impl TryFrom<ConfigDto> for AppConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::model::config::{MAX_CAPTCHA_TIMEOUT_SECONDS, MIN_CAPTCHA_TIMEOUT_SECONDS};
 
     /// Non-empty bootstrap key used by tests that don't assert on `api_key`
     /// but still exercise a fresh-config code path, which now requires one.
@@ -552,6 +561,25 @@ mod tests {
         let config = store.get_config().unwrap();
 
         assert_eq!(config.history_retention_days, 0);
+    }
+
+    #[test]
+    fn test_loading_config_clamps_hand_edited_captcha_timeout() {
+        for (persisted, expected) in [
+            (1, MIN_CAPTCHA_TIMEOUT_SECONDS),
+            (u32::MAX, MAX_CAPTCHA_TIMEOUT_SECONDS),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("config.toml");
+            std::fs::write(&path, format!("captcha_timeout_seconds = {persisted}\n")).unwrap();
+
+            let store = TomlConfigStore::new(path, None, None);
+
+            assert_eq!(
+                store.get_config().unwrap().captcha_timeout_seconds,
+                expected
+            );
+        }
     }
 
     #[test]

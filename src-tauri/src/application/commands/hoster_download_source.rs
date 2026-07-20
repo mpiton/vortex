@@ -11,6 +11,13 @@ use crate::domain::ports::driven::{
 pub(super) fn resolved_protected_source(
     link: ExtractedHosterLink,
 ) -> Result<ResolvedDownloadSource, DomainError> {
+    if let Some(captcha) = link.captcha {
+        return Err(DomainError::CaptchaRequired {
+            challenge_type: captcha.challenge_type,
+            challenge_url: link.source_url,
+            image_data: captcha.image_data,
+        });
+    }
     let direct_url = link
         .direct_url
         .filter(|url| !url.trim().is_empty())

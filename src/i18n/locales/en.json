@@ -14,6 +14,45 @@
     "statistics": "Statistics",
     "settings": "Settings"
   },
+  "captcha": {
+    "title": "Captcha",
+    "pendingCount_one": "{{count}} pending",
+    "pendingCount_other": "{{count}} pending",
+    "queue": "Pending queue",
+    "empty": "No CAPTCHA waiting",
+    "loading": "Loading CAPTCHA queue…",
+    "error": "Could not load the CAPTCHA queue",
+    "history": "Recent challenges",
+    "download": "Download #{{id}}",
+    "answer": "Captcha answer",
+    "unsupported": "This challenge requires browser interaction and is not supported yet.",
+    "actions": {
+      "solve": "Solve",
+      "skip": "Skip",
+      "retry": "Retry"
+    },
+    "types": {
+      "image": "Image challenge",
+      "text_input": "Text challenge",
+      "recaptcha_v2": "reCAPTCHA v2",
+      "recaptcha_v3": "reCAPTCHA v3",
+      "hcaptcha": "hCaptcha"
+    },
+    "status": {
+      "pending": "Pending",
+      "solved": "Solved",
+      "skipped": "Skipped",
+      "timed_out": "Timed out"
+    },
+    "settings": {
+      "title": "Solver settings",
+      "description": "Solvers run in order. Only manual solving is enabled in this release.",
+      "manual": "Manual solver",
+      "manualDescription": "Enter the answer shown in the challenge image.",
+      "timeout": "Timeout (seconds)",
+      "fallback": "Expired challenges are skipped and logged."
+    }
+  },
   "settings": {
     "tabs": {
       "general": "General",

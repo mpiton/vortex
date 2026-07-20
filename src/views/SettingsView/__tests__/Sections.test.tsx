@@ -46,6 +46,7 @@ const mockConfig: AppConfig = {
   preAllocateSpace: true,
   dynamicSplitEnabled: true,
   dynamicSplitMinRemainingMb: 4,
+  captchaTimeoutSeconds: 120,
   historyRetentionDays: 30,
   proxyType: "none",
   proxyUrl: null,
