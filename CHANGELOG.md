@@ -26,6 +26,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- CAPTCHA browser windows now close directly from persisted terminal command
+  flows instead of relying on a lossy event subscriber (MAT-141).
 - CAPTCHA solver review hardening now preserves the complete solver audit while
   bounding UI, IPC, guest-memory, and WASM payloads; binds each popup to one
   challenge; clears inherited Tesseract data paths; and keeps keyring I/O off

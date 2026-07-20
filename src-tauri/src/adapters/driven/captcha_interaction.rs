@@ -2,7 +2,7 @@ use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 
 use crate::adapters::captcha_browser::browser_window_label;
 use crate::domain::error::DomainError;
-use crate::domain::model::captcha::CaptchaChallenge;
+use crate::domain::model::captcha::{CaptchaChallenge, CaptchaId};
 use crate::domain::ports::driven::CaptchaInteraction;
 
 pub struct TauriCaptchaInteraction {
@@ -37,6 +37,14 @@ impl CaptchaInteraction for TauriCaptchaInteraction {
         .map_err(window_error)?;
         Ok(())
     }
+
+    fn dismiss(&self, challenge_id: &CaptchaId) -> Result<(), DomainError> {
+        let label = browser_window_label(challenge_id.as_str());
+        if let Some(window) = self.app.get_webview_window(&label) {
+            window.close().map_err(close_window_error)?;
+        }
+        Ok(())
+    }
 }
 
 fn browser_window_path(challenge_id: &str) -> String {
@@ -46,6 +54,10 @@ fn browser_window_path(challenge_id: &str) -> String {
 
 fn window_error(_: tauri::Error) -> DomainError {
     DomainError::PluginError("could not open the CAPTCHA browser window".into())
+}
+
+fn close_window_error(_: tauri::Error) -> DomainError {
+    DomainError::PluginError("could not close the CAPTCHA browser window".into())
 }
 
 #[cfg(test)]

@@ -204,11 +204,19 @@ impl CaptchaSolver for BlockingCaptchaSolver {
 }
 
 #[derive(Default)]
-struct RecordingCaptchaInteraction(Mutex<Vec<CaptchaId>>);
+struct RecordingCaptchaInteraction {
+    requested: Mutex<Vec<CaptchaId>>,
+    dismissed: Mutex<Vec<CaptchaId>>,
+}
 
 impl CaptchaInteraction for RecordingCaptchaInteraction {
     fn request(&self, challenge: &CaptchaChallenge) -> Result<(), DomainError> {
-        self.0.lock().unwrap().push(challenge.id().clone());
+        self.requested.lock().unwrap().push(challenge.id().clone());
+        Ok(())
+    }
+
+    fn dismiss(&self, challenge_id: &CaptchaId) -> Result<(), DomainError> {
+        self.dismissed.lock().unwrap().push(challenge_id.clone());
         Ok(())
     }
 }
@@ -450,7 +458,7 @@ async fn automatic_failures_fall_through_and_are_logged_per_solver() {
 }
 
 #[tokio::test]
-async fn browser_fallback_requests_a_human_interaction_window() {
+async fn browser_fallback_is_requested_and_dismissed_by_the_terminal_flow() {
     let calls = Arc::new(Mutex::new(Vec::new()));
     let interaction = Arc::new(RecordingCaptchaInteraction::default());
     let config = AppConfig {
@@ -471,7 +479,7 @@ async fn browser_fallback_requests_a_human_interaction_window() {
     wait_for_solver_attempts(&captchas, &id, 1).await;
     tokio::time::timeout(std::time::Duration::from_secs(1), async {
         loop {
-            if interaction.0.lock().unwrap().as_slice() == [id.clone()] {
+            if interaction.requested.lock().unwrap().as_slice() == [id.clone()] {
                 break;
             }
             tokio::task::yield_now().await;
@@ -479,6 +487,37 @@ async fn browser_fallback_requests_a_human_interaction_window() {
     })
     .await
     .expect("browser interaction should be requested");
+
+    <CaptchaCommandHandler as CommandHandler<SkipCaptchaCommand>>::handle(
+        &handler,
+        SkipCaptchaCommand {
+            challenge_id: id.clone(),
+        },
+    )
+    .await
+    .expect("terminal flow succeeds");
+
+    assert_eq!(interaction.dismissed.lock().unwrap().as_slice(), [id]);
+}
+
+#[tokio::test]
+async fn solved_flow_dismisses_the_assisted_window_directly() {
+    let interaction = Arc::new(RecordingCaptchaInteraction::default());
+    let (handler, _, _, _, _) = fixture();
+    let handler = handler.with_interaction(interaction.clone());
+    let id = enqueue(&handler).await;
+
+    <CaptchaCommandHandler as CommandHandler<SolveCaptchaCommand>>::handle(
+        &handler,
+        SolveCaptchaCommand {
+            challenge_id: id.clone(),
+            solution: "manual-answer".into(),
+        },
+    )
+    .await
+    .expect("manual resolution succeeds");
+
+    assert_eq!(interaction.dismissed.lock().unwrap().as_slice(), [id]);
 }
 
 #[tokio::test]

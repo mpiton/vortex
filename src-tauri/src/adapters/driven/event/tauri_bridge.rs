@@ -1,37 +1,18 @@
 use serde_json::json;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter};
 
-use crate::adapters::captcha_browser::browser_window_label;
 use crate::domain::event::DomainEvent;
-use crate::domain::model::captcha::CaptchaId;
 use crate::domain::ports::driven::EventBus;
 
 /// Subscribes to the EventBus and emits each event to the Tauri webview.
 pub fn spawn_tauri_event_bridge(app_handle: AppHandle, event_bus: &dyn EventBus) {
     event_bus.subscribe(Box::new(move |event: &DomainEvent| {
-        if let Some(challenge_id) = resolved_captcha_id(event) {
-            let label = browser_window_label(challenge_id.as_str());
-            if let Some(window) = app_handle.get_webview_window(&label)
-                && let Err(error) = window.close()
-            {
-                tracing::warn!(error = %error, "failed to close resolved CAPTCHA window");
-            }
-        }
         if !should_forward_to_frontend(event) {
             return;
         }
         let (name, payload) = to_tauri_event(event);
         app_handle.emit(name, payload).ok();
     }));
-}
-
-fn resolved_captcha_id(event: &DomainEvent) -> Option<&CaptchaId> {
-    match event {
-        DomainEvent::CaptchaSolved { challenge_id, .. }
-        | DomainEvent::CaptchaSkipped { challenge_id, .. }
-        | DomainEvent::CaptchaTimedOut { challenge_id, .. } => Some(challenge_id),
-        _ => None,
-    }
 }
 
 /// Gate `DomainEvent::DownloadCompleted` at the bridge.
@@ -384,7 +365,7 @@ fn to_tauri_event(event: &DomainEvent) -> (&'static str, serde_json::Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::model::captcha::{CaptchaId, CaptchaType};
+    use crate::domain::model::captcha::CaptchaType;
     use crate::domain::model::download::DownloadId;
 
     #[test]
@@ -424,43 +405,6 @@ mod tests {
             challenge_url: "https://hoster.example/captcha".into(),
             image_data: Some(std::sync::Arc::<[u8]>::from(vec![1, 2, 3])),
         }));
-    }
-
-    #[test]
-    fn terminal_captcha_events_target_the_assisted_window() {
-        let challenge_id = CaptchaId::new("captcha-1");
-        let events = [
-            DomainEvent::CaptchaSolved {
-                challenge_id: challenge_id.clone(),
-                download_id: DownloadId(8),
-                solver: "manual".into(),
-                duration_ms: 10,
-            },
-            DomainEvent::CaptchaSkipped {
-                challenge_id: challenge_id.clone(),
-                download_id: DownloadId(8),
-                reason: "skipped".into(),
-            },
-            DomainEvent::CaptchaTimedOut {
-                challenge_id: challenge_id.clone(),
-                download_id: DownloadId(8),
-                duration_ms: 10,
-            },
-        ];
-
-        for event in &events {
-            assert_eq!(
-                resolved_captcha_id(event).map(CaptchaId::as_str),
-                Some("captcha-1")
-            );
-        }
-        assert!(
-            resolved_captcha_id(&DomainEvent::CaptchaPending {
-                challenge_id,
-                download_id: DownloadId(8),
-            })
-            .is_none()
-        );
     }
 
     #[test]

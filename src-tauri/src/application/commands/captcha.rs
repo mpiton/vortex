@@ -197,6 +197,14 @@ impl CaptchaCommandHandler {
         }
     }
 
+    fn dismiss_interaction(&self, id: &CaptchaId) {
+        if let Some(interaction) = &self.interaction
+            && let Err(error) = interaction.dismiss(id)
+        {
+            tracing::warn!(error = %error, "failed to dismiss CAPTCHA interaction");
+        }
+    }
+
     async fn run_solver_cascade(
         &self,
         id: CaptchaId,
@@ -310,6 +318,7 @@ impl CaptchaCommandHandler {
             }
             return Err(error);
         }
+        self.dismiss_interaction(challenge.id());
         self.cancel_timer(challenge.id());
         self.cancel_solver_cascade(challenge.id());
         self.events.publish(queued_event);
@@ -545,6 +554,7 @@ impl CaptchaCommandHandler {
             }
             return Err(error);
         }
+        self.dismiss_interaction(challenge.id());
         self.cancel_timer(challenge.id());
         self.cancel_solver_cascade(challenge.id());
         let event = if timed_out {
