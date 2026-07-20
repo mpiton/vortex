@@ -3,7 +3,9 @@
 use super::ResolveHosterSourceHandler;
 use crate::application::services::download_source_policy::classify_download_module;
 use crate::domain::error::DomainError;
+use crate::domain::model::config::ResolutionTier;
 use crate::domain::model::download::Download;
+use crate::domain::model::plugin::PluginCategory;
 use crate::domain::ports::driven::{
     DownloadSourceResolver, ExtractedHosterLink, ResolutionCancellation, ResolvedDownloadSource,
 };
@@ -55,7 +57,14 @@ impl ResolveHosterSourceHandler {
         cancellation: &ResolutionCancellation,
     ) -> Result<ResolvedDownloadSource, DomainError> {
         if download.account_id().is_some() {
-            return self.resolve_download(download, cancellation);
+            let error = match self.resolve_download(download, cancellation) {
+                Ok(source) => return Ok(source),
+                Err(error) => error,
+            };
+            if self.debrid_falls_through(download, cancellation) {
+                return self.free_tier_source(download, error);
+            }
+            return Err(error);
         }
         cancellation.ensure_active()?;
         let service_name = download.module_name().ok_or_else(|| {
@@ -67,4 +76,66 @@ impl ResolveHosterSourceHandler {
         cancellation.ensure_active()?;
         resolved_protected_source(link)
     }
+
+    /// A debrid is one rung of the cascade, not the only route to the file.
+    /// The link check picked it while it was healthy; by the time the engine
+    /// asks for a URL the quota can be spent, the hoster dropped out of
+    /// coverage, or the service down. R-04 wants the next rung tried with an
+    /// explicit reason instead of a dead download.
+    ///
+    /// Only the free rung is retried. Premium is deliberately not: any
+    /// premium account for the hoster was already offered this link at check
+    /// time and lost to the debrid, so re-offering it replays a decision.
+    /// A lookup that itself fails leaves the fall-through unproven, and then
+    /// the debrid error stands.
+    fn debrid_falls_through(
+        &self,
+        download: &Download,
+        cancellation: &ResolutionCancellation,
+    ) -> bool {
+        let Some(module) = download.module_name() else {
+            return false;
+        };
+        cancellation.ensure_active().is_ok()
+            && self
+                .config
+                .get_config()
+                .is_ok_and(|config| config.resolution_order.contains(&ResolutionTier::Free))
+            && self.plugins.list_loaded().is_ok_and(|infos| {
+                infos
+                    .iter()
+                    .any(|info| info.name() == module && info.category() == PluginCategory::Debrid)
+            })
+    }
+
+    /// Anonymous extraction through the plugin that owns the URL, keeping the
+    /// debrid's reason alongside the free one when neither rung delivers.
+    fn free_tier_source(
+        &self,
+        download: &Download,
+        debrid_error: DomainError,
+    ) -> Result<ResolvedDownloadSource, DomainError> {
+        let url = download.url().as_str();
+        let hoster = match self.plugins.resolve_url(url) {
+            Ok(Some(info)) if Some(info.name()) != download.module_name() => {
+                info.name().to_string()
+            }
+            _ => return Err(debrid_error),
+        };
+        self.plugins
+            .extract_hoster_link(&hoster, url, None)
+            .and_then(resolved_protected_source)
+            .map_err(|free_error| match free_error {
+                // The engine answers a challenge; burying it in a text
+                // summary would strand the download instead.
+                captcha @ DomainError::CaptchaRequired { .. } => captcha,
+                free_error => DomainError::ResolutionExhausted(format!(
+                    "debrid: {debrid_error}; free: {free_error}"
+                )),
+            })
+    }
 }
+
+#[cfg(test)]
+#[path = "hoster_download_source_tests.rs"]
+mod tests;

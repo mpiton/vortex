@@ -1413,6 +1413,10 @@ const MAX_CAPTCHA_SOLVER_IDENTIFIER_BYTES: usize = 128;
 /// One entry per `ResolutionTier` variant; duplicates are dropped by
 /// `normalize_resolution_order`, so a longer list is malformed input.
 const MAX_RESOLUTION_ORDER_ENTRIES: usize = 3;
+/// The longest tier name is `premium`. Anything beyond this is malformed
+/// input whose only effect would be an oversized IPC error string, since
+/// the parse failure quotes what it rejected.
+const MAX_RESOLUTION_TIER_IDENTIFIER_BYTES: usize = 16;
 
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1502,10 +1506,18 @@ impl TryFrom<ConfigPatchDto> for ConfigPatch {
             Some(raw) => Some(raw.parse().map_err(|e: DomainError| e.to_string())?),
             None => None,
         };
-        let resolution_order = match &d.resolution_order {
-            Some(order) if order.len() > MAX_RESOLUTION_ORDER_ENTRIES => {
+        if let Some(order) = &d.resolution_order {
+            if order.len() > MAX_RESOLUTION_ORDER_ENTRIES {
                 return Err("Resolution order exceeds safety limits".to_string());
             }
+            if order
+                .iter()
+                .any(|tier| tier.len() > MAX_RESOLUTION_TIER_IDENTIFIER_BYTES)
+            {
+                return Err("Resolution tier identifier exceeds safety limits".to_string());
+            }
+        }
+        let resolution_order = match &d.resolution_order {
             Some(order) => Some(
                 order
                     .iter()
@@ -5005,6 +5017,23 @@ mod tests {
                 .expect_err("oversized solver identifier must be rejected")
                 .contains("solver identifier")
         );
+    }
+
+    #[test]
+    fn config_patch_dto_rejects_an_oversized_resolution_tier_identifier() {
+        use super::{ConfigPatch, ConfigPatchDto};
+
+        // The parse error quotes what it rejected, so an unbounded tier
+        // name would come straight back as an oversized IPC error.
+        let dto = ConfigPatchDto {
+            resolution_order: Some(vec!["x".repeat(4096)]),
+            ..Default::default()
+        };
+
+        let result: Result<ConfigPatch, String> = dto.try_into();
+        let error = result.expect_err("oversized tier identifier must be rejected");
+        assert!(error.contains("tier identifier"), "{error}");
+        assert!(!error.contains("xxxx"), "{error}");
     }
 
     #[test]

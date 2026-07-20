@@ -34,6 +34,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A debrid that fails when the engine asks for the direct URL now falls through
+  to anonymous extraction instead of leaving the download in error. The link
+  check picks the debrid while it is healthy, but the quota can be spent, the
+  hoster can drop out of coverage, or the service can go down before the
+  transfer starts. When neither rung delivers, the error names both (MAT-142).
+- Resolution tier identifiers coming over IPC are now length-bounded, so a
+  malformed patch cannot turn the parse error into an oversized IPC string
+  (MAT-142).
 - CAPTCHA browser windows now close directly from persisted terminal command
   flows instead of relying on a lossy event subscriber (MAT-141).
 - The Windows Tesseract broker regression fixture now returns success after

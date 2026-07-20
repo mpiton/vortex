@@ -249,6 +249,21 @@ mod tests {
     }
 
     #[test]
+    fn test_display_resolution_exhausted_keeps_every_tier_reason() {
+        // R-04: the user needs to read which rung refused and why, not a
+        // generic failure that hides the whole cascade.
+        let err = DomainError::ResolutionExhausted(
+            "premium: no premium account for vortex-mod-mediafire; \
+             debrid: no debrid service covers this hoster"
+                .to_string(),
+        );
+        let msg = err.to_string();
+
+        assert!(msg.contains("no premium account"), "{msg}");
+        assert!(msg.contains("no debrid service covers"), "{msg}");
+    }
+
+    #[test]
     fn test_display_unsupported_checksum_format() {
         let err = DomainError::UnsupportedChecksumFormat("xyz".to_string());
         let msg = err.to_string();

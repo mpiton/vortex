@@ -116,11 +116,16 @@ impl ConfigStore for OrderedConfigStore {
 }
 
 fn account(id: &str, service: &str, status: AccountStatus) -> Account {
+    let account_type = if service == DEBRID {
+        AccountType::Debrid
+    } else {
+        AccountType::Premium
+    };
     let mut account = Account::new(
         AccountId::new(id),
         service.to_string(),
         "user".into(),
-        AccountType::Debrid,
+        account_type,
         0,
     );
     account.set_status(status);
@@ -226,6 +231,22 @@ async fn test_exhausted_debrid_account_falls_through_to_free() {
     assert_eq!(resolved[0].module_name, HOSTER);
     assert_eq!(resolved[0].status, "online");
     assert_eq!(*plugins.anonymous_calls.lock().expect("call log"), [HOSTER]);
+}
+
+#[tokio::test]
+async fn test_an_exhausted_premium_account_aborts_instead_of_downgrading_to_free() {
+    // The rotator's contract is that the caller waits out the cooldown, so
+    // premium exhaustion is not a skip. Downgrading here would quietly turn
+    // a paid download into a throttled anonymous one.
+    let mut premium = account("premium-1", HOSTER, AccountStatus::Valid);
+    // A deadline no clock reaches: the account is in cooldown, not absent,
+    // which is what separates exhaustion from "no account configured".
+    premium.mark_exhausted(u64::MAX);
+
+    let (resolved, plugins) = resolve(default_resolution_order(), vec![premium], true).await;
+
+    assert_eq!(resolved[0].status, "error");
+    assert!(plugins.anonymous_calls.lock().expect("call log").is_empty());
 }
 
 #[tokio::test]

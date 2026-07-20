@@ -275,20 +275,22 @@ impl FromStr for ResolutionTier {
 
 /// PRD §4.3 default: a hoster-specific premium account outranks a debrid
 /// subscription, which outranks anonymous free extraction.
+const DEFAULT_ORDER: [ResolutionTier; 3] = [
+    ResolutionTier::Premium,
+    ResolutionTier::Debrid,
+    ResolutionTier::Free,
+];
+
 pub fn default_resolution_order() -> Vec<ResolutionTier> {
-    vec![
-        ResolutionTier::Premium,
-        ResolutionTier::Debrid,
-        ResolutionTier::Free,
-    ]
+    DEFAULT_ORDER.to_vec()
 }
 
 /// Drop duplicates from a persisted order and append any tier the user
 /// left out, so every rung stays reachable and no link becomes
 /// unresolvable through a hand-edited config.
 pub fn normalize_resolution_order(raw: &[ResolutionTier]) -> Vec<ResolutionTier> {
-    let mut normalized: Vec<ResolutionTier> = Vec::with_capacity(3);
-    for tier in raw.iter().chain(default_resolution_order().iter()) {
+    let mut normalized: Vec<ResolutionTier> = Vec::with_capacity(DEFAULT_ORDER.len());
+    for tier in raw.iter().chain(DEFAULT_ORDER.iter()) {
         if !normalized.contains(tier) {
             normalized.push(*tier);
         }
