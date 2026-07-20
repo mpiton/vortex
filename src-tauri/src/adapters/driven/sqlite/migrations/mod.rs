@@ -11,6 +11,7 @@ mod m20260430_000008_add_package_external_id;
 mod m20260505_000009_add_mirrors;
 mod m20260716_000010_wire_premium_accounts;
 mod m20260719_000011_create_captcha_log;
+mod m20260720_000012_add_captcha_solver_attempts;
 
 pub struct Migrator;
 
@@ -29,6 +30,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260505_000009_add_mirrors::Migration),
             Box::new(m20260716_000010_wire_premium_accounts::Migration),
             Box::new(m20260719_000011_create_captcha_log::Migration),
+            Box::new(m20260720_000012_add_captcha_solver_attempts::Migration),
         ]
     }
 }

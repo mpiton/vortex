@@ -3,7 +3,7 @@
 mod legacy;
 mod legacy_download;
 mod output;
-mod platform;
+pub(crate) mod platform;
 mod process;
 mod request;
 mod selectors;

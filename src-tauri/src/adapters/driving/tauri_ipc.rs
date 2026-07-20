@@ -17,20 +17,21 @@ use crate::application::commands::{
     AccountPatch, AddAccountCommand, AddDownloadToPackageCommand, CancelDownloadCommand,
     ChangeDirectoryBulkCommand, ChangeDirectoryBulkOutcome, ChangeDirectoryCommand,
     ChangeDirectoryFailure, CheckOnlineCommand, ClearDownloadsByStateCommand, ClearHistoryCommand,
-    CreatePackageCommand, DeleteAccountCommand, DeleteHistoryEntryCommand, DeletePackageCommand,
-    DisablePluginCommand, EnablePluginCommand, ExportAccountsCommand, ExportAccountsOutcome,
-    ExportHistoryCommand, ExportHistoryFormat, ImportAccountsCommand, ImportAccountsOutcome,
-    ImportContainerCommand, ImportContainerOutcome, InstallPluginCommand,
-    MovePackageToFolderCommand, MoveToBottomCommand, MoveToTopCommand, OpenDownloadFileCommand,
-    OpenDownloadFolderCommand, PackageMoveOutcome, PackagePatch, PauseAllDownloadsCommand,
-    PauseDownloadCommand, PurgeHistoryCommand, RedownloadCommand, RedownloadSource,
-    RemoveDownloadCommand, RemoveDownloadFromPackageCommand, ReorderQueueCommand,
+    CreatePackageCommand, DeleteAccountCommand, DeleteCaptchaCredentialCommand,
+    DeleteHistoryEntryCommand, DeletePackageCommand, DisablePluginCommand, EnablePluginCommand,
+    ExportAccountsCommand, ExportAccountsOutcome, ExportHistoryCommand, ExportHistoryFormat,
+    ImportAccountsCommand, ImportAccountsOutcome, ImportContainerCommand, ImportContainerOutcome,
+    InstallPluginCommand, MovePackageToFolderCommand, MoveToBottomCommand, MoveToTopCommand,
+    OpenDownloadFileCommand, OpenDownloadFolderCommand, PackageMoveOutcome, PackagePatch,
+    PauseAllDownloadsCommand, PauseDownloadCommand, PurgeHistoryCommand, RedownloadCommand,
+    RedownloadSource, RemoveDownloadCommand, RemoveDownloadFromPackageCommand, ReorderQueueCommand,
     ReportBrokenPluginCommand, ResolveLinksCommand, ResolvedLinkDto, ResumeAllDownloadsCommand,
-    ResumeDownloadCommand, RetryCaptchaCommand, RetryDownloadCommand, SetPackagePasswordCommand,
-    SetPackagePriorityCommand, SetPriorityCommand, SkipCaptchaCommand, SolveCaptchaCommand,
-    StartDownloadCommand, TogglePackageAutoExtractCommand, UninstallPluginCommand,
-    UpdateAccountCommand, UpdateConfigCommand, UpdatePackageCommand, UpdatePluginConfigCommand,
-    ValidateAccountCommand, ValidationOutcomeDto, VerifyChecksumCommand, VerifyChecksumOutcome,
+    ResumeDownloadCommand, RetryCaptchaCommand, RetryDownloadCommand, SetCaptchaCredentialCommand,
+    SetPackagePasswordCommand, SetPackagePriorityCommand, SetPriorityCommand, SkipCaptchaCommand,
+    SolveCaptchaCommand, StartDownloadCommand, TogglePackageAutoExtractCommand,
+    UninstallPluginCommand, UpdateAccountCommand, UpdateConfigCommand, UpdatePackageCommand,
+    UpdatePluginConfigCommand, ValidateAccountCommand, ValidationOutcomeDto, VerifyChecksumCommand,
+    VerifyChecksumOutcome,
 };
 use crate::application::error::AppError;
 use crate::application::queries::{
@@ -241,6 +242,44 @@ pub async fn captcha_get_pending(
     state
         .query_bus
         .handle_captcha_get_pending(CaptchaGetPendingQuery { challenge_id })
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CaptchaCredentialStatusDto {
+    pub configured: bool,
+}
+
+#[tauri::command]
+pub async fn captcha_credential_status(
+    state: State<'_, AppState>,
+) -> Result<CaptchaCredentialStatusDto, String> {
+    state
+        .command_bus
+        .captcha_credential_configured()
+        .map(|configured| CaptchaCredentialStatusDto { configured })
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn captcha_credential_set(
+    state: State<'_, AppState>,
+    api_key: String,
+) -> Result<(), String> {
+    state
+        .command_bus
+        .handle_set_captcha_credential(SetCaptchaCredentialCommand { api_key })
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn captcha_credential_delete(state: State<'_, AppState>) -> Result<(), String> {
+    state
+        .command_bus
+        .handle_delete_captcha_credential(DeleteCaptchaCredentialCommand)
         .await
         .map_err(|error| error.to_string())
 }
@@ -1238,6 +1277,7 @@ pub struct SettingsDto {
 
     // CAPTCHA
     pub captcha_timeout_seconds: u32,
+    pub captcha_solver_order: Vec<String>,
 
     // History
     pub history_retention_days: i64,
@@ -1304,6 +1344,7 @@ impl From<AppConfig> for SettingsDto {
             dynamic_split_enabled: c.dynamic_split_enabled,
             dynamic_split_min_remaining_mb: c.dynamic_split_min_remaining_mb,
             captcha_timeout_seconds: c.captcha_timeout_seconds,
+            captcha_solver_order: c.captcha_solver_order,
             history_retention_days: c.history_retention_days,
             account_selection_strategy: c.account_selection_strategy.to_string(),
             proxy_type: c.proxy_type,
@@ -1355,6 +1396,7 @@ pub struct ConfigPatchDto {
 
     // CAPTCHA
     pub captcha_timeout_seconds: Option<u32>,
+    pub captcha_solver_order: Option<Vec<String>>,
 
     // History
     pub history_retention_days: Option<i64>,
@@ -1421,6 +1463,7 @@ impl TryFrom<ConfigPatchDto> for ConfigPatch {
             dynamic_split_enabled: d.dynamic_split_enabled,
             dynamic_split_min_remaining_mb: d.dynamic_split_min_remaining_mb,
             captcha_timeout_seconds: d.captcha_timeout_seconds,
+            captcha_solver_order: d.captcha_solver_order,
             history_retention_days: d.history_retention_days,
             account_selection_strategy,
             proxy_type: d.proxy_type,

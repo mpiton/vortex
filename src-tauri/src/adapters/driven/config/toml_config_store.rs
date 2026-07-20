@@ -10,7 +10,7 @@ use crate::domain::error::DomainError;
 use crate::domain::model::account::AccountSelectionStrategy;
 use crate::domain::model::config::{
     AppConfig, ConfigPatch, MAX_CAPTCHA_TIMEOUT_SECONDS, MIN_CAPTCHA_TIMEOUT_SECONDS, apply_patch,
-    normalize_history_retention_days,
+    normalize_captcha_solver_order, normalize_history_retention_days,
 };
 use crate::domain::ports::driven::ConfigStore;
 
@@ -165,6 +165,7 @@ struct ConfigDto {
 
     // CAPTCHA
     captcha_timeout_seconds: u32,
+    captcha_solver_order: Vec<String>,
 
     // History
     history_retention_days: i64,
@@ -230,6 +231,7 @@ impl From<AppConfig> for ConfigDto {
             dynamic_split_enabled: c.dynamic_split_enabled,
             dynamic_split_min_remaining_mb: c.dynamic_split_min_remaining_mb,
             captcha_timeout_seconds: c.captcha_timeout_seconds,
+            captcha_solver_order: c.captcha_solver_order,
             history_retention_days: c.history_retention_days,
             account_selection_strategy: c.account_selection_strategy.to_string(),
             proxy_type: c.proxy_type,
@@ -291,6 +293,7 @@ impl TryFrom<ConfigDto> for AppConfig {
             captcha_timeout_seconds: d
                 .captcha_timeout_seconds
                 .clamp(MIN_CAPTCHA_TIMEOUT_SECONDS, MAX_CAPTCHA_TIMEOUT_SECONDS),
+            captcha_solver_order: normalize_captcha_solver_order(&d.captcha_solver_order),
             history_retention_days: normalize_history_retention_days(d.history_retention_days),
             account_selection_strategy,
             proxy_type: d.proxy_type,
@@ -319,7 +322,10 @@ impl TryFrom<ConfigDto> for AppConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::model::config::{MAX_CAPTCHA_TIMEOUT_SECONDS, MIN_CAPTCHA_TIMEOUT_SECONDS};
+    use crate::domain::model::config::{
+        CAPTCHA_SOLVER_BROWSER, CAPTCHA_SOLVER_OCR, MAX_CAPTCHA_TIMEOUT_SECONDS,
+        MIN_CAPTCHA_TIMEOUT_SECONDS, default_captcha_solver_order,
+    };
 
     /// Non-empty bootstrap key used by tests that don't assert on `api_key`
     /// but still exercise a fresh-config code path, which now requires one.
@@ -419,6 +425,31 @@ mod tests {
         // All other fields should be defaults
         assert_eq!(config.max_concurrent_downloads, 4);
         assert!(config.notifications_enabled);
+        assert_eq!(config.captcha_solver_order, default_captcha_solver_order());
+    }
+
+    #[test]
+    fn test_captcha_solver_order_is_persisted_and_reloaded() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let store = TomlConfigStore::new(path.clone(), None, Some(TEST_API_KEY.to_string()));
+        let expected = vec![
+            CAPTCHA_SOLVER_BROWSER.to_string(),
+            CAPTCHA_SOLVER_OCR.to_string(),
+        ];
+
+        store
+            .update_config(ConfigPatch {
+                captcha_solver_order: Some(expected.clone()),
+                ..Default::default()
+            })
+            .unwrap();
+        let restarted = TomlConfigStore::new(path, None, None);
+
+        assert_eq!(
+            restarted.get_config().unwrap().captcha_solver_order,
+            expected
+        );
     }
 
     #[test]

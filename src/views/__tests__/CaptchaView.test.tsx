@@ -20,6 +20,7 @@ const pendingCaptcha = {
   status: "pending",
   solver: null,
   attempts: 0,
+  solverAttempts: [],
   createdAt: Date.now() - 1_000,
   expiresAt: Date.now() + 60_000,
   resolvedAt: null,
@@ -46,6 +47,7 @@ beforeEach(() => {
       return [{ ...pendingCaptcha, imageData: null, imageMimeType: null }];
     }
     if (command === "captcha_get_pending") return pendingCaptcha;
+    if (command === "captcha_credential_status") return { configured: false };
     return null;
   });
 });
@@ -61,6 +63,94 @@ describe("CaptchaView", () => {
     expect(screen.getByLabelText("Captcha answer")).toBeInTheDocument();
     expect(screen.getByTestId("captcha-timer")).toHaveTextContent(/\d{2}:\d{2}/);
     expect(screen.getByText("Manual solver")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Tesseract is detected in trusted system paths. If it is missing, the cascade continues automatically.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("activates solvers and persists their cascade order", async () => {
+    renderView();
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("button", { name: "Move AntiCaptcha up" }));
+
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenCalledWith("settings_update", {
+        patch: {
+          captchaSolverOrder: [
+            "vortex-mod-captcha-anticaptcha",
+            "vortex-mod-captcha-ocr",
+            "vortex-mod-captcha-browser",
+          ],
+        },
+      }),
+    );
+
+    await user.click(screen.getByRole("checkbox", { name: "Tesseract OCR" }));
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenCalledWith("settings_update", {
+        patch: {
+          captchaSolverOrder: ["vortex-mod-captcha-anticaptcha", "vortex-mod-captcha-browser"],
+        },
+      }),
+    );
+  });
+
+  it("stores the AntiCaptcha key through the dedicated credential command", async () => {
+    renderView();
+    const user = userEvent.setup();
+
+    await user.type(await screen.findByLabelText("AntiCaptcha API key"), "secret-api-key");
+    await user.click(screen.getByRole("button", { name: "Save API key" }));
+
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenCalledWith("captcha_credential_set", {
+        apiKey: "secret-api-key",
+      }),
+    );
+  });
+
+  it("shows the ordered automatic solver attempts without answers", async () => {
+    mockInvoke.mockImplementation(async (command: string) => {
+      if (command === "captcha_list") {
+        return [
+          {
+            ...pendingCaptcha,
+            imageData: null,
+            imageMimeType: null,
+            solverAttempts: [
+              {
+                solver: "vortex-mod-captcha-ocr",
+                outcome: "unavailable",
+                attemptedAt: Date.now(),
+                durationMs: 12,
+              },
+            ],
+          },
+        ];
+      }
+      if (command === "captcha_get_pending") {
+        return {
+          ...pendingCaptcha,
+          solverAttempts: [
+            {
+              solver: "vortex-mod-captcha-ocr",
+              outcome: "unavailable",
+              attemptedAt: Date.now(),
+              durationMs: 12,
+            },
+          ],
+        };
+      }
+      if (command === "captcha_credential_status") return { configured: false };
+      return null;
+    });
+
+    renderView();
+
+    expect(await screen.findByText("Tesseract OCR — Unavailable")).toBeInTheDocument();
   });
 
   it("submits the answer through captcha_solve", async () => {

@@ -12,6 +12,7 @@ mod add_account;
 mod add_download_to_package;
 mod cancel_download;
 pub mod captcha;
+mod captcha_credential;
 mod change_directory;
 mod check_online;
 mod clear_downloads_by_state;
@@ -160,6 +161,26 @@ pub struct TimeoutCaptchaCommand {
     pub expected_expires_at: u64,
 }
 impl Command for TimeoutCaptchaCommand {}
+
+pub struct SetCaptchaCredentialCommand {
+    pub api_key: String,
+}
+
+impl std::fmt::Debug for SetCaptchaCredentialCommand {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SetCaptchaCredentialCommand")
+            .field("api_key", &"<redacted>")
+            .finish()
+    }
+}
+
+impl Command for SetCaptchaCredentialCommand {}
+
+#[derive(Debug)]
+pub struct DeleteCaptchaCredentialCommand;
+
+impl Command for DeleteCaptchaCredentialCommand {}
 
 #[derive(Debug)]
 pub struct PauseAllDownloadsCommand;

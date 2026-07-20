@@ -7,6 +7,9 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use super::capabilities::{CredentialSlot, PluginHostContext};
+use super::tesseract_broker::{
+    PluginTesseractRequest, run_plugin_request as run_tesseract_request,
+};
 use super::ytdlp_broker::{
     LegacySubprocessRequest, PluginYtDlpRequest, run_legacy_request, run_plugin_request,
 };
@@ -415,6 +418,41 @@ pub fn make_run_ytdlp_function(user_data: extism::UserData<PluginHostContext>) -
             let response = run_plugin_request(&plugin_name, request)?;
             let json = serde_json::to_string(&response)
                 .map_err(|e| anyhow::anyhow!("run_ytdlp: failed to serialize response: {e}"))?;
+            write_output_string(plugin, outputs, &json)
+        },
+    )
+}
+
+/// Run Tesseract with a host-owned executable, image stdin and fixed arguments.
+pub fn make_run_tesseract_function(
+    user_data: extism::UserData<PluginHostContext>,
+) -> extism::Function {
+    extism::Function::new(
+        "run_tesseract",
+        [extism::ValType::I64],
+        [extism::ValType::I64],
+        user_data,
+        |plugin, inputs, outputs, ud| {
+            let input = read_input_string(plugin, inputs)?;
+            let request: PluginTesseractRequest = serde_json::from_str(&input)
+                .map_err(|_| anyhow::anyhow!("run_tesseract: invalid request"))?;
+            let plugin_name = {
+                let guard = ud.get()?;
+                let ctx = guard
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("run_tesseract: mutex poisoned"))?;
+                if !ctx
+                    .capabilities
+                    .iter()
+                    .any(|cap| cap == "subprocess:tesseract")
+                {
+                    return Err(anyhow::anyhow!("run_tesseract: capability is not declared"));
+                }
+                ctx.plugin_name.clone()
+            };
+            let response = run_tesseract_request(&plugin_name, request)?;
+            let json = serde_json::to_string(&response)
+                .map_err(|_| anyhow::anyhow!("run_tesseract: failed to encode response"))?;
             write_output_string(plugin, outputs, &json)
         },
     )

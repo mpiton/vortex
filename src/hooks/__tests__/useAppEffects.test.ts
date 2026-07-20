@@ -30,6 +30,11 @@ const baseConfig: AppConfig = {
   dynamicSplitEnabled: true,
   dynamicSplitMinRemainingMb: 4,
   captchaTimeoutSeconds: 120,
+  captchaSolverOrder: [
+    "vortex-mod-captcha-ocr",
+    "vortex-mod-captcha-anticaptcha",
+    "vortex-mod-captcha-browser",
+  ],
   proxyType: "none",
   proxyUrl: null,
   userAgent: "Vortex/1.0",

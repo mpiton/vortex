@@ -31,6 +31,7 @@ export interface AppConfig {
   dynamicSplitEnabled: boolean;
   dynamicSplitMinRemainingMb: number;
   captchaTimeoutSeconds: number;
+  captchaSolverOrder: string[];
 
   // History
   historyRetentionDays: number;

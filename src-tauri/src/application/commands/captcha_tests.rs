@@ -10,10 +10,17 @@ use crate::application::commands::captcha::{CaptchaCommandHandler, ManualCaptcha
 use crate::application::commands::tests_support::{CapturingEventBus, InMemoryDownloadRepo};
 use crate::domain::error::DomainError;
 use crate::domain::event::DomainEvent;
-use crate::domain::model::captcha::{CaptchaChallenge, CaptchaId, CaptchaStatus, CaptchaType};
-use crate::domain::model::config::{AppConfig, ConfigPatch};
+use crate::domain::model::captcha::{
+    CaptchaChallenge, CaptchaId, CaptchaSolution, CaptchaSolverAttemptOutcome, CaptchaStatus,
+    CaptchaType,
+};
+use crate::domain::model::config::{
+    AppConfig, CAPTCHA_SOLVER_ANTICAPTCHA, CAPTCHA_SOLVER_BROWSER, CAPTCHA_SOLVER_OCR, ConfigPatch,
+};
 use crate::domain::model::download::{Download, DownloadId, DownloadState, Url};
-use crate::domain::ports::driven::{CaptchaRepository, Clock, ConfigStore, DownloadRepository};
+use crate::domain::ports::driven::{
+    CaptchaInteraction, CaptchaRepository, Clock, ConfigStore, DownloadRepository,
+};
 use crate::domain::ports::driven::{CaptchaSolver, CaptchaSolverOutcome};
 use crate::domain::ports::driving::CommandHandler;
 
@@ -81,14 +88,12 @@ impl Clock for FixedClock {
     }
 }
 
-struct FixedConfig;
+#[derive(Default)]
+struct FixedConfig(AppConfig);
 
 impl ConfigStore for FixedConfig {
     fn get_config(&self) -> Result<AppConfig, DomainError> {
-        Ok(AppConfig {
-            captcha_timeout_seconds: 120,
-            ..AppConfig::default()
-        })
+        Ok(self.0.clone())
     }
 
     fn update_config(&self, _: ConfigPatch) -> Result<AppConfig, DomainError> {
@@ -109,6 +114,13 @@ fn fixture() -> Fixture {
 }
 
 fn fixture_with_solvers(solvers: Vec<Arc<dyn CaptchaSolver>>) -> Fixture {
+    fixture_with_config_and_solvers(AppConfig::default(), solvers)
+}
+
+fn fixture_with_config_and_solvers(
+    config: AppConfig,
+    solvers: Vec<Arc<dyn CaptchaSolver>>,
+) -> Fixture {
     let captchas = Arc::new(MemoryCaptchaRepo::new());
     let downloads = Arc::new(InMemoryDownloadRepo::new());
     let events = Arc::new(CapturingEventBus::new());
@@ -125,7 +137,7 @@ fn fixture_with_solvers(solvers: Vec<Arc<dyn CaptchaSolver>>) -> Fixture {
         captchas.clone(),
         downloads.clone(),
         events.clone(),
-        Arc::new(FixedConfig),
+        Arc::new(FixedConfig(config)),
         clock.clone(),
         solvers,
     );
@@ -146,6 +158,54 @@ impl CaptchaSolver for FailingCaptchaSolver {
     ) -> Result<CaptchaSolverOutcome, DomainError> {
         Err(DomainError::PluginError("solver unavailable".into()))
     }
+}
+
+struct RecordedCaptchaSolver {
+    name: &'static str,
+    outcome: CaptchaSolverOutcome,
+    calls: Arc<Mutex<Vec<String>>>,
+}
+
+#[derive(Default)]
+struct RecordingCaptchaInteraction(Mutex<Vec<CaptchaId>>);
+
+impl CaptchaInteraction for RecordingCaptchaInteraction {
+    fn request(&self, challenge: &CaptchaChallenge) -> Result<(), DomainError> {
+        self.0.lock().unwrap().push(challenge.id().clone());
+        Ok(())
+    }
+}
+
+impl CaptchaSolver for RecordedCaptchaSolver {
+    fn name(&self) -> &str {
+        self.name
+    }
+
+    fn solve(
+        &self,
+        _challenge: &CaptchaChallenge,
+        _solution: &str,
+    ) -> Result<CaptchaSolverOutcome, DomainError> {
+        self.calls.lock().unwrap().push(self.name.to_string());
+        Ok(self.outcome.clone())
+    }
+}
+
+async fn wait_for_solver_attempts(captchas: &MemoryCaptchaRepo, id: &CaptchaId, expected: usize) {
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        loop {
+            if captchas
+                .find_by_id(id)
+                .unwrap()
+                .is_some_and(|challenge| challenge.solver_attempts().len() >= expected)
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("automatic CAPTCHA cascade should finish");
 }
 
 fn png_image() -> Vec<u8> {
@@ -184,6 +244,145 @@ async fn enqueue_parks_download_and_emits_pending() {
         CaptchaStatus::Pending
     );
     assert!(events.snapshot().iter().any(|event| matches!(event, DomainEvent::CaptchaPending { challenge_id, download_id } if challenge_id == &id && *download_id == DownloadId(42))));
+}
+
+#[tokio::test]
+async fn enqueue_runs_enabled_solvers_in_order_until_one_succeeds() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let solvers: Vec<Arc<dyn CaptchaSolver>> = vec![
+        Arc::new(RecordedCaptchaSolver {
+            name: CAPTCHA_SOLVER_OCR,
+            outcome: CaptchaSolverOutcome::Unavailable,
+            calls: calls.clone(),
+        }),
+        Arc::new(RecordedCaptchaSolver {
+            name: CAPTCHA_SOLVER_ANTICAPTCHA,
+            outcome: CaptchaSolverOutcome::Solved(
+                CaptchaSolution::try_new("ephemeral-answer").unwrap(),
+            ),
+            calls: calls.clone(),
+        }),
+        Arc::new(RecordedCaptchaSolver {
+            name: CAPTCHA_SOLVER_BROWSER,
+            outcome: CaptchaSolverOutcome::InteractionRequired,
+            calls: calls.clone(),
+        }),
+    ];
+    let (handler, captchas, downloads, _, _) =
+        fixture_with_config_and_solvers(AppConfig::default(), solvers);
+
+    let id = enqueue(&handler).await;
+    wait_for_solver_attempts(&captchas, &id, 2).await;
+
+    assert_eq!(
+        calls.lock().unwrap().as_slice(),
+        [CAPTCHA_SOLVER_OCR, CAPTCHA_SOLVER_ANTICAPTCHA]
+    );
+    let stored = captchas.find_by_id(&id).unwrap().unwrap();
+    assert_eq!(stored.status(), CaptchaStatus::Solved);
+    assert_eq!(stored.solver(), Some(CAPTCHA_SOLVER_ANTICAPTCHA));
+    assert_eq!(stored.solver_attempts().len(), 2);
+    assert_eq!(
+        stored.solver_attempts()[0].outcome(),
+        CaptchaSolverAttemptOutcome::Unavailable
+    );
+    assert_eq!(
+        stored.solver_attempts()[1].outcome(),
+        CaptchaSolverAttemptOutcome::Solved
+    );
+    assert_eq!(
+        downloads
+            .find_by_id(DownloadId(42))
+            .unwrap()
+            .unwrap()
+            .state(),
+        DownloadState::Queued
+    );
+}
+
+#[tokio::test]
+async fn automatic_failures_fall_through_and_are_logged_per_solver() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let solvers: Vec<Arc<dyn CaptchaSolver>> = vec![
+        Arc::new(FailingCaptchaSolver),
+        Arc::new(RecordedCaptchaSolver {
+            name: CAPTCHA_SOLVER_ANTICAPTCHA,
+            outcome: CaptchaSolverOutcome::Rejected,
+            calls: calls.clone(),
+        }),
+        Arc::new(RecordedCaptchaSolver {
+            name: CAPTCHA_SOLVER_BROWSER,
+            outcome: CaptchaSolverOutcome::InteractionRequired,
+            calls: calls.clone(),
+        }),
+    ];
+    let config = AppConfig {
+        captcha_solver_order: vec![
+            "failing".into(),
+            CAPTCHA_SOLVER_ANTICAPTCHA.into(),
+            CAPTCHA_SOLVER_BROWSER.into(),
+        ],
+        ..AppConfig::default()
+    };
+    let (handler, captchas, downloads, _, _) = fixture_with_config_and_solvers(config, solvers);
+
+    let id = enqueue(&handler).await;
+    wait_for_solver_attempts(&captchas, &id, 3).await;
+
+    let stored = captchas.find_by_id(&id).unwrap().unwrap();
+    assert_eq!(stored.status(), CaptchaStatus::Pending);
+    assert_eq!(
+        stored
+            .solver_attempts()
+            .iter()
+            .map(|attempt| attempt.outcome())
+            .collect::<Vec<_>>(),
+        vec![
+            CaptchaSolverAttemptOutcome::Failed,
+            CaptchaSolverAttemptOutcome::Rejected,
+            CaptchaSolverAttemptOutcome::InteractionRequired,
+        ]
+    );
+    assert_eq!(
+        downloads
+            .find_by_id(DownloadId(42))
+            .unwrap()
+            .unwrap()
+            .state(),
+        DownloadState::Waiting
+    );
+}
+
+#[tokio::test]
+async fn browser_fallback_requests_a_human_interaction_window() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let interaction = Arc::new(RecordingCaptchaInteraction::default());
+    let config = AppConfig {
+        captcha_solver_order: vec![CAPTCHA_SOLVER_BROWSER.into()],
+        ..AppConfig::default()
+    };
+    let (handler, captchas, _, _, _) = fixture_with_config_and_solvers(
+        config,
+        vec![Arc::new(RecordedCaptchaSolver {
+            name: CAPTCHA_SOLVER_BROWSER,
+            outcome: CaptchaSolverOutcome::InteractionRequired,
+            calls,
+        })],
+    );
+    let handler = handler.with_interaction(interaction.clone());
+
+    let id = enqueue(&handler).await;
+    wait_for_solver_attempts(&captchas, &id, 1).await;
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        loop {
+            if interaction.0.lock().unwrap().as_slice() == [id.clone()] {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("browser interaction should be requested");
 }
 
 #[tokio::test]
@@ -248,6 +447,31 @@ async fn manual_solve_logs_metadata_and_requeues_without_persisting_answer() {
         DownloadState::Queued
     );
     assert!(events.snapshot().iter().any(|event| matches!(event, DomainEvent::CaptchaSolved { challenge_id, .. } if challenge_id == &id)));
+}
+
+#[tokio::test]
+async fn rejected_manual_solution_is_logged_without_leaving_the_pending_state() {
+    let (handler, captchas, _, _, _) = fixture();
+    let id = enqueue(&handler).await;
+
+    let result = <CaptchaCommandHandler as CommandHandler<SolveCaptchaCommand>>::handle(
+        &handler,
+        SolveCaptchaCommand {
+            challenge_id: id.clone(),
+            solution: "   ".into(),
+        },
+    )
+    .await;
+
+    assert!(matches!(result, Err(DomainError::ValidationError(_))));
+    let stored = captchas.find_by_id(&id).unwrap().unwrap();
+    assert_eq!(stored.status(), CaptchaStatus::Pending);
+    assert_eq!(stored.solver_attempts().len(), 1);
+    assert_eq!(stored.solver_attempts()[0].solver(), "manual");
+    assert_eq!(
+        stored.solver_attempts()[0].outcome(),
+        CaptchaSolverAttemptOutcome::Rejected
+    );
 }
 
 #[tokio::test]

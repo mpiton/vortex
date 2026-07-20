@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -14,11 +14,12 @@ use crate::application::error::AppError;
 use crate::domain::error::DomainError;
 use crate::domain::event::DomainEvent;
 use crate::domain::model::captcha::{
-    CaptchaChallenge, CaptchaId, CaptchaStatus, CaptchaType, MAX_CAPTCHA_SOLUTION_BYTES,
+    CaptchaChallenge, CaptchaId, CaptchaSolution, CaptchaSolverAttempt,
+    CaptchaSolverAttemptOutcome, CaptchaStatus, CaptchaType,
 };
 use crate::domain::ports::driven::{
-    CaptchaRepository, CaptchaSolver, CaptchaSolverOutcome, Clock, ConfigStore, DownloadRepository,
-    EventBus,
+    CaptchaInteraction, CaptchaRepository, CaptchaSolver, CaptchaSolverOutcome, Clock, ConfigStore,
+    DownloadRepository, EventBus,
 };
 use crate::domain::ports::driving::CommandHandler;
 
@@ -40,10 +41,10 @@ impl CaptchaSolver for ManualCaptchaSolver {
         ) {
             return Ok(CaptchaSolverOutcome::Unavailable);
         }
-        if solution.trim().is_empty() || solution.len() > MAX_CAPTCHA_SOLUTION_BYTES {
-            return Ok(CaptchaSolverOutcome::Rejected);
+        match CaptchaSolution::try_new(solution) {
+            Ok(solution) => Ok(CaptchaSolverOutcome::Solved(solution)),
+            Err(_) => Ok(CaptchaSolverOutcome::Rejected),
         }
-        Ok(CaptchaSolverOutcome::Solved)
     }
 }
 
@@ -55,7 +56,9 @@ pub struct CaptchaCommandHandler {
     config: Arc<dyn ConfigStore>,
     clock: Arc<dyn Clock>,
     solvers: Arc<Vec<Arc<dyn CaptchaSolver>>>,
+    interaction: Option<Arc<dyn CaptchaInteraction>>,
     timers: Arc<Mutex<HashMap<CaptchaId, CancellationToken>>>,
+    solver_runs: Arc<Mutex<HashMap<CaptchaId, CancellationToken>>>,
     mutation_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
@@ -75,9 +78,16 @@ impl CaptchaCommandHandler {
             config,
             clock,
             solvers: Arc::new(solvers),
+            interaction: None,
             timers: Arc::new(Mutex::new(HashMap::new())),
+            solver_runs: Arc::new(Mutex::new(HashMap::new())),
             mutation_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
+    }
+
+    pub fn with_interaction(mut self, interaction: Arc<dyn CaptchaInteraction>) -> Self {
+        self.interaction = Some(interaction);
+        self
     }
 
     pub fn start_listening(self: &Arc<Self>) {
@@ -110,6 +120,7 @@ impl CaptchaCommandHandler {
     pub async fn restore_pending(&self) -> Result<(), DomainError> {
         for challenge in self.captchas.list_pending()? {
             self.schedule_timeout(&challenge);
+            self.start_solver_cascade(challenge.id().clone());
         }
         Ok(())
     }
@@ -166,33 +177,148 @@ impl CaptchaCommandHandler {
         }
     }
 
+    fn start_solver_cascade(&self, id: CaptchaId) {
+        let token = CancellationToken::new();
+        if let Some(previous) = solver_run_map(&self.solver_runs).insert(id.clone(), token.clone())
+        {
+            previous.cancel();
+        }
+        let handler = self.clone();
+        tokio::spawn(async move {
+            if let Err(error) = handler.run_solver_cascade(id, token).await {
+                tracing::warn!(error = %error, "automatic CAPTCHA solver cascade stopped");
+            }
+        });
+    }
+
+    fn cancel_solver_cascade(&self, id: &CaptchaId) {
+        if let Some(token) = solver_run_map(&self.solver_runs).remove(id) {
+            token.cancel();
+        }
+    }
+
+    async fn run_solver_cascade(
+        &self,
+        id: CaptchaId,
+        token: CancellationToken,
+    ) -> Result<(), DomainError> {
+        let order = self.config.get_config()?.captcha_solver_order;
+        for solver_name in order {
+            if token.is_cancelled() {
+                return Ok(());
+            }
+            let Some(solver) = self
+                .solvers
+                .iter()
+                .find(|solver| solver.name() == solver_name)
+                .cloned()
+            else {
+                continue;
+            };
+            let challenge = self.find(&id)?;
+            if challenge.status() != CaptchaStatus::Pending
+                || challenge.is_expired(self.clock.now_unix_ms())
+            {
+                return Ok(());
+            }
+
+            let attempted_at = self.clock.now_unix_ms();
+            let started = Instant::now();
+            let solver_challenge = challenge.clone();
+            let result =
+                tokio::task::spawn_blocking(move || solver.solve(&solver_challenge, "")).await;
+            let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+            let (outcome, attempt_outcome) = match result {
+                Ok(Ok(outcome)) => {
+                    let attempt_outcome = match &outcome {
+                        CaptchaSolverOutcome::Solved(_) => CaptchaSolverAttemptOutcome::Solved,
+                        CaptchaSolverOutcome::Unavailable => {
+                            CaptchaSolverAttemptOutcome::Unavailable
+                        }
+                        CaptchaSolverOutcome::Rejected => CaptchaSolverAttemptOutcome::Rejected,
+                        CaptchaSolverOutcome::InteractionRequired => {
+                            CaptchaSolverAttemptOutcome::InteractionRequired
+                        }
+                    };
+                    (Some(outcome), attempt_outcome)
+                }
+                Ok(Err(DomainError::NotFound(_))) => {
+                    (None, CaptchaSolverAttemptOutcome::Unavailable)
+                }
+                Ok(Err(_)) | Err(_) => (None, CaptchaSolverAttemptOutcome::Failed),
+            };
+
+            let _guard = self.mutation_lock.lock().await;
+            let mut challenge = self.find(&id)?;
+            let now = self.clock.now_unix_ms();
+            if token.is_cancelled()
+                || challenge.status() != CaptchaStatus::Pending
+                || challenge.is_expired(now)
+            {
+                return Ok(());
+            }
+            challenge.record_solver_attempt(CaptchaSolverAttempt::new(
+                solver_name.clone(),
+                attempt_outcome,
+                attempted_at,
+                duration_ms,
+            ))?;
+            match outcome {
+                Some(CaptchaSolverOutcome::Solved(_solution)) => {
+                    return self.finish_as_solved_locked(challenge, now, &solver_name);
+                }
+                Some(CaptchaSolverOutcome::InteractionRequired) => {
+                    self.captchas.save(&challenge)?;
+                    drop(_guard);
+                    if let Some(interaction) = &self.interaction {
+                        interaction.request(&challenge)?;
+                    }
+                    return Ok(());
+                }
+                Some(CaptchaSolverOutcome::Unavailable | CaptchaSolverOutcome::Rejected) | None => {
+                    self.captchas.save(&challenge)?
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn find(&self, id: &CaptchaId) -> Result<CaptchaChallenge, DomainError> {
         self.captchas
             .find_by_id(id)?
             .ok_or_else(|| DomainError::NotFound(format!("CAPTCHA {id}")))
     }
 
-    fn select_solver(
+    fn finish_as_solved_locked(
         &self,
-        challenge: &CaptchaChallenge,
-        solution: &str,
-    ) -> Result<String, DomainError> {
-        let mut last_error = None;
-        for solver in self.solvers.iter() {
-            match solver.solve(challenge, solution) {
-                Ok(CaptchaSolverOutcome::Solved) => return Ok(solver.name().to_string()),
-                Ok(CaptchaSolverOutcome::Rejected) => {
-                    return Err(DomainError::ValidationError(
-                        "CAPTCHA solution was rejected".into(),
-                    ));
-                }
-                Ok(CaptchaSolverOutcome::Unavailable) => {}
-                Err(error) => last_error = Some(error),
+        mut challenge: CaptchaChallenge,
+        now: u64,
+        solver: &str,
+    ) -> Result<(), DomainError> {
+        let mut download = self
+            .downloads
+            .find_by_id(challenge.download_id())?
+            .ok_or_else(|| DomainError::NotFound("CAPTCHA download".into()))?;
+        let queued_event = download.queue_after_wait()?;
+        let pending_challenge = challenge.clone();
+        challenge.solve(now, solver)?;
+        self.captchas.save(&challenge)?;
+        if let Err(error) = self.downloads.save(&download) {
+            if let Err(rollback_error) = self.captchas.save(&pending_challenge) {
+                tracing::error!(error = %rollback_error, "failed to roll back CAPTCHA solve");
             }
+            return Err(error);
         }
-        Err(last_error.unwrap_or_else(|| {
-            DomainError::ValidationError("No solver supports this CAPTCHA type".into())
-        }))
+        self.cancel_timer(challenge.id());
+        self.cancel_solver_cascade(challenge.id());
+        self.events.publish(queued_event);
+        self.events.publish(DomainEvent::CaptchaSolved {
+            challenge_id: challenge.id().clone(),
+            download_id: challenge.download_id(),
+            solver: solver.to_string(),
+            duration_ms: challenge.duration_ms().unwrap_or_default(),
+        });
+        Ok(())
     }
 }
 
@@ -208,18 +334,25 @@ impl CommandHandler<EnqueueCaptchaCommand> for CaptchaCommandHandler {
                 error: "CAPTCHA challenge could not be queued".into(),
             });
         }
-        result
+        let (id, created) = result?;
+        if created {
+            self.start_solver_cascade(id.clone());
+        }
+        Ok(id)
     }
 }
 
 impl CaptchaCommandHandler {
-    async fn enqueue(&self, command: EnqueueCaptchaCommand) -> Result<CaptchaId, DomainError> {
+    async fn enqueue(
+        &self,
+        command: EnqueueCaptchaCommand,
+    ) -> Result<(CaptchaId, bool), DomainError> {
         let _guard = self.mutation_lock.lock().await;
         if let Some(existing) = self
             .captchas
             .find_pending_by_download(command.download_id)?
         {
-            return Ok(existing.id().clone());
+            return Ok((existing.id().clone(), false));
         }
         let now = self.clock.now_unix_ms();
         let expires_at = self.timeout_deadline(now)?;
@@ -253,7 +386,7 @@ impl CaptchaCommandHandler {
             download_id: command.download_id,
         });
         self.schedule_timeout(&challenge);
-        Ok(challenge.id().clone())
+        Ok((challenge.id().clone(), true))
     }
 }
 
@@ -269,30 +402,30 @@ impl CommandHandler<SolveCaptchaCommand> for CaptchaCommandHandler {
                 "CAPTCHA challenge has expired".into(),
             ));
         }
-        let solver = self.select_solver(&challenge, &command.solution)?;
-        let mut download = self
-            .downloads
-            .find_by_id(challenge.download_id())?
-            .ok_or_else(|| DomainError::NotFound("CAPTCHA download".into()))?;
-        let queued_event = download.queue_after_wait()?;
-        let pending_challenge = challenge.clone();
-        challenge.solve(now, &solver)?;
-        self.captchas.save(&challenge)?;
-        if let Err(error) = self.downloads.save(&download) {
-            if let Err(rollback_error) = self.captchas.save(&pending_challenge) {
-                tracing::error!(error = %rollback_error, "failed to roll back CAPTCHA solve");
+        let started = Instant::now();
+        let outcome = ManualCaptchaSolver.solve(&challenge, &command.solution)?;
+        let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let attempt_outcome = match &outcome {
+            CaptchaSolverOutcome::Solved(_) => CaptchaSolverAttemptOutcome::Solved,
+            CaptchaSolverOutcome::Unavailable => CaptchaSolverAttemptOutcome::Unavailable,
+            CaptchaSolverOutcome::Rejected => CaptchaSolverAttemptOutcome::Rejected,
+            CaptchaSolverOutcome::InteractionRequired => {
+                CaptchaSolverAttemptOutcome::InteractionRequired
             }
-            return Err(error);
+        };
+        challenge.record_solver_attempt(CaptchaSolverAttempt::new(
+            "manual",
+            attempt_outcome,
+            now,
+            duration_ms,
+        ))?;
+        if matches!(outcome, CaptchaSolverOutcome::Solved(_)) {
+            return self.finish_as_solved_locked(challenge, now, "manual");
         }
-        self.cancel_timer(challenge.id());
-        self.events.publish(queued_event);
-        self.events.publish(DomainEvent::CaptchaSolved {
-            challenge_id: challenge.id().clone(),
-            download_id: challenge.download_id(),
-            solver,
-            duration_ms: challenge.duration_ms().unwrap_or_default(),
-        });
-        Ok(())
+        self.captchas.save(&challenge)?;
+        Err(DomainError::ValidationError(
+            "CAPTCHA solution was rejected".into(),
+        ))
     }
 }
 
@@ -407,6 +540,7 @@ impl CaptchaCommandHandler {
             return Err(error);
         }
         self.cancel_timer(challenge.id());
+        self.cancel_solver_cascade(challenge.id());
         let event = if timed_out {
             DomainEvent::CaptchaTimedOut {
                 challenge_id: challenge.id().clone(),
@@ -441,6 +575,8 @@ impl CommandHandler<RetryCaptchaCommand> for CaptchaCommandHandler {
             challenge.retry(now, self.timeout_deadline(now)?)?;
             self.captchas.save(&challenge)?;
             self.schedule_timeout(&challenge);
+            drop(_guard);
+            self.start_solver_cascade(challenge.id().clone());
             return Ok(());
         }
         if challenge.status() == CaptchaStatus::Solved {
@@ -511,6 +647,15 @@ fn timer_map(
     timers: &Mutex<HashMap<CaptchaId, CancellationToken>>,
 ) -> std::sync::MutexGuard<'_, HashMap<CaptchaId, CancellationToken>> {
     match timers.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+fn solver_run_map(
+    runs: &Mutex<HashMap<CaptchaId, CancellationToken>>,
+) -> std::sync::MutexGuard<'_, HashMap<CaptchaId, CancellationToken>> {
+    match runs.lock() {
         Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner(),
     }

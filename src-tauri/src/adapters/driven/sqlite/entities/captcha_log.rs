@@ -2,7 +2,8 @@ use sea_orm::entity::prelude::*;
 
 use crate::domain::error::DomainError;
 use crate::domain::model::captcha::{
-    CaptchaChallenge, CaptchaChallengeRecord, CaptchaId, CaptchaStatus, CaptchaType,
+    CaptchaChallenge, CaptchaChallengeRecord, CaptchaId, CaptchaSolverAttempt,
+    CaptchaSolverAttemptOutcome, CaptchaStatus, CaptchaType,
 };
 use crate::domain::model::download::DownloadId;
 
@@ -18,6 +19,7 @@ pub struct Model {
     pub status: String,
     pub solver: Option<String>,
     pub attempts: i32,
+    pub solver_attempts_json: String,
     pub created_at: i64,
     pub expires_at: i64,
     pub resolved_at: Option<i64>,
@@ -41,6 +43,7 @@ impl Model {
             status: self.status.parse::<CaptchaStatus>()?,
             solver: self.solver,
             attempts: u32::try_from(self.attempts).map_err(|_| invalid_integer("attempts"))?,
+            solver_attempts: decode_solver_attempts(&self.solver_attempts_json)?,
             created_at: to_u64(self.created_at, "created_at")?,
             expires_at: to_u64(self.expires_at, "expires_at")?,
             resolved_at: self
@@ -71,6 +74,7 @@ impl ActiveModel {
             attempts: Set(
                 i32::try_from(challenge.attempts()).map_err(|_| invalid_integer("attempts"))?
             ),
+            solver_attempts_json: Set(encode_solver_attempts(challenge.solver_attempts())?),
             created_at: Set(to_i64(challenge.created_at(), "created_at")?),
             expires_at: Set(to_i64(challenge.expires_at(), "expires_at")?),
             resolved_at: Set(challenge
@@ -84,6 +88,48 @@ impl ActiveModel {
             failure_reason: Set(challenge.failure_reason().map(str::to_string)),
         })
     }
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SolverAttemptDto {
+    solver: String,
+    outcome: String,
+    attempted_at: u64,
+    duration_ms: u64,
+}
+
+fn encode_solver_attempts(attempts: &[CaptchaSolverAttempt]) -> Result<String, DomainError> {
+    let attempts: Vec<_> = attempts
+        .iter()
+        .map(|attempt| SolverAttemptDto {
+            solver: attempt.solver().to_string(),
+            outcome: attempt.outcome().to_string(),
+            attempted_at: attempt.attempted_at(),
+            duration_ms: attempt.duration_ms(),
+        })
+        .collect();
+    serde_json::to_string(&attempts).map_err(|error| {
+        DomainError::StorageError(format!("failed to encode CAPTCHA attempts: {error}"))
+    })
+}
+
+fn decode_solver_attempts(value: &str) -> Result<Vec<CaptchaSolverAttempt>, DomainError> {
+    let attempts: Vec<SolverAttemptDto> = serde_json::from_str(value).map_err(|error| {
+        DomainError::StorageError(format!(
+            "captcha_log contains invalid solver attempts: {error}"
+        ))
+    })?;
+    attempts
+        .into_iter()
+        .map(|attempt| {
+            Ok(CaptchaSolverAttempt::new(
+                attempt.solver,
+                attempt.outcome.parse::<CaptchaSolverAttemptOutcome>()?,
+                attempt.attempted_at,
+                attempt.duration_ms,
+            ))
+        })
+        .collect()
 }
 
 fn to_u64(value: i64, field: &str) -> Result<u64, DomainError> {

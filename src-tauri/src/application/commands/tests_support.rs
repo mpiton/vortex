@@ -901,6 +901,23 @@ pub(crate) fn build_account_bus_with_plugin_loader(
     bus
 }
 
+pub(crate) fn build_credential_bus(credential_store: Arc<dyn CredentialStore>) -> CommandBus {
+    CommandBus::new(
+        Arc::new(StubDownloadRepo),
+        Arc::new(StubDownloadEngine),
+        Arc::new(CapturingEventBus::new()),
+        Arc::new(StubFileStorage),
+        Arc::new(StubHttpClient),
+        Arc::new(StubPluginLoader),
+        Arc::new(StubConfigStore),
+        credential_store,
+        Arc::new(StubClipboardObserver),
+        Arc::new(StubArchiveExtractor),
+        Arc::new(NoopHistoryRepo),
+        None,
+    )
+}
+
 /// Build a [`CommandBus`] wired with the package ports needed by the
 /// package-command handlers. The download write repo is supplied so
 /// `set_priority` and `move_to_folder` can read/save member downloads.

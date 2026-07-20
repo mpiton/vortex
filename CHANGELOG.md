@@ -12,6 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CAPTCHA pipeline: persistent manual challenge queue, solve/skip/retry
   actions, timeout handling, automatic download resumption, compact image
   transport, bounded plugin inputs, and redacted challenge history (MAT-140).
+- CAPTCHA solvers: configurable OCR → AntiCaptcha → browser cascade, typed
+  Tesseract host broker, keyring-backed AntiCaptcha credentials, persisted
+  per-solver attempts, and a dedicated human-assisted WebView (MAT-141).
 
 ### Security
 

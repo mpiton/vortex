@@ -14,6 +14,7 @@ use domain::ports::driven::{
 };
 
 // Public API — concrete types for app wiring (main.rs, Tauri setup, integration tests)
+pub use adapters::driven::captcha_interaction::TauriCaptchaInteraction;
 pub use adapters::driven::clipboard::TauriClipboardObserver;
 pub use adapters::driven::config::TomlConfigStore;
 pub use adapters::driven::credential::KeyringAccountStore;
@@ -39,7 +40,8 @@ pub use adapters::driven::notification::spawn_notification_bridge;
 pub use adapters::driven::plugin::builtin::HttpModule;
 pub use adapters::driven::plugin::capabilities::SharedHostResources;
 pub use adapters::driven::plugin::{
-    ExtismPluginLoader, GithubStoreClient, PluginAccountValidator, PluginRegistry, PluginWatcher,
+    ExtismPluginLoader, GithubStoreClient, PluginAccountValidator, PluginCaptchaSolver,
+    PluginRegistry, PluginWatcher,
 };
 pub use adapters::driven::scheduler::{HISTORY_PURGE_STATE_FILE, HistoryPurgeWorker, SystemClock};
 pub use adapters::driven::sqlite::account_repo::SqliteAccountRepo;
@@ -77,12 +79,13 @@ pub use domain::model::ExtractionConfig;
 pub use adapters::driving::tauri_ipc::{
     self, AppState, account_add, account_delete, account_export, account_get, account_import,
     account_list, account_traffic_get, account_update, account_validate, browse_file,
-    browse_folder, captcha_get_pending, captcha_list, captcha_retry, captcha_skip, captcha_solve,
-    clipboard_state, clipboard_toggle, command_get_media_metadata, download_cancel,
-    download_change_directory, download_change_directory_bulk, download_clear_completed,
-    download_clear_failed, download_count_by_state, download_detail, download_list, download_logs,
-    download_media_start, download_move_to_bottom, download_move_to_top, download_open_file,
-    download_open_folder, download_pause, download_pause_all, download_redownload, download_remove,
+    browse_folder, captcha_credential_delete, captcha_credential_set, captcha_credential_status,
+    captcha_get_pending, captcha_list, captcha_retry, captcha_skip, captcha_solve, clipboard_state,
+    clipboard_toggle, command_get_media_metadata, download_cancel, download_change_directory,
+    download_change_directory_bulk, download_clear_completed, download_clear_failed,
+    download_count_by_state, download_detail, download_list, download_logs, download_media_start,
+    download_move_to_bottom, download_move_to_top, download_open_file, download_open_folder,
+    download_pause, download_pause_all, download_redownload, download_remove,
     download_reorder_queue, download_resume, download_resume_all, download_retry,
     download_set_priority, download_skip_wait, download_start, download_verify_checksum,
     history_clear, history_delete_entry, history_export, history_get_by_id, history_list,
@@ -187,7 +190,9 @@ pub fn run() {
             );
 
             // ── Plugin system ───────────────────────────────────────
-            let shared_resources = Arc::new(SharedHostResources::new());
+            let shared_resources = Arc::new(
+                SharedHostResources::new().with_credential_store(credential_store.clone()),
+            );
             let plugin_config_store: Arc<
                 dyn crate::domain::ports::driven::PluginConfigStore,
             > = Arc::new(
@@ -358,16 +363,28 @@ pub fn run() {
                 queue_manager.clone(),
             );
 
-            let captcha_solvers: Vec<Arc<dyn CaptchaSolver>> =
-                vec![Arc::new(ManualCaptchaSolver)];
-            let captcha_handler = Arc::new(CaptchaCommandHandler::new(
-                captcha_repo.clone(),
-                download_repo.clone(),
-                event_bus.clone(),
-                config_store.clone(),
-                Arc::new(SystemClock) as Arc<dyn Clock>,
-                captcha_solvers,
-            ));
+            let captcha_solvers: Vec<Arc<dyn CaptchaSolver>> = [
+                crate::domain::model::config::CAPTCHA_SOLVER_OCR,
+                crate::domain::model::config::CAPTCHA_SOLVER_ANTICAPTCHA,
+                crate::domain::model::config::CAPTCHA_SOLVER_BROWSER,
+            ]
+            .into_iter()
+            .map(|name| {
+                Arc::new(PluginCaptchaSolver::new(name, plugin_loader.clone()))
+                    as Arc<dyn CaptchaSolver>
+            })
+            .collect();
+            let captcha_handler = Arc::new(
+                CaptchaCommandHandler::new(
+                    captcha_repo.clone(),
+                    download_repo.clone(),
+                    event_bus.clone(),
+                    config_store.clone(),
+                    Arc::new(SystemClock) as Arc<dyn Clock>,
+                    captcha_solvers,
+                )
+                .with_interaction(Arc::new(TauriCaptchaInteraction::new(app.handle().clone()))),
+            );
             captcha_handler.start_listening();
 
             // ── Plugin store client ─────────────────────────────────
@@ -600,6 +617,9 @@ pub fn run() {
             captcha_retry,
             captcha_list,
             captcha_get_pending,
+            captcha_credential_status,
+            captcha_credential_set,
+            captcha_credential_delete,
             download_change_directory,
             download_change_directory_bulk,
             download_retry,

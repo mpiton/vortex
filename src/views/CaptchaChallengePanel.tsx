@@ -11,7 +11,27 @@ import type { CaptchaChallengeView } from "@/types/captcha";
 
 const INVALIDATE_KEYS = [captchaQueries.all(), downloadQueries.all()] as const;
 
-export function CaptchaChallengePanel({ challenge }: { challenge: CaptchaChallengeView }) {
+function solverLabel(solver: string, translate: (key: string) => string): string {
+  switch (solver) {
+    case "vortex-mod-captcha-ocr":
+      return translate("captcha.settings.solvers.ocr");
+    case "vortex-mod-captcha-anticaptcha":
+      return translate("captcha.settings.solvers.antiCaptcha");
+    case "vortex-mod-captcha-browser":
+      return translate("captcha.settings.solvers.browser");
+    case "manual":
+      return translate("captcha.settings.manual");
+    default:
+      return solver;
+  }
+}
+
+interface CaptchaChallengePanelProps {
+  challenge: CaptchaChallengeView;
+  onResolved?: () => void;
+}
+
+export function CaptchaChallengePanel({ challenge, onResolved }: CaptchaChallengePanelProps) {
   const { t } = useTranslation();
   const [solution, setSolution] = useState("");
   const countdown = useCountdown(challenge.expiresAt);
@@ -25,9 +45,11 @@ export function CaptchaChallengePanel({ challenge }: { challenge: CaptchaChallen
 
   const solve = useTauriMutation<void, { challengeId: string; solution: string }>("captcha_solve", {
     invalidateKeys: INVALIDATE_KEYS,
+    onSuccess: onResolved,
   });
   const skip = useTauriMutation<void, { challengeId: string }>("captcha_skip", {
     invalidateKeys: INVALIDATE_KEYS,
+    onSuccess: onResolved,
   });
   const retry = useTauriMutation<void, { challengeId: string }>("captcha_retry", {
     invalidateKeys: INVALIDATE_KEYS,
@@ -52,6 +74,16 @@ export function CaptchaChallengePanel({ challenge }: { challenge: CaptchaChallen
             data-testid="captcha-image"
             src={`data:${challenge.imageMimeType};base64,${challenge.imageData}`}
           />
+        ) : null}
+        {challenge.solverAttempts.length > 0 ? (
+          <div className="space-y-1 rounded-md border p-3 text-sm">
+            <p className="font-medium">{t("captcha.attempts")}</p>
+            {challenge.solverAttempts.map((attempt, index) => (
+              <p className="text-muted-foreground" key={`${attempt.solver}-${index}`}>
+                {solverLabel(attempt.solver, t)} — {t(`captcha.outcomes.${attempt.outcome}`)}
+              </p>
+            ))}
+          </div>
         ) : null}
         {acceptsText ? (
           <div className="space-y-2">

@@ -132,7 +132,10 @@ impl OfficialProvenanceStore {
                 && entry.wasm_sha256 == digest(wasm_bytes)
                 && entry.manifest_sha256 == digest(manifest_bytes)
         });
-        HostFunctionGrants { ytdlp: verified }
+        HostFunctionGrants {
+            ytdlp: verified,
+            tesseract: verified && name == "vortex-mod-captcha-ocr",
+        }
     }
 
     pub(super) fn revoke(&self, name: &str) -> Result<(), DomainError> {

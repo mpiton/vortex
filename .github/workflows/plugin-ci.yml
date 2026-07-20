@@ -110,6 +110,12 @@ jobs:
           test -s "${WASM_PATH}"
 
           case "${PACKAGE_NAME}" in
+            vortex-mod-captcha-anticaptcha)
+              required="can_solve solve get_balance"
+              ;;
+            vortex-mod-captcha-browser|vortex-mod-captcha-ocr)
+              required="can_solve solve"
+              ;;
             vortex-mod-containers)
               required="can_decrypt detect decrypt"
               ;;

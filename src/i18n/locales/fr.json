@@ -22,9 +22,19 @@
     "empty": "Aucun CAPTCHA en attente",
     "loading": "Chargement de la file CAPTCHA…",
     "error": "Impossible de charger la file CAPTCHA",
+    "browserTitle": "Vérification CAPTCHA humaine",
+    "browserUnavailable": "Ce CAPTCHA n’est plus en attente. Vous pouvez fermer cette fenêtre.",
     "history": "Défis récents",
     "download": "Téléchargement nº {{id}}",
     "answer": "Réponse au captcha",
+    "attempts": "Tentatives des solveurs",
+    "outcomes": {
+      "solved": "Résolu",
+      "unavailable": "Indisponible",
+      "rejected": "Rejeté",
+      "failed": "Échec",
+      "interaction_required": "Interaction humaine demandée"
+    },
     "unsupported": "Ce défi exige une interaction navigateur et n’est pas encore pris en charge.",
     "actions": {
       "solve": "Résoudre",
@@ -46,7 +56,21 @@
     },
     "settings": {
       "title": "Configuration des solveurs",
-      "description": "Les solveurs s’exécutent dans l’ordre. Seule la résolution manuelle est active dans cette version.",
+      "description": "Les solveurs actifs s’exécutent automatiquement dans l’ordre affiché.",
+      "automatic": "Cascade automatique",
+      "solvers": {
+        "ocr": "OCR Tesseract",
+        "antiCaptcha": "AntiCaptcha",
+        "browser": "Relais navigateur"
+      },
+      "moveUp": "Monter {{solver}}",
+      "moveDown": "Descendre {{solver}}",
+      "tesseractDetection": "Tesseract est détecté dans les chemins système de confiance. S’il est absent, la cascade continue automatiquement.",
+      "apiKey": "Clé API AntiCaptcha",
+      "saveApiKey": "Enregistrer la clé API",
+      "deleteApiKey": "Supprimer la clé API",
+      "apiKeyConfigured": "Stockée de façon sécurisée dans le trousseau système.",
+      "apiKeyMissing": "Aucune clé API configurée.",
       "manual": "Solveur manuel",
       "manualDescription": "Saisissez la réponse affichée dans l’image du défi.",
       "timeout": "Délai d’expiration (secondes)",
