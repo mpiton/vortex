@@ -229,6 +229,12 @@ jobs:
       - name: npm ci
         run: npm ci
 
+      - name: Tesseract broker test (Windows)
+        if: runner.os == 'Windows'
+        run: >-
+          cargo test --manifest-path src-tauri/Cargo.toml
+          tesseract_windows_fixture_receives_only_fixed_arguments
+
       - name: Tauri build
         id: tauri-build
         shell: bash
