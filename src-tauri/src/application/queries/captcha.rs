@@ -66,14 +66,16 @@ mod tests {
         }
 
         fn list_pending(&self) -> Result<Vec<CaptchaChallenge>, DomainError> {
-            Ok(self
+            let mut pending: Vec<_> = self
                 .0
                 .lock()
                 .unwrap()
                 .iter()
                 .filter(|challenge| challenge.status() == CaptchaStatus::Pending)
                 .cloned()
-                .collect())
+                .collect();
+            pending.sort_by_key(CaptchaChallenge::created_at);
+            Ok(pending)
         }
     }
 
@@ -112,7 +114,11 @@ mod tests {
     async fn get_pending_supports_explicit_id_and_oldest_fallback() {
         let mut solved = challenge("captcha-solved", 500);
         solved.solve(600, "manual").unwrap();
-        let bus = bus(vec![challenge("captcha-oldest", 1_000), solved]);
+        let bus = bus(vec![
+            challenge("captcha-newer", 2_000),
+            challenge("captcha-oldest", 1_000),
+            solved,
+        ]);
 
         let explicit = bus
             .handle_captcha_get_pending(CaptchaGetPendingQuery {

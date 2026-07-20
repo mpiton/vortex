@@ -10,23 +10,18 @@ impl CommandBus {
         &self,
         cmd: super::RemoveDownloadCommand,
     ) -> Result<(), AppError> {
-        let download = self
-            .download_repo()
-            .find_by_id(cmd.id)?
-            .ok_or_else(|| AppError::NotFound(format!("Download {} not found", cmd.id.0)))?;
-
-        let was_waiting_for_captcha = self.has_pending_captcha_for_download(cmd.id).await?;
-
-        let is_active = matches!(
-            download.state(),
-            DownloadState::Downloading | DownloadState::Waiting
-        ) && !was_waiting_for_captcha;
-
-        if is_active {
-            let _ = self.download_engine().cancel(cmd.id);
-        }
-
-        self.delete_download_with_captcha_cleanup(&download).await?;
+        let (download, is_active) = self
+            .delete_download_with_captcha_cleanup(cmd.id, |download, has_pending_captcha| {
+                let is_active = matches!(
+                    download.state(),
+                    DownloadState::Downloading | DownloadState::Waiting
+                ) && !has_pending_captcha;
+                if is_active {
+                    let _ = self.download_engine().cancel(cmd.id);
+                }
+                Ok(is_active)
+            })
+            .await?;
 
         if cmd.delete_files {
             // Remove the downloaded content file

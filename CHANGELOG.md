@@ -23,6 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- CAPTCHA recovery now re-arms every pending timeout, and download removal
+  atomically coordinates engine cancellation with challenge cleanup (MAT-140).
 - Contributor Automation: `actions/first-interaction` v3 requires both
   `issue_message` and `pr_message` at runtime, so the split welcome jobs
   each crashed with "Input required and not supplied". Merged them into a

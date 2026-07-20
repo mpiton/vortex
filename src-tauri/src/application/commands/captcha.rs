@@ -314,17 +314,7 @@ impl CommandHandler<TimeoutCaptchaCommand> for CaptchaCommandHandler {
 }
 
 impl CaptchaCommandHandler {
-    pub(crate) async fn has_pending_for_download(
-        &self,
-        download_id: crate::domain::model::download::DownloadId,
-    ) -> Result<bool, DomainError> {
-        let _guard = self.mutation_lock.lock().await;
-        Ok(self
-            .captchas
-            .find_pending_by_download(download_id)?
-            .is_some())
-    }
-
+    #[cfg(test)]
     pub(crate) async fn skip_pending_for_download(
         &self,
         download_id: crate::domain::model::download::DownloadId,
@@ -335,6 +325,36 @@ impl CaptchaCommandHandler {
         };
         self.finish_as_failure_locked(challenge.id().clone(), None)?;
         Ok(true)
+    }
+
+    async fn take_download_for_removal<F>(
+        &self,
+        download_id: crate::domain::model::download::DownloadId,
+        before_delete: F,
+    ) -> Result<Option<(crate::domain::model::download::Download, bool)>, DomainError>
+    where
+        F: FnOnce(&crate::domain::model::download::Download, bool) -> Result<bool, DomainError>,
+    {
+        let _guard = self.mutation_lock.lock().await;
+        let Some(download) = self.downloads.find_by_id(download_id)? else {
+            return Ok(None);
+        };
+        let pending = self.captchas.find_pending_by_download(download_id)?;
+        let was_pending = pending.is_some();
+        let is_active = before_delete(&download, was_pending)?;
+        self.downloads.delete(download_id)?;
+        if let Some(challenge) = pending
+            && let Err(error) = self.finish_as_failure_locked(challenge.id().clone(), None)
+        {
+            if let Err(rollback_error) = self.downloads.save(&download) {
+                tracing::error!(
+                    error = %rollback_error,
+                    "failed to restore download after CAPTCHA cleanup failure"
+                );
+            }
+            return Err(error);
+        }
+        Ok(Some((download, is_active)))
     }
 
     async fn finish_as_failure(
@@ -440,37 +460,32 @@ impl CommandHandler<RetryCaptchaCommand> for CaptchaCommandHandler {
 }
 
 impl CommandBus {
-    pub(crate) async fn has_pending_captcha_for_download(
+    pub(crate) async fn delete_download_with_captcha_cleanup<F>(
         &self,
         download_id: crate::domain::model::download::DownloadId,
-    ) -> Result<bool, AppError> {
-        match self.captcha_handler_opt() {
+        before_delete: F,
+    ) -> Result<(crate::domain::model::download::Download, bool), AppError>
+    where
+        F: FnOnce(&crate::domain::model::download::Download, bool) -> Result<bool, DomainError>,
+    {
+        let removed = match self.captcha_handler_opt() {
             Some(handler) => handler
-                .has_pending_for_download(download_id)
+                .take_download_for_removal(download_id, before_delete)
                 .await
-                .map_err(AppError::Domain),
-            None => Ok(false),
-        }
-    }
-
-    pub(crate) async fn delete_download_with_captcha_cleanup(
-        &self,
-        download: &crate::domain::model::download::Download,
-    ) -> Result<(), AppError> {
-        self.download_repo().delete(download.id())?;
-        let Some(handler) = self.captcha_handler_opt() else {
-            return Ok(());
-        };
-        if let Err(error) = handler.skip_pending_for_download(download.id()).await {
-            if let Err(rollback_error) = self.download_repo().save(download) {
-                tracing::error!(
-                    error = %rollback_error,
-                    "failed to restore download after CAPTCHA cleanup failure"
-                );
+                .map_err(AppError::Domain)?,
+            None => {
+                let Some(download) = self.download_repo().find_by_id(download_id)? else {
+                    return Err(AppError::NotFound(format!(
+                        "Download {} not found",
+                        download_id.0
+                    )));
+                };
+                let is_active = before_delete(&download, false).map_err(AppError::Domain)?;
+                self.download_repo().delete(download_id)?;
+                Some((download, is_active))
             }
-            return Err(AppError::Domain(error));
-        }
-        Ok(())
+        };
+        removed.ok_or_else(|| AppError::NotFound(format!("Download {} not found", download_id.0)))
     }
 
     pub async fn handle_captcha_solve(&self, command: SolveCaptchaCommand) -> Result<(), AppError> {

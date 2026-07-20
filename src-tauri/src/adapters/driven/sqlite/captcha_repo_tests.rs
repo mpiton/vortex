@@ -78,7 +78,7 @@ async fn captcha_log_never_has_a_solution_column() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn pending_query_is_defensively_capped() {
+async fn pending_query_returns_every_challenge_needed_for_recovery() {
     let db = setup_test_db().await.expect("test db");
     let repo = SqliteCaptchaRepo::new(db);
     for index in 0..201 {
@@ -86,5 +86,5 @@ async fn pending_query_is_defensively_capped() {
             .expect("save pending challenge");
     }
 
-    assert_eq!(repo.list_pending().expect("list pending").len(), 200);
+    assert_eq!(repo.list_pending().expect("list pending").len(), 201);
 }

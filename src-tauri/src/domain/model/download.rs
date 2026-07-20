@@ -953,11 +953,12 @@ mod tests {
     #[test]
     fn queue_after_wait_rejects_non_waiting_downloads() {
         let mut download = make_download();
+        download.start().unwrap();
 
         assert!(matches!(
             download.queue_after_wait(),
             Err(DomainError::InvalidTransition {
-                from: DownloadState::Queued,
+                from: DownloadState::Downloading,
                 to: DownloadState::Queued,
             })
         ));
