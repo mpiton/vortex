@@ -35,6 +35,7 @@ const baseConfig: AppConfig = {
     "vortex-mod-captcha-anticaptcha",
     "vortex-mod-captcha-browser",
   ],
+  resolutionOrder: ["premium", "debrid", "free"],
   proxyType: "none",
   proxyUrl: null,
   userAgent: "Vortex/1.0",

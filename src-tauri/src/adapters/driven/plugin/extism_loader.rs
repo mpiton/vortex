@@ -470,7 +470,10 @@ impl PluginLoader for ExtismPluginLoader {
             .into_iter()
             .filter(|i| i.is_enabled())
             .collect();
-        infos.sort_by(|a, b| a.name().cmp(b.name()));
+        // A debrid plugin claims every hoster it can unrestrict, so on name
+        // order alone it would steal URLs the hoster plugin owns. Debrid is a
+        // fallback rung of the resolution cascade, never the URL owner.
+        infos.sort_by_key(|i| (i.category() == PluginCategory::Debrid, i.name().to_string()));
         for info in infos {
             let name = info.name().to_string();
             match self.registry.call_plugin(&name, "can_handle", url) {
@@ -486,6 +489,24 @@ impl PluginLoader for ExtismPluginLoader {
             return Ok(Some(HttpModule::plugin_info()));
         }
         Ok(None)
+    }
+
+    fn plugin_can_handle(&self, name: &str, url: &str) -> Result<bool, DomainError> {
+        let enabled = self
+            .registry
+            .list_info()
+            .into_iter()
+            .any(|i| i.name() == name && i.is_enabled());
+        if !enabled {
+            return Ok(false);
+        }
+        match self.registry.call_plugin(name, "can_handle", url) {
+            Ok(result) => Ok(result.trim() == "true"),
+            Err(e) => {
+                tracing::warn!("plugin '{name}' failed can_handle call: {e}");
+                Ok(false)
+            }
+        }
     }
 
     fn list_loaded(&self) -> Result<Vec<PluginInfo>, DomainError> {

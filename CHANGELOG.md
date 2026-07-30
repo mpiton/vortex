@@ -15,6 +15,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CAPTCHA solvers: configurable OCR → AntiCaptcha → browser cascade, typed
   Tesseract host broker, keyring-backed AntiCaptcha credentials, persisted
   per-solver attempts, and a dedicated human-assisted WebView (MAT-141).
+- Debrid support: `vortex-mod-realdebrid` and `vortex-mod-alldebrid` plugins
+  unrestrict a covered hoster link through a keyring-held API token and report
+  premium expiry back to the Accounts view (MAT-142).
+- Configurable Premium → Debrid → Free resolution order (PRD-v2 §4.3). Link
+  resolution now walks the tiers in the order set under Settings → Downloads,
+  picking the plugin and account before any hoster is contacted. A tier that
+  declines records why, so an exhausted cascade names every rung it tried
+  instead of failing as a bare "no source" (MAT-142).
 
 ### Security
 
@@ -26,6 +34,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A debrid that fails when the engine asks for the direct URL now falls through
+  to anonymous extraction instead of leaving the download in error. The link
+  check picks the debrid while it is healthy, but the quota can be spent, the
+  hoster can drop out of coverage, or the service can go down before the
+  transfer starts. When neither rung delivers, the error names both. The
+  fall-through only ever targets a hoster plugin, so a second debrid is never
+  called anonymously and reported as the free rung (MAT-142).
+- Resolution tier identifiers coming over IPC are now length-bounded, so a
+  malformed patch cannot turn the parse error into an oversized IPC string
+  (MAT-142).
 - CAPTCHA browser windows now close directly from persisted terminal command
   flows instead of relying on a lossy event subscriber (MAT-141).
 - The Windows Tesseract broker regression fixture now returns success after

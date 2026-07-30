@@ -42,6 +42,7 @@ mod remove_download_from_package;
 mod report_broken_plugin;
 mod resolve_links;
 mod resolve_links_gallery;
+mod resolve_links_tiers;
 pub mod resolve_premium_source;
 mod resume_all;
 mod resume_download;

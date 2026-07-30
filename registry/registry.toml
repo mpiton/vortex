@@ -171,3 +171,31 @@ checksum_sha256      = "28ba16ce5325b48451164b7cd2062b4225f5a87a1f1c2ce7cd7e7211
 checksum_sha256_toml = "6d7e0152bc28c56adae29ba0e078cb511cc6aad468d2395c58d02d3b1f758dd6"
 official             = true
 min_vortex_version   = "0.1.0"
+
+[[plugin]]
+name                 = "vortex-mod-realdebrid"
+description          = "Real-Debrid — unrestrict a covered hoster link with a premium API token held in the keyring"
+author               = "vortex-community"
+version              = "1.0.0"
+category             = "debrid"
+repository           = "https://github.com/mpiton/vortex-mod-realdebrid"
+checksum_sha256      = "4aece8b0af53812dbbba8c60acb8de4cbe35856311ec64624d923801f3659fb7"
+checksum_sha256_toml = "d79bfb33786d76ea20032b5746e558fef6c4a9f0878b930d7d1197696c76e300"
+official             = true
+# Vortex 0.3.0 is where the Premium → Debrid → Free cascade lands. On an
+# older host a debrid plugin is just another URL claimant and would outrank
+# the hoster plugin that owns the domain.
+min_vortex_version   = "0.3.0"
+
+[[plugin]]
+name                 = "vortex-mod-alldebrid"
+description          = "AllDebrid — unrestrict a covered hoster link with a premium API key held in the keyring"
+author               = "vortex-community"
+version              = "1.0.0"
+category             = "debrid"
+repository           = "https://github.com/mpiton/vortex-mod-alldebrid"
+checksum_sha256      = "3e1ef6417574884c8c19360eccb349ab948c2bc01e671e4c22b0e121228a3003"
+checksum_sha256_toml = "c672b883752d1ca2d5864a7fcc01dc26d2c4e132afda36eb1aa67add7bc75d39"
+official             = true
+# Same 0.3.0 floor as vortex-mod-realdebrid above.
+min_vortex_version   = "0.3.0"

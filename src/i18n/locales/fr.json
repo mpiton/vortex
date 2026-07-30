@@ -127,6 +127,22 @@
       "speedLimitDesc": "0 = illimité",
       "maxRetries": "Tentatives max",
       "retryDelay": "Délai de tentative (secondes)",
+      "resolutionOrder": {
+        "label": "Priorité de résolution",
+        "description": "Ordre de résolution d'un lien. Le premier niveau capable de servir le lien l'emporte.",
+        "tiers": {
+          "premium": "Compte premium",
+          "debrid": "Service debrid",
+          "free": "Gratuit"
+        },
+        "hints": {
+          "premium": "Un compte payant enregistré directement chez l'hébergeur.",
+          "debrid": "Un abonnement Real-Debrid ou AllDebrid couvrant l'hébergeur.",
+          "free": "Téléchargement anonyme, avec l'attente et le CAPTCHA imposés par l'hébergeur."
+        },
+        "moveUp": "Déplacer {{tier}} vers le haut",
+        "moveDown": "Déplacer {{tier}} vers le bas"
+      },
       "verifyChecksums": "Vérifier les sommes de contrôle",
       "verifyChecksumsDesc": "Vérifier l'intégrité du fichier après téléchargement",
       "preAllocate": "Pré-allouer l'espace",

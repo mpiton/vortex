@@ -52,6 +52,7 @@ const mockConfig: AppConfig = {
     "vortex-mod-captcha-anticaptcha",
     "vortex-mod-captcha-browser",
   ],
+  resolutionOrder: ["premium", "debrid", "free"],
   historyRetentionDays: 30,
   proxyType: "none",
   proxyUrl: null,

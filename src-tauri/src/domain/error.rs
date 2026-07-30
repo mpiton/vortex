@@ -31,6 +31,10 @@ pub enum DomainError {
     HosterAuthenticationRequired,
     HosterDirectUrlExpired,
     HosterUnexpectedHtml,
+    /// Every rung of the Premium → Debrid → Free cascade declined the link.
+    /// The payload lists each tier and why, so the failure is never a bare
+    /// "no source" the user cannot act on (PRD §4.3).
+    ResolutionExhausted(String),
     CaptchaRequired {
         challenge_type: CaptchaType,
         challenge_url: String,
@@ -116,6 +120,9 @@ impl std::fmt::Display for DomainError {
             }
             DomainError::HosterUnexpectedHtml => {
                 write!(f, "Hoster returned an HTML page instead of file content")
+            }
+            DomainError::ResolutionExhausted(reasons) => {
+                write!(f, "No resolution tier could handle this link ({reasons})")
             }
             DomainError::CaptchaRequired { .. } => write!(f, "CAPTCHA is required"),
             DomainError::AdaptiveStreamOnly => write!(
@@ -239,6 +246,21 @@ mod tests {
         assert!(msg.contains("SHA-256"));
         assert!(msg.contains("abc"));
         assert!(msg.contains("def"));
+    }
+
+    #[test]
+    fn test_display_resolution_exhausted_keeps_every_tier_reason() {
+        // R-04: the user needs to read which rung refused and why, not a
+        // generic failure that hides the whole cascade.
+        let err = DomainError::ResolutionExhausted(
+            "premium: no premium account for vortex-mod-mediafire; \
+             debrid: no debrid service covers this hoster"
+                .to_string(),
+        );
+        let msg = err.to_string();
+
+        assert!(msg.contains("no premium account"), "{msg}");
+        assert!(msg.contains("no debrid service covers"), "{msg}");
     }
 
     #[test]

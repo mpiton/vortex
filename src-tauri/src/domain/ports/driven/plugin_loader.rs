@@ -63,6 +63,16 @@ pub trait PluginLoader: Send + Sync {
     /// the built-in HTTP module).
     fn resolve_url(&self, url: &str) -> Result<Option<PluginInfo>, DomainError>;
 
+    /// Ask one named plugin whether it claims the URL.
+    ///
+    /// `resolve_url` only reports the winner; the resolution cascade also
+    /// needs to poll debrid plugins that lost to the hoster that owns the
+    /// domain. The default answers "does not claim" so a loader without
+    /// per-plugin dispatch makes the cascade skip a rung rather than abort.
+    fn plugin_can_handle(&self, _name: &str, _url: &str) -> Result<bool, DomainError> {
+        Ok(false)
+    }
+
     /// List all currently loaded plugins.
     fn list_loaded(&self) -> Result<Vec<PluginInfo>, DomainError>;
 

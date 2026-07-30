@@ -2,6 +2,7 @@ import { useTranslation } from "react-i18next";
 import { useTauriMutation } from "@/api/hooks";
 import { toast } from "@/lib/toast";
 import type { AppConfig, AppConfigPatch } from "@/types/settings";
+import { ResolutionOrderSetting } from "./ResolutionOrderSetting";
 import { SettingToggle, SettingNumberInput } from "./SettingField";
 
 interface DownloadsSectionProps {
@@ -74,6 +75,11 @@ export function DownloadsSection({ config }: DownloadsSectionProps) {
           max={3600}
         />
       </div>
+
+      <ResolutionOrderSetting
+        value={config.resolutionOrder}
+        onChange={(next) => handleChange("resolutionOrder", next)}
+      />
 
       <div className="space-y-1">
         <SettingToggle

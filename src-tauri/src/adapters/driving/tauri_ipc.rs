@@ -76,7 +76,7 @@ use crate::application::read_models::stats_view::{ModuleStatsDto, StatsViewDto};
 use crate::domain::error::DomainError;
 use crate::domain::model::account::{AccountId, AccountType};
 use crate::domain::model::captcha::{CaptchaId, MAX_CAPTCHA_SOLUTION_BYTES};
-use crate::domain::model::config::{AppConfig, ConfigPatch};
+use crate::domain::model::config::{AppConfig, ConfigPatch, ResolutionTier};
 use crate::domain::model::download::{DownloadId, DownloadState};
 use crate::domain::model::package::{PackageId, PackageSourceType};
 use crate::domain::model::views::{
@@ -1316,6 +1316,9 @@ pub struct SettingsDto {
     /// Serialized as `"best_traffic" | "round_robin" | "manual"` to mirror
     /// the snake_case enum convention used elsewhere in IPC payloads.
     pub account_selection_strategy: String,
+    /// Link resolution cascade, most-preferred first. Entries are
+    /// `"premium" | "debrid" | "free"`.
+    pub resolution_order: Vec<String>,
 
     // Network
     pub proxy_type: String,
@@ -1377,6 +1380,11 @@ impl From<AppConfig> for SettingsDto {
             captcha_solver_order: c.captcha_solver_order,
             history_retention_days: c.history_retention_days,
             account_selection_strategy: c.account_selection_strategy.to_string(),
+            resolution_order: c
+                .resolution_order
+                .iter()
+                .map(ResolutionTier::to_string)
+                .collect(),
             proxy_type: c.proxy_type,
             proxy_url: c.proxy_url,
             user_agent: c.user_agent,
@@ -1402,6 +1410,13 @@ impl From<AppConfig> for SettingsDto {
 
 const MAX_CAPTCHA_SOLVER_ORDER_ENTRIES: usize = 3;
 const MAX_CAPTCHA_SOLVER_IDENTIFIER_BYTES: usize = 128;
+/// One entry per `ResolutionTier` variant; duplicates are dropped by
+/// `normalize_resolution_order`, so a longer list is malformed input.
+const MAX_RESOLUTION_ORDER_ENTRIES: usize = 3;
+/// The longest tier name is `premium`. Anything beyond this is malformed
+/// input whose only effect would be an oversized IPC error string, since
+/// the parse failure quotes what it rejected.
+const MAX_RESOLUTION_TIER_IDENTIFIER_BYTES: usize = 16;
 
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1438,6 +1453,9 @@ pub struct ConfigPatchDto {
     /// Accepted values: `"best_traffic"`, `"round_robin"`, `"manual"`.
     /// Unknown values are rejected by `ConfigPatch::try_from(ConfigPatchDto)`.
     pub account_selection_strategy: Option<String>,
+    /// Accepted values: `"premium"`, `"debrid"`, `"free"`. Unknown values
+    /// are rejected by `ConfigPatch::try_from(ConfigPatchDto)`.
+    pub resolution_order: Option<Vec<String>>,
 
     // Network
     pub proxy_type: Option<String>,
@@ -1488,6 +1506,27 @@ impl TryFrom<ConfigPatchDto> for ConfigPatch {
             Some(raw) => Some(raw.parse().map_err(|e: DomainError| e.to_string())?),
             None => None,
         };
+        if let Some(order) = &d.resolution_order {
+            if order.len() > MAX_RESOLUTION_ORDER_ENTRIES {
+                return Err("Resolution order exceeds safety limits".to_string());
+            }
+            if order
+                .iter()
+                .any(|tier| tier.len() > MAX_RESOLUTION_TIER_IDENTIFIER_BYTES)
+            {
+                return Err("Resolution tier identifier exceeds safety limits".to_string());
+            }
+        }
+        let resolution_order = match &d.resolution_order {
+            Some(order) => Some(
+                order
+                    .iter()
+                    .map(|tier| tier.parse())
+                    .collect::<Result<Vec<ResolutionTier>, DomainError>>()
+                    .map_err(|e| e.to_string())?,
+            ),
+            None => None,
+        };
         Ok(Self {
             download_dir: d.download_dir,
             start_minimized: d.start_minimized,
@@ -1510,6 +1549,7 @@ impl TryFrom<ConfigPatchDto> for ConfigPatch {
             captcha_solver_order: d.captcha_solver_order,
             history_retention_days: d.history_retention_days,
             account_selection_strategy,
+            resolution_order,
             proxy_type: d.proxy_type,
             proxy_url: d.proxy_url,
             user_agent: d.user_agent,
@@ -4977,6 +5017,23 @@ mod tests {
                 .expect_err("oversized solver identifier must be rejected")
                 .contains("solver identifier")
         );
+    }
+
+    #[test]
+    fn config_patch_dto_rejects_an_oversized_resolution_tier_identifier() {
+        use super::{ConfigPatch, ConfigPatchDto};
+
+        // The parse error quotes what it rejected, so an unbounded tier
+        // name would come straight back as an oversized IPC error.
+        let dto = ConfigPatchDto {
+            resolution_order: Some(vec!["x".repeat(4096)]),
+            ..Default::default()
+        };
+
+        let result: Result<ConfigPatch, String> = dto.try_into();
+        let error = result.expect_err("oversized tier identifier must be rejected");
+        assert!(error.contains("tier identifier"), "{error}");
+        assert!(!error.contains("xxxx"), "{error}");
     }
 
     #[test]

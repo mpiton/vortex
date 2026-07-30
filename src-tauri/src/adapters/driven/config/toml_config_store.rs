@@ -9,8 +9,9 @@ use std::sync::Mutex;
 use crate::domain::error::DomainError;
 use crate::domain::model::account::AccountSelectionStrategy;
 use crate::domain::model::config::{
-    AppConfig, ConfigPatch, MAX_CAPTCHA_TIMEOUT_SECONDS, MIN_CAPTCHA_TIMEOUT_SECONDS, apply_patch,
-    normalize_captcha_solver_order, normalize_history_retention_days,
+    AppConfig, ConfigPatch, MAX_CAPTCHA_TIMEOUT_SECONDS, MIN_CAPTCHA_TIMEOUT_SECONDS,
+    ResolutionTier, apply_patch, normalize_captcha_solver_order, normalize_history_retention_days,
+    normalize_resolution_order,
 };
 use crate::domain::ports::driven::ConfigStore;
 
@@ -172,6 +173,7 @@ struct ConfigDto {
 
     // Accounts
     account_selection_strategy: String,
+    resolution_order: Vec<String>,
 
     // Network
     proxy_type: String,
@@ -234,6 +236,11 @@ impl From<AppConfig> for ConfigDto {
             captcha_solver_order: c.captcha_solver_order,
             history_retention_days: c.history_retention_days,
             account_selection_strategy: c.account_selection_strategy.to_string(),
+            resolution_order: c
+                .resolution_order
+                .iter()
+                .map(ResolutionTier::to_string)
+                .collect(),
             proxy_type: c.proxy_type,
             proxy_url: c.proxy_url,
             user_agent: c.user_agent,
@@ -272,6 +279,15 @@ impl TryFrom<ConfigDto> for AppConfig {
             } else {
                 d.account_selection_strategy.parse()?
             };
+        // Same backward-compat contract: an absent list means "never
+        // configured" and falls back to the PRD default, while a typo'd
+        // tier is corruption and must not silently disable a rung.
+        let resolution_order = normalize_resolution_order(
+            &d.resolution_order
+                .iter()
+                .map(|tier| tier.parse())
+                .collect::<Result<Vec<ResolutionTier>, DomainError>>()?,
+        );
         Ok(Self {
             download_dir: d.download_dir,
             start_minimized: d.start_minimized,
@@ -296,6 +312,7 @@ impl TryFrom<ConfigDto> for AppConfig {
             captcha_solver_order: normalize_captcha_solver_order(&d.captcha_solver_order),
             history_retention_days: normalize_history_retention_days(d.history_retention_days),
             account_selection_strategy,
+            resolution_order,
             proxy_type: d.proxy_type,
             proxy_url: d.proxy_url,
             user_agent: d.user_agent,

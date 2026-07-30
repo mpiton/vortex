@@ -1,4 +1,6 @@
 export type ProxyType = "none" | "http" | "socks5";
+/** Mirrors `domain::model::config::ResolutionTier`. */
+export type ResolutionTier = "premium" | "debrid" | "free";
 export type ThemeMode = "light" | "dark" | "auto";
 export type SettingTab =
   | "general"
@@ -32,6 +34,8 @@ export interface AppConfig {
   dynamicSplitMinRemainingMb: number;
   captchaTimeoutSeconds: number;
   captchaSolverOrder: string[];
+  /** Tiers walked by link resolution, most preferred first. PRD §4.3. */
+  resolutionOrder: ResolutionTier[];
 
   // History
   historyRetentionDays: number;
