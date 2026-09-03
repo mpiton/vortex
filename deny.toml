@@ -40,18 +40,18 @@ ignore = [
   "RUSTSEC-2025-0081",
   "RUSTSEC-2025-0098",
   "RUSTSEC-2025-0100",
-  # proc-macro-error2 2.0.1 is unmaintained through sea-bae →
-  # sea-orm-macros 1.1.20. It runs only while compiling, so it has no runtime
-  # input surface. Mitigation: follow SeaORM 1.x updates and remove this entry
-  # when its macros migrate. Review by 2026-10-15.
-  "RUSTSEC-2026-0173",
-  # quick-xml <0.41 is pulled by wayland-scanner 0.31.10 for trusted build-time
-  # protocol XML. The vulnerable parser paths do not process remote XML in
-  # Vortex.
-  # Mitigation: keep parent crates current and remove when they adopt 0.41+.
-  # Review by 2026-10-15.
-  "RUSTSEC-2026-0194",
-  "RUSTSEC-2026-0195",
+  # Extism 1.30.0 pins wasmtime 43.0.2. No patched 43.x exists; fixed lines are
+  # 24.0.13 / 36.0.14 / 46.0.3 / 47.0.4, all incompatible with this Extism.
+  # Vortex only loads first-party plugin WASM from the app data dir.
+  # Mitigation: bump when Extism ships a wasmtime 46+/47+ runtime.
+  # Review by 2026-12-01.
+  "RUSTSEC-2026-0222",
+  "RUSTSEC-2026-0269",
+  # Unmaintained wasmtime 43 transitive crates (bitmaps / im-rc / sized-chunks
+  # via wasm-compose). Same Extism pin as above. Review by 2026-12-01.
+  "RUSTSEC-2026-0247",
+  "RUSTSEC-2026-0250",
+  "RUSTSEC-2026-0251",
 ]
 
 # === License compliance (GPL-3.0 compatible) ===
