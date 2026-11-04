@@ -40,7 +40,7 @@ uuid = { version = "1.26.0", features = ["v4"] }
 tauri-plugin-clipboard-manager = "2.3.3"
 tauri-plugin-notification = "2.4.0"
 regex = "1"
-zip = "8.5.1"
+zip = "9.0.5"
 tar = "0.4.46"
 flate2 = "1.1.10"
 bzip2 = "0.6.1"
