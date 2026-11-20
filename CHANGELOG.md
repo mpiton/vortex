@@ -31,6 +31,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   date, matching the existing `deny.toml` triage. The fix is merged upstream
   but unreleased; the ignore goes away once wayland-scanner > 0.31.10 ships
   (MAT-139).
+- npm dependencies: cleared every `npm audit` advisory. `oxfmt` moves to 0.79
+  (drops the vulnerable `tinypool`), `vitest` and `@vitest/coverage-v8` to
+  4.1.12, and the lockfile picks up patched `react-router`, `vite`, `undici`,
+  `zod`, `nanoid`, `smol-toml`, `browserslist` and `source-map-js`.
 
 ### Fixed
 
