@@ -69,6 +69,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Bug report template: version dropdown now lists `v0.3.0-beta.1` as the
   latest beta.
 - README: feedback section links to the v0.3.0-beta.1 discussion thread.
+- Mutation testing workflow: removed the nightly `schedule` trigger. The
+  4-shard full sweep hit its 6-hour timeout every night; it now runs only
+  on `workflow_dispatch`. The PR-diff job is unchanged.
 
 ## [0.3.0-beta.1] - 2026-07-19
 

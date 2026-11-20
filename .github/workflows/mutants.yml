@@ -6,8 +6,6 @@ on:
     paths:
       - "src-tauri/**"
       - ".github/workflows/mutants.yml"
-  schedule:
-    - cron: "0 3 * * *"
   workflow_dispatch:
 
 permissions:
