@@ -35,6 +35,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (drops the vulnerable `tinypool`), `vitest` and `@vitest/coverage-v8` to
   4.1.12, and the lockfile picks up patched `react-router`, `vite`, `undici`,
   `zod`, `nanoid`, `smol-toml`, `browserslist` and `source-map-js`.
+- Rust dependencies: `cargo update` plus `zip` 9.8.1 and `extism` 1.41.0
+  (wasmtime 49) clear the RustSec advisories reported by `cargo deny`. The
+  five wasmtime 43 ignores are gone from `deny.toml`. Four advisories with no
+  upgrade path stay ignored with a review date: RUSTSEC-2026-0370/0371/0372
+  (`zbus_names`, `zvariant`, `zvariant_derive` unmaintained, pulled by
+  `tauri-plugin-notification`) and RUSTSEC-2026-0459 (bundled SQLite, fixed
+  only with sea-orm 2 / sqlx 0.9).
 
 ### Fixed
 
@@ -76,6 +83,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Mutation testing workflow: removed the nightly `schedule` trigger. The
   4-shard full sweep hit its 6-hour timeout every night; it now runs only
   on `workflow_dispatch`. The PR-diff job is unchanged.
+- Minimum supported Rust version is now 1.96 (required by wasmtime 49).
+- CodSpeed workflow: pinned to `ubuntu-24.04`. The CodSpeed runner exits with
+  "Unsupported system" on ubuntu-26.04, which `ubuntu-latest` now resolves to.
+- `QueueManager`: replaced the deprecated `AtomicUsize::fetch_update` with
+  `try_update`, which clippy rejects on current stable.
 
 ## [0.3.0-beta.1] - 2026-07-19
 

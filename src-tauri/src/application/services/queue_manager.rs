@@ -126,7 +126,7 @@ impl QueueManager {
     // F1: safe decrement — never wraps below 0
     fn safe_decrement(&self) {
         self.active_count
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
                 Some(current.saturating_sub(1))
             })
             .ok();
