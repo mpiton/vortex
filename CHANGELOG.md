@@ -88,6 +88,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   "Unsupported system" on ubuntu-26.04, which `ubuntu-latest` now resolves to.
 - `QueueManager`: replaced the deprecated `AtomicUsize::fetch_update` with
   `try_update`, which clippy rejects on current stable.
+- `@tauri-apps/api` 2.12 and `@tauri-apps/plugin-dialog` 2.8, to match the
+  `tauri` 2.12 and `tauri-plugin-dialog` 2.8 crates. The Tauri CLI refuses to
+  build when the npm and crate minor versions differ.
 
 ## [0.3.0-beta.1] - 2026-07-19
 
