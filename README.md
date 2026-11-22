@@ -3,7 +3,7 @@
 [![Release](https://img.shields.io/github/v/release/mpiton/vortex?include_prereleases&label=release)](https://github.com/mpiton/vortex/releases/latest)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![Built with Tauri](https://img.shields.io/badge/built%20with-Tauri%202-24c8db?logo=tauri)](https://tauri.app)
-[![Rust](https://img.shields.io/badge/rust-1.95-orange?logo=rust)](src-tauri/Cargo.toml)
+[![Rust](https://img.shields.io/badge/rust-1.96-orange?logo=rust)](src-tauri/Cargo.toml)
 [![CI](https://github.com/mpiton/vortex/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/mpiton/vortex/actions/workflows/ci.yml)
 [![CodSpeed](https://img.shields.io/endpoint?url=https://codspeed.io/badge.json)](https://codspeed.io/mpiton/vortex?utm_source=badge)
 
@@ -88,7 +88,7 @@ See [`ARCHI.md`](ARCHI.md) for the full architecture documentation.
 
 ```bash
 # Prerequisites
-rustup install 1.95.0  # or use the rust-toolchain.toml pin
+rustup install 1.96.0  # or use the rust-toolchain.toml pin
 node --version          # 22.x recommended
 sudo apt install libwebkit2gtk-4.1-dev build-essential libssl-dev libappindicator3-dev librsvg2-dev  # Linux
 

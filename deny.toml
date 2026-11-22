@@ -40,18 +40,20 @@ ignore = [
   "RUSTSEC-2025-0081",
   "RUSTSEC-2025-0098",
   "RUSTSEC-2025-0100",
-  # Extism 1.30.0 pins wasmtime 43.0.2. No patched 43.x exists; fixed lines are
-  # 24.0.13 / 36.0.14 / 46.0.3 / 47.0.4, all incompatible with this Extism.
-  # Vortex only loads first-party plugin WASM from the app data dir.
-  # Mitigation: bump when Extism ships a wasmtime 46+/47+ runtime.
-  # Review by 2026-12-01.
-  "RUSTSEC-2026-0222",
-  "RUSTSEC-2026-0269",
-  # Unmaintained wasmtime 43 transitive crates (bitmaps / im-rc / sized-chunks
-  # via wasm-compose). Same Extism pin as above. Review by 2026-12-01.
-  "RUSTSEC-2026-0247",
-  "RUSTSEC-2026-0250",
-  "RUSTSEC-2026-0251",
+  # zbus_names / zvariant / zvariant_derive were merged into zbus 6.0.0 and are
+  # no longer published standalone. Transitive via tauri-plugin-notification
+  # 2.x → zbus 5.x; no safe upgrade until the plugin moves to zbus 6.
+  # Review by 2027-02-01.
+  "RUSTSEC-2026-0370",
+  "RUSTSEC-2026-0371",
+  "RUSTSEC-2026-0372",
+  # Bundled SQLite < 3.54.0 (CVE-2026-119375) via sea-orm 1.1 → sqlx 0.8 →
+  # libsqlite3-sys 0.30. The fix needs libsqlite3-sys >= 0.39, which only
+  # sea-orm 2.x / sqlx 0.9 pull in. Exposure requires opening a database and
+  # `-wal` file written by a less trusted party; Vortex only opens its own
+  # database in the app data dir. Remove with the sea-orm 2 migration.
+  # Review by 2027-02-01.
+  "RUSTSEC-2026-0459",
 ]
 
 # === License compliance (GPL-3.0 compatible) ===

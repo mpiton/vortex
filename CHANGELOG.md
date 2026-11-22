@@ -31,6 +31,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   date, matching the existing `deny.toml` triage. The fix is merged upstream
   but unreleased; the ignore goes away once wayland-scanner > 0.31.10 ships
   (MAT-139).
+- npm dependencies: cleared every `npm audit` advisory. `oxfmt` moves to 0.79,
+  `vitest` and `@vitest/coverage-v8` to 4.1.12, and the lockfile picks up
+  patched `vite`, `undici`, `zod`, `tinypool`, `smol-toml` and
+  `source-map-js`.
+- Rust dependencies: `cargo update` plus `zip` 9.8.1 and `extism` 1.41.0
+  (wasmtime 49) clear the RustSec advisories reported by `cargo deny`. The
+  five wasmtime 43 ignores are gone from `deny.toml`. Four advisories with no
+  upgrade path stay ignored with a review date: RUSTSEC-2026-0370/0371/0372
+  (`zbus_names`, `zvariant`, `zvariant_derive` unmaintained, pulled by
+  `tauri-plugin-notification`) and RUSTSEC-2026-0459 (bundled SQLite, fixed
+  only with sea-orm 2 / sqlx 0.9).
 
 ### Fixed
 
@@ -69,6 +80,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Bug report template: version dropdown now lists `v0.3.0-beta.1` as the
   latest beta.
 - README: feedback section links to the v0.3.0-beta.1 discussion thread.
+- Mutation testing workflow: removed the nightly `schedule` trigger. The
+  4-shard full sweep hit its 6-hour timeout every night; it now runs only
+  on `workflow_dispatch`. The PR-diff job is unchanged.
+- Minimum supported Rust version is now 1.96 (required by wasmtime 49). The
+  Flatpak manifest and the README follow.
+- CodSpeed workflow: pinned to `ubuntu-24.04`. The CodSpeed runner exits with
+  "Unsupported system" on ubuntu-26.04, which `ubuntu-latest` now resolves to.
+- `QueueManager`: replaced the deprecated `AtomicUsize::fetch_update` with
+  `try_update`, which clippy rejects on current stable.
+- `@tauri-apps/api` 2.12 and `@tauri-apps/plugin-dialog` 2.8, to match the
+  `tauri` 2.12 and `tauri-plugin-dialog` 2.8 crates. The Tauri CLI refuses to
+  build when the npm and crate minor versions differ.
 
 ## [0.3.0-beta.1] - 2026-07-19
 

@@ -86,8 +86,9 @@ impl ZipHandler {
             let enclosed = match entry.enclosed_name() {
                 Some(path) => path,
                 None => {
-                    warn!("skipping entry with path traversal: {}", entry.name());
-                    warnings.push(format!("skipped suspicious path: {}", entry.name()));
+                    let name = String::from_utf8_lossy(entry.name_raw());
+                    warn!("skipping entry with path traversal: {}", name);
+                    warnings.push(format!("skipped suspicious path: {}", name));
                     continue;
                 }
             };
@@ -191,7 +192,10 @@ impl ZipHandler {
             let enclosed = match entry.enclosed_name() {
                 Some(path) => path,
                 None => {
-                    debug!("skipping entry with path traversal: {}", entry.name());
+                    debug!(
+                        "skipping entry with path traversal: {}",
+                        String::from_utf8_lossy(entry.name_raw())
+                    );
                     continue;
                 }
             };
